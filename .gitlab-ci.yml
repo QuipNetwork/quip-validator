@@ -3,9 +3,10 @@
 # CI pipeline for quip-protocol-rs.
 #
 # Stages:
-#   - test:      fmt / clippy / test / runtime release build on every MR, plus
-#                the quip-signer PyPI dry-run (build wheels + import-smoke both
-#                arches on native runners)
+#   - test:      fmt / clippy / test / runtime release build on every MR;
+#                also the quip-signer PyPI wheel build + amd64 import-smoke as an
+#                MR dry-run; the arm64 import-smoke runs on release tags only
+#                (all three gated on QUIP_SIGNER_PUBLISH at tag time)
 #   - build:     build the node and EVM-sidecar containers per architecture
 #                (amd64 + arm64), each on a native runner, on release tags only
 #   - manifest:  stitch each image's per-arch builds into a multi-arch manifest
@@ -14,7 +15,7 @@
 #                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
 #
 # Triggers:
-#   - merge_request_event  →  test (incl. PyPI build + both-arch import smoke, no upload)
+#   - merge_request_event  →  test (+ quip-signer wheel build & amd64 import-smoke, no upload)
 #   - push to main         →  test
 #   - push to v0.2         →  test
 #   - stable git tag vX.Y.Z reachable from main
@@ -22,10 +23,10 @@
 #                                 (:<tag> + :latest + :vX.Y + :sha-*)
 #   - rc / pre-release tag (or stable tag not on main)
 #                              →  test + build + manifest (:<tag> + :sha-* only)
-#   - release tag pipelines also run:
+#   - release tag pipelines also run, when QUIP_SIGNER_PUBLISH is enabled:
+#                              + release:build-pypi + both import-smokes
 #                              + release:publish-testpypi (auto)
 #                              + release:publish-pypi (manual promote)
-#     when QUIP_SIGNER_PUBLISH is enabled
 #
 # Multi-arch: kaniko has no cross-build/manifest support — it builds for the
 # native architecture of whichever runner it runs on. So each architecture has
@@ -643,44 +644,47 @@ manifest-evm-sidecar:
 # scripts/python-dists.sh, so the cross-built aarch64 wheel is import-tested on
 # a native arm64 runner before any upload (a wheel only imports on its own
 # arch — one amd64 job cannot exercise both):
-#   release:build-pypi         every MR/push + pre-publish   build 3 artefacts + guards
-#   release:smoke-pypi-amd64   needs build                   import the x86_64 wheel
-#   release:smoke-pypi-arm64   needs build (arm64 runner)    import the aarch64 wheel
+#   release:build-pypi         MR dry-run + release tag      build 3 artefacts + guards
+#   release:smoke-pypi-amd64   MR dry-run + tag; needs build import the x86_64 wheel
+#   release:smoke-pypi-arm64   release tag only; needs build import the aarch64 wheel
 #   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
 #   release:publish-pypi       release tag, if PUBLISH=true  manual  → PyPI
 #
-# build + both smokes run on every MR/push (the old dry-run, now import-testing
-# both wheels) and again on a release tag ahead of publish. The publish jobs are
-# gated on QUIP_SIGNER_PUBLISH (off by default) so a node release tag never reds
-# on an unconfigured wheel publish during Phase 1. Every pypi job `needs` only
-# other pypi jobs, so the chain never waits on the container build/manifest
-# stages (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both
-# smokes, so a wheel that won't import on its own arch blocks the upload.
+# build + the amd64 smoke also run as an MR dry-run (no upload) to catch packaging
+# regressions before a tag. The arm64 smoke and both publishes are tag-only — the
+# arm64 runners are slow and in demand, so the aarch64 wheel is import-tested at
+# tag time, not on every MR. On a release tag the whole chain is gated on
+# QUIP_SIGNER_PUBLISH (off by default), so a node release tag never reds on an
+# unconfigured wheel publish during Phase 1. Every pypi job `needs` only other
+# pypi jobs, so the chain never waits on the container build/manifest stages
+# (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both smokes, so a
+# wheel that won't import on its own arch blocks the upload.
 #
 # Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
 # (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
 # sdist (universal source fallback; macOS/Windows build from it). The wheel
 # version is the pyproject/Cargo version, bumped per release so the tag matches.
 
-# Run on pushed release tags like v0.2.1, v0.3.0-rc1, … (the same `v*` stream
-# that releases the node container — both publishes are tag-only) AND only once
-# publishing is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an unconfigured
-# publish from reding the node release pipeline during Phase 1.
+# Tag-only rule for the pypi jobs that do NOT run as an MR dry-run: the arm64
+# import-smoke and both publishes. Runs on pushed release tags like v0.2.1,
+# v0.3.0-rc1, … (the same `v*` stream that releases the node container) AND only
+# once publishing is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an
+# unconfigured publish from reding the node release pipeline during Phase 1.
 .on-release-tag:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
 
-# build + smoke run on every MR/push (dry-run: no upload) AND on a release tag
-# ahead of the gated publish. Union of "PR or push" and .on-release-tag: any MR /
-# branch push, plus a `v*` tag only once publishing is enabled — so an
-# unconfigured tag pipeline doesn't build/smoke a wheel it will never publish.
-.on-pr-push-or-release-tag:
+# build-pypi + the amd64 smoke additionally run as an MR dry-run (no upload) to
+# catch packaging regressions before a tag is cut. The arm64 smoke is left out
+# (it uses .on-release-tag) — those runners are slower and in higher demand, so
+# we don't spend them on every MR; the aarch64 wheel is import-tested at tag
+# time instead. On a release tag these two still require QUIP_SIGNER_PUBLISH (the
+# first rule); a tag with the gate off matches nothing here and is skipped, so no
+# wheel is built that will never ship.
+.on-mr-or-release-tag:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
-    - if: $CI_COMMIT_TAG =~ /^v\d/
-      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH
 
 # Build base: the one job that compiles. Runs on the lean Rust image (see
 # PY_RELEASE_IMAGE) and installs the maturin/twine/zig toolchain. The binding is
@@ -762,14 +766,15 @@ manifest-evm-sidecar:
     - pip install --quiet --upgrade 'twine>=6.1'
 
 # Build all three artefacts, guard their tags/content, twine-check metadata, and
-# publish dist/ as an artefact. Runs on every MR/push (dry-run) and again ahead
-# of a tagged publish. No token, no upload. Catches release-blocking packaging
-# regressions (bad metadata, a wheel that won't build, an unbuildable aarch64
-# cross, a dropped python surface) long before a tag is cut.
+# publish dist/ as an artefact. Runs as an MR dry-run and again on a release tag
+# (when publishing is enabled) ahead of the publish jobs. No token, no upload.
+# Catches release-blocking packaging regressions (bad metadata, a wheel that
+# won't build, an unbuildable aarch64 cross, a dropped python surface) before a
+# tag is cut.
 release:build-pypi:
   extends: .pypi-build
   stage: test
-  rules: !reference [.on-pr-push-or-release-tag, rules]
+  rules: !reference [.on-mr-or-release-tag, rules]
   script:
     - bash scripts/python-dists.sh build
 
@@ -781,11 +786,15 @@ release:build-pypi:
 # tested on real arm64 before publish. The smoke workload is featherweight
 # (install a ~1 MB wheel + import), so gating on the memory-constrained arm64
 # runner is safe — nothing like the Substrate compile that strains it elsewhere.
+# The two jobs carry different rules on purpose: amd64 runs as an MR dry-run
+# (.on-mr-or-release-tag), arm64 is tag-only (.on-release-tag) because those
+# runners are slower and in higher demand — the aarch64 wheel is import-tested at
+# tag time rather than on every MR.
 release:smoke-pypi-amd64:
   extends: .pypi-smoke
   stage: test
   tags: [docker, amd64]
-  rules: !reference [.on-pr-push-or-release-tag, rules]
+  rules: !reference [.on-mr-or-release-tag, rules]
   script:
     - bash scripts/python-dists.sh smoke
 
@@ -793,7 +802,7 @@ release:smoke-pypi-arm64:
   extends: .pypi-smoke
   stage: test
   tags: [docker, arm64]
-  rules: !reference [.on-pr-push-or-release-tag, rules]
+  rules: !reference [.on-release-tag, rules]
   script:
     - bash scripts/python-dists.sh smoke
 
