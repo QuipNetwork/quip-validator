@@ -9,7 +9,7 @@ version = "0.2.2"
 license = "MIT-0"
 authors = ["Quip Network <roman@postquant.xyz>"]
 homepage = "https://www.quip.network/"
-repository = "https://gitlab.com/quip.network/quip-protocol-rs.git"
+repository = "https://gitlab.com/quip.network/quip-validator.git"
 edition = "2021"
 publish = false
 

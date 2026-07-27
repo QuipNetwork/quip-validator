@@ -24,7 +24,7 @@ git push origin v<MAJOR>.<MINOR>.<PATCH>
 
 The GitLab CI pipeline at `.gitlab-ci.yml` picks up the tag via the
 `$CI_COMMIT_TAG` rule and publishes
-`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`.
+`registry.gitlab.com/quip.network/quip-validator/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`.
 
 ### Version-tag format (shared standard)
 
@@ -48,7 +48,7 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 - [ ] Image present:
 
   ```bash
-  docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>
+  docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>
   ```
 
 - [ ] Smoke test against the published spec:
@@ -57,7 +57,7 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
   curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/quip-testnet.json \
       -o /tmp/quip-testnet.json
   docker run --rm -v /tmp:/spec \
-      registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH> \
+      registry.gitlab.com/quip.network/quip-validator/quip-network-node:v<MAJOR>.<MINOR>.<PATCH> \
       --chain=/spec/quip-testnet.json --tmp --name v-smoke --no-mdns
   ```
 

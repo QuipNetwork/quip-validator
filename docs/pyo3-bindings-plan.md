@@ -37,7 +37,7 @@ is preserved; "no_std" is not (and is not needed for a CPython extension).
 ## Target architecture
 
 ```
-quip-protocol-rs/
+quip-validator/
 └── crates/
     ├── transaction-crypto-core/  # UNCHANGED — sp-free byte API + golden fixture
     ├── transaction-crypto-wasm/  # UNCHANGED — cdylib over core (hex API, browser)
@@ -64,7 +64,7 @@ into the built wheel, so an out-of-tree path shipped a surface-less wheel
 The crate depends on `quip-transaction-crypto-core` only — the same dependency
 edge the WASM crate uses. The `crates/transaction-crypto-py/python/` staging package mirrors the role
 `js/quip-transaction-crypto-wasm/` plays for the browser signer: a fixed
-location, importable by a downstream that pins `quip-protocol-rs` as a git
+location, importable by a downstream that pins `quip-validator` as a git
 submodule, into which `make py-signer` drops the built (git-ignored) extension.
 
 ## Public API (Python module `quip_signer`)
@@ -167,14 +167,14 @@ keygen on every `sign`.
 
 ### Primary — git submodule (selected)
 
-A downstream Python project pins `quip-protocol-rs` as a git submodule and
+A downstream Python project pins `quip-validator` as a git submodule and
 builds the extension locally, exactly like the `apps` repo consumes the browser
-signer today (`apps/Makefile`: init submodule → `make -C quip-protocol-rs
+signer today (`apps/Makefile`: init submodule → `make -C quip-validator
 wasm-signer` → import from `js/...`). The Python analogue:
 
 ```make
 # downstream Makefile
-QUIP_SUBMODULE := quip-protocol-rs
+QUIP_SUBMODULE := quip-validator
 py-signer: quip-submodule
 	$(MAKE) -C $(QUIP_SUBMODULE) py-signer
 	# then either:
@@ -191,7 +191,7 @@ origin (just like `apps` does), so the pin must be pushed to be shareable.
 ### Alternative — local dev build (in-repo)
 
 `make py-signer-develop` → `maturin develop` into the active venv. For working
-inside `quip-protocol-rs` itself (running `pytest`, iterating on the API).
+inside `quip-validator` itself (running `pytest`, iterating on the API).
 
 ### Alternative — published wheels + CI (deferred)
 

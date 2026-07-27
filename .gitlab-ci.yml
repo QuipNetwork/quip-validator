@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# CI pipeline for quip-protocol-rs.
+# CI pipeline for quip-validator.
 #
 # Stages:
 #   - test:      fmt / clippy / test / runtime release build on every MR;
@@ -47,7 +47,7 @@
 # Hub — see the Dockerfile header for the buildx command). Rebuild it
 # locally and re-push when the toolchain Dockerfile changes.
 #
-# Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
+# Runtime image: registry.gitlab.com/quip.network/quip-validator/quip-network-node:<tag>
 
 stages:
   - test

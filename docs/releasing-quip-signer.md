@@ -88,12 +88,23 @@ The CI project coordinates the Trusted Publisher needs below:
 | Field | Value |
 |---|---|
 | Namespace | `quip.network` |
-| Project | `quip-protocol-rs` |
+| Project | `quip-validator` |
 | Top-level pipeline file path | `.gitlab-ci.yml` |
 | Environment | `release` |
 
 (Confirm the namespace against the CI project URL —
-`gitlab.com/quip.network/quip-protocol-rs`.)
+`gitlab.com/quip.network/quip-validator`.)
+
+> **If the GitLab project is ever renamed or moved, publishing breaks.** The
+> OIDC token GitLab mints carries the project path as a claim, so a Trusted
+> Publisher configured against the old path stops matching and `twine` fails
+> with `publisher config mismatch`. Nothing in CI detects this — the first
+> symptom is a red `v*` tag pipeline. Update the **Project** field above on
+> **both** test.pypi.org and pypi.org (`/manage/account/publishing/`) as part
+> of the rename, before the next release tag.
+>
+> This repository was renamed `quip-protocol-rs` → `quip-validator` on
+> 2026-07-27; the table above reflects the new name.
 
 ### 2. TestPyPI (Phase 1)
 

@@ -117,7 +117,7 @@ also find the source code and instructions for hosting your own instance in the
 
 Quip uses hybrid BABE and GRANDPA consensus keys. Polkadot.js Apps does not
 require custom types for Quip anymore; for usage notes, see
-[docs/polkadotjs/README.md](/Users/romanuseinov/projects/quip/quip-protocol-rs/docs/polkadotjs/README.md).
+[docs/polkadotjs/README.md](/Users/romanuseinov/projects/quip/quip-validator/docs/polkadotjs/README.md).
 
 ### Multi-Node Local Testnet
 
@@ -261,7 +261,7 @@ Every push to `main` and every git tag publishes an image to the project's
 GitLab Container Registry, so you don't have to build locally:
 
 ```sh
-docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:latest
+docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:latest
 ```
 
 Tag scheme:
@@ -322,11 +322,11 @@ chain spec preset and also published as a raw JSON file at
 
 ```sh
 # Pull the matching release image
-docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0
+docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.2.0
 
 # Join the testnet as a full node (no validator key required)
 docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
-  registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0 \
+  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.2.0 \
   --chain=quip-testnet --base-path=/data \
   --name="my-quip-node"
 ```
@@ -344,7 +344,7 @@ curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-s
     -o quip-testnet.json
 
 docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
-  registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0 \
+  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.2.0 \
   --chain=/spec/quip-testnet.json --base-path=/data
 ```
 

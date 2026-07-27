@@ -1,4 +1,4 @@
-# QBlock `device_access_time_us` Implementation Plan (quip-protocol-rs)
+# QBlock `device_access_time_us` Implementation Plan (quip-validator)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Branch: `v0.2` of `/Users/carback1/Code/quip/quip-protocol-rs`. Feature branch off it; GitLab (`origin`) is the only remote that matters for MRs.
+- Branch: `v0.2` of `/Users/carback1/Code/quip/quip-validator`. Feature branch off it; GitLab (`origin`) is the only remote that matters for MRs.
 - Runtime spec 111 is **not deployed** (chain runs 110, shipped in v0.2.1-rc11). Do NOT bump `spec_version`; amend 111's changes. QuantumPow pallet storage version stays 4 (v4 never shipped either).
 - `transaction_version` must move 4 → 5 in the same change (deployed 110 encodes `submit_proof` without the new field).
 - Field name is exactly `device_access_time_us` (u64, microseconds). `0` = unreported. No validation/cap on the value — it is self-reported observability, same trust model as `MinerRegistry.participate`'s `budget_seconds`.
