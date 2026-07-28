@@ -44,8 +44,9 @@
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
-# Hub — see the Dockerfile header for the buildx command). Rebuild it
-# locally and re-push when the toolchain Dockerfile changes.
+# Hub — see the Dockerfile header for the buildx command, or run
+# `make builder-image`). Rebuild it locally and re-push when the toolchain
+# Dockerfile changes.
 #
 # Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 

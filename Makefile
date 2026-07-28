@@ -71,5 +71,21 @@ py-signer-develop: $(PY_SIGNER_PY)
 py-signer-test: py-signer-develop
 	$(PY_SIGNER_PY) -m pytest $(PY_SIGNER_CRATE)/tests -q
 
+# Build and push the multi-arch CI toolchain image to Docker Hub. No CI job
+# does this — there are no Docker Hub credentials in the project or group CI
+# variables, so it is a workstation action run under the carback1 namespace
+# after `docker login`. Both arches are mandatory: the faucet repo's per-arch
+# build-binary jobs pull this image on arm64 runners. The context is .gitlab/
+# rather than the repo root because nothing in the Dockerfile COPYs, and the
+# root would upload target/ and venv/ for no reason.
+BUILDER_IMAGE ?= carback1/rust-substrate-builder:latest
+builder-image:
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--file .gitlab/ci-toolchain.Dockerfile \
+		--tag $(BUILDER_IMAGE) \
+		--push \
+		.gitlab/
+
 .PHONY: local-3-node quantum-validation-venv quantum-validation-fixtures wasm-signer \
-	py-signer py-signer-develop py-signer-test
+	py-signer py-signer-develop py-signer-test builder-image
