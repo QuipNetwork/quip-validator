@@ -13,8 +13,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node dist-test/test/index.test.js",
-    "test:integration": "node test/local-node.mjs"
+    "test": "tsc -p tsconfig.test.json && node dist-test/test/index.test.js && node test/revive-fund-account.test.mjs",
+    "test:integration": "node test/local-node.mjs",
+    "test:revive-funding": "node test/revive-fund-account.test.mjs",
+    "fund:revive": "node test/revive-fund-account.mjs"
   },
   "peerDependencies": {
     "@polkadot/api": "^16.5.6",
