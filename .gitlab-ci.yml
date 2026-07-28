@@ -81,6 +81,7 @@ variables:
   # `curl .../main/install.sh | bash` bootstrap), so the toolchain that builds a
   # published, trust-signed wheel can't be altered by an upstream `main` change.
   CARGO_BINSTALL_VERSION: "1.20.1"
+  WASM_PACK_VERSION: "0.12.1"
   # Gate for the publish jobs. They stay dormant on `v*` tags until this is set
   # to "true" in project CI/CD variables — which the maintainer does only after
   # the PyPI Trusted Publisher is configured (see docs/releasing-quip-signer.md).
@@ -118,6 +119,59 @@ cargo-test:
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
+
+# Browser-facing half of the hybrid extrinsic-signing contract. This is kept
+# separate from cargo-test because it additionally installs Node and the pinned
+# wasm-pack release, builds browser bindings, and exercises the actual
+# Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
+browser-signer-test:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 60m
+  cache:
+    key:
+      files:
+        - Cargo.lock
+        - js/quip-signer/package-lock.json
+    paths:
+      - .cargo/registry/cache
+      - .cargo/registry/index
+      - .cargo/bin/
+      - target/
+      - .npm/
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends curl nodejs npm
+    - rm -rf /var/lib/apt/lists/*
+    - rustup target add wasm32-unknown-unknown
+    - mkdir -p "$CARGO_HOME/bin"
+    - export PATH="$CARGO_HOME/bin:$PATH"
+    - |
+      if ! command -v cargo-binstall >/dev/null 2>&1; then
+        curl -L --proto '=https' --tlsv1.2 -sSf \
+          "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-x86_64-unknown-linux-musl.tgz" |
+          tar -xz -C "$CARGO_HOME/bin"
+      fi
+    - |
+      if ! command -v wasm-pack >/dev/null 2>&1 ||
+        [ "$(wasm-pack --version)" != "wasm-pack ${WASM_PACK_VERSION}" ]; then
+        cargo binstall --no-confirm --locked "wasm-pack@${WASM_PACK_VERSION}"
+      fi
+  script:
+    - cargo test -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
+    - cargo test -p quip-protocol-runtime --test signing_fixture
+    - cargo check -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown
+    - make wasm-signer
+    - npm ci --prefix js/quip-signer
+    - npm run typecheck --prefix js/quip-signer
+    - npm test --prefix js/quip-signer
+    - npm run build --prefix js/quip-signer
+    - cargo build -p quip-network-node --features dev-chain-id
+    - bash scripts/test-browser-signer-integration.sh
 
 # Boot the same single-validator Revive, Ethereum RPC sidecar, and Subscan EVM
 # indexing/explorer stack used by developers. The pinned SDK sidecar needs a
