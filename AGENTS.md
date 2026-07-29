@@ -73,6 +73,8 @@ cargo +nightly doc --open
 
 CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. `browser-signer-test` also checks the signing fixture. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
 
+Two further merge-request jobs run automatically and cover benchmarks. `benchmark-preflight` exercises every benchmark against the production runtime constants at low resolution, without touching tracked weights. `weights-staleness-check` warns (yellow, never blocking) when a pallet's `lib.rs`/`benchmarking.rs` changed but its `weights.rs`/`benchmark_weights.rs` did not. Regenerating weights is the separate `benchmark-weights` job — **manual by design**, because it runs on the single serialized reference machine and pushes the regenerated files back to the MR branch. Play it when your change can affect weights.
+
 ## Architecture
 
 Three-crate workspace:
