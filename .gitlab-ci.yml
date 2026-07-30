@@ -18,10 +18,15 @@
 #   - merge_request_event  →  test (incl. PyPI build + both-arch import smoke, no upload)
 #   - push to main         →  test
 #   - push to v0.2         →  test
-#   - git tag on v0.2      →  test + build + manifest (:<tag> + :v0.2 + :sha-*)
-#   - git tag on main      →  test + build + manifest (:<tag> + :latest + :sha-*)
-#                             + release:publish-testpypi (auto)
-#                             + release:publish-pypi (manual promote)
+#   - stable git tag vX.Y.Z reachable from main
+#                              →  test + build + manifest
+#                                 (:<tag> + :latest + :vX.Y + :sha-*)
+#   - rc / pre-release tag (or stable tag not on main)
+#                              →  test + build + manifest (:<tag> + :sha-* only)
+#   - release tag pipelines also run:
+#                              + release:publish-testpypi (auto)
+#                              + release:publish-pypi (manual promote)
+#     when QUIP_SIGNER_PUBLISH is enabled
 #
 # Multi-arch: kaniko has no cross-build/manifest support — it builds for the
 # native architecture of whichever runner it runs on. So each architecture has
@@ -40,8 +45,9 @@
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
-# Hub — see the Dockerfile header for the buildx command). Rebuild it
-# locally and re-push when the toolchain Dockerfile changes.
+# Hub — see the Dockerfile header for the buildx command, or run
+# `make builder-image`). Rebuild it locally and re-push when the toolchain
+# Dockerfile changes.
 #
 # Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 
@@ -259,11 +265,13 @@ py-signer-test:
     - make py-signer-test
 
 # Shared publish rules. Container images are published on release tags ONLY —
-# branch pushes (main/v0.2 merges) never build or push images. The floating
-# consumer tag depends on which branch the tag was cut from (resolved by
-# resolve-floating-tag): v0.2 releases float :v0.2, main releases float
-# :latest. Referenced (not inherited) by the build jobs and the manifest job
-# so all resolve the same PRIMARY_TAG for a given pipeline.
+# branch pushes (main/v0.2 merges) never build or push images. Floating
+# consumer tags are resolved by resolve-floating-tag: only a stable SemVer
+# tag (vX.Y.Z, no pre-release suffix) whose commit is reachable from
+# origin/main floats both :latest and :vX.Y; rc tags and stable tags not on
+# main float nothing (only :<tag> + :sha-*). Referenced (not inherited) by
+# the build jobs and the manifest job so all resolve the same PRIMARY_TAG
+# for a given pipeline.
 .publish-rules:
   rules:
     - if: $CI_COMMIT_TAG
@@ -345,13 +353,16 @@ kaniko-build-arm64:
     # Disable it so layers stream to disk instead of accumulating in memory.
     KANIKO_EXTRA: "--compressed-caching=false"
 
-# Maps the release tag to its floating consumer tag by branch membership:
-# tags cut on v0.2 → :v0.2, tags cut on main → :latest. Tag pipelines carry no
-# branch variable (CI_COMMIT_BRANCH is empty), so commit ancestry decides;
-# v0.2 is checked first so a v0.2 release that was also merged up to main
-# still floats :v0.2. A tag reachable from neither branch gets no floating
-# tag (only :<tag> and :sha-*). GIT_DEPTH 0 forces a full clone — merge-base
-# needs real ancestry, not a shallow tip.
+# Maps a release tag to zero or more floating consumer tags. Tag pipelines
+# carry no branch variable (CI_COMMIT_BRANCH is empty), so commit ancestry
+# decides. Policy:
+#   - rc / pre-release (tag does not match ^v[0-9]+\.[0-9]+\.[0-9]+$):
+#     float nothing — only :<tag> + :sha-*.
+#   - stable vX.Y.Z reachable from origin/main: float both :latest and
+#     :vX.Y (minor series, e.g. v0.2 for v0.2.1).
+#   - stable tag not reachable from origin/main: float nothing.
+# GIT_DEPTH 0 forces a full clone — merge-base needs real ancestry, not a
+# shallow tip. FLOATING_TAGS is space-separated (empty when none apply).
 resolve-floating-tag:
   stage: build
   needs: []
@@ -364,16 +375,17 @@ resolve-floating-tag:
   variables:
     GIT_DEPTH: "0"
   script:
-    - git fetch origin main v0.2
+    - git fetch origin main
     - |
-      FLOATING_TAG=""
-      if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/v0.2; then
-        FLOATING_TAG="v0.2"
-      elif git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
-        FLOATING_TAG="latest"
+      FLOATING_TAGS=""
+      if printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+          minor=$(printf '%s' "$CI_COMMIT_TAG" | sed -E 's/^(v[0-9]+\.[0-9]+).*/\1/')
+          FLOATING_TAGS="latest ${minor}"
+        fi
       fi
-      echo "FLOATING_TAG=$FLOATING_TAG" > floating-tag.env
-      echo "resolved FLOATING_TAG='$FLOATING_TAG' for $CI_COMMIT_TAG ($CI_COMMIT_SHA)"
+      echo "FLOATING_TAGS=$FLOATING_TAGS" > floating-tag.env
+      echo "resolved FLOATING_TAGS='$FLOATING_TAGS' for $CI_COMMIT_TAG ($CI_COMMIT_SHA)"
   artifacts:
     reports:
       dotenv: floating-tag.env
@@ -382,8 +394,9 @@ resolve-floating-tag:
 # replaces the literal `ARCH` token in --template with each platform's arch
 # (amd64 / arm64), matching the arch-suffixed tags the build jobs pushed, and
 # stamps the assembled index with the consumer-facing tags: PRIMARY_TAG (the
-# release tag), the commit-sha tag, and the branch-derived floating tag from
-# resolve-floating-tag (:v0.2 for v0.2 releases, :latest for main releases).
+# release tag), the commit-sha tag, and zero or more floating tags from
+# resolve-floating-tag (:latest + :vX.Y for a stable tag on main; none for
+# rc / off-main stable tags).
 manifest:
   stage: manifest
   needs: [kaniko-build-amd64, kaniko-build-arm64, resolve-floating-tag]
@@ -396,9 +409,9 @@ manifest:
   script:
     - |
       ADDL_TAGS="sha-$CI_COMMIT_SHORT_SHA"
-      if [ -n "$FLOATING_TAG" ]; then
-        ADDL_TAGS="$ADDL_TAGS,$FLOATING_TAG"
-      fi
+      for tag in $FLOATING_TAGS; do
+        ADDL_TAGS="$ADDL_TAGS,$tag"
+      done
       manifest-tool \
         --username "$CI_REGISTRY_USER" \
         --password "$CI_REGISTRY_PASSWORD" \
