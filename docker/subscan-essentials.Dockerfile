@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Subscan Essentials has no maintained prebuilt image. Build the official
-# source at an exact commit so local development and CI exercise identical
-# indexing code.
+# source at an exact commit so local development uses reproducible indexing
+# code.
 ARG GO_VERSION=1.25.0
 ARG ALPINE_VERSION=3.21
 

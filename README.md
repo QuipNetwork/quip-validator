@@ -345,6 +345,15 @@ Ethereum-shaped block has been indexed. The node uses archive state/block
 pruning in this stack because Subscan backfills events from historical block
 state.
 
+The Compose stack continues to build the sidecar locally from
+`docker/revive-eth-rpc.Dockerfile`. Release tags also publish that Dockerfile as
+the multi-architecture image
+`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:<tag>`
+for `linux/amd64` and `linux/arm64`. The sidecar uses the same exact release,
+commit-SHA, and branch-derived floating tags as `quip-network-node`. CI does not
+boot the full Revive/Subscan Compose stack; run the checks above for manual
+integration validation.
+
 ## Public testnet
 
 `quip-testnet` is the public testnet ("AGLS" tokens, 12 decimals). The

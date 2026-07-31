@@ -3,14 +3,13 @@
 # CI pipeline for quip-protocol-rs.
 #
 # Stages:
-#   - test:      fmt / clippy / test / runtime release build on every MR;
-#                boot Revive + Ethereum RPC + Subscan API/UI and check indexing;
-#                also the quip-signer PyPI dry-run (build wheels + import-smoke
-#                both arches on native runners)
-#   - build:     build the quip-network-node container per architecture
+#   - test:      fmt / clippy / test / runtime release build on every MR, plus
+#                the quip-signer PyPI dry-run (build wheels + import-smoke both
+#                arches on native runners)
+#   - build:     build the node and EVM-sidecar containers per architecture
 #                (amd64 + arm64), each on a native runner, on release tags only
-#   - manifest:  stitch the per-arch images into a multi-arch manifest list so
-#                a single tag serves both architectures
+#   - manifest:  stitch each image's per-arch builds into a multi-arch manifest
+#                list so a single tag serves both architectures
 #   - release:   publish the quip-signer abi3 wheels + sdist to PyPI on release
 #                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
 #
@@ -32,8 +31,8 @@
 # native architecture of whichever runner it runs on. So each architecture has
 # its own kaniko job pinned to a native runner (tags: [docker, amd64] /
 # [docker, arm64]) that publishes an arch-suffixed image (:<tag>-amd64 /
-# :<tag>-arm64). The `manifest` job then combines those into the real
-# consumer-facing tags as a manifest list with `manifest-tool` (buildx-free).
+# :<tag>-arm64). One manifest job per image then combines those into the real
+# consumer-facing tags with `manifest-tool` (buildx-free).
 #
 # The `docker` tag is load-bearing: it pins these jobs to *container* (Docker)
 # executors, which honour `image:` and can run kaniko. The fleet also has macOS
@@ -49,7 +48,9 @@
 # `make builder-image`). Rebuild it locally and re-push when the toolchain
 # Dockerfile changes.
 #
-# Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
+# Runtime images:
+#   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
+#   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:<tag>
 
 stages:
   - test
@@ -66,6 +67,8 @@ variables:
   # cache upload, so builds never warm. The per-arch suffix is appended in the
   # build job (-> quip-network-node-buildcache-<arch>).
   CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node-buildcache
+  EVM_SIDECAR_IMAGE: $CI_REGISTRY_IMAGE/quip-network-evm-sidecar
+  EVM_SIDECAR_CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-evm-sidecar-buildcache
   # Keep Cargo's registry and the workspace target/ inside the project dir so
   # the GitLab CI cache can pick them up between runs.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
@@ -179,47 +182,6 @@ browser-signer-test:
     - cargo build -p quip-network-node --features dev-chain-id
     - bash scripts/test-browser-signer-integration.sh
 
-# Boot the same single-validator Revive, Ethereum RPC sidecar, and Subscan EVM
-# indexing/explorer stack used by developers. The pinned SDK sidecar needs a
-# separate process; once paritytech/polkadot-sdk#11297 lands in our SDK pin,
-# this job can migrate to the embedded server without changing the external
-# eth_* readiness contract.
-# The selected Docker executor must permit the privileged docker:dind service.
-revive-sidecar-readiness:
-  stage: test
-  image: docker:28.3.3-cli
-  services:
-    - name: docker:28.3.3-dind
-      alias: docker
-      command: ["--tls=false"]
-  tags: [docker, amd64]
-  interruptible: true
-  timeout: 90m
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    DOCKER_BUILDKIT: "1"
-    COMPOSE_PROJECT_NAME: quip-revive-$CI_PIPELINE_ID
-  before_script:
-    - apk add --no-cache bash curl
-    - docker info
-    - docker compose version
-  script:
-    - docker compose -f docker-compose.revive.yml config --quiet
-    - docker compose -f docker-compose.revive.yml up --build --detach --wait --wait-timeout 600
-    - ETH_RPC_URL=http://docker:8545 bash scripts/check-revive-sidecar.sh
-    - SUBSCAN_API_URL=http://docker:4399 ETH_RPC_URL=http://docker:8545 bash scripts/check-subscan-evm-indexer.sh
-    - SUBSCAN_UI_URL=http://docker:3000 SUBSCAN_API_URL=http://docker:4399 SUBSCAN_BROWSER_API_URL=http://localhost:4399 SUBSCAN_UI_ORIGIN=http://localhost:3000 bash scripts/check-subscan-ui.sh
-  after_script:
-    - docker compose -f docker-compose.revive.yml ps || true
-    - docker compose -f docker-compose.revive.yml logs --no-color > revive-sidecar-compose.log 2>&1 || true
-    - docker compose -f docker-compose.revive.yml down --volumes --remove-orphans || true
-  artifacts:
-    when: always
-    paths:
-      - revive-sidecar-compose.log
-    expire_in: 1 week
-
 # The Python signer crate (crates/transaction-crypto-py) is *excluded* from the
 # workspace — its macOS `dynamic_lookup` link requirement would perturb the
 # runtime/node builds (see the exclude comment in the root Cargo.toml). A side
@@ -278,14 +240,14 @@ py-signer-test:
       variables:
         PRIMARY_TAG: $CI_COMMIT_TAG
 
-# Per-architecture container build. `needs: []` lets the kaniko jobs start as
+# Parameterized per-architecture container build. `needs: []` lets Kaniko jobs start as
 # soon as the pipeline is created instead of waiting for `cargo-test` — the
-# container build is independent of the cargo lint/test suite. Each concrete
-# job below pins itself to a native runner and sets ARCH (amd64 also opts into
-# the GPU-runner /lib workaround); this template holds what they share. Only
-# the arch-suffixed tag
-# (:<tag>-<arch>) is pushed here — the consumer-facing tags are assembled by
-# the `manifest` job.
+# container builds are independent of the cargo lint/test suite. Image-specific
+# templates provide KANIKO_CONTEXT, KANIKO_DOCKERFILE, KANIKO_IMAGE,
+# KANIKO_CACHE_IMAGE, and optional whitespace-separated KANIKO_BUILD_ARGS.
+# Each concrete job pins itself to a native runner and sets ARCH (amd64 also
+# opts into the GPU-runner /lib workaround). Only the arch-suffixed tag
+# (:<tag>-<arch>) is pushed here; consumer-facing tags are assembled later.
 .kaniko-build:
   stage: build
   needs: []
@@ -311,23 +273,45 @@ py-signer-test:
         "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
         > /kaniko/.docker/config.json
   script:
-    # --cache-repo is suffixed per arch: kaniko's cache keys hash the build
+    # --cache-repo is suffixed per arch: Kaniko's cache keys hash the build
     # instructions, not the target architecture, so amd64 and arm64 would
     # collide on identical keys but hold arch-incompatible layers if they
     # shared one cache repo.
     - |
-      /kaniko/executor \
-        --context "$CI_PROJECT_DIR" \
-        --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
-        --destination "$IMAGE:$PRIMARY_TAG-$ARCH" \
-        --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
+      set -- /kaniko/executor \
+        --context "$KANIKO_CONTEXT" \
+        --dockerfile "$KANIKO_DOCKERFILE" \
+        --destination "$KANIKO_IMAGE:$PRIMARY_TAG-$ARCH" \
         --cache=true \
-        --cache-repo "$CACHE_IMAGE-$ARCH" \
-        $KANIKO_LIB_IGNORE \
-        $KANIKO_EXTRA
+        --cache-repo "$KANIKO_CACHE_IMAGE-$ARCH"
+      for build_arg in $KANIKO_BUILD_ARGS; do
+        set -- "$@" --build-arg "$build_arg"
+      done
+      for extra_arg in $KANIKO_LIB_IGNORE $KANIKO_EXTRA; do
+        set -- "$@" "$extra_arg"
+      done
+      "$@"
+
+.node-kaniko-build:
+  extends: .kaniko-build
+  variables:
+    KANIKO_CONTEXT: $CI_PROJECT_DIR
+    KANIKO_DOCKERFILE: $CI_PROJECT_DIR/Dockerfile
+    KANIKO_IMAGE: $IMAGE
+    KANIKO_CACHE_IMAGE: $CACHE_IMAGE
+    KANIKO_BUILD_ARGS: SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA
+
+.evm-sidecar-kaniko-build:
+  extends: .kaniko-build
+  variables:
+    KANIKO_CONTEXT: $CI_PROJECT_DIR
+    KANIKO_DOCKERFILE: $CI_PROJECT_DIR/docker/revive-eth-rpc.Dockerfile
+    KANIKO_IMAGE: $EVM_SIDECAR_IMAGE
+    KANIKO_CACHE_IMAGE: $EVM_SIDECAR_CACHE_IMAGE
+    KANIKO_BUILD_ARGS: ""
 
 kaniko-build-amd64:
-  extends: .kaniko-build
+  extends: .node-kaniko-build
   tags: [docker, amd64]
   variables:
     ARCH: amd64
@@ -337,7 +321,7 @@ kaniko-build-amd64:
     KANIKO_LIB_IGNORE: "--ignore-path=/lib"
 
 kaniko-build-arm64:
-  extends: .kaniko-build
+  extends: .node-kaniko-build
   tags: [docker, arm64]
   # The OrbStack/Colima Mac runner is slower than the amd64 boxes; a full
   # Substrate release compile + kaniko snapshot can run long, so give it more
@@ -351,6 +335,22 @@ kaniko-build-arm64:
     # snapshotting the multi-GB Rust builder rootfs, which OOM-freezes the whole
     # VM (docker daemon hangs) right at "Taking snapshot of full filesystem".
     # Disable it so layers stream to disk instead of accumulating in memory.
+    KANIKO_EXTRA: "--compressed-caching=false"
+
+kaniko-build-evm-sidecar-amd64:
+  extends: .evm-sidecar-kaniko-build
+  tags: [docker, amd64]
+  variables:
+    ARCH: amd64
+    TRIPLET: x86_64-linux-gnu
+    KANIKO_LIB_IGNORE: "--ignore-path=/lib"
+
+kaniko-build-evm-sidecar-arm64:
+  extends: .evm-sidecar-kaniko-build
+  tags: [docker, arm64]
+  timeout: 180m
+  variables:
+    ARCH: arm64
     KANIKO_EXTRA: "--compressed-caching=false"
 
 # Maps a release tag to zero or more floating consumer tags. Tag pipelines
@@ -390,16 +390,16 @@ resolve-floating-tag:
     reports:
       dotenv: floating-tag.env
 
-# Combine the per-arch images into a multi-arch manifest list. manifest-tool
+# Combine one image's per-arch builds into a multi-arch manifest list. manifest-tool
 # replaces the literal `ARCH` token in --template with each platform's arch
 # (amd64 / arm64), matching the arch-suffixed tags the build jobs pushed, and
 # stamps the assembled index with the consumer-facing tags: PRIMARY_TAG (the
 # release tag), the commit-sha tag, and zero or more floating tags from
 # resolve-floating-tag (:latest + :vX.Y for a stable tag on main; none for
-# rc / off-main stable tags).
-manifest:
+# rc / off-main stable tags). Concrete jobs provide MANIFEST_IMAGE and their
+# matching architecture-build dependencies.
+.manifest-publish:
   stage: manifest
-  needs: [kaniko-build-amd64, kaniko-build-arm64, resolve-floating-tag]
   image:
     name: mplatform/manifest-tool:alpine
     entrypoint: [""]
@@ -417,9 +417,24 @@ manifest:
         --password "$CI_REGISTRY_PASSWORD" \
         push from-args \
         --platforms linux/amd64,linux/arm64 \
-        --template "$IMAGE:$PRIMARY_TAG-ARCH" \
-        --target "$IMAGE:$PRIMARY_TAG" \
+        --template "$MANIFEST_IMAGE:$PRIMARY_TAG-ARCH" \
+        --target "$MANIFEST_IMAGE:$PRIMARY_TAG" \
         --tags "$ADDL_TAGS"
+
+manifest:
+  extends: .manifest-publish
+  needs: [kaniko-build-amd64, kaniko-build-arm64, resolve-floating-tag]
+  variables:
+    MANIFEST_IMAGE: $IMAGE
+
+manifest-evm-sidecar:
+  extends: .manifest-publish
+  needs:
+    - kaniko-build-evm-sidecar-amd64
+    - kaniko-build-evm-sidecar-arm64
+    - resolve-floating-tag
+  variables:
+    MANIFEST_IMAGE: $EVM_SIDECAR_IMAGE
 
 # ---------------------------------------------------------------------------
 # quip-signer PyPI release pipeline (QUI-776)

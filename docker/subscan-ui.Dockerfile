@@ -2,7 +2,7 @@
 
 # Build the official Subscan Essentials UI at an exact commit. Upstream ships
 # a runtime-only Dockerfile, so this image adds the reproducible source/build
-# stages needed by local development and CI.
+# stages needed by local development.
 ARG NODE_VERSION=18.20.2
 
 FROM node:${NODE_VERSION}-alpine AS builder

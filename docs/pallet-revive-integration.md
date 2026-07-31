@@ -255,11 +255,13 @@ deferred; the initial integration uses the upstream UI unchanged.
 `archive` mode instead persists a SQLite receipt index and requires an archive
 node for complete historical synchronization.
 
-GitLab CI boots this same Compose stack and requires `eth_chainId == 0x539`, a
-valid `eth_blockNumber` response, at least one indexed EVM block from Subscan,
-and a ready UI configured for the local API. Uploading, deploying, and calling
-a contract is the next smoke-test increment and is deliberately not part of
-the initial readiness job.
+Release-tag pipelines publish `docker/revive-eth-rpc.Dockerfile` as
+`$CI_REGISTRY_IMAGE/quip-network-evm-sidecar` for `linux/amd64` and
+`linux/arm64`. Its release tag, `sha-<short-sha>`, and branch-derived floating
+tags match the node image. CI does not boot the Revive/Subscan Compose stack;
+`make revive-dev` plus the three readiness scripts above remain the manual
+integration path. Uploading, deploying, and calling a contract is a future
+smoke-test increment.
 
 ## Pending decisions and validation
 
@@ -306,15 +308,17 @@ and testnet IDs.
 - [x] Implement Revive runtime APIs.
 - [x] Add a pinned SDK Ethereum RPC sidecar image and a single-node development
       Compose stack.
-- [x] Boot the Compose stack in CI and validate `eth_chainId` and
-      `eth_blockNumber` readiness.
-- [x] Add Subscan Essentials to the development/CI stack and require an indexed
-      Ethereum-shaped block.
+- [x] Retain local/manual Compose validation of `eth_chainId`,
+      `eth_blockNumber`, and the Subscan EVM index.
+- [x] Add Subscan Essentials to the development stack and require an indexed
+      Ethereum-shaped block in the manual readiness checks.
 - [x] Add the pinned Subscan Essentials UI, runtime API configuration, and UI
-      readiness/CORS checks to the development and CI stack.
-- [ ] Extend the CI smoke test to upload, deploy, and call a contract.
-- [ ] Define production sidecar image publishing and persistent/archive receipt
-      storage before exposing the public testnet Ethereum RPC.
+      readiness/CORS checks to the local development stack.
+- [ ] Extend the readiness smoke test to upload, deploy, and call a contract.
+- [x] Publish the pinned sidecar as a release-tag-only, multi-architecture
+      `quip-network-evm-sidecar` image with node-matching tag semantics.
+- [ ] Define the production deployment and persistent/archive receipt storage
+      before exposing the public testnet Ethereum RPC.
 - [x] Leave genesis mapped accounts empty; permissionless explicit mapping is
       available and avoids divergence from an upgraded existing testnet.
 - [x] Add initialization required for an existing-testnet
@@ -394,6 +398,7 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 | 2026-07-17 | Require the `dev-chain-id` node/runtime artifact for all local presets and reject `quip-testnet` from that artifact; only the default/testnet artifact can run the public testnet with Chain ID `20049`. |
 | 2026-07-17 | Replace transaction-payment `IdentityFee` with `BlockRatioFee<1, 1, Runtime, Balance>` while retaining the fixed multiplier and length fee. |
 | 2026-07-17 | Add Revive at stable pallet index `14`, with runtime APIs, EVM-aware extrinsics, and idempotent existing-chain account initialization. |
-| 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar for development and CI while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test and production sidecar publishing. |
-| 2026-07-20 | Add pinned Subscan Essentials API/subscriber/worker services with MySQL and Redis to the development and CI stack; run the node in archive mode and require an indexed EVM block. |
+| 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar for development while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test. |
+| 2026-07-20 | Add pinned Subscan Essentials API/subscriber/worker services with MySQL and Redis to the development stack; run the node in archive mode and require an indexed EVM block during manual readiness checks. |
 | 2026-07-20 | Add the official Subscan Essentials UI at pinned commit `9f29809f`, expose it locally on port `3000`, configure its browser API through runtime `__ENV.js`, and defer Quip-specific branding. |
+| 2026-07-31 | Publish the pinned SDK sidecar as the release-tag-only, multi-architecture `quip-network-evm-sidecar` image; keep the full Revive/Subscan readiness stack as a local/manual validation path rather than a GitLab CI job. |
