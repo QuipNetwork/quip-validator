@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub use pallet::*;
 
+mod benchmark_weights;
 pub mod difficulty;
 pub mod topology;
 pub mod types;
@@ -135,10 +136,10 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, derive_nonce, energy_of_solution, generate_ising_model,
+        calculate_diversity, derive_nonce, energy_of_solution_indexed,
+        generate_ising_model_indexed,
         packed::{packed_solution_byte_len, unpack_solution},
-        select_diverse, validate_spins, validate_topology_consistency, AllowedValueSpec,
-        MilliValue,
+        select_diverse, validate_topology_consistency, AllowedValueSpec, MilliValue, TopologyIndex,
     };
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
@@ -402,6 +403,9 @@ pub mod pallet {
         /// mis-drive the other's difficulty. Remove the existing non-default
         /// mineable topology before adding another.
         MineableTopologyConflict,
+        /// A positive diversity floor requires at least two selected
+        /// solutions; diversity is defined as zero for fewer than two.
+        InvalidDiversityConfig,
     }
 
     #[pallet::hooks]
@@ -680,7 +684,13 @@ pub mod pallet {
         }
 
         #[pallet::call_index(2)]
-        #[pallet::weight(<T as Config>::WeightInfo::register_topology())]
+        #[pallet::weight(<T as Config>::WeightInfo::register_topology(
+            nodes.len() as u32,
+            edges.len() as u32,
+            Pallet::<T>::allowed_value_input_count(&allowed_h_values)
+                .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_j_values))
+                .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_spin_values)),
+        ))]
         pub fn register_topology(
             origin: OriginFor<T>,
             nodes: NodesOf<T>,
@@ -829,6 +839,10 @@ pub mod pallet {
                 RegisteredTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
+            ensure!(
+                difficulty.min_diversity_milli == 0 || difficulty.min_solutions >= 2,
+                Error::<T>::InvalidDiversityConfig
+            );
             Difficulties::<T>::insert(topology_hash, difficulty);
             Self::deposit_event(Event::DifficultyUpdated {
                 topology_hash,
@@ -884,7 +898,9 @@ pub mod pallet {
             // Calculate weight based on actual proof dimensions to prevent under-charging
             // for large proofs (mitigates QIP-03: fixed placeholder weight vulnerability).
             //
-            // Weight formula: W(n, e, s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+            // Weight formula:
+            // W(n, e, s) =
+            //   BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n + k₆·n·e
             // Where n=nodes, e=edges, s=solutions
             //
             // Validation cost scales with the registered topology's dimensions and the
@@ -899,6 +915,11 @@ pub mod pallet {
             // nonce, …) still pays the full formula — DispatchResult carries no
             // PostDispatchInfo refund; over-charging rejected work is the safe
             // direction.
+            //
+            // The n·e term is a conservative empirical proxy for the combined topology
+            // cost observed on node02, not a claim of literal O(n·e) complexity.
+            // TopologyIndex uses BTreeMap construction and lookups, whose structural
+            // behavior is closer to n·log(n) + e·log(n).
             let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
                 .map(|topology| (topology.nodes.len() as u32, topology.edges.len() as u32))
                 .unwrap_or((0, 0));
@@ -951,12 +972,16 @@ pub mod pallet {
                 derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
-            let (h, j) = generate_ising_model(
+            let topology_index =
+                TopologyIndex::new(topology.nodes.as_slice(), topology.edges.as_slice())
+                    .map_err(|_| Error::<T>::InvalidTopology)?;
+            let (h, j) = generate_ising_model_indexed(
                 proof.nonce,
                 topology.nodes.as_slice(),
                 topology.edges.as_slice(),
                 &topology.allowed_h_values.as_slice(),
                 &topology.allowed_j_values.as_slice(),
+                &topology_index,
             )
             .map_err(|_| Error::<T>::InvalidTopology)?;
 
@@ -964,7 +989,8 @@ pub mod pallet {
                 proof.topology_hash,
                 frame_system::Pallet::<T>::block_number(),
             );
-            let validation = Self::validate_proof(&proof, &topology, &h, &j, &current)?;
+            let validation =
+                Self::validate_proof(&proof, &topology, &topology_index, &h, &j, &current)?;
 
             ensure!(
                 validation.best_energy_milli < current.max_energy_milli,
@@ -1216,6 +1242,18 @@ pub mod pallet {
             }
         }
 
+        /// Number of variable allowed-value inputs represented by a spec.
+        ///
+        /// Explicit sets contribute their cardinality. Range variants have
+        /// two encoded endpoints and therefore contribute two fixed inputs.
+        fn allowed_value_input_count(spec: &AllowedValueSpec<AllowedValueSetOf<T>>) -> u32 {
+            match spec {
+                AllowedValueSpec::Set(values) => values.len() as u32,
+                AllowedValueSpec::IntegerRange { .. }
+                | AllowedValueSpec::ContinuousRange { .. } => 2,
+            }
+        }
+
         /// Sort the inner Set values so the stored spec matches the
         /// order-independent layout used by `canonical_bytes` / `hash_topology`.
         /// `IntegerRange` and `ContinuousRange` carry no order to canonicalize.
@@ -1298,6 +1336,7 @@ pub mod pallet {
         fn validate_proof(
             proof: &QuantumProofOf<T>,
             topology: &TopologyMetaOf<T>,
+            topology_index: &TopologyIndex,
             h: &[MilliValue],
             j: &[MilliValue],
             difficulty: &types::DifficultyConfig,
@@ -1325,18 +1364,17 @@ pub mod pallet {
                     ensure!(sign == -1 || sign == 1, Error::<T>::InvalidSpinValues);
                     spins.push(sign as i8);
                 }
-                ensure!(validate_spins(&spins), Error::<T>::InvalidSpinValues);
                 decoded.push(spins);
             }
 
             let mut energies = Vec::with_capacity(decoded.len());
             for spins in decoded.iter() {
-                let energy = energy_of_solution(
+                let energy = energy_of_solution_indexed(
                     spins,
                     h,
                     topology.edges.as_slice(),
                     j,
-                    topology.nodes.as_slice(),
+                    topology_index,
                 )
                 .map_err(|err| match err {
                     quantum_validation::ValidationError::SolutionLengthMismatch { .. } => {
@@ -1361,6 +1399,11 @@ pub mod pallet {
                 !energy_valid_indices.is_empty(),
                 Error::<T>::InsufficientEnergy
             );
+            let best_energy_milli = energy_valid_indices
+                .iter()
+                .map(|&index| energies[index])
+                .min()
+                .ok_or(Error::<T>::InsufficientEnergy)?;
 
             let energy_valid_solutions: Vec<&[i8]> = energy_valid_indices
                 .iter()
@@ -1379,12 +1422,6 @@ pub mod pallet {
 
             let diversity_milli = calculate_diversity(&selected_solutions)
                 .map_err(|_| DispatchError::from(Error::<T>::InvalidSpinValues))?;
-
-            let best_energy_milli = selected_indices
-                .iter()
-                .map(|&index| energies[energy_valid_indices[index]])
-                .min()
-                .ok_or(Error::<T>::InsufficientEnergy)?;
 
             Ok(types::ProofValidation {
                 best_energy_milli,

@@ -24,12 +24,16 @@ where
         .expect("benchmark input fits within bounds")
 }
 
-fn reward_of<T: Config>(amount: u128) -> BalanceOf<T> {
-    amount.saturated_into()
+fn benchmark_reward<T: Config>() -> BalanceOf<T> {
+    T::MinReward::get()
 }
 
-fn fund_account<T: Config>(who: &T::AccountId, amount: u128) {
-    let _ = T::Currency::make_free_balance_be(who, reward_of::<T>(amount));
+fn benchmark_funding<T: Config>() -> BalanceOf<T> {
+    benchmark_reward::<T>().saturating_mul(10u32.saturated_into())
+}
+
+fn fund_account<T: Config>(who: &T::AccountId, amount: BalanceOf<T>) {
+    let _ = T::Currency::make_free_balance_be(who, amount);
 }
 
 fn sample_spec<T: Config>() -> (
@@ -76,6 +80,51 @@ fn sample_solution<T: Config>() -> SolutionsOf<T> {
     bounded(vec![bounded(vec![1, 1])])
 }
 
+fn params_with_dimensions<T: Config>(
+    node_count: u32,
+    edge_count: u32,
+    min_solutions: Option<u32>,
+) -> IsingParamsOf<T> {
+    assert!(node_count >= 2);
+    let nodes: Vec<u32> = (0..node_count).collect();
+    let edges: Vec<(u32, u32)> = (0..edge_count)
+        .map(|index| {
+            let source = index % node_count;
+            (source, (source + 1) % node_count)
+        })
+        .collect();
+
+    types::IsingParams {
+        nodes: bounded(nodes),
+        edges: bounded(edges),
+        h_values: bounded(vec![0; node_count as usize]),
+        j_values: bounded(vec![-1_000; edge_count as usize]),
+        min_energy_milli: None,
+        min_diversity_milli: None,
+        min_solutions,
+    }
+}
+
+fn solutions_with_dimensions<T: Config>(node_count: u32, solution_count: u32) -> SolutionsOf<T> {
+    bounded(
+        (0..solution_count)
+            .map(|solution_index| {
+                bounded(
+                    (0..node_count)
+                        .map(|node_index| {
+                            if (node_index + solution_index) % 3 == 0 {
+                                -1
+                            } else {
+                                1
+                            }
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
 fn register_spec_for<T: Config>(builder: &T::AccountId) -> T::Hash {
     let (name, formulation, validation_program, transform_program) = sample_spec::<T>();
     let spec_id = sample_spec_id::<T>(&name, formulation, validation_program, transform_program);
@@ -101,24 +150,50 @@ fn register_solver_for<T: Config>(solver: &T::AccountId) {
 
 fn propose_open_order_for<T: Config>(
     proposer: &T::AccountId,
-    reward: u128,
+    reward: BalanceOf<T>,
     resolution: types::RewardResolution,
     deadline_blocks: BlockNumberOf<T>,
     block_wait: BlockNumberOf<T>,
     delivery: types::ResultDelivery,
 ) -> u64 {
-    fund_account::<T>(proposer, reward.saturating_mul(10));
+    fund_account::<T>(proposer, reward.saturating_mul(10u32.saturated_into()));
     let spec_id = register_spec_for::<T>(proposer);
     let order_id = NextOrderId::<T>::get();
     assert!(QuantumComputeMempool::<T>::propose_job(
         RawOrigin::Signed(proposer.clone()).into(),
         spec_id,
         sample_params::<T>(),
-        reward_of::<T>(reward),
+        reward,
         types::JobMode::Open,
         resolution,
         deadline_blocks,
         block_wait,
+        delivery,
+    )
+    .is_ok());
+    order_id
+}
+
+fn propose_order_for<T: Config>(
+    proposer: &T::AccountId,
+    params: IsingParamsOf<T>,
+    reward: BalanceOf<T>,
+    mode: JobModeOf<T>,
+    resolution: types::RewardResolution,
+    delivery: types::ResultDelivery,
+) -> u64 {
+    fund_account::<T>(proposer, reward.saturating_mul(10u32.saturated_into()));
+    let spec_id = register_spec_for::<T>(proposer);
+    let order_id = NextOrderId::<T>::get();
+    assert!(QuantumComputeMempool::<T>::propose_job(
+        RawOrigin::Signed(proposer.clone()).into(),
+        spec_id,
+        params,
+        reward,
+        mode,
+        resolution,
+        10u32.into(),
+        5u32.into(),
         delivery,
     )
     .is_ok());
@@ -174,19 +249,33 @@ mod benchmarks {
     }
 
     #[benchmark]
-    fn propose_job() {
+    fn propose_job(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        b: Linear<1, { T::MaxBidMiners::get() }>,
+        t: Linear<0, 8>,
+    ) {
         let caller: T::AccountId = whitelisted_caller();
-        fund_account::<T>(&caller, 1_000_000);
+        fund_account::<T>(&caller, benchmark_funding::<T>());
         let spec_id = register_spec_for::<T>(&caller);
-        let reward = reward_of::<T>(100);
+        let reward = benchmark_reward::<T>();
+        let miners = bounded((0..b).map(|index| account("bid-miner", index, 0)).collect());
+        let miner_types = if t == 0 {
+            None
+        } else {
+            Some(bounded(vec![types::MinerType::Cpu; t as usize]))
+        };
 
         #[extrinsic_call]
         QuantumComputeMempool::propose_job(
             RawOrigin::Signed(caller.clone()),
             spec_id,
-            sample_params::<T>(),
+            params_with_dimensions::<T>(n, e, None),
             reward,
-            types::JobMode::Open,
+            types::JobMode::Bid {
+                miners: Some(miners),
+                miner_types,
+            },
             types::RewardResolution::SingleBest,
             10u32.into(),
             5u32.into(),
@@ -197,24 +286,40 @@ mod benchmarks {
     }
 
     #[benchmark]
-    fn submit_solution() {
+    fn submit_solution(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
         let proposer: T::AccountId = whitelisted_caller();
         let solver: T::AccountId = account("solver", 0, 0);
         register_solver_for::<T>(&solver);
-        let order_id = propose_open_order_for::<T>(
+        let min_solutions = if s > 1 { s - 1 } else { 1 };
+        let order_id = propose_order_for::<T>(
             &proposer,
-            100,
-            types::RewardResolution::SingleBest,
-            10u32.into(),
-            5u32.into(),
+            params_with_dimensions::<T>(n, e, Some(min_solutions)),
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::TopNEqual {
+                n: types::MAX_REWARD_WINNERS,
+            },
             types::ResultDelivery::OnChainOnly,
         );
+        let ranked: TopSolversOf<T> = bounded(
+            (0..types::MAX_REWARD_WINNERS)
+                .map(|index| types::RankedSolver {
+                    solver: account("ranked-solver", index, 0),
+                    energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
+                })
+                .collect(),
+        );
+        OrderTopSolvers::<T>::insert(order_id, ranked);
 
         #[extrinsic_call]
         QuantumComputeMempool::submit_solution(
             RawOrigin::Signed(solver.clone()),
             order_id,
-            sample_solution::<T>(),
+            solutions_with_dimensions::<T>(n, s),
         );
 
         assert!(OrderSolutions::<T>::contains_key(order_id, solver));
@@ -223,29 +328,57 @@ mod benchmarks {
     #[benchmark]
     fn claim_reward() {
         let proposer: T::AccountId = whitelisted_caller();
-        let solver: T::AccountId = account("solver", 0, 0);
-        register_solver_for::<T>(&solver);
-        let order_id = propose_open_order_for::<T>(
+        let winner_count = types::MAX_REWARD_WINNERS;
+        let reward = benchmark_reward::<T>().saturating_mul(winner_count.saturated_into());
+        let winners: Vec<T::AccountId> = (0..winner_count)
+            .map(|index| account("winner", index, 0))
+            .collect();
+        for winner in &winners {
+            register_solver_for::<T>(winner);
+        }
+        let caller = winners.first().expect("winner set is nonempty").clone();
+        let order_id = propose_order_for::<T>(
             &proposer,
-            100,
-            types::RewardResolution::SingleBest,
-            2u32.into(),
-            1u32.into(),
-            types::ResultDelivery::OnChainOnly,
+            sample_params::<T>(),
+            reward,
+            types::JobMode::Bid {
+                miners: Some(bounded(vec![caller.clone()])),
+                miner_types: None,
+            },
+            types::RewardResolution::TopNEqual { n: winner_count },
+            types::ResultDelivery::CallbackWithPoll {
+                endpoint: bounded(b"https://solver.example/result".to_vec()),
+            },
         );
-        assert!(QuantumComputeMempool::<T>::submit_solution(
-            RawOrigin::Signed(solver.clone()).into(),
-            order_id,
-            sample_solution::<T>(),
-        )
-        .is_ok());
-        frame_system::Pallet::<T>::set_block_number(2u32.into());
+        let ranked: TopSolversOf<T> = bounded(
+            winners
+                .iter()
+                .enumerate()
+                .map(|(index, winner)| types::RankedSolver {
+                    solver: winner.clone(),
+                    energy_milli: -(index as i64) - 1,
+                })
+                .collect(),
+        );
+        OrderTopSolvers::<T>::insert(order_id, ranked);
+        JobOrders::<T>::mutate(order_id, |maybe_order| {
+            let order = maybe_order.as_mut().expect("benchmark order exists");
+            order.solution_count = winner_count;
+            order.status = types::OrderStatus::Expired;
+        });
 
         #[extrinsic_call]
-        QuantumComputeMempool::claim_reward(RawOrigin::Signed(solver.clone()), order_id);
+        QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
 
         let order = JobOrders::<T>::get(order_id).expect("order exists");
         assert_eq!(order.status, types::OrderStatus::Closed);
+        assert_eq!(
+            OrderResults::<T>::get(order_id)
+                .expect("poll result is stored")
+                .winners
+                .len(),
+            winner_count as usize
+        );
     }
 
     #[benchmark]
@@ -253,7 +386,7 @@ mod benchmarks {
         let proposer: T::AccountId = whitelisted_caller();
         let order_id = propose_open_order_for::<T>(
             &proposer,
-            100,
+            benchmark_reward::<T>(),
             types::RewardResolution::SingleBest,
             1u32.into(),
             1u32.into(),
@@ -274,15 +407,15 @@ mod benchmarks {
         let solver: T::AccountId = account("solver", 0, 0);
         let cleaner: T::AccountId = account("cleaner", 0, 0);
         register_solver_for::<T>(&solver);
-        fund_account::<T>(&cleaner, 1_000);
+        fund_account::<T>(&cleaner, benchmark_funding::<T>());
         let spec_id = register_spec_for::<T>(&proposer);
-        fund_account::<T>(&proposer, 1_000_000);
+        fund_account::<T>(&proposer, benchmark_funding::<T>());
         let order_id = NextOrderId::<T>::get();
         assert!(QuantumComputeMempool::<T>::propose_job(
             RawOrigin::Signed(proposer.clone()).into(),
             spec_id,
             sample_params::<T>(),
-            reward_of::<T>(100),
+            benchmark_reward::<T>(),
             types::JobMode::Bid {
                 miners: Some(bounded(vec![solver.clone()])),
                 miner_types: None,

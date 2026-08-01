@@ -2,6 +2,9 @@ use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::BoundedVec;
 use scale_info::TypeInfo;
 
+/// Maximum number of solvers that can share one settled reward.
+pub const MAX_REWARD_WINNERS: u32 = 32;
+
 /// Registered problem families. v0 supports Ising only.
 #[derive(
     Clone,
@@ -249,5 +252,8 @@ pub struct StoredResult<AccountId, Balance, BlockNumber> {
     pub endpoint: BoundedVec<u8, frame_support::traits::ConstU32<256>>,
     pub resolution: RewardResolution,
     pub settled_at: BlockNumber,
-    pub winners: BoundedVec<WinnerSummary<AccountId, Balance>, frame_support::traits::ConstU32<32>>,
+    pub winners: BoundedVec<
+        WinnerSummary<AccountId, Balance>,
+        frame_support::traits::ConstU32<MAX_REWARD_WINNERS>,
+    >,
 }
