@@ -3,10 +3,7 @@
 #![allow(unused_imports)]
 
 use core::marker::PhantomData;
-use frame_support::{
-	traits::Get,
-	weights::{constants::RocksDbWeight, Weight},
-};
+use frame_support::weights::Weight;
 
 /// Weight functions for `pallet-faucet-ops`.
 pub trait WeightInfo {
@@ -16,19 +13,19 @@ pub trait WeightInfo {
 
 /// Default substrate database-backed weights for the faucet ops pallet.
 pub struct SubstrateWeight<T>(PhantomData<T>);
-impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+impl<T: frame_system::Config + pallet_balances::Config> WeightInfo for SubstrateWeight<T> {
 	fn mint() -> Weight {
-		Weight::from_parts(15_000_000, 0)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
+		// FaucetOps is an operational/development-only pallet, not a production
+		// benchmarking target. Its only state transition follows Balances'
+		// account-creating mint path, so reuse that upstream benchmarked weight
+		// instead of maintaining a pallet-specific benchmark.
+		<<T as pallet_balances::Config>::WeightInfo as pallet_balances::WeightInfo>::force_set_balance_creating()
 	}
 }
 
 /// Test and fallback weights for the faucet ops pallet.
 impl WeightInfo for () {
 	fn mint() -> Weight {
-		Weight::from_parts(15_000_000, 0)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
+		<() as pallet_balances::WeightInfo>::force_set_balance_creating()
 	}
 }

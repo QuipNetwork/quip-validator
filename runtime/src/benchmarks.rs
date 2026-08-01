@@ -28,6 +28,7 @@ frame_benchmarking::define_benchmarks!(
     [frame_system, SystemBench::<Runtime>]
     [frame_system_extensions, SystemExtensionsBench::<Runtime>]
     [pallet_balances, Balances]
+    [pallet_miner_registry, MinerRegistry]
     [pallet_quantum_compute_mempool, QuantumComputeMempool]
     [pallet_quantum_pow, QuantumPow]
     [pallet_revive, Revive]

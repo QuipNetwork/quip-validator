@@ -7357,6 +7357,7 @@ dependencies = [
 name = "pallet-miner-registry"
 version = "0.2.1"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "pallet-balances",

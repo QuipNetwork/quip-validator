@@ -195,6 +195,71 @@ fn propose_job_works_with_genesis_default_ising_spec() {
 }
 
 #[test]
+fn propose_job_rejects_positive_diversity_with_explicitly_fewer_than_two_solutions() {
+    for min_solutions in [0, 1] {
+        new_test_ext().execute_with(|| {
+            let spec_id = register_spec();
+            let mut params = sample_params();
+            params.min_diversity_milli = Some(1);
+            params.min_solutions = Some(min_solutions);
+
+            assert_noop!(
+                QuantumComputeMempool::propose_job(
+                    RuntimeOrigin::signed(1),
+                    spec_id,
+                    params,
+                    100,
+                    JobMode::Open,
+                    RewardResolution::SingleBest,
+                    10,
+                    5,
+                    ResultDelivery::OnChainOnly,
+                ),
+                crate::Error::<Test>::InvalidDiversityConfig
+            );
+            assert_eq!(NextOrderId::<Test>::get(), 0);
+        });
+    }
+}
+
+#[test]
+fn propose_job_allows_positive_diversity_without_explicit_solution_minimum() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let mut params = sample_params();
+        params.min_diversity_milli = Some(500);
+
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            params,
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert_eq!(
+            JobOrders::<Test>::get(0)
+                .expect("order was stored")
+                .ising_params
+                .min_solutions,
+            None
+        );
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            bounded(vec![bounded(vec![1, 1]), bounded(vec![1, -1])]),
+        ));
+    });
+}
+
+#[test]
 fn proposed_jobs_are_discoverable_through_open_order_index() {
     new_test_ext().execute_with(|| {
         let spec_id = register_spec();
@@ -1110,5 +1175,59 @@ fn purge_result_is_permissionless_after_ttl() {
         ));
 
         assert!(QuantumComputeMempool::result_for_order(0).is_none());
+    });
+}
+
+#[test]
+fn propose_job_dispatch_info_uses_call_dimensions() {
+    use crate::weights::WeightInfo;
+    use frame_support::dispatch::GetDispatchInfo;
+
+    new_test_ext().execute_with(|| {
+        let mode = JobMode::Bid {
+            miners: Some(bounded(vec![2, 3])),
+            miner_types: Some(bounded(vec![
+                MinerType::Cpu,
+                MinerType::Gpu,
+                MinerType::QpuDwave,
+            ])),
+        };
+        let call = crate::Call::<Test>::propose_job {
+            spec_id: QuantumComputeMempool::default_ising_spec_id(),
+            ising_params: sample_params(),
+            reward: MinReward::get(),
+            mode,
+            resolution: RewardResolution::SingleBest,
+            deadline_blocks: 2,
+            block_wait: 1,
+            delivery: ResultDelivery::OnChainOnly,
+        };
+
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            <() as WeightInfo>::propose_job(2, 1, 2, 3),
+        );
+    });
+}
+
+#[test]
+fn submit_solution_dispatch_info_charges_configured_maxima() {
+    use crate::weights::WeightInfo;
+    use frame_support::dispatch::GetDispatchInfo;
+
+    new_test_ext().execute_with(|| {
+        let call = crate::Call::<Test>::submit_solution {
+            order_id: 0,
+            solutions: sample_solution(),
+        };
+
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            <() as WeightInfo>::submit_solution(
+                MaxNodes::get(),
+                MaxEdges::get(),
+                MaxSolutions::get(),
+            ),
+        );
     });
 }

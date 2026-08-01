@@ -126,6 +126,7 @@ runtime-benchmarks = [
   "frame-system/runtime-benchmarks",
   "pallet-balances/runtime-benchmarks",
   "pallet-grandpa/runtime-benchmarks",
+  "pallet-miner-registry/runtime-benchmarks",
   "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-quantum-pow/runtime-benchmarks",
   "pallet-revive/runtime-benchmarks",

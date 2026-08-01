@@ -10,7 +10,7 @@ use sp_core::U256;
 use crate::errors::ValidationError;
 use crate::fixed::MilliValue;
 use crate::puzzle_spec::AllowedValueSpec;
-use crate::validation::ensure_valid_topology;
+use crate::validation::TopologyIndex;
 
 /// Derive the deterministic puzzle nonce for a `submit_proof` call.
 ///
@@ -51,6 +51,24 @@ pub fn generate_ising_model(
     allowed_h: &AllowedValueSpec<&[MilliValue]>,
     allowed_j: &AllowedValueSpec<&[MilliValue]>,
 ) -> Result<(Vec<MilliValue>, Vec<MilliValue>), ValidationError> {
+    let topology = TopologyIndex::new(nodes, edges)?;
+    generate_ising_model_indexed(nonce, nodes, edges, allowed_h, allowed_j, &topology)
+}
+
+/// Generate an Ising model while reusing a topology index validated by the
+/// caller.
+///
+/// Proof validation builds the index once and then reuses it for both model
+/// generation and energy scoring. This avoids rebuilding the node-id map for
+/// every submitted solution.
+pub fn generate_ising_model_indexed(
+    nonce: U256,
+    nodes: &[u32],
+    edges: &[(u32, u32)],
+    allowed_h: &AllowedValueSpec<&[MilliValue]>,
+    allowed_j: &AllowedValueSpec<&[MilliValue]>,
+    topology: &TopologyIndex,
+) -> Result<(Vec<MilliValue>, Vec<MilliValue>), ValidationError> {
     if nodes.is_empty() {
         return Err(ValidationError::EmptyNodes);
     }
@@ -64,7 +82,12 @@ pub fn generate_ising_model(
     }
     let _ = allowed_j.bits_per_value()?;
 
-    ensure_valid_topology(nodes, edges)?;
+    if topology.len() != nodes.len() {
+        return Err(ValidationError::FieldLengthMismatch {
+            expected: nodes.len(),
+            actual: topology.len(),
+        });
+    }
 
     let seed: [u8; 32] = nonce.to_big_endian();
     let mut rng = ChaCha8Rng::from_seed(seed);
@@ -84,8 +107,9 @@ pub fn generate_ising_model(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_nonce, generate_ising_model};
+    use super::{derive_nonce, generate_ising_model, generate_ising_model_indexed};
     use crate::puzzle_spec::AllowedValueSpec;
+    use crate::validation::TopologyIndex;
 
     const ALICE_BYTES: [u8; 32] = [0xA1; 32];
     const BOB_BYTES: [u8; 32] = [0xB0; 32];
@@ -133,5 +157,21 @@ mod tests {
         for value in j {
             assert!(allowed_j.contains(&value));
         }
+    }
+
+    #[test]
+    fn indexed_generation_matches_standalone_generation() {
+        let nodes = [10, 20, 30];
+        let edges = [(10, 20), (20, 30)];
+        let allowed_h = AllowedValueSpec::Set(&[-1_000, 0, 1_000][..]);
+        let allowed_j = AllowedValueSpec::Set(&[-1_000, 1_000][..]);
+        let nonce = derive_nonce(&[3; 32], &ALICE_BYTES, &SALT_A);
+        let topology = TopologyIndex::new(&nodes, &edges).unwrap();
+
+        assert_eq!(
+            generate_ising_model(nonce, &nodes, &edges, &allowed_h, &allowed_j).unwrap(),
+            generate_ising_model_indexed(nonce, &nodes, &edges, &allowed_h, &allowed_j, &topology)
+                .unwrap()
+        );
     }
 }

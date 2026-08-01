@@ -3,7 +3,7 @@
 use crate::errors::ValidationError;
 use crate::fixed::{MilliEnergy, MilliValue, MILLI_SCALE};
 use crate::puzzle_spec::AllowedValueSpec;
-use crate::validation::{ensure_valid_spins, ensure_valid_topology};
+use crate::validation::{ensure_valid_spins, TopologyIndex};
 
 /// Empirical SA alignment-efficiency factor for the field term. Calibrated
 /// against the v0.1 Python reference; applies only to the h contribution.
@@ -36,23 +36,40 @@ pub fn energy_of_solution(
     j: &[MilliValue],
     nodes: &[u32],
 ) -> Result<MilliEnergy, ValidationError> {
-    validate_shape(solution, h, edges, j, nodes)?;
+    validate_shape_lengths(solution, h, edges, j, nodes.len())?;
+    let topology = TopologyIndex::new(nodes, edges)?;
+    energy_of_solution_indexed(solution, h, edges, j, &topology)
+}
+
+/// Compute Ising energy using a topology index validated once by the caller.
+///
+/// This is equivalent to [`energy_of_solution`], but avoids rebuilding the
+/// node-id index when scoring multiple solutions for the same topology.
+pub fn energy_of_solution_indexed(
+    solution: &[i8],
+    h: &[MilliValue],
+    edges: &[(u32, u32)],
+    j: &[MilliValue],
+    topology: &TopologyIndex,
+) -> Result<MilliEnergy, ValidationError> {
+    validate_shape_lengths(solution, h, edges, j, topology.len())?;
     ensure_valid_spins(solution)?;
 
     let mut energy = 0_i64;
 
-    for (position, (&node, &field)) in nodes.iter().zip(h.iter()).enumerate() {
-        let _ = node;
+    for (position, &field) in h.iter().enumerate() {
         energy = energy
             .checked_add(i64::from(field) * i64::from(solution[position]))
             .ok_or(ValidationError::ArithmeticOverflow)?;
     }
 
     for (&(u, v), &coupling) in edges.iter().zip(j.iter()) {
-        let u_pos =
-            position_of_node(nodes, u).ok_or(ValidationError::UnknownNodeInEdge { node: u })?;
-        let v_pos =
-            position_of_node(nodes, v).ok_or(ValidationError::UnknownNodeInEdge { node: v })?;
+        let u_pos = topology
+            .position(u)
+            .ok_or(ValidationError::UnknownNodeInEdge { node: u })?;
+        let v_pos = topology
+            .position(v)
+            .ok_or(ValidationError::UnknownNodeInEdge { node: v })?;
         energy = energy
             .checked_add(
                 i64::from(coupling) * i64::from(solution[u_pos]) * i64::from(solution[v_pos]),
@@ -159,27 +176,27 @@ fn discrete_mean_abs(min: i64, max: i64) -> Result<f64, ValidationError> {
     Ok(sum_abs as f64 / span as f64)
 }
 
-fn validate_shape(
+fn validate_shape_lengths(
     solution: &[i8],
     h: &[MilliValue],
     edges: &[(u32, u32)],
     j: &[MilliValue],
-    nodes: &[u32],
+    node_count: usize,
 ) -> Result<(), ValidationError> {
-    if nodes.is_empty() {
+    if node_count == 0 {
         return Err(ValidationError::EmptyNodes);
     }
 
-    if solution.len() != nodes.len() {
+    if solution.len() != node_count {
         return Err(ValidationError::SolutionLengthMismatch {
-            expected: nodes.len(),
+            expected: node_count,
             actual: solution.len(),
         });
     }
 
-    if h.len() != nodes.len() {
+    if h.len() != node_count {
         return Err(ValidationError::FieldLengthMismatch {
-            expected: nodes.len(),
+            expected: node_count,
             actual: h.len(),
         });
     }
@@ -191,21 +208,16 @@ fn validate_shape(
         });
     }
 
-    ensure_valid_topology(nodes, edges)?;
-
     Ok(())
-}
-
-fn position_of_node(nodes: &[u32], target: u32) -> Option<usize> {
-    nodes.iter().position(|&node| node == target)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{energy_of_solution, expected_gse};
+    use super::{energy_of_solution, energy_of_solution_indexed, expected_gse};
     use crate::errors::ValidationError;
     use crate::fixed::MilliValue;
     use crate::puzzle_spec::AllowedValueSpec;
+    use crate::validation::TopologyIndex;
 
     fn set_spec(values: &[MilliValue]) -> AllowedValueSpec<&[MilliValue]> {
         AllowedValueSpec::Set(values)
@@ -222,6 +234,21 @@ mod tests {
         let energy = energy_of_solution(&solution, &h, &edges, &j, &nodes).unwrap();
 
         assert_eq!(energy, 1_250);
+    }
+
+    #[test]
+    fn indexed_energy_matches_the_standalone_path() {
+        let nodes = [10, 20, 30];
+        let edges = [(10, 20), (20, 30), (30, 10)];
+        let h = [500, -1_000, 250];
+        let j = [250, -500, 750];
+        let solution = [1, -1, 1];
+        let topology = TopologyIndex::new(&nodes, &edges).unwrap();
+
+        assert_eq!(
+            energy_of_solution_indexed(&solution, &h, &edges, &j, &topology).unwrap(),
+            energy_of_solution(&solution, &h, &edges, &j, &nodes).unwrap(),
+        );
     }
 
     #[test]

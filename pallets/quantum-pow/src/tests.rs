@@ -554,6 +554,30 @@ fn set_difficulty_rejects_unregistered_topology() {
 }
 
 #[test]
+fn set_difficulty_rejects_positive_diversity_with_fewer_than_two_solutions() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+
+        for min_solutions in [0, 1] {
+            assert_noop!(
+                QuantumPow::set_difficulty(
+                    RuntimeOrigin::root(),
+                    hash,
+                    DifficultyConfig {
+                        min_solutions,
+                        max_energy_milli: -2_000,
+                        min_diversity_milli: 1,
+                    },
+                ),
+                crate::Error::<Test>::InvalidDiversityConfig
+            );
+        }
+
+        assert_eq!(Difficulties::<Test>::get(hash), None);
+    });
+}
+
+#[test]
 fn set_difficulty_works() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
@@ -2634,8 +2658,36 @@ fn weight_scales_with_proof_dimensions() {
 }
 
 #[test]
+fn register_topology_weight_scales_with_all_dimensions() {
+    let base = <() as WeightInfo>::register_topology(2, 1, 3);
+    assert!(<() as WeightInfo>::register_topology(3, 1, 3).ref_time() > base.ref_time());
+    assert!(<() as WeightInfo>::register_topology(2, 2, 3).ref_time() > base.ref_time());
+    assert!(<() as WeightInfo>::register_topology(2, 1, 4).ref_time() > base.ref_time());
+}
+
+#[test]
+fn register_topology_dispatch_info_uses_input_dimensions() {
+    use frame_support::dispatch::GetDispatchInfo;
+
+    let call = crate::Call::<Test>::register_topology {
+        nodes: bounded::<_, MaxNodes>(vec![0, 1, 2]),
+        edges: bounded::<_, MaxEdges>(vec![(0, 1), (1, 2)]),
+        allowed_h_values: allowed_h_spec(),
+        allowed_j_values: allowed_j_spec(),
+        allowed_spin_values: allowed_spin_spec(),
+    };
+
+    assert_eq!(
+        call.get_dispatch_info().call_weight,
+        <() as WeightInfo>::register_topology(3, 2, 7),
+    );
+}
+
+#[test]
 fn weight_formula_components_are_present() {
-    // Verify all components of W(n,e,s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+    // Verify the independently isolatable components of
+    // W(n,e,s) =
+    // BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n + k₆·n·e.
 
     let base_weight = calculate_weight(0, 0, 0);
     assert!(base_weight.ref_time() > 0, "Base weight should be non-zero");
@@ -2663,6 +2715,16 @@ fn weight_formula_components_are_present() {
         w_2_sol_100_edge.ref_time() > w_1_sol_100_edge.ref_time(),
         "Solution-edge component (k₄·s·e) should increase with solutions"
     );
+
+    // Component k₆·n·e: the edge slope grows with the node count.
+    let edge_slope_at_1_node =
+        calculate_weight(1, 200, 0).ref_time() - calculate_weight(1, 100, 0).ref_time();
+    let edge_slope_at_100_nodes =
+        calculate_weight(100, 200, 0).ref_time() - calculate_weight(100, 100, 0).ref_time();
+    assert!(
+        edge_slope_at_100_nodes > edge_slope_at_1_node,
+        "Node-edge component (k₆·n·e) should increase the edge slope"
+    );
 }
 
 #[test]
@@ -2680,6 +2742,195 @@ fn weight_prevents_undercharging_for_large_proofs() {
         ratio >= 10,
         "Worst-case proof should cost at least 10x more than minimal proof, got {ratio}x"
     );
+}
+
+const EXPECTED_SWEEP_POINTS: [(&str, u32, u32, u32); 6] = [
+    ("minimum", 16, 1, 1),
+    ("nodes", 5_000, 1, 1),
+    ("edges", 16, 50_000, 1),
+    ("solution_nodes", 5_000, 1, 32),
+    ("solution_edges", 16, 50_000, 32),
+    ("worst_case", 5_000, 50_000, 32),
+];
+
+fn expected_sweep_dimensions(point: &str) -> (u32, u32, u32) {
+    EXPECTED_SWEEP_POINTS
+        .iter()
+        .find_map(|(name, nodes, edges, solutions)| {
+            (*name == point).then_some((*nodes, *edges, *solutions))
+        })
+        .unwrap_or_else(|| panic!("unexpected sweep point: {point}"))
+}
+
+fn assert_weight_covers_observation(
+    source: &str,
+    point: &str,
+    nodes: u32,
+    edges: u32,
+    solutions: u32,
+    maximum_ns: u64,
+    required_margin_percent: u128,
+) {
+    let charged = u128::from(calculate_weight(nodes, edges, solutions).ref_time());
+    let observed = u128::from(maximum_ns) * 1_000;
+    let margin_basis_points = charged
+        .saturating_mul(10_000)
+        .checked_div(observed)
+        .unwrap_or_default()
+        .saturating_sub(10_000);
+    let margin_whole = margin_basis_points / 100;
+    let margin_fraction = margin_basis_points % 100;
+
+    assert!(
+        charged * 100 >= observed * (100 + required_margin_percent),
+        "{source} {point} charge {charged} ps covers observed {observed} ps by \
+         {margin_whole}.{margin_fraction:02}%; required {required_margin_percent}%"
+    );
+}
+
+#[test]
+fn weight_covers_recorded_node02_sweeps_with_twenty_percent_target() {
+    const RECORDED_SWEEPS: &str = include_str!("../testdata/node02-submit-proof-sweeps.tsv");
+    const EXPECTED_HEADER: &str =
+        "job_id\tcommit_sha\tpoint\tnodes\tedges\tsolutions\tsamples\tmax_ns";
+    const EXPECTED_JOBS: [u64; 3] = [15_552_403_591, 15_618_730_781, 15_638_128_172];
+
+    let mut lines = RECORDED_SWEEPS.lines();
+    assert_eq!(lines.next(), Some(EXPECTED_HEADER));
+    let mut seen = std::collections::BTreeSet::new();
+
+    for line in lines {
+        assert!(
+            !line.is_empty(),
+            "recorded sweep fixture contains an empty row"
+        );
+        let columns = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(columns.len(), 8, "invalid recorded sweep row: {line}");
+
+        let job_id = columns[0].parse::<u64>().expect("recorded job ID");
+        let commit_sha = columns[1];
+        let point = columns[2];
+        let nodes = columns[3].parse::<u32>().expect("recorded nodes");
+        let edges = columns[4].parse::<u32>().expect("recorded edges");
+        let solutions = columns[5].parse::<u32>().expect("recorded solutions");
+        let samples = columns[6].parse::<u32>().expect("recorded samples");
+        let maximum_ns = columns[7].parse::<u64>().expect("recorded maximum");
+
+        assert_eq!(commit_sha.len(), 40, "invalid commit SHA in row: {line}");
+        assert!(
+            commit_sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "non-hex commit SHA in row: {line}"
+        );
+        assert!(samples > 0, "recorded sample count must be nonzero");
+        assert_eq!(
+            (nodes, edges, solutions),
+            expected_sweep_dimensions(point),
+            "recorded dimensions do not match point {point}"
+        );
+        assert!(
+            seen.insert((job_id, point)),
+            "duplicate recorded sweep row for job {job_id}, point {point}"
+        );
+
+        assert_weight_covers_observation(
+            &format!("job {job_id}"),
+            point,
+            nodes,
+            edges,
+            solutions,
+            maximum_ns,
+            20,
+        );
+    }
+
+    for job_id in EXPECTED_JOBS {
+        for (point, _, _, _) in EXPECTED_SWEEP_POINTS {
+            assert!(
+                seen.contains(&(job_id, point)),
+                "missing recorded sweep row for job {job_id}, point {point}"
+            );
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        18,
+        "recorded fixture must contain three full sweeps"
+    );
+}
+
+#[test]
+#[ignore = "requires QUANTUM_POW_SWEEP_SUMMARY from a completed sweep"]
+fn weight_covers_executed_sweep_with_ten_percent_floor() {
+    const EXPECTED_HEADER: &str =
+        "point\tnodes\tedges\tsolutions\tsamples\tmin_ns\tmedian_ns\tmax_ns";
+
+    let summary_path = std::env::var("QUANTUM_POW_SWEEP_SUMMARY")
+        .expect("QUANTUM_POW_SWEEP_SUMMARY must point to the completed summary.tsv");
+    let summary =
+        std::fs::read_to_string(&summary_path).expect("completed sweep summary must be readable");
+    let mut lines = summary.lines();
+    assert_eq!(lines.next(), Some(EXPECTED_HEADER), "invalid sweep header");
+    let mut seen = std::collections::BTreeSet::new();
+
+    for line in lines {
+        assert!(!line.is_empty(), "sweep summary contains an empty row");
+        let columns = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(columns.len(), 8, "invalid sweep summary row: {line}");
+
+        let point = columns[0];
+        let nodes = columns[1].parse::<u32>().expect("summary nodes");
+        let edges = columns[2].parse::<u32>().expect("summary edges");
+        let solutions = columns[3].parse::<u32>().expect("summary solutions");
+        let samples = columns[4].parse::<u32>().expect("summary samples");
+        let minimum_ns = columns[5].parse::<u64>().expect("summary minimum");
+        let median_ns = columns[6].parse::<u64>().expect("summary median");
+        let maximum_ns = columns[7].parse::<u64>().expect("summary maximum");
+
+        assert!(samples > 0, "summary sample count must be nonzero");
+        assert!(
+            minimum_ns <= median_ns && median_ns <= maximum_ns,
+            "summary timings are not ordered for point {point}"
+        );
+        assert_eq!(
+            (nodes, edges, solutions),
+            expected_sweep_dimensions(point),
+            "summary dimensions do not match point {point}"
+        );
+        assert!(
+            seen.insert(point),
+            "duplicate sweep summary row for point {point}"
+        );
+
+        assert_weight_covers_observation(
+            &summary_path,
+            point,
+            nodes,
+            edges,
+            solutions,
+            maximum_ns,
+            10,
+        );
+    }
+
+    for (point, _, _, _) in EXPECTED_SWEEP_POINTS {
+        assert!(seen.contains(point), "missing sweep summary point {point}");
+    }
+    assert_eq!(seen.len(), 6, "sweep summary must contain all six points");
+}
+
+#[test]
+fn weight_is_monotonic_across_solution_bounds() {
+    for (nodes, edges) in [(16, 1), (5_000, 50_000)] {
+        let mut previous = calculate_weight(nodes, edges, 0).ref_time();
+        for solutions in 1..=32 {
+            let current = calculate_weight(nodes, edges, solutions).ref_time();
+            assert!(
+                current >= previous,
+                "weight decreased at n={nodes}, e={edges}, s={solutions}"
+            );
+            previous = current;
+        }
+    }
 }
 
 #[test]

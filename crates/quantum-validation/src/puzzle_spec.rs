@@ -200,10 +200,16 @@ impl AllowedValueSpec<&[MilliValue]> {
         match *self {
             Self::Set(values) => {
                 out.push(0u8);
-                let mut sorted: Vec<MilliValue> = values.to_vec();
-                sorted.sort_unstable();
-                for v in sorted {
-                    out.extend_from_slice(&v.to_be_bytes());
+                if values.windows(2).all(|pair| pair[0] <= pair[1]) {
+                    for &value in values {
+                        out.extend_from_slice(&value.to_be_bytes());
+                    }
+                } else {
+                    let mut sorted: Vec<MilliValue> = values.to_vec();
+                    sorted.sort_unstable();
+                    for value in sorted {
+                        out.extend_from_slice(&value.to_be_bytes());
+                    }
                 }
             }
             Self::IntegerRange { min, max } => {

@@ -1,5 +1,6 @@
 //! Structural validation helpers for spins and solution sets.
 
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -38,26 +39,45 @@ pub(crate) fn ensure_valid_spins(spins: &[i8]) -> Result<(), ValidationError> {
     Ok(())
 }
 
-pub(crate) fn ensure_valid_topology(
-    nodes: &[u32],
-    edges: &[(u32, u32)],
-) -> Result<(), ValidationError> {
-    for (position, &node) in nodes.iter().enumerate() {
-        if nodes[..position].contains(&node) {
-            return Err(ValidationError::DuplicateNode { node });
+/// Validated node-id to solution-position index for an Ising topology.
+///
+/// Building this once turns repeated edge endpoint lookups from linear scans
+/// over `nodes` into logarithmic map lookups. Callers scoring multiple
+/// solutions should reuse the same index for the whole solution set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TopologyIndex {
+    positions: BTreeMap<u32, usize>,
+}
+
+impl TopologyIndex {
+    /// Validate node uniqueness and edge endpoints, then build the index.
+    pub fn new(nodes: &[u32], edges: &[(u32, u32)]) -> Result<Self, ValidationError> {
+        let mut positions = BTreeMap::new();
+        for (position, &node) in nodes.iter().enumerate() {
+            if positions.insert(node, position).is_some() {
+                return Err(ValidationError::DuplicateNode { node });
+            }
         }
+
+        for &(u, v) in edges {
+            if !positions.contains_key(&u) {
+                return Err(ValidationError::UnknownNodeInEdge { node: u });
+            }
+            if !positions.contains_key(&v) {
+                return Err(ValidationError::UnknownNodeInEdge { node: v });
+            }
+        }
+
+        Ok(Self { positions })
     }
 
-    for &(u, v) in edges {
-        if !nodes.contains(&u) {
-            return Err(ValidationError::UnknownNodeInEdge { node: u });
-        }
-        if !nodes.contains(&v) {
-            return Err(ValidationError::UnknownNodeInEdge { node: v });
-        }
+    pub(crate) fn len(&self) -> usize {
+        self.positions.len()
     }
 
-    Ok(())
+    pub(crate) fn position(&self, node: u32) -> Option<usize> {
+        self.positions.get(&node).copied()
+    }
 }
 
 /// Report returned by [`validate_solution`].
@@ -90,9 +110,10 @@ pub fn validate_topology_consistency(
     allowed_j_values: Option<&[MilliValue]>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
+    let mut known_nodes = BTreeSet::new();
 
-    for (position, &node) in nodes.iter().enumerate() {
-        if nodes[..position].contains(&node) {
+    for &node in nodes {
+        if !known_nodes.insert(node) {
             errors.push(format!("Duplicate node id: {node}"));
         }
     }
@@ -128,7 +149,7 @@ pub fn validate_topology_consistency(
 
     let allowed_j_display = allowed_j_values.map(display_milli_list);
     for (index, &(u, v)) in edges.iter().enumerate() {
-        if !nodes.contains(&u) || !nodes.contains(&v) {
+        if !known_nodes.contains(&u) || !known_nodes.contains(&v) {
             errors.push(format!("J parameter for invalid edge: ({u}, {v})"));
         }
 

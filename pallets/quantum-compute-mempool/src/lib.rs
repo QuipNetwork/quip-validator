@@ -45,7 +45,7 @@ type ProposerOrdersOf<T> =
     frame_support::pallet_prelude::BoundedVec<u64, <T as Config>::MaxOrdersPerProposer>;
 type TopSolversOf<T> = frame_support::pallet_prelude::BoundedVec<
     types::RankedSolver<AccountIdOf<T>>,
-    frame_support::traits::ConstU32<32>,
+    frame_support::traits::ConstU32<{ types::MAX_REWARD_WINNERS }>,
 >;
 type IsingParamsOf<T> = types::IsingParams<NodesOf<T>, EdgesOf<T>, FieldsOf<T>, CouplingsOf<T>>;
 type JobModeOf<T> = types::JobMode<MinerAccountsOf<T>, MinerTypesOf>;
@@ -64,7 +64,7 @@ type SolverInfoOf<T> = types::SolverInfo<AccountIdOf<T>, BalanceOf<T>, BlockNumb
 type FrontRunnerOf<T> = types::FrontRunner<AccountIdOf<T>>;
 type WinnerSummariesOf<T> = frame_support::pallet_prelude::BoundedVec<
     types::WinnerSummary<AccountIdOf<T>, BalanceOf<T>>,
-    frame_support::traits::ConstU32<32>,
+    frame_support::traits::ConstU32<{ types::MAX_REWARD_WINNERS }>,
 >;
 type StoredResultOf<T> = types::StoredResult<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
@@ -168,7 +168,8 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, energy_of_solution, select_diverse, ValidationError,
+        calculate_diversity, energy_of_solution_indexed, select_diverse, TopologyIndex,
+        ValidationError,
     };
     use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating, Zero};
 
@@ -415,6 +416,10 @@ pub mod pallet {
         NoSolutionsAccepted,
         ResultNotFound,
         ResultTtlNotElapsed,
+        /// A positive diversity floor cannot be paired with an explicit
+        /// solution minimum below two. `None` remains valid because it
+        /// selects every valid submitted solution.
+        InvalidDiversityConfig,
     }
 
     #[pallet::call]
@@ -489,7 +494,15 @@ pub mod pallet {
         }
 
         #[pallet::call_index(3)]
-        #[pallet::weight(<T as Config>::WeightInfo::propose_job())]
+        #[pallet::weight({
+            let (bid_miners, bid_types) = Pallet::<T>::bid_dimensions(&mode);
+            <T as Config>::WeightInfo::propose_job(
+                ising_params.nodes.len() as u32,
+                ising_params.edges.len() as u32,
+                bid_miners,
+                bid_types,
+            )
+        })]
         pub fn propose_job(
             origin: OriginFor<T>,
             spec_id: T::Hash,
@@ -520,6 +533,14 @@ pub mod pallet {
                 ensure!(
                     min_solutions <= T::MaxSolutions::get(),
                     Error::<T>::TooManySolutions
+                );
+            }
+            if ising_params.min_diversity_milli.unwrap_or(0) > 0 {
+                ensure!(
+                    ising_params
+                        .min_solutions
+                        .is_none_or(|min_solutions| min_solutions >= 2),
+                    Error::<T>::InvalidDiversityConfig
                 );
             }
 
@@ -594,7 +615,21 @@ pub mod pallet {
         }
 
         #[pallet::call_index(4)]
-        #[pallet::weight(<T as Config>::WeightInfo::submit_solution())]
+        #[pallet::weight(
+            // The stored topology and VM-transformed output dimensions are not
+            // safely available from the encoded call before dispatch. Charge
+            // the configured maxima; the benchmark still exposes all three
+            // dimensions so a future call format or VM weight contract can
+            // pass exact values without changing WeightInfo again.
+            // TODO(benchmarking): Return DispatchResultWithPostInfo and refund
+            // to the actual topology and transformed-solution dimensions once
+            // they are known; calibrate that path on node02.
+            <T as Config>::WeightInfo::submit_solution(
+                T::MaxNodes::get(),
+                T::MaxEdges::get(),
+                T::MaxSolutions::get(),
+            )
+        )]
         pub fn submit_solution(
             origin: OriginFor<T>,
             order_id: u64,
@@ -622,6 +657,7 @@ pub mod pallet {
             let edges = order.ising_params.edges.as_slice();
             let h_values = order.ising_params.h_values.as_slice();
             let j_values = order.ising_params.j_values.as_slice();
+            let topology = TopologyIndex::new(nodes, edges).map_err(Self::map_validation_error)?;
             let transformed_solutions = T::VM::transform_solutions(
                 &order.spec_id,
                 spec.validation_program.as_ref(),
@@ -645,9 +681,14 @@ pub mod pallet {
             let mut best_energy = i64::MAX;
 
             for solution in &transformed_solutions {
-                let energy =
-                    energy_of_solution(solution.as_slice(), h_values, edges, j_values, nodes)
-                        .map_err(Self::map_validation_error)?;
+                let energy = energy_of_solution_indexed(
+                    solution.as_slice(),
+                    h_values,
+                    edges,
+                    j_values,
+                    &topology,
+                )
+                .map_err(Self::map_validation_error)?;
                 if let Some(min_energy) = order.ising_params.min_energy_milli {
                     if energy > min_energy {
                         continue;
@@ -1110,6 +1151,25 @@ pub mod pallet {
             Ok(())
         }
 
+        fn bid_dimensions(mode: &JobModeOf<T>) -> (u32, u32) {
+            match mode {
+                types::JobMode::Open => (0, 0),
+                types::JobMode::Bid {
+                    miners,
+                    miner_types,
+                } => (
+                    miners
+                        .as_ref()
+                        .map(|accounts| accounts.len() as u32)
+                        .unwrap_or(0),
+                    miner_types
+                        .as_ref()
+                        .map(|types| types.len() as u32)
+                        .unwrap_or(0),
+                ),
+            }
+        }
+
         fn ensure_valid_resolution(
             resolution: &types::RewardResolution,
         ) -> Result<(), DispatchError> {
@@ -1117,7 +1177,10 @@ pub mod pallet {
                 types::RewardResolution::SingleBest => Ok(()),
                 types::RewardResolution::TopNWeighted { n }
                 | types::RewardResolution::TopNEqual { n } => {
-                    ensure!(*n > 0 && *n <= 32, Error::<T>::InvalidRewardResolution);
+                    ensure!(
+                        *n > 0 && *n <= types::MAX_REWARD_WINNERS,
+                        Error::<T>::InvalidRewardResolution
+                    );
                     Ok(())
                 }
             }
@@ -1193,11 +1256,12 @@ pub mod pallet {
                 }
                 types::RewardResolution::TopNWeighted { n }
                 | types::RewardResolution::TopNEqual { n } => {
-                    let previous_front = OrderTopSolvers::<T>::get(order_id)
+                    let current = OrderTopSolvers::<T>::get(order_id);
+                    let previous_front = current
                         .first()
                         .map(|entry| (entry.solver.clone(), entry.energy_milli));
                     let updated = rewards::update_ranked_solvers(
-                        OrderTopSolvers::<T>::get(order_id).as_slice(),
+                        current.as_slice(),
                         types::RankedSolver {
                             solver: solver.clone(),
                             energy_milli: best_energy,
@@ -1302,7 +1366,7 @@ pub mod pallet {
                 })
                 .collect::<Vec<_>>()
                 .try_into()
-                .expect("reward resolution limits payouts to at most 32 winners")
+                .expect("reward resolution limits payouts to MAX_REWARD_WINNERS")
         }
 
         fn map_validation_error(error: ValidationError) -> Error<T> {

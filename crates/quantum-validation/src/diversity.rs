@@ -23,6 +23,10 @@ pub fn symmetric_hamming(a: &[i8], b: &[i8]) -> Result<u32, ValidationError> {
     ensure_valid_spins(a)?;
     ensure_valid_spins(b)?;
 
+    Ok(symmetric_hamming_validated(a, b))
+}
+
+fn symmetric_hamming_validated(a: &[i8], b: &[i8]) -> u32 {
     let mut direct = 0_u32;
     let mut inverted = 0_u32;
 
@@ -35,7 +39,7 @@ pub fn symmetric_hamming(a: &[i8], b: &[i8]) -> Result<u32, ValidationError> {
         }
     }
 
-    Ok(direct.min(inverted))
+    direct.min(inverted)
 }
 
 /// Compute average pairwise diversity in milli precision.
@@ -62,10 +66,10 @@ pub fn calculate_diversity<T: AsRef<[i8]>>(
 
     for i in 0..solutions.len() {
         for j in (i + 1)..solutions.len() {
-            total_distance += u64::from(symmetric_hamming(
+            total_distance += u64::from(symmetric_hamming_validated(
                 solutions[i].as_ref(),
                 solutions[j].as_ref(),
-            )?);
+            ));
             pair_count += 1;
         }
     }
@@ -103,32 +107,50 @@ pub fn select_diverse<T: AsRef<[i8]>>(
         return Ok((0..solutions.len()).collect());
     }
 
-    let mut selected = most_distant_pair(solutions)?;
+    if target_count == 1 {
+        return Ok(vec![0]);
+    }
+
+    // Compute every O(n)-spin Hamming distance once. The previous greedy
+    // implementation recomputed distances inside each selection round,
+    // turning the worst case into O(s³·n). Reusing this matrix keeps the
+    // dimension model at O(s²·n), with O(s²) scalar selection work.
+    let distances = pairwise_distances(solutions);
+    let mut selected = most_distant_pair(&distances);
+    let mut is_selected = vec![false; solutions.len()];
+    is_selected[selected[0]] = true;
+    is_selected[selected[1]] = true;
+
+    let mut min_distance = vec![u32::MAX; solutions.len()];
+    for candidate in 0..solutions.len() {
+        min_distance[candidate] =
+            distances[candidate][selected[0]].min(distances[candidate][selected[1]]);
+    }
 
     while selected.len() < target_count {
         let mut best_index = None;
         let mut best_min_distance = 0_u32;
 
         for candidate in 0..solutions.len() {
-            if selected.contains(&candidate) {
+            if is_selected[candidate] {
                 continue;
             }
 
-            let mut min_distance = u32::MAX;
-            for &chosen in &selected {
-                let distance =
-                    symmetric_hamming(solutions[candidate].as_ref(), solutions[chosen].as_ref())?;
-                min_distance = min_distance.min(distance);
-            }
-
-            if best_index.is_none() || min_distance > best_min_distance {
+            if best_index.is_none() || min_distance[candidate] > best_min_distance {
                 best_index = Some(candidate);
-                best_min_distance = min_distance;
+                best_min_distance = min_distance[candidate];
             }
         }
 
         if let Some(index) = best_index {
             selected.push(index);
+            is_selected[index] = true;
+            for candidate in 0..solutions.len() {
+                if !is_selected[candidate] {
+                    min_distance[candidate] =
+                        min_distance[candidate].min(distances[candidate][index]);
+                }
+            }
         } else {
             break;
         }
@@ -137,13 +159,25 @@ pub fn select_diverse<T: AsRef<[i8]>>(
     Ok(selected)
 }
 
-fn most_distant_pair<T: AsRef<[i8]>>(solutions: &[T]) -> Result<Vec<usize>, ValidationError> {
-    let mut best = (0_usize, 1_usize);
-    let mut best_distance = symmetric_hamming(solutions[0].as_ref(), solutions[1].as_ref())?;
-
+fn pairwise_distances<T: AsRef<[i8]>>(solutions: &[T]) -> Vec<Vec<u32>> {
+    let mut distances = vec![vec![0; solutions.len()]; solutions.len()];
     for i in 0..solutions.len() {
         for j in (i + 1)..solutions.len() {
-            let distance = symmetric_hamming(solutions[i].as_ref(), solutions[j].as_ref())?;
+            let distance =
+                symmetric_hamming_validated(solutions[i].as_ref(), solutions[j].as_ref());
+            distances[i][j] = distance;
+            distances[j][i] = distance;
+        }
+    }
+    distances
+}
+
+fn most_distant_pair(distances: &[Vec<u32>]) -> Vec<usize> {
+    let mut best = (0_usize, 1_usize);
+    let mut best_distance = distances[0][1];
+
+    for (i, row) in distances.iter().enumerate() {
+        for (j, &distance) in row.iter().enumerate().skip(i + 1) {
             if distance > best_distance {
                 best = (i, j);
                 best_distance = distance;
@@ -151,7 +185,7 @@ fn most_distant_pair<T: AsRef<[i8]>>(solutions: &[T]) -> Result<Vec<usize>, Vali
         }
     }
 
-    Ok(vec![best.0, best.1])
+    vec![best.0, best.1]
 }
 
 fn ensure_valid_solution_inputs<T: AsRef<[i8]>>(solutions: &[T]) -> Result<usize, ValidationError> {
@@ -198,5 +232,12 @@ mod tests {
 
         assert_eq!(selected.len(), 2);
         assert_ne!(selected[0], selected[1]);
+    }
+
+    #[test]
+    fn select_diverse_honors_single_solution_target() {
+        let solutions = [[1, 1], [1, -1], [-1, 1]];
+
+        assert_eq!(select_diverse(&solutions, 1).unwrap(), vec![0]);
     }
 }
