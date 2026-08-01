@@ -42,11 +42,12 @@
 # Docker boxes (lovelace/finney/watch) and an arm64 Docker-executor runner
 # (e.g. a docker-executor gitlab-runner hosted on an Apple-Silicon Mac).
 #
-# Toolchain image: docker.io/carback1/rust-substrate-builder:latest
+# Toolchain image: docker.io/carback1/rust-substrate-builder
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
 # Hub — see the Dockerfile header for the buildx command, or run
 # `make builder-image`). Rebuild it locally and re-push when the toolchain
-# Dockerfile changes.
+# Dockerfile changes, then bump the pinned digest in TOOLCHAIN_IMAGE below —
+# CI resolves the digest, not the tag, so a re-push alone changes nothing.
 #
 # Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 
@@ -57,7 +58,7 @@ stages:
   - release
 
 variables:
-  TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder:latest
+  TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder@sha256:e5ae45a0e6bac33c5b0a66d6fa291d23178d0ae1426b96073eb29de7612ee6ac
   IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
   # Tagless repository: kaniko's --cache-repo must be a bare repo, not a tag
   # ref. A ':buildcache' tag here makes kaniko reject the cache destination
