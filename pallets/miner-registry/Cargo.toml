@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 codec = { features = ["derive"], workspace = true }
+frame-benchmarking = { optional = true, workspace = true }
 frame-support.workspace = true
 frame-system.workspace = true
 pallet-balances.workspace = true
@@ -34,6 +35,7 @@ sp-runtime = { default-features = true, workspace = true }
 default = ["std"]
 std = [
   "codec/std",
+  "frame-benchmarking?/std",
   "frame-support/std",
   "frame-system/std",
   "pallet-balances/std",
@@ -42,6 +44,13 @@ std = [
   "sp-core/std",
   "sp-io/std",
   "sp-runtime/std",
+]
+runtime-benchmarks = [
+  "frame-benchmarking/runtime-benchmarks",
+  "frame-support/runtime-benchmarks",
+  "frame-system/runtime-benchmarks",
+  "pallet-balances/runtime-benchmarks",
+  "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [
   "frame-support/try-runtime",

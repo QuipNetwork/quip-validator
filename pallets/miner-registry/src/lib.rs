@@ -4,6 +4,8 @@ extern crate alloc;
 
 pub use pallet::*;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
@@ -522,6 +524,13 @@ pub mod pallet {
         /// Validates the payload, then reserves (or refunds) the difference
         /// between the new and any previous deposit so the held amount always
         /// matches the current descriptor size.
+        ///
+        /// The fixed benchmark weight covers replacement with a fully
+        /// populated, maximally bounded V2 descriptor. Descriptor validation,
+        /// hashing, deposit calculation, and SCALE storage encoding traverse
+        /// several independent byte strings and collections; charging the
+        /// bounded maximum avoids repeating those traversals pre-dispatch just
+        /// to derive a dynamic component.
         #[pallet::call_index(0)]
         #[pallet::weight(<T as Config>::WeightInfo::set_descriptor())]
         pub fn set_descriptor(
