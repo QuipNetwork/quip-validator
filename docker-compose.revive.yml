@@ -51,9 +51,6 @@ services:
     build:
       context: .
       dockerfile: docker/revive-eth-rpc.Dockerfile
-      args:
-        POLKADOT_SDK_REPOSITORY: https://github.com/QuipNetwork/polkadot-sdk.git
-        POLKADOT_SDK_REV: 4330574c320bccf82ac254514e95657fb5b4601e
     image: quip-network-evm-sidecar:4330574c
     restart: unless-stopped
     depends_on:
