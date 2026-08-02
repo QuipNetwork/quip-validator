@@ -9,7 +9,7 @@ FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
 # script depends on revive-dev-runtime through the SDK workspace, so building
 # from a complete pinned checkout is required until the package is embeddable.
 ARG POLKADOT_SDK_REPOSITORY=https://github.com/QuipNetwork/polkadot-sdk.git
-ARG POLKADOT_SDK_REV=4330574c320bccf82ac254514e95657fb5b4601e
+ARG POLKADOT_SDK_REV=f17113ffe89361a26cb286f6afc5a92f443179a8
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \

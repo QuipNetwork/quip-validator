@@ -187,11 +187,30 @@ browser-signer-test:
     - cargo build -p quip-network-node --features dev-chain-id
     - bash scripts/test-browser-signer-integration.sh
 
+# pallet-revive's runtime benchmarks compile both Solidity/EVM and
+# Solidity/PolkaVM fixtures. Keep these versions aligned with the pinned SDK's
+# get-solc/get-resolc actions. They are installed per job because the current
+# digest-pinned toolchain image predates pallet-revive benchmarking support.
+.revive-benchmark-tooling:
+  variables:
+    SOLC_VERSION: "0.8.30"
+    RESOLC_VERSION: "1.0.0"
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends ca-certificates curl
+    - rm -rf /var/lib/apt/lists/*
+    - curl -Lsf --show-error -o /usr/local/bin/solc "https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solc-static-linux"
+    - curl -Lsf --show-error -o /usr/local/bin/resolc "https://github.com/paritytech/revive/releases/download/v${RESOLC_VERSION}/resolc-x86_64-unknown-linux-musl"
+    - chmod +x /usr/local/bin/solc /usr/local/bin/resolc
+    - solc --version
+    - resolc --version
+
 # Low-resolution benchmark execution against production runtime constants.
 # This is a setup/signature check, not a measurement job: output stays in a
 # temporary directory and the reference-machine benchmark-weights job remains
 # responsible for regenerating tracked weights.
 benchmark-preflight:
+  extends: .revive-benchmark-tooling
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
@@ -281,6 +300,7 @@ py-signer-test:
 # warm runs are much shorter. See scripts/run-benchmarks.sh for the pallet
 # derivation and the pallet_quantum_pow skip rationale.
 benchmark-weights:
+  extends: .revive-benchmark-tooling
   stage: bench
   needs: []
   image: $TOOLCHAIN_IMAGE
@@ -314,6 +334,7 @@ benchmark-weights:
 # explicit availability check and treats missing tooling or malformed/missing
 # JSON as a hard failure.
 benchmark-quantum-pow-sweeps:
+  extends: .revive-benchmark-tooling
   stage: bench
   needs: []
   image: $TOOLCHAIN_IMAGE
