@@ -119,11 +119,12 @@ cargo-test:
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
-  timeout: 60m
+  timeout: 90m
   cache:
     key:
       files:
         - Cargo.lock
+    policy: pull-push
     paths:
       - .cargo/registry/cache
       - .cargo/registry/index
@@ -143,18 +144,28 @@ browser-signer-test:
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
-  timeout: 60m
+  timeout: 90m
   cache:
-    key:
-      files:
-        - Cargo.lock
-        - js/quip-signer/package-lock.json
-    paths:
-      - .cargo/registry/cache
-      - .cargo/registry/index
-      - .cargo/bin/
-      - target/
-      - .npm/
+    # cargo-test owns publication of the large shared target archive. Keeping
+    # this consumer pull-only prevents two jobs on one runner from concurrently
+    # compressing and uploading separate multi-gigabyte target caches.
+    - key:
+        files:
+          - Cargo.lock
+      policy: pull
+      paths:
+        - .cargo/registry/cache
+        - .cargo/registry/index
+        - target/
+    # Browser-only tools are small and remain writable independently.
+    - key:
+        prefix: browser-signer-tools
+        files:
+          - js/quip-signer/package-lock.json
+      policy: pull-push
+      paths:
+        - .cargo/bin/
+        - .npm/
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
   before_script:
