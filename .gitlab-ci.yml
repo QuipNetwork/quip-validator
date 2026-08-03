@@ -438,7 +438,7 @@ benchmark-machine:
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
-  timeout: 90m
+  timeout: 3h
   interruptible: true
   rules: !reference [.publish-rules, rules]
   before_script:
@@ -507,10 +507,6 @@ kaniko-build-amd64:
 kaniko-build-arm64:
   extends: .node-kaniko-build
   tags: [docker, arm64]
-  # The OrbStack/Colima Mac runner is slower than the amd64 boxes; a full
-  # Substrate release compile + kaniko snapshot can run long, so give it more
-  # than the 90m template default.
-  timeout: 180m
   variables:
     ARCH: arm64
     # The arm64 runner is a docker-executor on an Apple-Silicon Mac (OrbStack),
@@ -532,7 +528,6 @@ kaniko-build-evm-sidecar-amd64:
 kaniko-build-evm-sidecar-arm64:
   extends: .evm-sidecar-kaniko-build
   tags: [docker, arm64]
-  timeout: 180m
   variables:
     ARCH: arm64
     KANIKO_EXTRA: "--compressed-caching=false"
