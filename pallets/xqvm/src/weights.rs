@@ -68,10 +68,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
 		//  Estimated: `69037`
-		// Minimum execution time: 15_138_000 picoseconds.
-		Weight::from_parts(15_598_048, 69037)
+		// Minimum execution time: 14_878_000 picoseconds.
+		Weight::from_parts(15_525_706, 69037)
 			// Standard Error: 0
-			.saturating_add(Weight::from_parts(1_416, 0).saturating_mul(s.into()))
+			.saturating_add(Weight::from_parts(1_398, 0).saturating_mul(s.into()))
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
@@ -81,8 +81,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `66`
 		//  Estimated: `69037`
-		// Minimum execution time: 16_381_000 picoseconds.
-		Weight::from_parts(17_152_000, 69037)
+		// Minimum execution time: 16_201_000 picoseconds.
+		Weight::from_parts(17_022_000, 69037)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 	}
 }
@@ -98,10 +98,10 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
 		//  Estimated: `69037`
-		// Minimum execution time: 15_138_000 picoseconds.
-		Weight::from_parts(15_598_048, 69037)
+		// Minimum execution time: 14_878_000 picoseconds.
+		Weight::from_parts(15_525_706, 69037)
 			// Standard Error: 0
-			.saturating_add(Weight::from_parts(1_416, 0).saturating_mul(s.into()))
+			.saturating_add(Weight::from_parts(1_398, 0).saturating_mul(s.into()))
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
@@ -111,8 +111,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `66`
 		//  Estimated: `69037`
-		// Minimum execution time: 16_381_000 picoseconds.
-		Weight::from_parts(17_152_000, 69037)
+		// Minimum execution time: 16_201_000 picoseconds.
+		Weight::from_parts(17_022_000, 69037)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 	}
 }
