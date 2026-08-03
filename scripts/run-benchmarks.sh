@@ -10,7 +10,8 @@ set -euo pipefail
 # just don't commit weights measured off-reference hardware.
 #
 # What it does:
-#   1. Builds the node with `--features runtime-benchmarks`.
+#   1. Builds the node with `runtime-benchmarks` and the local-chain EIP-155
+#      configuration required by the benchmark CLI's default chain preset.
 #   2. Derives the pallet list from `benchmark pallet --list` — the runtime's
 #      define_benchmarks! registry — so a newly registered pallet is picked up
 #      with no change here.
@@ -79,7 +80,7 @@ if [ "$#" -ne 0 ]; then
 fi
 
 echo "== Building node with runtime-benchmarks (this is the slow part) =="
-cargo build --release --features runtime-benchmarks -p quip-network-node
+cargo build --release --features runtime-benchmarks,dev-chain-id -p quip-network-node
 
 BIN="${CARGO_TARGET_DIR:-target}/release/quip-network-node"
 

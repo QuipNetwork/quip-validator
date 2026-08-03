@@ -34,7 +34,7 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 echo "Building quip-network-node..."
-cargo build -p quip-network-node --manifest-path "${ROOT_DIR}/Cargo.toml"
+cargo build -p quip-network-node --features dev-chain-id --manifest-path "${ROOT_DIR}/Cargo.toml"
 
 echo "Logs will be written to ${LOG_DIR}"
 echo "State directories live under ${STATE_ROOT}"

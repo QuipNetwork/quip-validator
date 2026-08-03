@@ -31,7 +31,7 @@ cargo check
 cargo clippy --all-targets
 
 # Build benchmarks
-cargo build --release --features runtime-benchmarks
+cargo build --release --features runtime-benchmarks,dev-chain-id
 
 # Run the dev chain (after release build)
 ./target/release/quip-network-node --dev

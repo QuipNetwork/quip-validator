@@ -366,7 +366,7 @@ benchmark-quantum-pow-sweeps:
     GIT_DEPTH: "0"
   cache: []
   script:
-    - cargo build --release --features runtime-benchmarks -p quip-network-node
+    - cargo build --release --features runtime-benchmarks,dev-chain-id -p quip-network-node
     - ./scripts/run-quantum-pow-sweeps.sh
     - test -r "$CI_PROJECT_DIR/quantum-pow-sweeps/summary.tsv"
     - QUANTUM_POW_SWEEP_SUMMARY=$CI_PROJECT_DIR/quantum-pow-sweeps/summary.tsv cargo test -p pallet-quantum-pow --lib tests::weight_covers_executed_sweep_with_ten_percent_floor -- --ignored --exact
@@ -408,7 +408,7 @@ benchmark-machine:
       when: manual
       allow_failure: true
   script:
-    - quip-network-node benchmark machine --allow-fail
+    - quip-network-node benchmark machine --chain quip-testnet --allow-fail
 
 # Shared publish rules. Container images are published on release tags ONLY —
 # branch pushes (main/v0.2 merges) never build or push images. Floating
