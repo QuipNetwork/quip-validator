@@ -233,5 +233,24 @@ for pallet in "${pallets[@]}"; do
   )
 done
 
+OVERHEAD_OUTPUT_DIR="$OUTPUT_DIR/overhead"
+mkdir -p "$OVERHEAD_OUTPUT_DIR"
+
+echo "== Checking runtime execution-overhead benchmark =="
+"$BIN" benchmark overhead \
+  --dev \
+  --wasm-execution compiled \
+  --warmup 1 \
+  --repeat 1 \
+  --max-ext-per-block 1 \
+  --weight-path "$OVERHEAD_OUTPUT_DIR"
+
+for output in block_weights.rs extrinsic_weights.rs; do
+  if [ ! -s "$OVERHEAD_OUTPUT_DIR/$output" ]; then
+    echo "ERROR: overhead benchmark did not generate $output" >&2
+    exit 1
+  fi
+done
+
 echo "== Production-runtime benchmark preflight passed =="
-echo "Executed $benchmark_count benchmarks without modifying tracked weights."
+echo "Executed $benchmark_count pallet benchmarks and the overhead smoke test without modifying tracked weights."

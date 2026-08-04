@@ -9093,6 +9093,7 @@ name = "quip-network-node"
 version = "0.2.1"
 dependencies = [
  "clap",
+ "frame-benchmarking",
  "frame-benchmarking-cli",
  "frame-metadata-hash-extension",
  "frame-system",
@@ -9186,6 +9187,7 @@ dependencies = [
  "sp-storage",
  "sp-transaction-pool",
  "sp-version",
+ "sp-weights",
  "substrate-wasm-builder",
 ]
 

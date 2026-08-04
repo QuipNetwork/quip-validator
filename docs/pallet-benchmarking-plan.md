@@ -19,6 +19,7 @@ This plan covers:
 - `pallet_quantum_compute_mempool`
 - `pallet_quantum_pow`
 - `pallet_miner_registry`
+- runtime block and extrinsic execution overhead
 - benchmark CI preflight and verification
 
 `pallet_template` already has usable generated weights and requires no further
@@ -37,6 +38,11 @@ active.
 
 SDK pallets continue using their upstream weight implementations. Generating
 runtime-specific SDK pallet weights remains future work.
+
+Runtime execution overhead is runtime-specific even while SDK dispatchables use
+upstream `SubstrateWeight` implementations. The reference-machine workflow now
+generates `BlockExecutionWeight` and `ExtrinsicBaseWeight` with `benchmark
+overhead`, and the runtime wires those values into its block-weight limits.
 
 ## Current Gaps
 
@@ -164,6 +170,25 @@ After the benchmark contracts are complete:
    - `cargo test`
    - the release runtime-benchmarks build
 
+### 6. Measure runtime execution overhead
+
+The reference-machine regeneration also runs `benchmark overhead` against the
+release benchmark node with the development chain preset and compiled Wasm. It
+writes `runtime/src/weights/block_weights.rs` and
+`runtime/src/weights/extrinsic_weights.rs`; the benchmark bot includes both in
+the same weight commit as pallet results.
+
+The runtime explicitly uses those generated constants as `base_block` and as
+the `base_extrinsic` for every dispatch class. Its existing capacity policy is
+unchanged: a two-second maximum block, 75% Normal allowance, the remaining 25%
+reserved for Operational transactions, and a 10% average initialization
+allowance.
+
+The shared-runner preflight executes a one-repeat overhead smoke test with one
+extrinsic per block and writes only to its temporary directory. This checks the
+CLI/runtime plumbing but is not a source of coefficients. Only the serialized
+reference-machine job may update the tracked overhead files.
+
 ## Delivery Order
 
 Use small reviewable changes:
@@ -174,6 +199,7 @@ Use small reviewable changes:
 4. Miner-registry benchmark coverage.
 5. Quantum-pow reference-machine sweep CI integration.
 6. Final all-pallet reference-machine regeneration and CI cleanup.
+7. Reference-machine block and extrinsic overhead generation and runtime wiring.
 
 ## Completion Criteria
 
@@ -183,6 +209,10 @@ The work is complete when:
 - Every dispatchable has a benchmark-backed weight contract.
 - No in-scope pallet remains in the default skip list.
 - Low-resolution runtime preflight succeeds for every registered benchmark.
+- The overhead smoke test generates both expected files without modifying the
+  tracked runtime weights.
+- Reference-machine regeneration updates and commits both runtime overhead
+  constants alongside pallet weights.
 - Quantum-pow nonlinear sweeps run through CI on `node02`, with raw JSON
   results retained as artifacts.
 - Full node02 regeneration succeeds without manual pallet exclusions.

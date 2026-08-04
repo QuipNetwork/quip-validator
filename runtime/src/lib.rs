@@ -7,6 +7,7 @@ pub mod apis;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarks;
 pub mod configs;
+pub mod weights;
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -145,7 +146,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // EVM-aware unchecked-extrinsic wrapper, and `EthSetOrigin` transaction
     // extension. The extension set and accepted extrinsic forms change, so
     // `transaction_version` moves to 6.
-    spec_version: 113,
+    // Bumped to 114 for the regenerated benchmark weights. No call encodings
+    // changed, so `transaction_version` stays at 6.
+    spec_version: 114,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 6,

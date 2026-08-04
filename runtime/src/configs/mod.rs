@@ -25,7 +25,9 @@
 
 // Substrate and Polkadot dependencies
 use frame_support::{
-    derive_impl, parameter_types,
+    derive_impl,
+    dispatch::DispatchClass,
+    parameter_types,
     traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Get, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
@@ -50,18 +52,35 @@ use super::{
     RuntimeOrigin, RuntimeTask, SessionKeys, Signature, System, Timestamp, EXISTENTIAL_DEPOSIT,
     MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
+use crate::weights::{BlockExecutionWeight, ExtrinsicBaseWeight};
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+const AVERAGE_ON_INITIALIZE_RATIO: Perbill = Perbill::from_percent(10);
 
 parameter_types! {
     pub const BlockHashCount: BlockNumber = 2400;
     pub const Version: RuntimeVersion = VERSION;
 
     /// We allow for 2 seconds of compute with a 6 second average block time.
-    pub RuntimeBlockWeights: BlockWeights = BlockWeights::with_sensible_defaults(
-        Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX),
-        NORMAL_DISPATCH_RATIO,
-    );
+    pub RuntimeBlockWeights: BlockWeights = {
+        let max_block = Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX);
+        let normal_max = NORMAL_DISPATCH_RATIO * max_block;
+
+        BlockWeights::builder()
+            .base_block(BlockExecutionWeight::get())
+            .for_class(DispatchClass::all(), |weights| {
+                weights.base_extrinsic = ExtrinsicBaseWeight::get();
+            })
+            .for_class(DispatchClass::Normal, |weights| {
+                weights.max_total = Some(normal_max);
+            })
+            .for_class(DispatchClass::Operational, |weights| {
+                weights.max_total = Some(max_block);
+                weights.reserved = Some(max_block - normal_max);
+            })
+            .avg_block_initialization(AVERAGE_ON_INITIALIZE_RATIO)
+            .build_or_panic()
+    };
     // Replacement for the now-deprecated `BlockLength::max_with_normal_ratio` —
     // reconstruct the same shape via the builder: max = 5 MiB for all dispatch
     // classes, but the Normal class is scaled down by `NORMAL_DISPATCH_RATIO`.
@@ -463,6 +482,58 @@ impl pallet_miner_registry::Config for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_block_weights_use_benchmarked_overhead() {
+        let weights = RuntimeBlockWeights::get();
+
+        assert_eq!(weights.base_block, BlockExecutionWeight::get());
+        for class in DispatchClass::all() {
+            assert_eq!(
+                weights.get(*class).base_extrinsic,
+                ExtrinsicBaseWeight::get(),
+                "unexpected base extrinsic weight for {class:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_block_weight_limits_preserve_sensible_defaults() {
+        let weights = RuntimeBlockWeights::get();
+        let max_block = Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX);
+        let normal_max = NORMAL_DISPATCH_RATIO * max_block;
+
+        assert_eq!(weights.max_block, max_block);
+        assert_eq!(
+            weights.get(DispatchClass::Normal).max_total,
+            Some(normal_max)
+        );
+        assert_eq!(
+            weights.get(DispatchClass::Operational).max_total,
+            Some(max_block)
+        );
+        assert_eq!(
+            weights.get(DispatchClass::Operational).reserved,
+            Some(max_block - normal_max)
+        );
+        let initialization = AVERAGE_ON_INITIALIZE_RATIO * max_block;
+        assert_eq!(
+            weights.get(DispatchClass::Normal).max_extrinsic,
+            Some(normal_max - initialization - ExtrinsicBaseWeight::get())
+        );
+        assert_eq!(
+            weights.get(DispatchClass::Operational).max_extrinsic,
+            Some(max_block - initialization - ExtrinsicBaseWeight::get())
+        );
+        assert_eq!(weights.get(DispatchClass::Mandatory).max_total, None);
+    }
+
+    #[test]
+    fn runtime_block_weights_validate() {
+        RuntimeBlockWeights::get()
+            .validate()
+            .expect("runtime block weights must be internally consistent");
+    }
 
     /// Catches typos and silent address drift in the hardcoded SS58 string.
     /// Without this, a malformed constant would only surface as a panic inside

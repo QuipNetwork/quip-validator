@@ -112,6 +112,7 @@ sp-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch =
 sp-storage = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 sp-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 sp-version = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+sp-weights = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 substrate-wasm-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 quip-crypto-primitives = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 quip-crypto-primitives-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
