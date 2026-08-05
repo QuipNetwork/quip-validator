@@ -436,7 +436,7 @@ benchmark-machine:
   stage: build
   needs: []
   image:
-    name: registry.gitlab.com/quip.network/kaniko/executor:v1.25.17
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
   timeout: 3h
   interruptible: true
