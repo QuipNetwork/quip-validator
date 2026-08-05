@@ -154,3 +154,6 @@ git diff --stat -- \
   'pallets/*/src/benchmark_weights.rs' \
   'runtime/src/weights/block_weights.rs' \
   'runtime/src/weights/extrinsic_weights.rs' || true
+
+echo "== Running 'cargo fmt'"
+cargo fmt
