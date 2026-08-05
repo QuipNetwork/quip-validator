@@ -299,7 +299,7 @@ mod tests {
                 Ok(_) => panic!("development builds must reject the public testnet preset"),
                 Err(error) => error,
             };
-            assert!(error.contains("20049"));
+            assert!(error.contains("20033"));
         }
     }
 

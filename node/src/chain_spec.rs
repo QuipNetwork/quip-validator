@@ -5,7 +5,7 @@ use sc_service::ChainType;
 pub type ChainSpec = sc_service::GenericChainSpec;
 
 const LOCAL_CHAIN_ID_FEATURE_ERROR: &str = "local chain presets require a node built with the `dev-chain-id` feature (EIP-155 chain ID 1337); rebuild with `cargo build -p quip-network-node --features dev-chain-id`";
-const TESTNET_CHAIN_ID_FEATURE_ERROR: &str = "the `quip-testnet` chain preset requires the default/testnet runtime artifact (EIP-155 chain ID 20049) and cannot run from a `dev-chain-id` build";
+const TESTNET_CHAIN_ID_FEATURE_ERROR: &str = "the `quip-testnet` chain preset requires the default/testnet runtime artifact (EIP-155 chain ID 20033) and cannot run from a `dev-chain-id` build";
 
 pub(crate) fn ensure_local_chain_id_feature() -> Result<(), String> {
     if cfg!(feature = "dev-chain-id") {

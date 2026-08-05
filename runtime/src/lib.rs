@@ -457,7 +457,7 @@ mod tests {
         #[cfg(not(feature = "dev-chain-id"))]
         assert_eq!(
             <configs::ReviveChainId as frame_support::traits::Get<u64>>::get(),
-            20_049
+            20_033
         );
 
         assert_eq!(configs::ReviveDepositPerByte::get(), 10 * MICRO_UNIT);

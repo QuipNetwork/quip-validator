@@ -175,5 +175,5 @@ metadata-hash = ["substrate-wasm-builder/metadata-hash"]
 on-chain-release-build = ["metadata-hash", "sp-api/disable-logging"]
 
 # Build a dedicated local-development runtime with EIP-155 chain ID 1337.
-# Release/testnet artifacts use 20049 by default.
+# Release/testnet artifacts use 20033 by default.
 dev-chain-id = []

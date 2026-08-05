@@ -35,11 +35,11 @@ dependency is updated.
 |---|---:|---:|---|
 | Local development (`--dev`) | `1337` | `0x539` | Decided |
 | Local multi-validator (`local_testnet`, `local_three_validator`) | `1337` | `0x539` | Decided |
-| Public Quip testnet (`quip-testnet`) | `20049` | `0x4e51` | Decided |
+| Public Quip testnet (`quip-testnet`) | `20033` | `0x4e41` | Decided |
 | Future production network | TBD | TBD | Open |
 
 `1337` is the conventional EIP-155 identifier for Geth private development
-chains. `20049` is a provisional Quip testnet identifier. No current entry for
+chains. `20033` is a provisional Quip testnet identifier. No current entry for
 it was found in the common public chain-ID registry when this decision was
 made. Registry availability is not a reservation, so Quip should register the
 testnet before advertising a public EVM RPC.
@@ -49,18 +49,18 @@ testnet before advertising a public EVM RPC.
 `pallet_revive::Config::ChainId` is supplied by the compiled runtime, while all
 current Quip chain-spec presets use the same embedded runtime Wasm. A single
 runtime artifact therefore cannot expose `1337` for the development preset and
-`20049` for the public testnet preset using an ordinary `ConstU64`.
+`20033` for the public testnet preset using an ordinary `ConstU64`.
 
 Implemented mechanism:
 
-- `20049` is the default release/testnet runtime value.
+- `20033` is the default release/testnet runtime value.
 - The `dev-chain-id` runtime and node feature selects `1337`.
 - That feature is required for the `dev`, `local_testnet`, and
   `local_three_validator` presets.
 
 Consequence: a normal testnet/release binary rejects all local presets with an
 instruction to rebuild with `dev-chain-id`; only the public `quip-testnet`
-preset can run with `20049`. The dedicated development build reports `1337` and
+preset can run with `20033`. The dedicated development build reports `1337` and
 rejects the public testnet preset. This keeps the chain ID a compile-time
 runtime constant and avoids untyped storage outside a pallet.
 
@@ -164,7 +164,7 @@ not a transaction fee.
 
 | `Config` type | Current candidate | Status | Notes |
 |---|---|---|---|
-| `ChainId` | `1337` for local development; `20049` for testnet | Decided | See the chain-ID decision above. |
+| `ChainId` | `1337` for local development; `20033` for testnet | Decided | See the chain-ID decision above. |
 | `NativeToEthRatio` | `ConstU32<1_000_000>` | Decided | Derived as `10^(18 - 12)` to map the 12-decimal native token to 18-decimal EVM values. |
 | `FeeInfo` | `pallet_revive::evm::fees::Info<Address, Signature, EthExtraImpl>` | Required | Production Ethereum transaction support cannot use the mock `()` implementation. |
 | `MaxEthExtrinsicWeight` | `FixedU128::from_rational(9, 10)` | Decided | Caps one Ethereum transaction at 90% of the normal maximum-extrinsic weight. |
@@ -288,7 +288,7 @@ and testnet IDs.
   `InitializeReviveAccount` reproduces Revive's genesis-time minimum-balance
   initialization and is idempotent. No native accounts are pre-mapped; users
   can call Revive's permissionless account-mapping extrinsic as needed.
-- **Public registration:** register testnet Chain ID `20049` before publishing
+- **Public registration:** register testnet Chain ID `20033` before publishing
   a public EVM RPC. Select and register a separate production ID later.
 
 ### Implementation checklist
@@ -350,7 +350,7 @@ and testnet IDs.
 - [ ] Ethereum legacy and typed transactions validate the expected Chain ID
       and reject transactions signed for another network.
 - [ ] `eth_chainId` and the EVM `CHAINID` opcode return `1337` on local builds
-      and `20049` on testnet builds.
+      and `20033` on testnet builds.
 - [ ] Contract upload, deployment, calls, events, and termination work.
 - [ ] Storage deposits, code-hash lockups, refunds, and address-mapping
       deposits match the accepted economics.
@@ -382,7 +382,7 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 |---|---|
 | 2026-07-16 | Use EIP-155 chain ID `1337` for local development. |
 | 2026-07-16 | Use EIP-155 chain ID `1337` for the `local_testnet` and `local_three_validator` presets. |
-| 2026-07-16 | Use EIP-155 chain ID `20049` provisionally for the public Quip testnet. |
+| 2026-07-16 | Use EIP-155 chain ID `20033` provisionally for the public Quip testnet. |
 | 2026-07-16 | Defer selection of a distinct production chain ID until a production network is planned. |
 | 2026-07-16 | Make EVM code upload and contract instantiation permissionless for signed accounts. |
 | 2026-07-16 | Start with no Quip-specific precompiles and disable Revive debug mode in normal runtime artifacts. |
@@ -394,8 +394,8 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 | 2026-07-17 | Burn minor EVM dust/value-conversion and rounding withdrawals by configuring `OnBurn = ()`. |
 | 2026-07-17 | Resolve EVM `block.coinbase` from the BABE authority through `Session::Validators`. |
 | 2026-07-17 | Use Revive integrity-check memory baselines of 128 MiB runtime memory and 512 MiB PVF memory. |
-| 2026-07-17 | Use default/testnet and `dev-chain-id` runtime artifacts to deliver Chain IDs `20049` and `1337`, respectively. |
-| 2026-07-17 | Require the `dev-chain-id` node/runtime artifact for all local presets and reject `quip-testnet` from that artifact; only the default/testnet artifact can run the public testnet with Chain ID `20049`. |
+| 2026-07-17 | Use default/testnet and `dev-chain-id` runtime artifacts to deliver Chain IDs `20033` and `1337`, respectively. |
+| 2026-07-17 | Require the `dev-chain-id` node/runtime artifact for all local presets and reject `quip-testnet` from that artifact; only the default/testnet artifact can run the public testnet with Chain ID `20033`. |
 | 2026-07-17 | Replace transaction-payment `IdentityFee` with `BlockRatioFee<1, 1, Runtime, Balance>` while retaining the fixed multiplier and length fee. |
 | 2026-07-17 | Add Revive at stable pallet index `14`, with runtime APIs, EVM-aware extrinsics, and idempotent existing-chain account initialization. |
 | 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar for development while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test. |

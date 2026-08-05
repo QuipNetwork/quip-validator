@@ -234,7 +234,7 @@ parameter_types! {
 
 /// The public-testnet chain ID is the safe default for release artifacts.
 #[cfg(not(feature = "dev-chain-id"))]
-pub type ReviveChainId = ConstU64<20_049>;
+pub type ReviveChainId = ConstU64<20_033>;
 
 /// Local development artifacts deliberately use the conventional private-chain ID.
 #[cfg(feature = "dev-chain-id")]
