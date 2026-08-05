@@ -470,6 +470,12 @@ mod tests {
             configs::ReviveCodeHashLockupDepositPercent::get(),
             sp_runtime::Perbill::from_percent(30)
         );
+        assert_eq!(
+            <<Runtime as pallet_revive::Config>::NativeToEthRatio as frame_support::traits::Get<
+                u32,
+            >>::get(),
+            10u32.pow(18 - 12)
+        );
 
         let mut ext =
             sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());

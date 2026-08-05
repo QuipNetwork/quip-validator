@@ -228,6 +228,8 @@ parameter_types! {
     pub const ReviveDepositPerChildTrieItem: Balance = 2 * MILLI_UNIT;
     pub ReviveCodeHashLockupDepositPercent: Perbill = Perbill::from_percent(30);
     pub const ReviveMaxEthExtrinsicWeight: FixedU128 = FixedU128::from_rational(9, 10);
+    /// One native 12-decimal plank equals 10^6 Ethereum 18-decimal units.
+    pub const ReviveNativeToEthRatio: u32 = 1_000_000;
 }
 
 /// The public-testnet chain ID is the safe default for release artifacts.
@@ -261,7 +263,7 @@ impl pallet_revive::Config for Runtime {
     type RuntimeMemory = ConstU32<{ 128 * 1024 * 1024 }>;
     type PVFMemory = ConstU32<{ 512 * 1024 * 1024 }>;
     type ChainId = ReviveChainId;
-    type NativeToEthRatio = ConstU32<1_000_000>;
+    type NativeToEthRatio = ReviveNativeToEthRatio;
     type FeeInfo = pallet_revive::evm::fees::Info<Address, Signature, EthExtraImpl>;
     type MaxEthExtrinsicWeight = ReviveMaxEthExtrinsicWeight;
     type DebugEnabled = ConstBool<false>;
