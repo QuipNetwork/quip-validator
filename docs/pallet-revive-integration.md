@@ -210,58 +210,15 @@ Quip's pinned SDK commit `4330574c`.
 
 At that commit, the sidecar also cannot be added as an ordinary Git dependency:
 its build script requires `revive-dev-runtime` to be built in the SDK workspace.
-The development image therefore builds `pallet-revive-eth-rpc` from a complete,
-exactly pinned checkout of the Quip SDK fork.
-
-Run the development node and sidecar together with:
-
-```bash
-make revive-dev
-```
-
-In another terminal, check the Ethereum endpoint:
-
-```bash
-bash scripts/check-revive-sidecar.sh
-bash scripts/check-subscan-evm-indexer.sh
-bash scripts/check-subscan-ui.sh
-```
-
-Stop the attached stack with Ctrl-C. To remove its containers and development
-chain volume afterward, run `make revive-dev-down`.
-
-The stack builds the node with `dev-chain-id`, exposes Substrate RPC on `9944`,
-and exposes Ethereum JSON-RPC on `8545`. It also builds
-[Subscan Essentials](https://github.com/subscan-explorer/subscan-essentials) at
-commit `bcb39fbd`, runs its API/subscriber/worker with MySQL and Redis, and
-exposes the API on `4399`. It also builds the official
-[Subscan Essentials UI](https://github.com/subscan-explorer/subscan-essentials-ui-react)
-at commit `9f29809f` and exposes it on `3000`. The UI container regenerates
-`/__ENV.js` at startup so the browser uses the host-visible Subscan API instead
-of retaining upstream's default endpoint. Compose supports
-`QUIP_SUBSCAN_API_PORT` and `QUIP_SUBSCAN_UI_PORT` overrides; the default
-browser API URL is `http://localhost:4399`.
-
-Subscan reads finalized Substrate blocks from the node and their Ethereum
-representation from the sidecar; the local smoke checks require the EVM blocks
-API to return an indexed block, the UI to return HTML, its runtime API setting
-to target the local API, and the API to permit the UI's browser origin. The
-Compose node uses `--state-pruning=archive` and `--blocks-pruning=archive`,
-since Subscan's genesis backfill reads historical event storage that a pruned
-node discards. Quip-specific UI logos, banners, and theme customization are
-deferred; the initial integration uses the upstream UI unchanged.
-
-`--eth-pruning 256` keeps recent receipt data in memory. The default sidecar
-`archive` mode instead persists a SQLite receipt index and requires an archive
-node for complete historical synchronization.
+The sidecar image therefore builds `pallet-revive-eth-rpc` from a complete,
+exactly pinned checkout of the Quip SDK fork. Runtime deployments connect this
+standalone process to the node's WebSocket RPC and must choose an intentional
+receipt-retention and persistence policy.
 
 Release-tag pipelines publish `docker/revive-eth-rpc.Dockerfile` as
 `$CI_REGISTRY_IMAGE/quip-network-evm-sidecar` for `linux/amd64` and
 `linux/arm64`. Its release tag, `sha-<short-sha>`, and branch-derived floating
-tags match the node image. CI does not boot the Revive/Subscan Compose stack;
-`make revive-dev` plus the three readiness scripts above remain the manual
-integration path. Uploading, deploying, and calling a contract is a future
-smoke-test increment.
+tags match the node image.
 
 ## Pending decisions and validation
 
@@ -306,15 +263,7 @@ and testnet IDs.
 - [x] Replace the generic unchecked extrinsic wrapper with Revive's EVM-aware
       wrapper while preserving Quip's hybrid native signature flow.
 - [x] Implement Revive runtime APIs.
-- [x] Add a pinned SDK Ethereum RPC sidecar image and a single-node development
-      Compose stack.
-- [x] Retain local/manual Compose validation of `eth_chainId`,
-      `eth_blockNumber`, and the Subscan EVM index.
-- [x] Add Subscan Essentials to the development stack and require an indexed
-      Ethereum-shaped block in the manual readiness checks.
-- [x] Add the pinned Subscan Essentials UI, runtime API configuration, and UI
-      readiness/CORS checks to the local development stack.
-- [ ] Extend the readiness smoke test to upload, deploy, and call a contract.
+- [x] Add a pinned SDK Ethereum RPC sidecar Dockerfile.
 - [x] Publish the pinned sidecar as a release-tag-only, multi-architecture
       `quip-network-evm-sidecar` image with node-matching tag semantics.
 - [ ] Define the production deployment and persistent/archive receipt storage
@@ -398,7 +347,6 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 | 2026-07-17 | Require the `dev-chain-id` node/runtime artifact for all local presets and reject `quip-testnet` from that artifact; only the default/testnet artifact can run the public testnet with Chain ID `20033`. |
 | 2026-07-17 | Replace transaction-payment `IdentityFee` with `BlockRatioFee<1, 1, Runtime, Balance>` while retaining the fixed multiplier and length fee. |
 | 2026-07-17 | Add Revive at stable pallet index `14`, with runtime APIs, EVM-aware extrinsics, and idempotent existing-chain account initialization. |
-| 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar for development while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test. |
-| 2026-07-20 | Add pinned Subscan Essentials API/subscriber/worker services with MySQL and Redis to the development stack; run the node in archive mode and require an indexed EVM block during manual readiness checks. |
-| 2026-07-20 | Add the official Subscan Essentials UI at pinned commit `9f29809f`, expose it locally on port `3000`, configure its browser API through runtime `__ENV.js`, and defer Quip-specific branding. |
-| 2026-07-31 | Publish the pinned SDK sidecar as the release-tag-only, multi-architecture `quip-network-evm-sidecar` image; keep the full Revive/Subscan readiness stack as a local/manual validation path rather than a GitLab CI job. |
+| 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test. |
+| 2026-07-31 | Publish the pinned SDK sidecar as the release-tag-only, multi-architecture `quip-network-evm-sidecar` image. |
+| 2026-08-07 | Remove the in-repository Revive local orchestration and funding command; retain the standalone sidecar image and CI release publishing. |

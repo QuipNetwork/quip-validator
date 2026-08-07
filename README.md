@@ -311,49 +311,6 @@ docker compose down -v              # stop and wipe state
 Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 `ws://localhost:9945` (node2), or `ws://localhost:9946` (node3).
 
-#### Revive dev node with Ethereum RPC
-
-The Revive development stack starts one `--dev` node built with the
-`dev-chain-id` feature, the pinned SDK Ethereum RPC sidecar, and a pinned
-Subscan Essentials API/subscriber/worker and explorer UI backed by MySQL and
-Redis:
-
-```sh
-make revive-dev
-```
-
-In another terminal, check the Ethereum endpoint:
-
-```sh
-bash scripts/check-revive-sidecar.sh
-bash scripts/check-subscan-evm-indexer.sh
-bash scripts/check-subscan-ui.sh
-```
-
-Stop the attached stack with Ctrl-C. To remove its containers and development
-chain state afterward:
-
-```sh
-make revive-dev-down
-```
-
-The Substrate RPC is available at `ws://localhost:9944`; Ethereum JSON-RPC is
-available at `http://localhost:8545` and reports Chain ID `1337` (`0x539`). The
-Subscan API is available at `http://localhost:4399`, and its explorer UI is at
-`http://localhost:3000`. The Subscan check only passes after at least one
-Ethereum-shaped block has been indexed. The node uses archive state/block
-pruning in this stack because Subscan backfills events from historical block
-state.
-
-The Compose stack continues to build the sidecar locally from
-`docker/revive-eth-rpc.Dockerfile`. Release tags also publish that Dockerfile as
-the multi-architecture image
-`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:<tag>`
-for `linux/amd64` and `linux/arm64`. The sidecar uses the same exact release,
-commit-SHA, and branch-derived floating tags as `quip-network-node`. CI does not
-boot the full Revive/Subscan Compose stack; run the checks above for manual
-integration validation.
-
 ## Public testnet
 
 `quip-testnet` is the public testnet ("AGLS" tokens, 12 decimals). The

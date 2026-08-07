@@ -23,17 +23,6 @@ polkadot-sdk:
 local-3-node:
 	./scripts/start-local3.sh
 
-# Build and run the single-validator development node (Chain ID 1337), the
-# pinned pallet-revive Ethereum JSON-RPC sidecar, and Subscan EVM indexer/UI.
-# Runs attached so Ctrl-C stops the stack and leaves logs visible during testing.
-revive-dev:
-	docker compose -f docker-compose.revive.yml up --build
-
-# Remove containers, development chain/indexer volumes, and any orphaned
-# services left by an interrupted revive-dev run.
-revive-dev-down:
-	docker compose -f docker-compose.revive.yml down --volumes --remove-orphans
-
 quantum-validation-venv:
 	python3 -m venv $(QUIP_PROTOCOL_VENV)
 	$(QUIP_PROTOCOL_PYTHON) -m pip install -e $(QUIP_PROTOCOL_ROOT)
@@ -103,6 +92,6 @@ builder-image:
 		--push \
 		.gitlab/
 
-.PHONY: local-3-node revive-dev revive-dev-down quantum-validation-venv \
+.PHONY: local-3-node quantum-validation-venv \
 	quantum-validation-fixtures wasm-signer py-signer py-signer-develop \
 	py-signer-test

@@ -146,9 +146,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // EVM-aware unchecked-extrinsic wrapper, and `EthSetOrigin` transaction
     // extension. The extension set and accepted extrinsic forms change, so
     // `transaction_version` moves to 6.
-    // Bumped to 114 for the regenerated benchmark weights. No call encodings
+    // Bumped to 115 (tag -> 114, main build -> 115) for the regenerated benchmark weights. No call encodings
     // changed, so `transaction_version` stays at 6.
-    spec_version: 114,
+    spec_version: 115,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 6,
