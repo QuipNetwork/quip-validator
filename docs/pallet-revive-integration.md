@@ -4,7 +4,9 @@
 
 This is the living design, implementation, and decision record for integrating
 `pallet-revive` into the Quip runtime. The initial runtime integration is
-implemented at runtime `spec_version = 113` / `transaction_version = 6`.
+implemented at runtime `spec_version = 115` / `transaction_version = 6`
+(introduced at 113 on-branch, first shipped as 114 in the v0.2.2-rc tags,
+bumped to 115 for the benchmark weight regeneration).
 Remaining unchecked items are deployment and end-to-end validation work.
 
 Status labels:
@@ -17,7 +19,7 @@ Status labels:
 ## SDK baseline
 
 The workspace currently resolves the Quip Polkadot SDK fork to commit
-`4330574c320bccf82ac254514e95657fb5b4601e`. At that revision:
+`f17113ffe89361a26cb286f6afc5a92f443179a8`. At that revision:
 
 - `pallet-revive` is version `0.13.0`.
 - `pallet_revive::Config` has 27 associated types.
@@ -205,8 +207,8 @@ The pinned SDK exposes Revive's Ethereum RPC as a sidecar process connected to
 the node's WebSocket RPC. Embedded integration remains blocked on
 [paritytech/polkadot-sdk#11297](https://github.com/paritytech/polkadot-sdk/pull/11297),
 which introduces the `SubstrateClientT` abstraction and embeds the ETH RPC
-server into an omni-node. That PR is still open as of 2026-07-17 and is not in
-Quip's pinned SDK commit `4330574c`.
+server into an omni-node. That PR is still open as of 2026-08-07 and is not in
+Quip's pinned SDK commit `f17113f`.
 
 At that commit, the sidecar also cannot be added as an ordinary Git dependency:
 its build script requires `revive-dev-runtime` to be built in the SDK workspace.
@@ -272,7 +274,7 @@ and testnet IDs.
       available and avoids divergence from an upgraded existing testnet.
 - [x] Add initialization required for an existing-testnet
       runtime upgrade.
-- [x] Increment runtime `spec_version` to `113` and `transaction_version` to
+- [x] Increment runtime `spec_version` to `115` and `transaction_version` to
       `6`.
 - [ ] Run runtime benchmarks and replace provisional weights where necessary.
 

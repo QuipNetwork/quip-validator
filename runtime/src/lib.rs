@@ -142,12 +142,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // 7-field layout backfilling both trailing fields. Read-only runtime API
     // shape change (`QBlock`/`QBlockWithNonce`). `submit_proof`'s argument
     // encoding changed, so `transaction_version` moves to 5.
-    // Bumped to 113 for pallet-revive (idx 14), its Ethereum runtime APIs,
-    // EVM-aware unchecked-extrinsic wrapper, and `EthSetOrigin` transaction
-    // extension. The extension set and accepted extrinsic forms change, so
-    // `transaction_version` moves to 6.
-    // Bumped to 115 (tag -> 114, main build -> 115) for the regenerated benchmark weights. No call encodings
-    // changed, so `transaction_version` stays at 6.
+    // Bumped for pallet-revive (idx 14), its Ethereum runtime APIs, EVM-aware
+    // unchecked-extrinsic wrapper, and `EthSetOrigin` transaction extension.
+    // The extension set and accepted extrinsic forms change, so
+    // `transaction_version` moves to 6. First shipped as 114 in the v0.2.2-rc
+    // tags (113 was only an intermediate branch value and never released).
+    // Bumped to 115 for the post-tag main build after the benchmark weight
+    // regeneration. No call encodings changed, so `transaction_version` stays
+    // at 6.
     spec_version: 115,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

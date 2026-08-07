@@ -34,7 +34,7 @@ RUN cargo build --locked --release -p pallet-revive-eth-rpc --bin eth-rpc
 FROM debian:${DEBIAN_VERSION}-slim AS runtime
 
 # curl is used only by the container healthcheck; SQLite stores the receipt
-# index when archive mode is selected outside the development Compose stack.
+# index when archive mode is selected.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl libsqlite3-0 libssl3 \

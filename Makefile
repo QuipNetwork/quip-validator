@@ -94,4 +94,4 @@ builder-image:
 
 .PHONY: local-3-node quantum-validation-venv \
 	quantum-validation-fixtures wasm-signer py-signer py-signer-develop \
-	py-signer-test
+	py-signer-test builder-image

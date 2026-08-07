@@ -202,16 +202,24 @@ browser-signer-test:
 # Solidity/PolkaVM fixtures. Keep these versions aligned with the pinned SDK's
 # get-solc/get-resolc actions. They are installed per job because the current
 # digest-pinned toolchain image predates pallet-revive benchmarking support.
+# Both binaries are checksum-pinned: RESOLC_SHA256 comes from the release's
+# official checksums.txt; solc publishes no checksum, so SOLC_SHA256 was
+# pinned manually after verifying that the GitHub release artifact and
+# binaries.soliditylang.org serve identical bytes.
 .revive-benchmark-tooling:
   variables:
     SOLC_VERSION: "0.8.30"
+    SOLC_SHA256: "f3e987dc6ecebd4bd350c48edcbc320b46cf9e3109bd3fc3d88f1acaf4c428f7"
     RESOLC_VERSION: "1.0.0"
+    RESOLC_SHA256: "e626ba7a1a0d26828c14713781b0082ececc9a0fbfe984f11f0d93d66bbd7806"
   before_script:
     - apt-get update
     - apt-get install -y --no-install-recommends ca-certificates curl
     - rm -rf /var/lib/apt/lists/*
     - curl -Lsf --show-error -o /usr/local/bin/solc "https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solc-static-linux"
     - curl -Lsf --show-error -o /usr/local/bin/resolc "https://github.com/paritytech/revive/releases/download/v${RESOLC_VERSION}/resolc-x86_64-unknown-linux-musl"
+    - echo "${SOLC_SHA256}  /usr/local/bin/solc" | sha256sum -c -
+    - echo "${RESOLC_SHA256}  /usr/local/bin/resolc" | sha256sum -c -
     - chmod +x /usr/local/bin/solc /usr/local/bin/resolc
     - solc --version
     - resolc --version
@@ -435,6 +443,13 @@ benchmark-machine:
 .kaniko-build:
   stage: build
   needs: []
+  # The executor runs from a project-owned mirror of the upstream
+  # gcr.io/kaniko-project/executor image. Rationale: digest-pinning a mirror
+  # we control avoids gcr.io availability/rate-limit surprises and guarantees
+  # the exact -debug flavor (required: GitLab before_script needs a shell,
+  # absent from the non-debug image). To refresh: pull the desired upstream
+  # tag, re-tag under registry.gitlab.com/quip.network/kaniko/executor, push,
+  # then update the tag and sha256 digest here.
   image:
     name: registry.gitlab.com/quip.network/kaniko/executor:v1.25.17-debug@sha256:d53c54f94bf0a0733f0976a06b503814bf23f4ebc75a9b75ad683a3f528a366f
     entrypoint: [""]
