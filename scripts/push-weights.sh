@@ -24,7 +24,9 @@ set -euo pipefail
 
 if git diff --quiet -- \
   'pallets/*/src/weights.rs' \
-  'pallets/*/src/benchmark_weights.rs'; then
+  'pallets/*/src/benchmark_weights.rs' \
+  'runtime/src/weights/block_weights.rs' \
+  'runtime/src/weights/extrinsic_weights.rs'; then
   echo "No weight changes — nothing to push."
   exit 0
 fi
@@ -54,7 +56,11 @@ git checkout -B "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" FETCH_HEAD
 
 git config user.name  "quip-bench-bot"
 git config user.email "ops@postquant.xyz"
-git add 'pallets/*/src/weights.rs' 'pallets/*/src/benchmark_weights.rs'
+git add \
+  'pallets/*/src/weights.rs' \
+  'pallets/*/src/benchmark_weights.rs' \
+  'runtime/src/weights/block_weights.rs' \
+  'runtime/src/weights/extrinsic_weights.rs'
 git commit -m "chore: regenerate weights on reference machine"
 
 git push \

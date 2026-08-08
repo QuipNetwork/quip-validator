@@ -7,9 +7,12 @@ pub mod apis;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarks;
 pub mod configs;
+pub mod weights;
 
 extern crate alloc;
 use alloc::vec::Vec;
+use frame_support::traits::{fungible::Mutate, OnRuntimeUpgrade};
+use pallet_revive::evm::runtime::EthExtra;
 use quip_transaction_crypto::HybridTxSignature;
 use sp_runtime::{
     generic, impl_opaque_keys,
@@ -139,10 +142,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // 7-field layout backfilling both trailing fields. Read-only runtime API
     // shape change (`QBlock`/`QBlockWithNonce`). `submit_proof`'s argument
     // encoding changed, so `transaction_version` moves to 5.
-    spec_version: 112,
+    // Bumped for pallet-revive (idx 14), its Ethereum runtime APIs, EVM-aware
+    // unchecked-extrinsic wrapper, and `EthSetOrigin` transaction extension.
+    // The extension set and accepted extrinsic forms change, so
+    // `transaction_version` moves to 6. First shipped as 114 in the v0.2.2-rc
+    // tags (113 was only an intermediate branch value and never released).
+    // Bumped to 115 for the post-tag main build after the benchmark weight
+    // regeneration. No call encodings changed, so `transaction_version` stays
+    // at 6.
+    spec_version: 115,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 5,
+    transaction_version: 6,
     system_version: 1,
 };
 
@@ -237,19 +248,100 @@ pub type TxExtension = (
     frame_system::CheckWeight<Runtime>,
     pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
     frame_metadata_hash_extension::CheckMetadataHash<Runtime>,
+    pallet_revive::evm::tx_extension::SetOrigin<Runtime>,
     frame_system::WeightReclaim<Runtime>,
 );
 
+fn tx_extension(
+    era: generic::Era,
+    nonce: Nonce,
+    tip: Balance,
+    revive_origin: pallet_revive::evm::tx_extension::SetOrigin<Runtime>,
+) -> TxExtension {
+    (
+        frame_system::AuthorizeCall::<Runtime>::new(),
+        frame_system::CheckNonZeroSender::<Runtime>::new(),
+        frame_system::CheckSpecVersion::<Runtime>::new(),
+        frame_system::CheckTxVersion::<Runtime>::new(),
+        frame_system::CheckGenesis::<Runtime>::new(),
+        frame_system::CheckEra::<Runtime>::from(era),
+        frame_system::CheckNonce::<Runtime>::from(nonce),
+        frame_system::CheckWeight::<Runtime>::new(),
+        pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(tip),
+        frame_metadata_hash_extension::CheckMetadataHash::<Runtime>::new(false),
+        revive_origin,
+        frame_system::WeightReclaim::<Runtime>::new(),
+    )
+}
+
+/// Construct the extension tuple used by Quip's native signed transactions.
+/// Keeping this in the runtime prevents node-side transaction builders from
+/// drifting when the ordered extension set changes.
+pub fn native_tx_extension(era: generic::Era, nonce: Nonce, tip: Balance) -> TxExtension {
+    tx_extension(era, nonce, tip, Default::default())
+}
+
+/// Builds the normal transaction extensions used by an Ethereum transaction
+/// after Revive has recovered and validated its secp256k1 signer.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EthExtraImpl;
+
+impl EthExtra for EthExtraImpl {
+    type Config = Runtime;
+    type Extension = TxExtension;
+
+    fn get_eth_extension(nonce: u32, tip: Balance) -> Self::Extension {
+        tx_extension(
+            generic::Era::Immortal,
+            nonce,
+            tip,
+            pallet_revive::evm::tx_extension::SetOrigin::<Runtime>::new_from_eth_transaction(),
+        )
+    }
+}
+
 /// Unchecked extrinsic type as expected by this runtime.
 pub type UncheckedExtrinsic =
-    generic::UncheckedExtrinsic<Address, RuntimeCall, Signature, TxExtension>;
+    pallet_revive::evm::runtime::UncheckedExtrinsic<Address, Signature, EthExtraImpl>;
 
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 
 /// Runtime storage migrations, run on upgrade before every pallet's
 /// `on_runtime_upgrade`.
-pub type Migrations = (pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,);
+pub type Migrations = (
+    pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,
+    InitializeReviveAccount,
+);
+
+/// Reproduces Revive's genesis-time pallet-account initialization when the
+/// pallet is introduced to an already-running chain by runtime upgrade.
+///
+/// The account-existence guard makes this safe and idempotent on later
+/// upgrades and on chains whose genesis already included Revive.
+pub struct InitializeReviveAccount;
+
+impl OnRuntimeUpgrade for InitializeReviveAccount {
+    fn on_runtime_upgrade() -> frame_support::weights::Weight {
+        let account = Revive::account_id();
+        let db_weight = <Runtime as frame_system::Config>::DbWeight::get();
+
+        if System::account_exists(&account) {
+            return db_weight.reads(1);
+        }
+
+        let minimum_balance =
+            <Balances as frame_support::traits::fungible::Inspect<AccountId>>::minimum_balance();
+        assert!(
+            <Balances as Mutate<AccountId>>::mint_into(&account, minimum_balance).is_ok(),
+            "Revive pallet account must be initialized during runtime upgrade",
+        );
+
+        // Account-existence check plus balance-account and total-issuance
+        // reads; minting writes the latter two storage entries.
+        db_weight.reads_writes(3, 2)
+    }
+}
 
 /// Executive: handles dispatch to the various modules.
 pub type Executive = frame_executive::Executive<
@@ -275,24 +367,12 @@ mod tests {
         call: RuntimeCall,
         nonce: u32,
     ) -> UncheckedExtrinsic {
-        let tx_ext: TxExtension = (
-            frame_system::AuthorizeCall::<Runtime>::new(),
-            frame_system::CheckNonZeroSender::<Runtime>::new(),
-            frame_system::CheckSpecVersion::<Runtime>::new(),
-            frame_system::CheckTxVersion::<Runtime>::new(),
-            frame_system::CheckGenesis::<Runtime>::new(),
-            frame_system::CheckEra::<Runtime>::from(generic::Era::Immortal),
-            frame_system::CheckNonce::<Runtime>::from(nonce),
-            frame_system::CheckWeight::<Runtime>::new(),
-            pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(0),
-            frame_metadata_hash_extension::CheckMetadataHash::<Runtime>::new(false),
-            frame_system::WeightReclaim::<Runtime>::new(),
-        );
+        let tx_ext = native_tx_extension(generic::Era::Immortal, nonce, 0);
 
         let payload = SignedPayload::new(call.clone(), tx_ext.clone()).unwrap();
         let signature = payload.using_encoded(|encoded| HybridTxSignature::sign(sender, encoded));
 
-        UncheckedExtrinsic::new_signed(call, address, signature, tx_ext)
+        generic::UncheckedExtrinsic::new_signed(call, address, signature, tx_ext).into()
     }
 
     #[test]
@@ -363,6 +443,78 @@ mod tests {
             assert_eq!(checked.unwrap_err(), InvalidTransaction::BadProof.into());
         });
     }
+
+    #[test]
+    fn revive_configuration_matches_network_build() {
+        assert_eq!(
+            <Revive as frame_support::traits::PalletInfoAccess>::index(),
+            14
+        );
+
+        #[cfg(feature = "dev-chain-id")]
+        assert_eq!(
+            <configs::ReviveChainId as frame_support::traits::Get<u64>>::get(),
+            1_337
+        );
+        #[cfg(not(feature = "dev-chain-id"))]
+        assert_eq!(
+            <configs::ReviveChainId as frame_support::traits::Get<u64>>::get(),
+            20_033
+        );
+
+        assert_eq!(configs::ReviveDepositPerByte::get(), 10 * MICRO_UNIT);
+        assert_eq!(configs::ReviveDepositPerItem::get(), 200 * MILLI_UNIT);
+        assert_eq!(
+            configs::ReviveDepositPerChildTrieItem::get(),
+            2 * MILLI_UNIT
+        );
+        assert_eq!(
+            configs::ReviveCodeHashLockupDepositPercent::get(),
+            sp_runtime::Perbill::from_percent(30)
+        );
+        assert_eq!(
+            <<Runtime as pallet_revive::Config>::NativeToEthRatio as frame_support::traits::Get<
+                u32,
+            >>::get(),
+            10u32.pow(18 - 12)
+        );
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.execute_with(|| {
+            assert_eq!(
+                Revive::evm_base_fee(),
+                sp_core::U256::from(1_000_000_000u64)
+            );
+        });
+    }
+
+    #[test]
+    fn revive_upgrade_initialization_is_idempotent() {
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            let account = Revive::account_id();
+            assert!(System::account_exists(&account));
+
+            frame_system::Account::<Runtime>::remove(&account);
+            assert!(!System::account_exists(&account));
+
+            InitializeReviveAccount::on_runtime_upgrade();
+            assert!(System::account_exists(&account));
+            assert_eq!(
+                frame_system::Account::<Runtime>::get(&account).data.free,
+                EXISTENTIAL_DEPOSIT
+            );
+
+            InitializeReviveAccount::on_runtime_upgrade();
+            assert_eq!(
+                frame_system::Account::<Runtime>::get(&account).data.free,
+                EXISTENTIAL_DEPOSIT
+            );
+        });
+    }
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
@@ -425,4 +577,7 @@ mod runtime {
 
     #[runtime::pallet_index(13)]
     pub type MinerRegistry = pallet_miner_registry;
+
+    #[runtime::pallet_index(14)]
+    pub type Revive = pallet_revive;
 }

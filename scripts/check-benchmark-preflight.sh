@@ -150,7 +150,7 @@ esac
 check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
 
 echo "== Building debug node with runtime-benchmarks =="
-cargo build --features runtime-benchmarks -p quip-network-node
+cargo build --features runtime-benchmarks,dev-chain-id -p quip-network-node
 
 BIN="${CARGO_TARGET_DIR:-target}/debug/quip-network-node"
 OUTPUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/quip-benchmark-preflight.XXXXXX")"
@@ -233,5 +233,24 @@ for pallet in "${pallets[@]}"; do
   )
 done
 
+OVERHEAD_OUTPUT_DIR="$OUTPUT_DIR/overhead"
+mkdir -p "$OVERHEAD_OUTPUT_DIR"
+
+echo "== Checking runtime execution-overhead benchmark =="
+"$BIN" benchmark overhead \
+  --dev \
+  --wasm-execution compiled \
+  --warmup 1 \
+  --repeat 1 \
+  --max-ext-per-block 1 \
+  --weight-path "$OVERHEAD_OUTPUT_DIR"
+
+for output in block_weights.rs extrinsic_weights.rs; do
+  if [ ! -s "$OVERHEAD_OUTPUT_DIR/$output" ]; then
+    echo "ERROR: overhead benchmark did not generate $output" >&2
+    exit 1
+  fi
+done
+
 echo "== Production-runtime benchmark preflight passed =="
-echo "Executed $benchmark_count benchmarks without modifying tracked weights."
+echo "Executed $benchmark_count pallet benchmarks and the overhead smoke test without modifying tracked weights."

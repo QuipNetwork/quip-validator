@@ -1,7 +1,7 @@
 import type { Signer, SignerResult } from '@polkadot/api/types';
 import type { SignerPayloadRaw } from '@polkadot/types/types';
+import type { HexString } from '@polkadot/util/types';
 
-import { GenericExtrinsicSignatureV4 } from '@polkadot/types';
 import { hexToU8a, u8aToHex } from '@polkadot/util';
 import { blake2AsU8a, decodeAddress, encodeAddress } from '@polkadot/util-crypto';
 
@@ -23,7 +23,54 @@ interface SignFakeProto {
   signFake: (method: unknown, address: unknown, options: unknown) => unknown;
 }
 
-const DEFAULT_FAKE_SIGNATURE_LEN = 256;
+export const QUIP_ACCOUNT_ID_LEN = 32;
+export const QUIP_PUBLIC_KEY_LEN = 1344;
+export const QUIP_SIGNATURE_LEN = 2484;
+export const QUIP_ENVELOPE_LEN = QUIP_PUBLIC_KEY_LEN + QUIP_SIGNATURE_LEN;
+
+function nextResultId (): number {
+  nextSignerId = nextSignerId === Number.MAX_SAFE_INTEGER
+    ? 1
+    : nextSignerId + 1;
+
+  return nextSignerId;
+}
+
+function decodeHex (name: string, value: string, expectedLength?: number): Uint8Array {
+  if (!/^0x(?:[0-9a-f]{2})*$/iu.test(value)) {
+    throw new Error(`${name} must be a 0x-prefixed, even-length hex string`);
+  }
+
+  const decoded = hexToU8a(value);
+
+  if (expectedLength !== undefined && decoded.length !== expectedLength) {
+    throw new Error(`${name} must decode to ${expectedLength} bytes (got ${decoded.length})`);
+  }
+
+  return decoded;
+}
+
+function accountIdFromAddress (address: string): string {
+  if (!address || typeof address !== 'string') {
+    throw new Error('Quip signer address must be a non-empty SS58 address');
+  }
+
+  let decoded: Uint8Array;
+
+  try {
+    decoded = decodeAddress(address);
+  } catch (error) {
+    throw new Error(`Malformed Quip SS58 address: ${(error as Error).message}`);
+  }
+
+  if (decoded.length !== QUIP_ACCOUNT_ID_LEN) {
+    throw new Error(
+      `Quip SS58 address must decode to ${QUIP_ACCOUNT_ID_LEN} account-id bytes (got ${decoded.length})`
+    );
+  }
+
+  return u8aToHex(decoded).toLowerCase();
+}
 
 /**
  * Make polkadot-js fee estimation work with Quip's large hybrid signature.
@@ -41,31 +88,40 @@ const DEFAULT_FAKE_SIGNATURE_LEN = 256;
  * `ExtrinsicSignature` type, so fee estimation produces a correctly sized
  * extrinsic. It is idempotent and leaves the real signing path untouched.
  */
-export function patchExtrinsicSignFake (): void {
+export function patchExtrinsicSignFake (
+  signatureType: { prototype: unknown }
+): void {
   if (signFakePatched) {
     return;
   }
 
   signFakePatched = true;
 
-  const proto = GenericExtrinsicSignatureV4.prototype as unknown as SignFakeProto;
+  const proto = signatureType.prototype as SignFakeProto;
+  const upstreamSignFake = proto.signFake;
 
   proto.signFake = function (this: SignFakeProto, method, address, options) {
     if (!address) {
       throw new Error('Expected a valid address for signing');
     }
 
-    const payload = this.createPayload(method, options);
-
-    let fakeLength = DEFAULT_FAKE_SIGNATURE_LEN;
+    let fakeLength: number;
 
     try {
       fakeLength = this.registry.createType('ExtrinsicSignature').encodedLength;
     } catch {
-      // Fall back to the upstream 256-byte default if the registry cannot
-      // construct a default signature for any reason.
+      return upstreamSignFake.call(this, method, address, options);
     }
 
+    // This patch is installed by the opt-in Quip integration, but the Apps
+    // registry can later reconnect to another chain in the same page. Preserve
+    // upstream behavior unless metadata says the signature is exactly Quip's
+    // fixed hybrid envelope.
+    if (fakeLength !== QUIP_ENVELOPE_LEN) {
+      return upstreamSignFake.call(this, method, address, options);
+    }
+
+    const payload = this.createPayload(method, options);
     const fake = new Uint8Array(fakeLength).fill(1);
 
     return this._injectSignature(
@@ -160,7 +216,7 @@ const MAX_UNHASHED_PAYLOAD_LEN = 256;
  * hashed to match `SignedPayload::using_encoded`.
  */
 export function messageToSign (dataHex: string): string {
-  const data = hexToU8a(dataHex);
+  const data = decodeHex('raw signing payload', dataHex);
 
   return data.length > MAX_UNHASHED_PAYLOAD_LEN
     ? u8aToHex(blake2AsU8a(data, 256))
@@ -180,11 +236,16 @@ export class QuipSigner implements Signer {
   // has no raw-bytes field, so a `signPayload` implementation cannot sign
   // without rebuilding the payload from a registry.
   public async signRaw ({ address, data }: SignerPayloadRaw): Promise<SignerResult> {
+    const id = nextResultId();
+    accountIdFromAddress(address);
+    decodeHex('raw signing payload', data);
+
     const signature = await this.#provider.signPayload(address, messageToSign(data));
+    decodeHex('hybrid signature envelope', signature, QUIP_ENVELOPE_LEN);
 
     return {
-      id: ++nextSignerId,
-      signature
+      id,
+      signature: signature as HexString
     };
   }
 }
@@ -243,13 +304,19 @@ export class DevSeedProvider implements QuipSecretProvider {
     seedHex: string,
     genesisHash: string | null = null
   ): Promise<QuipSeedAccount> {
+    decodeHex('seed', seedHex, 32);
+
     const publicHex = await this.#wasm.publicFromSeed(seedHex);
+    decodeHex('H3 public key', publicHex, QUIP_PUBLIC_KEY_LEN);
+
     const accountIdHex = await this.#wasm.accountIdFromPublic(publicHex);
-    const address = encodeAddress(hexToU8a(accountIdHex), this.#ss58Format);
+    const accountId = decodeHex('Quip account id', accountIdHex, QUIP_ACCOUNT_ID_LEN);
+    const normalizedAccountId = u8aToHex(accountId).toLowerCase();
+    const address = encodeAddress(accountId, this.#ss58Format);
 
-    this.#seedsByAccountId.set(accountIdHex.toLowerCase(), seedHex);
+    this.#seedsByAccountId.set(normalizedAccountId, seedHex);
 
-    return { accountIdHex, address, genesisHash, name, publicHex };
+    return { accountIdHex: normalizedAccountId, address, genesisHash, name, publicHex };
   }
 
   /**
@@ -271,14 +338,37 @@ export class DevSeedProvider implements QuipSecretProvider {
   }
 
   public async signPayload(address: string, payloadHex: string): Promise<string> {
-    const accountIdHex = u8aToHex(decodeAddress(address)).toLowerCase();
+    const accountIdHex = accountIdFromAddress(address);
+    decodeHex('message to sign', payloadHex);
+
     const seedHex = this.#seedsByAccountId.get(accountIdHex);
 
     if (!seedHex) {
       throw new Error(`No Quip seed registered for ${address}`);
     }
 
-    return this.#wasm.signPayloadFromSeed(seedHex, payloadHex);
+    if (!this.#wasm.verifyEnvelope) {
+      throw new Error('verifyEnvelope is not available in the supplied Quip WASM module');
+    }
+
+    const envelopeHex = await this.#wasm.signPayloadFromSeed(seedHex, payloadHex);
+    decodeHex('hybrid signature envelope', envelopeHex, QUIP_ENVELOPE_LEN);
+
+    const isValid = await this.#wasm.verifyEnvelope(payloadHex, envelopeHex, accountIdHex);
+
+    if (!isValid) {
+      throw new Error(`Quip WASM returned an invalid signature envelope for ${address}`);
+    }
+
+    return envelopeHex;
+  }
+
+  public hasAccount(address: string): boolean {
+    try {
+      return this.#seedsByAccountId.has(accountIdFromAddress(address));
+    } catch {
+      return false;
+    }
   }
 }
 

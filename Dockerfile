@@ -39,7 +39,15 @@ COPY . .
 ARG SUBSTRATE_CLI_GIT_COMMIT_HASH=""
 ENV SUBSTRATE_CLI_GIT_COMMIT_HASH=${SUBSTRATE_CLI_GIT_COMMIT_HASH}
 
-RUN cargo build --release -p quip-network-node \
+# Local Compose stacks set this to `dev-chain-id`; release images leave it
+# empty and retain the public-testnet Chain ID. Keep the feature choice in the
+# image build because pallet-revive's EIP-155 ChainId is a runtime constant.
+ARG NODE_BUILD_FEATURES=""
+RUN if [ -n "$NODE_BUILD_FEATURES" ]; then \
+        cargo build --release -p quip-network-node --features "$NODE_BUILD_FEATURES"; \
+    else \
+        cargo build --release -p quip-network-node; \
+    fi \
  && cp target/release/quip-network-node /usr/local/bin/quip-network-node
 
 FROM debian:${DEBIAN_VERSION}-slim AS runtime

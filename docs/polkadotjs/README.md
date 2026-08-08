@@ -27,6 +27,19 @@ Browser-side transaction signing now has an initial WASM/signature wrapper in
 this repository and is tracked in
 [`wasm-signing-plan.md`](./wasm-signing-plan.md).
 
+## Regenerating the signing fixture
+
+`fixtures/hybrid-signing.json` embeds drift-prone runtime values (spec version,
+transaction version, extension set), so `cargo test -p quip-protocol-runtime
+--test signing_fixture` fails whenever those change. Regenerate it with:
+
+```bash
+cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture -- --write
+```
+
+Then re-run the signing-fixture tests and `npm test --prefix js/quip-signer`,
+which both consume the fixture.
+
 ## Metadata Compatibility
 
 Quip exposes the hybrid BABE and GRANDPA types through metadata-safe wrapper

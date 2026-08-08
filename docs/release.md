@@ -6,7 +6,9 @@
 - [ ] `cargo check --workspace --all-targets` clean
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean
 - [ ] `cargo test --workspace` passes
-- [ ] Image builds locally: `docker build -t quip-network-node:rc .`
+- [ ] Node image builds locally: `docker build -t quip-network-node:rc .`
+- [ ] Sidecar Dockerfile passes its static build check:
+      `docker build --check -f docker/revive-eth-rpc.Dockerfile .`
 - [ ] `./target/release/quip-network-node --version` reports the target version
 - [ ] `./target/release/quip-network-node export-chain-spec --chain quip-testnet --raw > /tmp/quip-testnet.raw.json` succeeds
 - [ ] Companion `nodes.quip.network` MR with the matching
@@ -24,7 +26,9 @@ git push origin v<MAJOR>.<MINOR>.<PATCH>
 
 The GitLab CI pipeline at `.gitlab-ci.yml` picks up the tag via the
 `$CI_COMMIT_TAG` rule and publishes
-`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`.
+`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`
+and
+`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH>`.
 
 ### Version-tag format (shared standard)
 
@@ -34,8 +38,8 @@ no-hyphen form `v0.2.1rc18`. This is the cross-repo standard so `quip-node-manag
 (and any SemVer consumer) can order release candidates correctly; see
 `quip-protocol/docs/VERSIONING.md` for the full rationale.
 
-Container images publish on release tags **only** — branch pushes never build
-or push images. The floating tag follows the branch the tag was cut from,
+Both container images publish on release tags **only** — branch pushes never
+build or push images. Their floating tags follow the branch the tag was cut from,
 resolved by the `resolve-floating-tag` CI job via commit ancestry (tag
 pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 `:v0.2`, a tag on `main` publishes `:<tag>` + `:latest`, both plus
@@ -45,10 +49,19 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 ## Post-tag verification
 
 - [ ] CI pipeline on the tag completes green (`glab ci status --live`)
-- [ ] Image present:
+- [ ] Both images are present:
 
   ```bash
   docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>
+  docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH>
+  ```
+
+- [ ] Sidecar image starts and reports its CLI help:
+
+  ```bash
+  docker run --rm \
+    registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH> \
+    --help
   ```
 
 - [ ] Smoke test against the published spec:

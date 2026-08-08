@@ -4,28 +4,35 @@ set -euo pipefail
 # Usage:
 #   scripts/run-benchmarks.sh
 #
-# Regenerates pallet weight files (pallets/<dir>/src/weights.rs) by running
-# the FRAME benchmarks. Meant to run on the benchmark reference machine (the
-# CI `benchmark-weights` job), but runs anywhere for a local pre-flight —
-# just don't commit weights measured off-reference hardware.
+# Regenerates pallet weight files and the runtime's block/extrinsic execution
+# overhead by running the FRAME benchmarks. Meant to run on the benchmark
+# reference machine (the CI `benchmark-weights` job), but runs anywhere for a
+# local pre-flight — just don't commit weights measured off-reference hardware.
 #
 # What it does:
-#   1. Builds the node with `--features runtime-benchmarks`.
+#   1. Builds the node with `runtime-benchmarks` and the local-chain EIP-155
+#      configuration required by the benchmark CLI's default chain preset.
 #   2. Derives the pallet list from `benchmark pallet --list` — the runtime's
 #      define_benchmarks! registry — so a newly registered pallet is picked up
 #      with no change here.
 #   3. Regenerates weights for every listed pallet that has a matching in-repo
 #      crate directory (pallet_foo_bar -> pallets/foo-bar). Pallets without
 #      one (frame_system, pallet_balances, ...) use upstream SubstrateWeight
-#      and are skipped until runtime/src/weights/ wiring exists for them.
+#      and are skipped.
+#   4. Measures the runtime-specific empty-block and System::remark overhead
+#      into runtime/src/weights/ using compiled Wasm.
 #
 # Environment overrides:
 #   STEPS / REPEAT   benchmark resolution (default 50 / 20, the settings the
 #                    existing generated weights were produced with)
+#   OVERHEAD_WARMUP / OVERHEAD_REPEAT
+#                    execution-overhead resolution (default 10 / 100)
 #   SKIP_PALLETS     optional space-separated pallets to skip (default empty)
 
 STEPS="${STEPS:-50}"
 REPEAT="${REPEAT:-20}"
+OVERHEAD_WARMUP="${OVERHEAD_WARMUP:-10}"
+OVERHEAD_REPEAT="${OVERHEAD_REPEAT:-100}"
 SKIP_PALLETS="${SKIP_PALLETS:-}"
 
 resolve_weight_output() {
@@ -79,7 +86,7 @@ if [ "$#" -ne 0 ]; then
 fi
 
 echo "== Building node with runtime-benchmarks (this is the slow part) =="
-cargo build --release --features runtime-benchmarks -p quip-network-node
+cargo build --release --features runtime-benchmarks,dev-chain-id -p quip-network-node
 
 BIN="${CARGO_TARGET_DIR:-target}/release/quip-network-node"
 
@@ -133,5 +140,20 @@ for pallet in "${pallets[@]}"; do
     --output "$output"
 done
 
+echo "== Benchmarking runtime execution overhead -> runtime/src/weights =="
+"$BIN" benchmark overhead \
+  --dev \
+  --wasm-execution compiled \
+  --warmup "$OVERHEAD_WARMUP" \
+  --repeat "$OVERHEAD_REPEAT" \
+  --weight-path runtime/src/weights
+
 echo "== Done. Regenerated files: =="
-git diff --stat -- 'pallets/*/src/weights.rs' 'pallets/*/src/benchmark_weights.rs' || true
+git diff --stat -- \
+  'pallets/*/src/weights.rs' \
+  'pallets/*/src/benchmark_weights.rs' \
+  'runtime/src/weights/block_weights.rs' \
+  'runtime/src/weights/extrinsic_weights.rs' || true
+
+echo "== Running 'cargo fmt'"
+cargo fmt
