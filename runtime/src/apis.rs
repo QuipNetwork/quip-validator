@@ -88,7 +88,11 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
 
     impl sp_api::Metadata<Block> for Runtime {
         fn metadata() -> OpaqueMetadata {
-            OpaqueMetadata::new(Runtime::metadata().into())
+            // Publish V16 (not the V14 inherent default) so legacy
+            // `state_getMetadata` consumers get the self-describing
+            // extrinsic section. The versioned API below keeps serving
+            // 14/15/16 unchanged.
+            Runtime::metadata_at_version(16).expect("Metadata V16 is supported")
         }
 
         fn metadata_at_version(version: u32) -> Option<OpaqueMetadata> {

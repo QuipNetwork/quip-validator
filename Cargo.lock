@@ -9143,6 +9143,7 @@ version = "0.2.1"
 dependencies = [
  "frame-benchmarking",
  "frame-executive",
+ "frame-metadata",
  "frame-metadata-hash-extension",
  "frame-support",
  "frame-system",
@@ -9170,6 +9171,8 @@ dependencies = [
  "quip-crypto-primitives",
  "quip-transaction-crypto",
  "quip-transaction-crypto-core",
+ "sc-executor",
+ "sc-executor-common",
  "scale-info",
  "serde_json",
  "sp-api",
@@ -9189,6 +9192,7 @@ dependencies = [
  "sp-version",
  "sp-weights",
  "substrate-wasm-builder",
+ "subxt-core",
 ]
 
 [[package]]

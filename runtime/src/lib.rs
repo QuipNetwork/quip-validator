@@ -150,7 +150,12 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 115 for the post-tag main build after the benchmark weight
     // regeneration. No call encodings changed, so `transaction_version` stays
     // at 6.
-    spec_version: 115,
+    // Bumped to 116 to publish Metadata V16 from the legacy metadata runtime
+    // API (`state_getMetadata`); previously it returned the V14 inherent
+    // default. The versioned metadata API keeps serving 14/15/16, and
+    // consensus and the extrinsic wire format are unchanged, so
+    // `transaction_version` stays at 6.
+    spec_version: 116,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 6,
