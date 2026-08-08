@@ -31,9 +31,11 @@ cargo check
 cargo clippy --all-targets
 
 # Build benchmarks
-cargo build --release --features runtime-benchmarks
+cargo build --release --features runtime-benchmarks,dev-chain-id
 
-# Run the dev chain (after release build)
+# Run the dev chain. Local presets (dev/local/local3) are rejected by plain
+# builds — the binary must be built with the dev-chain-id feature first.
+cargo build --release --features dev-chain-id
 ./target/release/quip-network-node --dev
 
 # Purge dev chain state

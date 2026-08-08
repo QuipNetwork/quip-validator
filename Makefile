@@ -6,6 +6,8 @@ WASM_SIGNER_CRATE := crates/transaction-crypto-wasm
 WASM_SIGNER_PKG := js/quip-transaction-crypto-wasm
 WASM_SIGNER_STAGE := target/wasm-signer-pkg
 WASM_SIGNER_NAME := quip_transaction_crypto_wasm
+WASM_PACK ?= wasm-pack
+WASM_PACK_VERSION := 0.12.1
 
 PY_SIGNER_CRATE := crates/transaction-crypto-py
 PY_SIGNER_VENV := target/py-signer-venv
@@ -32,7 +34,10 @@ quantum-validation-fixtures:
 # and git-ignored; this regenerates them in place. Staged under target/ first so
 # the curated package.json in the package dir is preserved.
 wasm-signer:
-	wasm-pack build $(WASM_SIGNER_CRATE) --target web --release \
+	@test "$$($(WASM_PACK) --version)" = "wasm-pack $(WASM_PACK_VERSION)" || { \
+		echo "wasm-pack $(WASM_PACK_VERSION) is required" >&2; exit 1; \
+	}
+	$(WASM_PACK) build $(WASM_SIGNER_CRATE) --target web --release \
 		--out-dir $(abspath $(WASM_SIGNER_STAGE)) --out-name $(WASM_SIGNER_NAME)
 	cp $(WASM_SIGNER_STAGE)/$(WASM_SIGNER_NAME).js \
 		$(WASM_SIGNER_STAGE)/$(WASM_SIGNER_NAME).d.ts \
@@ -87,5 +92,6 @@ builder-image:
 		--push \
 		.gitlab/
 
-.PHONY: local-3-node quantum-validation-venv quantum-validation-fixtures wasm-signer \
-	py-signer py-signer-develop py-signer-test builder-image
+.PHONY: local-3-node quantum-validation-venv \
+	quantum-validation-fixtures wasm-signer py-signer py-signer-develop \
+	py-signer-test builder-image

@@ -126,21 +126,10 @@ pub fn create_benchmark_extrinsic(
         .checked_next_power_of_two()
         .map(|c| c / 2)
         .unwrap_or(2) as u64;
-    let tx_ext: runtime::TxExtension = (
-        frame_system::AuthorizeCall::<runtime::Runtime>::new(),
-        frame_system::CheckNonZeroSender::<runtime::Runtime>::new(),
-        frame_system::CheckSpecVersion::<runtime::Runtime>::new(),
-        frame_system::CheckTxVersion::<runtime::Runtime>::new(),
-        frame_system::CheckGenesis::<runtime::Runtime>::new(),
-        frame_system::CheckEra::<runtime::Runtime>::from(sp_runtime::generic::Era::mortal(
-            period,
-            best_block.saturated_into(),
-        )),
-        frame_system::CheckNonce::<runtime::Runtime>::from(nonce),
-        frame_system::CheckWeight::<runtime::Runtime>::new(),
-        pallet_transaction_payment::ChargeTransactionPayment::<runtime::Runtime>::from(0),
-        frame_metadata_hash_extension::CheckMetadataHash::<runtime::Runtime>::new(false),
-        frame_system::WeightReclaim::<runtime::Runtime>::new(),
+    let tx_ext = runtime::native_tx_extension(
+        sp_runtime::generic::Era::mortal(period, best_block.saturated_into()),
+        nonce,
+        0,
     );
 
     let raw_payload = runtime::SignedPayload::from_raw(
@@ -158,16 +147,18 @@ pub fn create_benchmark_extrinsic(
             (),
             None,
             (),
+            (),
         ),
     );
     let signature = raw_payload.using_encoded(|e| HybridTxSignature::sign(&sender, e));
 
-    runtime::UncheckedExtrinsic::new_signed(
+    sp_runtime::generic::UncheckedExtrinsic::new_signed(
         call,
         account_id_from_public(&sender.public()).into(),
         signature,
         tx_ext,
     )
+    .into()
 }
 
 /// Generates inherent data for the `benchmark overhead` command.

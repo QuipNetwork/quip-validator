@@ -43,7 +43,7 @@ esac
 
 if [ ! -x "$BIN" ]; then
   echo "ERROR: benchmark node not found at $BIN" >&2
-  echo "Build it with: cargo build --release --features runtime-benchmarks -p quip-network-node" >&2
+  echo "Build it with: cargo build --release --features runtime-benchmarks,dev-chain-id -p quip-network-node" >&2
   exit 1
 fi
 

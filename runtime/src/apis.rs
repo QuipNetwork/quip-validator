@@ -24,7 +24,7 @@
 // For more information, please refer to <http://unlicense.org>
 
 // External crates imports
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use frame_support::{
     genesis_builder_helper::{build_state, get_preset},
     weights::Weight,
@@ -66,7 +66,12 @@ type QuantumMempoolMinerTypes = frame_support::BoundedVec<
     frame_support::traits::ConstU32<8>,
 >;
 
-impl_runtime_apis! {
+pallet_revive::impl_runtime_apis_plus_revive_traits!(
+    Runtime,
+    Revive,
+    Executive,
+    super::EthExtraImpl,
+
     impl sp_api::Core<Block> for Runtime {
         fn version() -> RuntimeVersion {
             VERSION
@@ -481,4 +486,4 @@ impl_runtime_apis! {
             crate::genesis_config_presets::preset_names()
         }
     }
-}
+);

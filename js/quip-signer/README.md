@@ -69,3 +69,45 @@ bytes, otherwise sign verbatim), signs with H3, and returns:
 
 `signature` is the SCALE-encoded `HybridTxSignature { public, signature }`
 envelope expected by the Quip runtime. It is not a `MultiSignature` variant.
+
+The wrapper validates every seed, account, payload, public key, and returned
+envelope at its boundary. If the WASM module does not expose
+`verifyEnvelope`, or verification fails, signing stops before the envelope is
+returned to polkadot-js.
+
+Quip's fixed-size signature also needs the fee-estimation compatibility patch.
+Pass the `GenericExtrinsicSignatureV4` class from the same polkadot-js
+installation as the consuming application:
+
+```ts
+import { GenericExtrinsicSignatureV4 } from '@polkadot/types';
+import { patchExtrinsicSignFake } from '@quip-network/quip-signer';
+
+patchExtrinsicSignFake(GenericExtrinsicSignatureV4);
+```
+
+The patch only changes `signFake` when the active registry declares Quip's
+3,828-byte `ExtrinsicSignature`; every other registry delegates to polkadot-js's
+original implementation.
+
+## Validation
+
+From the protocol repository:
+
+```sh
+make wasm-signer
+npm ci --prefix js/quip-signer
+npm run typecheck --prefix js/quip-signer
+npm test --prefix js/quip-signer
+npm run build --prefix js/quip-signer
+
+# With a dev node already listening on ws://127.0.0.1:9944
+# (build it with: cargo build -p quip-network-node --features dev-chain-id)
+npm run test:integration --prefix js/quip-signer
+```
+
+The unit suite consumes the Rust-generated fixture and loads the actual WASM
+artifact. The local-node integration estimates fees, submits short and
+over-256-byte payloads, exercises two accounts and mnemonic import, and confirms
+that tampered envelopes, mismatched accounts, stale nonces, and unknown local
+accounts are rejected.

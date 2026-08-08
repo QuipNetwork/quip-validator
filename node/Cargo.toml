@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 clap = { features = ["derive"], workspace = true }
+frame-benchmarking = { optional = true, workspace = true }
 frame-benchmarking-cli.default-features = true
 frame-benchmarking-cli.workspace = true
 frame-metadata-hash-extension.default-features = true
@@ -103,8 +104,14 @@ substrate-build-script-utils.workspace = true
 [features]
 default = ["std"]
 std = ["quip-protocol-runtime/std"]
+dev-chain-id = ["quip-protocol-runtime/dev-chain-id"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
+  # The benchmark CLI loads the local chain preset by default, which must use
+  # the development EIP-155 chain ID embedded in the runtime artifact.
+  "dev-chain-id",
+  "dep:frame-benchmarking",
+  "frame-benchmarking/runtime-benchmarks",
   "frame-benchmarking-cli/runtime-benchmarks",
   "frame-system/runtime-benchmarks",
   "pallet-transaction-payment/runtime-benchmarks",
