@@ -1,0 +1,122 @@
+# Local EVM development explorer stack.
+#
+# A NATIVELY running `quip-network-node --dev` (started by
+# scripts/start-evm-explorer.sh for fast cargo rebuilds) plus, in Docker: the
+# pinned pallet-revive Ethereum JSON-RPC sidecar and a Blockscout instance
+# (Postgres, backend, frontend) indexing from the sidecar.
+#
+# Containers reach the host node via host.docker.internal, mapped to the host
+# gateway below. The chain reports EIP-155 Chain ID 1337 (0x539) and requires
+# a node binary built with the dev-chain-id feature.
+#
+# The sidecar image is the CI-published prebuilt — release tags only, no
+# floating :latest for rc releases, so QUIP_EVM_SIDECAR_TAG must be bumped
+# when the pinned SDK revision moves on main. No `build:` fallback is kept on
+# purpose: with both `image:` and `build:` compose builds locally instead of
+# pulling.
+#
+# Blockscout uses the "anvil" JSON-RPC variant because the sidecar serves
+# only eth_* methods (no debug_traceTransaction / trace_*). Internal and
+# pending transaction fetchers are disabled accordingly. The sidecar serves
+# HTTP and WS on the same port.
+name: quip-evm-dev
+
+services:
+  eth-rpc:
+    image: registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:${QUIP_EVM_SIDECAR_TAG:-v0.2.2-rc5}
+    container_name: quip-eth-rpc
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - "${QUIP_ETH_RPC_PORT:-8545}:8545"
+    command:
+      - --dev
+      - --node-rpc-url=ws://host.docker.internal:${QUIP_NODE_RPC_PORT:-9944}
+      # No --eth-pruning: the default `archive` mode retains the full receipt
+      # history that Blockscout needs to backfill from genesis. It requires an
+      # archive node, which start-evm-explorer.sh provides.
+      - --rpc-port=8545
+      - --unsafe-rpc-external
+      - --rpc-cors=all
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          --header 'content-type: application/json'
+          --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+          http://127.0.0.1:8545 | grep --quiet '"result":"0x539"'
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+  blockscout-db:
+    image: postgres:17-alpine
+    container_name: quip-blockscout-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: blockscout
+      POSTGRES_DB: blockscout
+    volumes:
+      - blockscout-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d blockscout]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  blockscout:
+    image: ghcr.io/blockscout/blockscout:9.0.2
+    container_name: quip-blockscout
+    restart: unless-stopped
+    depends_on:
+      eth-rpc:
+        condition: service_healthy
+      blockscout-db:
+        condition: service_healthy
+    # The image's default CMD is a bare /bin/sh; Blockscout must be started
+    # explicitly, running DB migrations first.
+    command: sh -c "bin/blockscout eval 'Elixir.Explorer.ReleaseTasks.create_and_migrate()' && bin/blockscout start"
+    environment:
+      ETHEREUM_JSONRPC_VARIANT: anvil
+      ETHEREUM_JSONRPC_HTTP_URL: http://eth-rpc:8545
+      ETHEREUM_JSONRPC_WS_URL: ws://eth-rpc:8545
+      CHAIN_ID: "1337"
+      DATABASE_URL: postgresql://postgres:blockscout@blockscout-db:5432/blockscout?ssl=false
+      # Static development value only — never reuse for a public deployment.
+      SECRET_KEY_BASE: 71b4f0a06a6c5d1f2a4f9e3c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c
+      INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "true"
+      INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
+      PORT: "4000"
+    ports:
+      - "${QUIP_BLOCKSCOUT_API_PORT:-4000}:4000"
+
+  blockscout-frontend:
+    image: ghcr.io/blockscout/frontend:v2.3.5
+    container_name: quip-blockscout-frontend
+    restart: unless-stopped
+    depends_on:
+      blockscout:
+        condition: service_started
+    environment:
+      NEXT_PUBLIC_API_PROTOCOL: http
+      NEXT_PUBLIC_API_HOST: localhost
+      NEXT_PUBLIC_API_PORT: "${QUIP_BLOCKSCOUT_API_PORT:-4000}"
+      NEXT_PUBLIC_APP_PROTOCOL: http
+      NEXT_PUBLIC_APP_HOST: localhost
+      NEXT_PUBLIC_APP_PORT: "${QUIP_BLOCKSCOUT_PORT:-3000}"
+      NEXT_PUBLIC_NETWORK_NAME: Quip Dev
+      NEXT_PUBLIC_NETWORK_ID: "1337"
+      NEXT_PUBLIC_NETWORK_CURRENCY_NAME: Aglais
+      NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL: AGLS
+      # 12 native decimals map to 18 EVM decimals via NativeToEthRatio.
+      NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS: "18"
+    ports:
+      - "${QUIP_BLOCKSCOUT_PORT:-3000}:3000"
+
+volumes:
+  blockscout-db-data:

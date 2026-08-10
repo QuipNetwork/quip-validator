@@ -311,6 +311,39 @@ docker compose down -v              # stop and wipe state
 Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 `ws://localhost:9945` (node2), or `ws://localhost:9946` (node3).
 
+#### EVM dev node with Blockscout
+
+`make evm-explorer` starts the local EVM development stack: a single `--dev`
+node built with the `dev-chain-id` feature running natively (so cargo rebuilds
+stay fast), the prebuilt pallet-revive Ethereum JSON-RPC sidecar, and a
+Blockscout instance (Postgres + backend + frontend) in Docker, indexing from
+the sidecar:
+
+```sh
+make evm-explorer
+```
+
+Endpoints once the stack reports ready:
+
+- Substrate RPC: `ws://localhost:9944`
+- Ethereum JSON-RPC: `http://localhost:8545` (EIP-155 Chain ID `1337`, `0x539`)
+- Blockscout UI: `http://localhost:3000` (API on `http://localhost:4000`)
+
+Stop the attached stack with Ctrl-C. The node's chain state lives under
+`${TMPDIR:-/tmp}/quip-evm-dev`; Blockscout's Postgres volume persists across
+runs. To remove the containers and the explorer database:
+
+```sh
+make evm-explorer-down
+```
+
+The sidecar image is the CI-published
+`registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar`,
+pinned to a release tag via `QUIP_EVM_SIDECAR_TAG` (default in
+`docker-compose.evm-explorer.yml`). Ports can be overridden with
+`QUIP_NODE_RPC_PORT`, `QUIP_ETH_RPC_PORT`, `QUIP_BLOCKSCOUT_PORT`, and
+`QUIP_BLOCKSCOUT_API_PORT`.
+
 ## Public testnet
 
 `quip-testnet` is the public testnet ("AGLS" tokens, 12 decimals). The

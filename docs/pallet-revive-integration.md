@@ -352,3 +352,4 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 | 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test. |
 | 2026-07-31 | Publish the pinned SDK sidecar as the release-tag-only, multi-architecture `quip-network-evm-sidecar` image. |
 | 2026-08-07 | Remove the in-repository Revive local orchestration and funding command; retain the standalone sidecar image and CI release publishing. |
+| 2026-08-10 | Reintroduce local EVM orchestration (`make evm-explorer`): native `--dev` node, prebuilt sidecar image, and Blockscout replacing the removed Subscan stack. No funding command this time. |

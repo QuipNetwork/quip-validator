@@ -23,6 +23,16 @@ polkadot-sdk:
 local-3-node:
 	./scripts/start-local3.sh
 
+# Start the local EVM development stack: a native --dev node (Chain ID 1337),
+# the prebuilt pallet-revive Ethereum RPC sidecar, and Blockscout in Docker.
+# Runs attached so Ctrl-C stops the stack and leaves logs visible.
+evm-explorer:
+	./scripts/start-evm-explorer.sh
+
+# Remove the stack's containers and Blockscout's Postgres volume.
+evm-explorer-down:
+	docker compose -f docker-compose.evm-explorer.yml down --volumes --remove-orphans
+
 quantum-validation-venv:
 	python3 -m venv $(QUIP_PROTOCOL_VENV)
 	$(QUIP_PROTOCOL_PYTHON) -m pip install -e $(QUIP_PROTOCOL_ROOT)
@@ -92,6 +102,6 @@ builder-image:
 		--push \
 		.gitlab/
 
-.PHONY: local-3-node quantum-validation-venv \
+.PHONY: local-3-node evm-explorer evm-explorer-down quantum-validation-venv \
 	quantum-validation-fixtures wasm-signer py-signer py-signer-develop \
 	py-signer-test builder-image

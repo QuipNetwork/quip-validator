@@ -50,8 +50,8 @@
 # CI resolves the digest, not the tag, so a re-push alone changes nothing.
 #
 # Runtime images:
-#   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
-#   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:<tag>
+#   registry.gitlab.com/quip.network/quip-validator/quip-network-node:<tag>
+#   registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:<tag>
 
 stages:
   - test
