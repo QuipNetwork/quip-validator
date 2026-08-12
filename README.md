@@ -344,6 +344,47 @@ pinned to a release tag via `QUIP_EVM_SIDECAR_TAG` (default in
 `QUIP_NODE_RPC_PORT`, `QUIP_ETH_RPC_PORT`, `QUIP_BLOCKSCOUT_PORT`, and
 `QUIP_BLOCKSCOUT_API_PORT`.
 
+#### Substrate dev node with Subscan (spike)
+
+`make subscan-explorer` starts an alternative explorer stack that indexes the
+chain's Substrate RPC directly instead of going through the Ethereum sidecar:
+a single `--dev` node built with the `dev-chain-id` feature running natively,
+plus subscan-essentials (MySQL + Redis + API + subscribe + worker) and its
+React UI in Docker:
+
+```sh
+make subscan-explorer
+```
+
+Endpoints once the stack reports ready:
+
+- Substrate RPC: `ws://localhost:9944`
+- Subscan UI: `http://localhost:3100` (API on `http://localhost:4399`)
+
+The stack is independent from the Blockscout one — no eth-rpc sidecar, and it
+uses different ports, so the two do not have to run at the same time (both
+default to node ws port `9944`; override `QUIP_NODE_RPC_PORT` if you ever run
+them together). Upstream publishes no subscan-essentials images, so the
+backend and UI are built locally from pinned git commits (`SUBSCAN_REF` /
+`SUBSCAN_UI_REF` in `docker/subscan-essentials.Dockerfile` and
+`docker/subscan-ui.Dockerfile`). The backend image applies two small build-time
+patches: it fetches metadata v15 via `Metadata_metadata_at_version` because
+scale.go cannot decode our chain's v16 metadata yet
+(`docker/subscan-essentials/metadata_at_version.go`), and it drops the EVM
+plugin, which would otherwise auto-enable on pallet-revive and require an
+Ethereum RPC endpoint this stack does not have.
+
+Stop the attached stack with Ctrl-C. The node's chain state lives under
+`${TMPDIR:-/tmp}/quip-subscan-dev`; the subscan MySQL/Redis volumes persist
+across runs. To remove the containers and the explorer databases:
+
+```sh
+make subscan-explorer-down
+```
+
+Ports can be overridden with `QUIP_NODE_RPC_PORT`, `QUIP_SUBSCAN_API_PORT`,
+and `QUIP_SUBSCAN_UI_PORT`.
+
 ## Public testnet
 
 `quip-testnet` is the public testnet ("AGLS" tokens, 12 decimals). The

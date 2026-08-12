@@ -1,0 +1,133 @@
+# Local Substrate development explorer stack (Subscan spike).
+#
+# A NATIVELY running `quip-network-node --dev` (started by
+# scripts/start-subscan-explorer.sh for fast cargo rebuilds) plus, in Docker,
+# subscan-essentials (MySQL, Redis, API server, subscribe and worker
+# processes) indexing directly from the node's Substrate websocket RPC, and
+# the subscan-essentials React UI.
+#
+# This stack is independent from the Blockscout EVM explorer
+# (docker-compose.evm-explorer.yml): it needs no eth-rpc sidecar and uses
+# different ports (UI 3100 vs 3000, API 4399 vs 4000), so the two do not have
+# to run at the same time. Both do use the node's default ws port 9944 by
+# default — override QUIP_NODE_RPC_PORT if you ever run them together.
+#
+# Containers reach the host node via host.docker.internal, mapped to the host
+# gateway below. The node binary must be built with the dev-chain-id feature
+# (--dev presets are rejected by plain builds).
+#
+# Upstream publishes no Docker images for subscan-essentials or the UI, so
+# both are built from pinned git commits (SUBSCAN_REF / SUBSCAN_UI_REF build
+# args in docker/subscan-essentials.Dockerfile and
+# docker/subscan-ui.Dockerfile — bump them there when the pins move).
+name: quip-subscan-dev
+
+x-backend-env: &backend-env
+  DB_DRIVER: mysql
+  MYSQL_HOST: subscan-mysql
+  MYSQL_PORT: "3306"
+  MYSQL_USER: root
+  MYSQL_PASS: subscan
+  MYSQL_DB: subscan
+  REDIS_HOST: subscan-redis
+  REDIS_PORT: "6379"
+  CHAIN_WS_ENDPOINT: ws://host.docker.internal:${QUIP_NODE_RPC_PORT:-9944}
+  # No configs/source/quip.json exists upstream; a missing file is ignored
+  # and types are decoded from the chain's own metadata.
+  NETWORK_NODE: quip
+  # SS58 prefix 42 (runtime/src/configs/mod.rs) and 12 native decimals (AGLS).
+  SUBSTRATE_ADDRESS_TYPE: "42"
+  SUBSTRATE_ACCURACY: "12"
+
+services:
+  subscan-mysql:
+    image: mysql:8.4
+    container_name: quip-subscan-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: subscan
+      # subscan-essentials expects this database to already exist.
+      MYSQL_DATABASE: subscan
+    volumes:
+      - subscan-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: [CMD-SHELL, mysqladmin ping -h 127.0.0.1 -psubscan --silent]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  subscan-redis:
+    image: redis:7-alpine
+    container_name: quip-subscan-redis
+    restart: unless-stopped
+    volumes:
+      - subscan-redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  subscan-api:
+    build:
+      context: .
+      dockerfile: docker/subscan-essentials.Dockerfile
+    image: quip/subscan-essentials:spike
+    container_name: quip-subscan-api
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      subscan-mysql:
+        condition: service_healthy
+      subscan-redis:
+        condition: service_healthy
+    environment: *backend-env
+    ports:
+      - "${QUIP_SUBSCAN_API_PORT:-4399}:4399"
+
+  subscan-subscribe:
+    image: quip/subscan-essentials:spike
+    container_name: quip-subscan-subscribe
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      subscan-api:
+        condition: service_started
+    environment: *backend-env
+    command: ["start", "subscribe"]
+
+  subscan-worker:
+    image: quip/subscan-essentials:spike
+    container_name: quip-subscan-worker
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      subscan-api:
+        condition: service_started
+    environment: *backend-env
+    command: ["start", "worker"]
+
+  subscan-ui:
+    build:
+      context: .
+      dockerfile: docker/subscan-ui.Dockerfile
+    container_name: quip-subscan-ui
+    restart: unless-stopped
+    depends_on:
+      subscan-api:
+        condition: service_started
+    environment:
+      # Browser-facing API address; next-runtime-env picks this up at
+      # container start, no rebuild needed when the port changes.
+      NEXT_PUBLIC_API_HOST: http://localhost:${QUIP_SUBSCAN_API_PORT:-4399}
+    ports:
+      - "${QUIP_SUBSCAN_UI_PORT:-3100}:3000"
+
+volumes:
+  subscan-mysql-data:
+  subscan-redis-data:

@@ -33,6 +33,17 @@ evm-explorer:
 evm-explorer-down:
 	docker compose -f docker-compose.evm-explorer.yml down --volumes --remove-orphans
 
+# Start the local Substrate explorer stack (Subscan spike): a native --dev
+# node plus subscan-essentials (MySQL, Redis, API, subscribe, worker) and its
+# React UI in Docker. Independent from the Blockscout stack — no eth-rpc
+# sidecar, different ports. Runs attached so Ctrl-C stops the stack.
+subscan-explorer:
+	./scripts/start-subscan-explorer.sh
+
+# Remove the stack's containers and the subscan MySQL/Redis volumes.
+subscan-explorer-down:
+	docker compose -f docker-compose.subscan-explorer.yml down --volumes --remove-orphans
+
 quantum-validation-venv:
 	python3 -m venv $(QUIP_PROTOCOL_VENV)
 	$(QUIP_PROTOCOL_PYTHON) -m pip install -e $(QUIP_PROTOCOL_ROOT)
@@ -102,6 +113,7 @@ builder-image:
 		--push \
 		.gitlab/
 
-.PHONY: local-3-node evm-explorer evm-explorer-down quantum-validation-venv \
+.PHONY: local-3-node evm-explorer evm-explorer-down subscan-explorer \
+	subscan-explorer-down quantum-validation-venv \
 	quantum-validation-fixtures wasm-signer py-signer py-signer-develop \
 	py-signer-test builder-image
