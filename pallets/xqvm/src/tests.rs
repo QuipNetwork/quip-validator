@@ -1,7 +1,7 @@
 use crate::{mock::*, Error, Event, ProgramOwner, Programs};
-use aglais_xqvm_bytecode::{InstructionBuilder, Register};
 use frame_support::{assert_noop, assert_ok, BoundedVec};
 use sp_runtime::traits::Hash;
+use xqvm::{InstructionBuilder, Register};
 
 /// Encode a program built with `InstructionBuilder` into raw bytes.
 fn build_program(f: impl FnOnce(&mut InstructionBuilder)) -> Vec<u8> {
@@ -25,7 +25,7 @@ fn store_program_works() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         let bytecode = build_program(|b| {
-            b.halt();
+            b.emit_halt();
         });
         let hash = program_hash(&bytecode);
         let len = bytecode.len() as u32;
@@ -52,7 +52,7 @@ fn store_program_works() {
 fn store_duplicate_fails() {
     new_test_ext().execute_with(|| {
         let bytecode = build_program(|b| {
-            b.halt();
+            b.emit_halt();
         });
 
         assert_ok!(Xqvm::store_program(
@@ -87,13 +87,13 @@ fn execute_addition() {
         // Program: PUSH 3, PUSH 4, ADD, STOW r0, PUSH 0, OUTPUT r0, HALT
         // This stores 7 into r0, then writes r0 to output slot 0.
         let bytecode = build_program(|b| {
-            b.push(3)
-                .push(4)
-                .add()
-                .stow(Register(0))
-                .push(0)
-                .output(Register(0))
-                .halt();
+            b.emit_push(3)
+                .emit_push(4)
+                .emit_add()
+                .emit_stow(Register(0))
+                .emit_push(0)
+                .emit_output(Register(0))
+                .emit_halt();
         });
         let hash = program_hash(&bytecode);
 
@@ -130,15 +130,15 @@ fn execute_with_calldata() {
         // Program: INPUT r0 (from calldata[0]), LOAD r0, PUSH 10, MUL,
         //          STOW r1, PUSH 0, OUTPUT r1, HALT
         let bytecode = build_program(|b| {
-            b.push(0)
-                .input(Register(0))
-                .load(Register(0))
-                .push(10)
-                .mul()
-                .stow(Register(1))
-                .push(0)
-                .output(Register(1))
-                .halt();
+            b.emit_push(0)
+                .emit_input(Register(0))
+                .emit_load(Register(0))
+                .emit_push(10)
+                .emit_mul()
+                .emit_stow(Register(1))
+                .emit_push(0)
+                .emit_output(Register(1))
+                .emit_halt();
         });
         let hash = program_hash(&bytecode);
 
@@ -178,7 +178,7 @@ fn execute_step_limit_exceeded() {
         // Infinite loop: label -> PUSH 1 -> JUMPI label
         let bytecode = build_program(|b| {
             let top = b.label();
-            b.place(top).push(1).jump_if(top);
+            b.place(top).unwrap().emit_push(1).emit_jump_if(top);
         });
         let hash = program_hash(&bytecode);
 
@@ -206,7 +206,7 @@ fn execute_division_by_zero() {
         System::set_block_number(1);
 
         let bytecode = build_program(|b| {
-            b.push(1).push(0).div().halt();
+            b.emit_push(1).emit_push(0).emit_div().emit_halt();
         });
         let hash = program_hash(&bytecode);
 
@@ -250,7 +250,7 @@ fn execute_program_not_found() {
 fn execute_step_limit_too_high() {
     new_test_ext().execute_with(|| {
         let bytecode = build_program(|b| {
-            b.halt();
+            b.emit_halt();
         });
         let hash = program_hash(&bytecode);
 
@@ -277,7 +277,7 @@ fn execute_step_limit_too_high() {
 fn execute_too_many_output_slots() {
     new_test_ext().execute_with(|| {
         let bytecode = build_program(|b| {
-            b.halt();
+            b.emit_halt();
         });
         let hash = program_hash(&bytecode);
 

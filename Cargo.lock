@@ -72,50 +72,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aglais-xqvm-asm"
-version = "0.1.0"
-source = "git+https://gitlab.com/quip.network/xquad.git?rev=3cf0b07#3cf0b0713a68054d7aa01e7c111594a560f7e714"
-dependencies = [
- "aglais-xqvm-bytecode",
- "miette",
- "pest",
- "pest_derive",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aglais-xqvm-bytecode"
-version = "0.1.0"
-source = "git+https://gitlab.com/quip.network/xquad.git?rev=3cf0b07#3cf0b0713a68054d7aa01e7c111594a560f7e714"
-dependencies = [
- "oxicode",
- "pastey",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aglais-xqvm-disasm"
-version = "0.1.0"
-source = "git+https://gitlab.com/quip.network/xquad.git?rev=3cf0b07#3cf0b0713a68054d7aa01e7c111594a560f7e714"
-dependencies = [
- "aglais-xqvm-bytecode",
-]
-
-[[package]]
-name = "aglais-xqvm-vm"
-version = "0.1.0"
-source = "git+https://gitlab.com/quip.network/xquad.git?rev=3cf0b07#3cf0b0713a68054d7aa01e7c111594a560f7e714"
-dependencies = [
- "aglais-xqvm-asm",
- "aglais-xqvm-bytecode",
- "aglais-xqvm-disasm",
- "miette",
- "pastey",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "ahash"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7176,15 +7132,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
-name = "oxicode"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9dd20bb3a9f4c823c74502b65bb83b90e2168277cd6b894cb5fea2ebeec526b"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7678,8 +7625,6 @@ dependencies = [
 name = "pallet-xqvm"
 version = "0.2.2"
 dependencies = [
- "aglais-xqvm-bytecode",
- "aglais-xqvm-vm",
  "frame-benchmarking",
  "frame-support",
  "frame-system",
@@ -7688,6 +7633,7 @@ dependencies = [
  "sp-core",
  "sp-io",
  "sp-runtime",
+ "xqvm",
 ]
 
 [[package]]
@@ -10083,6 +10029,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "safe_arch"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11709,6 +11661,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap 2.13.1",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -14123,6 +14088,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+
+[[package]]
 name = "unsigned-varint"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15542,6 +15513,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
+]
+
+[[package]]
+name = "xqvm"
+version = "0.4.0-rc1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a23d9b98b6ec3405206e6ca6dc394068030336cfbff10eace8221b4f384757b"
+dependencies = [
+ "crc32fast",
+ "hashbrown 0.15.5",
+ "miette",
+ "pastey",
+ "serde",
+ "serde_yaml_ng",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -23,9 +23,8 @@ frame-system.workspace = true
 scale-info = { features = ["derive"], workspace = true }
 sp-runtime.workspace = true
 
-# XQVM crates (no_std compatible)
-aglais-xqvm-vm = { git = "https://gitlab.com/quip.network/xquad.git", rev = "3cf0b07", default-features = false }
-aglais-xqvm-bytecode = { git = "https://gitlab.com/quip.network/xquad.git", rev = "3cf0b07", default-features = false }
+# XQVM interpreter and bytecode (no_std compatible), published on crates.io.
+xqvm.workspace = true
 
 [dev-dependencies]
 sp-core = { default-features = true, workspace = true }
@@ -41,8 +40,7 @@ std = [
 	"frame-system/std",
 	"scale-info/std",
 	"sp-runtime/std",
-	"aglais-xqvm-vm/std",
-	"aglais-xqvm-bytecode/std",
+	"xqvm/std",
 ]
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",

@@ -127,6 +127,7 @@ schnorrkel = { version = "0.11.5", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["derive"] }
 wasm-bindgen = { version = "0.2.117" }
+xqvm = { version = "0.4.0-rc1", default-features = false }
 
 
 [workspace.lints.rust]

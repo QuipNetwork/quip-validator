@@ -25,8 +25,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::Hash as _;
 
-    use aglais_xqvm_bytecode::Program;
-    use aglais_xqvm_vm::{RegVal, Vm};
+    use xqvm::{Program, RegVal, Vm};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -121,8 +120,8 @@ pub mod pallet {
         VmRuntimeError,
     }
 
-    fn map_vm_error<T: Config>(e: &aglais_xqvm_vm::Error) -> Error<T> {
-        use aglais_xqvm_vm::Error as E;
+    fn map_vm_error<T: Config>(e: &xqvm::Error) -> Error<T> {
+        use xqvm::Error as E;
         match e {
             E::StackUnderflow { .. } => Error::<T>::VmStackUnderflow,
             E::StackOverflow { .. } => Error::<T>::VmStackOverflow,
