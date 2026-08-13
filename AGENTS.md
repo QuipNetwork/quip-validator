@@ -6,6 +6,21 @@ This file provides guidance to coding assistants (Claude Code, Codex, Cursor, et
 
 Quip Network solochain node built on Substrate (Polkadot SDK `polkadot-stable2512-2`). This is a standalone blockchain with Aura consensus (block authoring) and GRANDPA (finality), currently at the template stage with a single custom pallet.
 
+## Chain specs
+
+Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
+`--chain=local` is a disposable Alice-and-Bob chain. It is not the public testnet.
+
+| Flag | Preset | Network | EIP-155 |
+|------|--------|---------|--------:|
+| (omit `--chain`) | `quip-testnet` | live public testnet | 20033 |
+| `--chain=quip-testnet` | `quip-testnet` | live public testnet | 20033 |
+| `--dev` or `--chain=dev` | Development | Alice-only local | 1337 |
+| `--chain=local` | Local Testnet | Alice and Bob local | 1337 |
+| `--chain=local3` | Local Testnet (3 Validators) | Alice, Bob, and Charlie local | 1337 |
+
+Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
+
 ## Commands
 
 ```bash
@@ -31,28 +46,39 @@ cargo check
 cargo clippy --all-targets
 
 # Build benchmarks
-cargo build --release --features runtime-benchmarks,dev-chain-id
+cargo build --release --features runtime-benchmarks
 
-# Run the dev chain. Local presets (dev/local/local3) are rejected by plain
-# builds — the binary must be built with the dev-chain-id feature first.
-cargo build --release --features dev-chain-id
+# Join the live public testnet (default: omit --chain, EIP-155 20033)
+cargo build --release
+./target/release/quip-network-node
+
+# Same network, explicit flag
+./target/release/quip-network-node --chain=quip-testnet
+
+# Alice-only local chain (EIP-155 1337). Required for a single validator.
 ./target/release/quip-network-node --dev
 
-# Purge dev chain state
+# Purge Alice-only local chain state (EIP-155 1337)
 ./target/release/quip-network-node purge-chain --dev
+
+# Alice and Bob local chain (EIP-155 1337). Not the public testnet.
+./target/release/quip-network-node --chain=local
+
+# Three-validator local chain (EIP-155 1337)
+./target/release/quip-network-node --chain=local3
 
 # Generate rust docs
 cargo +nightly doc --open
 ```
 
-CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
+CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. `browser-signer-test` also checks the signing fixture. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
 
 ## Architecture
 
 Three-crate workspace:
 
 **`node/`** — Native binary (`quip-network-node`). Handles networking (libp2p), consensus orchestration, RPC server, and chain specification. Key files:
-- `chain_spec.rs` — Genesis configuration (dev and local testnet presets)
+- `chain_spec.rs` — Genesis configuration. Default (no `--chain`) is `quip-testnet`.
 - `service.rs` — Node service wiring (Aura + GRANDPA consensus, transaction pool, networking)
 - `rpc.rs` — Custom RPC endpoint registration
 
@@ -61,6 +87,8 @@ Three-crate workspace:
 - `configs/mod.rs` — All pallet `Config` trait implementations (system params, weights, fees)
 - `apis.rs` — Runtime API implementations exposed to the node
 - `genesis_config_presets.rs` — Genesis state presets for dev/testnet
+
+**`pallets/evm-chain-id/`** — Stores the EIP-155 chain ID set at genesis (`1337` local, `20033` testnet). `pallet-revive` reads it through `Get<u64>`.
 
 **`pallets/template/`** — Custom FRAME pallet (`pallet-template`). Starting point for Quip-specific logic.
 - `lib.rs` — Pallet definition (storage, events, errors, dispatchable calls)
@@ -112,6 +140,13 @@ These gate code at both pallet and runtime level.
 - Keep pallet indices stable once introduced.
 - Prefer runtime configuration via `parameter_types!` and explicit `impl pallet_x::Config for Runtime` blocks.
 - Avoid adding runtime-only behavior into pure helper crates.
+- Bump `spec_version` only after the current spec has shipped (a release tag that nodes actually run). If the current spec has not gone live, keep that number and do not invent the next one. Example: 115 has not shipped, so pallet-evm-chain-id stayed on 115 instead of 116.
+- When you do change `spec_version`, `transaction_version`, or the signed-extension set in `runtime/src/lib.rs`, regenerate the Polkadot.js signing fixture before you push. `docs/polkadotjs/fixtures/hybrid-signing.json` embeds those values. `browser-signer-test` runs `cargo test -p quip-protocol-runtime --test signing_fixture` and fails if the fixture is stale:
+
+```bash
+cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture -- --write
+cargo test -p quip-protocol-runtime --test signing_fixture
+```
 
 ### Validation / Pure logic
 

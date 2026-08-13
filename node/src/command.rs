@@ -39,31 +39,23 @@ impl SubstrateCli for Cli {
     fn load_spec(&self, id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
         let spec = match id {
             "dev" => chain_spec::development_chain_spec()?,
-            "" | "local" => chain_spec::local_chain_spec()?,
+            "local" => chain_spec::local_chain_spec()?,
             "local3" | "local-3" | "local_three_validator" => {
                 chain_spec::local_three_validator_chain_spec()?
             }
-            "quip-testnet" | "quip_testnet" | "testnet" => chain_spec::quip_testnet_chain_spec()?,
+            "" | "quip-testnet" | "quip_testnet" | "testnet" => {
+                chain_spec::quip_testnet_chain_spec()?
+            }
             path => chain_spec::ChainSpec::from_json_file(std::path::PathBuf::from(path))?,
         };
 
-        chain_spec::ensure_chain_spec_id_compatibility(spec.id())?;
         Ok(Box::new(spec))
     }
-}
-
-fn ensure_cli_chain_id_compatibility(cli: &Cli) -> sc_cli::Result<()> {
-    if cli.run.shared_params.is_dev() {
-        chain_spec::ensure_local_chain_id_feature().map_err(sc_cli::Error::Input)?;
-    }
-
-    Ok(())
 }
 
 /// Parse and run command line arguments
 pub fn run() -> sc_cli::Result<()> {
     let cli = Cli::from_args();
-    ensure_cli_chain_id_compatibility(&cli)?;
 
     match &cli.subcommand {
         Some(Subcommand::Key(cmd)) => cmd.run(&cli),
@@ -246,81 +238,39 @@ pub fn run() -> sc_cli::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser as _;
+    use sc_cli::SubstrateCli;
 
     #[test]
-    fn dev_flag_requires_matching_runtime_artifact() {
-        let cli = Cli::try_parse_from(["quip-network-node", "--dev"])
+    fn dev_flag_is_valid_cli_syntax() {
+        let _cli = Cli::try_parse_from(["quip-network-node", "--dev"])
             .expect("--dev should be valid CLI syntax");
-        let result = ensure_cli_chain_id_compatibility(&cli);
-
-        #[cfg(feature = "dev-chain-id")]
-        assert!(result.is_ok());
-
-        #[cfg(not(feature = "dev-chain-id"))]
-        {
-            let error = result.expect_err("default/testnet builds must reject --dev");
-            assert!(error.to_string().contains("dev-chain-id"));
-        }
     }
 
     #[test]
-    fn local_chain_specs_require_matching_runtime_artifact() {
-        let results = [
-            chain_spec::development_chain_spec(),
-            chain_spec::local_chain_spec(),
-            chain_spec::local_three_validator_chain_spec(),
-        ];
-
-        for result in results {
-            #[cfg(feature = "dev-chain-id")]
-            assert!(result.is_ok());
-
-            #[cfg(not(feature = "dev-chain-id"))]
-            {
-                let error = match result {
-                    Ok(_) => panic!("default/testnet builds must reject local presets"),
-                    Err(error) => error,
-                };
-                assert!(error.contains("dev-chain-id"));
-            }
-        }
+    fn local_chain_specs_are_available() {
+        assert!(chain_spec::development_chain_spec().is_ok());
+        assert!(chain_spec::local_chain_spec().is_ok());
+        assert!(chain_spec::local_three_validator_chain_spec().is_ok());
     }
 
     #[test]
-    fn testnet_chain_spec_requires_matching_runtime_artifact() {
-        let result = chain_spec::quip_testnet_chain_spec();
-
-        #[cfg(not(feature = "dev-chain-id"))]
-        assert!(result.is_ok());
-
-        #[cfg(feature = "dev-chain-id")]
-        {
-            let error = match result {
-                Ok(_) => panic!("development builds must reject the public testnet preset"),
-                Err(error) => error,
-            };
-            assert!(error.contains("20033"));
-        }
+    fn testnet_chain_spec_is_available() {
+        assert!(chain_spec::quip_testnet_chain_spec().is_ok());
     }
 
     #[test]
-    fn chain_spec_ids_cannot_bypass_runtime_artifact_split() {
-        let testnet = chain_spec::ensure_chain_spec_id_compatibility("quip_testnet");
-        let local = chain_spec::ensure_chain_spec_id_compatibility("local_testnet");
-        let custom = chain_spec::ensure_chain_spec_id_compatibility("custom_local");
+    fn omitted_chain_flag_is_empty_id() {
+        let cli = Cli::try_parse_from(["quip-network-node"]).expect("bare argv");
+        assert!(!cli.run.shared_params.is_dev());
+        assert_eq!(cli.run.shared_params.chain_id(false), "");
+    }
 
-        #[cfg(feature = "dev-chain-id")]
-        {
-            assert!(testnet.is_err());
-            assert!(local.is_ok());
-            assert!(custom.is_ok());
-        }
-
-        #[cfg(not(feature = "dev-chain-id"))]
-        {
-            assert!(testnet.is_ok());
-            assert!(local.is_err());
-            assert!(custom.is_err());
-        }
+    #[test]
+    fn empty_chain_id_loads_quip_testnet() {
+        let spec = Cli::try_parse_from(["quip-network-node"])
+            .expect("bare argv")
+            .load_spec("")
+            .expect("default spec");
+        assert_eq!(spec.id(), "quip_testnet");
     }
 }

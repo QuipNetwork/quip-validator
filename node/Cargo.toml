@@ -1,7 +1,7 @@
 [package]
 name = "quip-network-node"
 description = "A solochain node for Quip protocol built with Substrate."
-version = "0.2.1"
+version = "0.2.2"
 license = "Unlicense"
 authors.workspace = true
 homepage.workspace = true
@@ -104,12 +104,8 @@ substrate-build-script-utils.workspace = true
 [features]
 default = ["std"]
 std = ["quip-protocol-runtime/std"]
-dev-chain-id = ["quip-protocol-runtime/dev-chain-id"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
-  # The benchmark CLI loads the local chain preset by default, which must use
-  # the development EIP-155 chain ID embedded in the runtime artifact.
-  "dev-chain-id",
   "dep:frame-benchmarking",
   "frame-benchmarking/runtime-benchmarks",
   "frame-benchmarking-cli/runtime-benchmarks",

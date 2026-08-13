@@ -232,13 +232,7 @@ parameter_types! {
     pub const ReviveNativeToEthRatio: u32 = 1_000_000;
 }
 
-/// The public-testnet chain ID is the safe default for release artifacts.
-#[cfg(not(feature = "dev-chain-id"))]
-pub type ReviveChainId = ConstU64<20_033>;
-
-/// Local development artifacts deliberately use the conventional private-chain ID.
-#[cfg(feature = "dev-chain-id")]
-pub type ReviveChainId = ConstU64<1_337>;
+impl pallet_evm_chain_id::Config for Runtime {}
 
 impl pallet_revive::Config for Runtime {
     type Time = Timestamp;
@@ -262,7 +256,7 @@ impl pallet_revive::Config for Runtime {
     type InstantiateOrigin = frame_system::EnsureSigned<AccountId>;
     type RuntimeMemory = ConstU32<{ 128 * 1024 * 1024 }>;
     type PVFMemory = ConstU32<{ 512 * 1024 * 1024 }>;
-    type ChainId = ReviveChainId;
+    type ChainId = pallet_evm_chain_id::ChainId<Runtime>;
     type NativeToEthRatio = ReviveNativeToEthRatio;
     type FeeInfo = pallet_revive::evm::fees::Info<Address, Signature, EthExtraImpl>;
     type MaxEthExtrinsicWeight = ReviveMaxEthExtrinsicWeight;

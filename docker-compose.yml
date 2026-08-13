@@ -24,8 +24,6 @@ services:
   node1:
     build:
       context: .
-      args:
-        NODE_BUILD_FEATURES: dev-chain-id
     image: quip-network-node:local
     container_name: quip-node1
     restart: unless-stopped

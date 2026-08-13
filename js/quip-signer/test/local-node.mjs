@@ -4,7 +4,7 @@
 // Prerequisites:
 //   make wasm-signer
 //   npm run build --prefix js/quip-signer
-//   cargo build -p quip-network-node --features dev-chain-id
+//   cargo build -p quip-network-node
 //   target/debug/quip-network-node --dev
 //
 // Run from the repository root with:

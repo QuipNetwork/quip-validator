@@ -48,33 +48,27 @@ testnet before advertising a public EVM RPC.
 
 #### Runtime artifact constraint
 
-`pallet_revive::Config::ChainId` is supplied by the compiled runtime, while all
-current Quip chain-spec presets use the same embedded runtime Wasm. A single
-runtime artifact therefore cannot expose `1337` for the development preset and
-`20033` for the public testnet preset using an ordinary `ConstU64`.
+`pallet_revive::Config::ChainId` is a `Get<u64>`. The value lives in
+`pallet-evm-chain-id` storage and is written at genesis.
 
-Implemented mechanism:
+| Preset | Stored chain ID |
+|---|---:|
+| `dev`, `local_testnet`, `local_three_validator` | `1337` |
+| `quip-testnet` | `20033` |
 
-- `20033` is the default release/testnet runtime value.
-- The `dev-chain-id` runtime and node feature selects `1337`.
-- That feature is required for the `dev`, `local_testnet`, and
-  `local_three_validator` presets.
+One runtime Wasm serves every preset. Missing storage (a runtime upgrade of a
+chain that never wrote the key) returns `20033`, which matches the previous
+testnet `ConstU64`. There is no dispatchable to change the ID after genesis.
 
-Consequence: a normal testnet/release binary rejects all local presets with an
-instruction to rebuild with `dev-chain-id`; only the public `quip-testnet`
-preset can run with `20033`. The dedicated development build reports `1337` and
-rejects the public testnet preset. This keeps the chain ID a compile-time
-runtime constant and avoids untyped storage outside a pallet.
-
-This compatibility check also applies when loading a raw chain-spec JSON by
-path. The default/testnet artifact accepts only the canonical `quip_testnet`
-chain-spec ID; every other chain-spec ID requires `dev-chain-id`.
+`pallet-revive` still marks `ChainId` as a `#[pallet::constant]`. Metadata
+snapshots `Get::get()` when the Wasm is built, so the metadata constant is
+always the storage default `20033`. `eth_chainId` and the EVM `CHAINID` opcode
+read live storage and are the authoritative value.
 
 Build and run a local runtime with:
 
 ```bash
-cargo run -p quip-network-node --features dev-chain-id \
-  --bin quip-network-node -- --dev
+cargo run -p quip-network-node --bin quip-network-node -- --dev
 ```
 
 Treat a deployed network's chain ID as immutable. Although a runtime upgrade
@@ -300,8 +294,8 @@ and testnet IDs.
       encode and validate correctly in runtime tests.
 - [ ] Ethereum legacy and typed transactions validate the expected Chain ID
       and reject transactions signed for another network.
-- [ ] `eth_chainId` and the EVM `CHAINID` opcode return `1337` on local builds
-      and `20033` on testnet builds.
+- [ ] `eth_chainId` and the EVM `CHAINID` opcode return `1337` on local
+      presets and `20033` on the public testnet preset.
 - [ ] Contract upload, deployment, calls, events, and termination work.
 - [ ] Storage deposits, code-hash lockups, refunds, and address-mapping
       deposits match the accepted economics.
@@ -313,8 +307,7 @@ and testnet IDs.
 - [ ] Runtime APIs and Ethereum RPCs work with representative wallet and
       contract-development tooling.
 - [x] Formatting, runtime/node clippy with warnings denied, runtime/node tests,
-      both Chain-ID runtime test builds, and the runtime release/Wasm build
-      pass.
+      and the runtime release/Wasm build pass.
 - [ ] Run the complete workspace CI matrix before deployment.
 - [ ] If upgrading the existing testnet, migration checks and a testnet smoke
       test demonstrate safe initialization without changing existing pallet or
@@ -347,6 +340,7 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 | 2026-07-17 | Use Revive integrity-check memory baselines of 128 MiB runtime memory and 512 MiB PVF memory. |
 | 2026-07-17 | Use default/testnet and `dev-chain-id` runtime artifacts to deliver Chain IDs `20033` and `1337`, respectively. |
 | 2026-07-17 | Require the `dev-chain-id` node/runtime artifact for all local presets and reject `quip-testnet` from that artifact; only the default/testnet artifact can run the public testnet with Chain ID `20033`. |
+| 2026-08-13 | Store the EIP-155 chain ID in `pallet-evm-chain-id` at genesis (`1337` local, `20033` testnet) so one runtime artifact serves every preset. |
 | 2026-07-17 | Replace transaction-payment `IdentityFee` with `BlockRatioFee<1, 1, Runtime, Balance>` while retaining the fixed multiplier and length fee. |
 | 2026-07-17 | Add Revive at stable pallet index `14`, with runtime APIs, EVM-aware extrinsics, and idempotent existing-chain account initialization. |
 | 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test. |

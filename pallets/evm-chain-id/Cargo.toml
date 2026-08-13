@@ -1,6 +1,6 @@
 [package]
-name = "pallet-faucet-ops"
-description = "FRAME pallet for root-controlled faucet mint operations."
+name = "pallet-evm-chain-id"
+description = "FRAME pallet that stores the EIP-155 chain ID set at genesis."
 version = "0.2.2"
 license.workspace = true
 authors.workspace = true
@@ -19,9 +19,7 @@ workspace = true
 codec = { features = ["derive"], workspace = true }
 frame-support.workspace = true
 frame-system.workspace = true
-pallet-balances.workspace = true
 scale-info = { features = ["derive"], workspace = true }
-sp-runtime.workspace = true
 
 [dev-dependencies]
 sp-io = { default-features = true, workspace = true }
@@ -33,13 +31,9 @@ std = [
   "codec/std",
   "frame-support/std",
   "frame-system/std",
-  "pallet-balances/std",
   "scale-info/std",
-  "sp-runtime/std",
 ]
 try-runtime = [
   "frame-support/try-runtime",
   "frame-system/try-runtime",
-  "pallet-balances/try-runtime",
-  "sp-runtime/try-runtime",
 ]

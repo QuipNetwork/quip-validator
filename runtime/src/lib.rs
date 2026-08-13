@@ -149,7 +149,8 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // tags (113 was only an intermediate branch value and never released).
     // Bumped to 115 for the post-tag main build after the benchmark weight
     // regeneration. No call encodings changed, so `transaction_version` stays
-    // at 6.
+    // at 6. 115 has not shipped. Later storage-only changes (pallet-evm-chain-id)
+    // stay on 115 until a 115 runtime is live.
     spec_version: 115,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
@@ -450,16 +451,9 @@ mod tests {
             <Revive as frame_support::traits::PalletInfoAccess>::index(),
             14
         );
-
-        #[cfg(feature = "dev-chain-id")]
         assert_eq!(
-            <configs::ReviveChainId as frame_support::traits::Get<u64>>::get(),
-            1_337
-        );
-        #[cfg(not(feature = "dev-chain-id"))]
-        assert_eq!(
-            <configs::ReviveChainId as frame_support::traits::Get<u64>>::get(),
-            20_033
+            <EvmChainId as frame_support::traits::PalletInfoAccess>::index(),
+            15
         );
 
         assert_eq!(configs::ReviveDepositPerByte::get(), 10 * MICRO_UNIT);
@@ -482,6 +476,10 @@ mod tests {
         let mut ext =
             sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
         ext.execute_with(|| {
+            assert_eq!(
+                <pallet_evm_chain_id::ChainId<Runtime> as frame_support::traits::Get<u64>>::get(),
+                pallet_evm_chain_id::TESTNET_CHAIN_ID
+            );
             assert_eq!(
                 Revive::evm_base_fee(),
                 sp_core::U256::from(1_000_000_000u64)
@@ -580,4 +578,7 @@ mod runtime {
 
     #[runtime::pallet_index(14)]
     pub type Revive = pallet_revive;
+
+    #[runtime::pallet_index(15)]
+    pub type EvmChainId = pallet_evm_chain_id;
 }
