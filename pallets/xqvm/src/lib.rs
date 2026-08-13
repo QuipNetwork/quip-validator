@@ -94,8 +94,27 @@ pub mod pallet {
 
     #[pallet::error]
     pub enum Error<T> {
-        /// The bytecode failed to decode as a valid XQVM program.
+        /// The bytecode is not a well-formed XQBC container: bad magic,
+        /// unsupported format version, length mismatch, or CRC-32 mismatch.
+        ///
+        /// This covers the container only. Faults in the instruction stream
+        /// itself get their own variants below, from the verifier.
         InvalidBytecode,
+        /// Verifier: an instruction is truncated or uses an unknown opcode.
+        VerifierBadInstruction,
+        /// Verifier: a jump references a target that does not exist.
+        VerifierUndefinedJumpTarget,
+        /// Verifier: loop opens and closes do not balance, or a loop-context
+        /// read occurs with no active loop.
+        VerifierLoopImbalance,
+        /// Verifier: a register is read before it is written, on at least one
+        /// path through the program.
+        VerifierReadUnsetRegister,
+        /// Verifier: a register is read at a type it was not written as.
+        VerifierRegisterTypeMismatch,
+        /// Verifier: the program can underflow or overflow the value stack, or
+        /// reaches a join point at inconsistent stack depths.
+        VerifierStackFault,
         /// A program with this hash already exists.
         ProgramAlreadyExists,
         /// No program found for the given hash.
@@ -127,6 +146,28 @@ pub mod pallet {
         VmRuntimeError,
     }
 
+    /// Map a static-verification failure onto a dispatch error.
+    ///
+    /// Exhaustive on purpose: a new `VerifierError` variant upstream should
+    /// stop this compiling rather than be absorbed by a catch-all, which is
+    /// the same discipline QUI-1014 applies to runtime faults.
+    fn map_verifier_error<T: Config>(e: &xqvm::VerifierError) -> Error<T> {
+        use xqvm::VerifierError as V;
+        match e {
+            V::TruncatedInstruction { .. } | V::BadOpcode { .. } => {
+                Error::<T>::VerifierBadInstruction
+            }
+            V::UndefinedJumpTarget { .. } => Error::<T>::VerifierUndefinedJumpTarget,
+            V::NoActiveLoop { .. } | V::UnmatchedLoop { .. } => Error::<T>::VerifierLoopImbalance,
+            V::ReadUnsetRegister { .. } => Error::<T>::VerifierReadUnsetRegister,
+            V::RegisterTypeMismatch { .. } => Error::<T>::VerifierRegisterTypeMismatch,
+            V::StackUnderflow { .. }
+            | V::StackOverflowRisk { .. }
+            | V::LoopStackImbalance { .. }
+            | V::StackDepthMismatch { .. } => Error::<T>::VerifierStackFault,
+        }
+    }
+
     fn map_vm_error<T: Config>(e: &xqvm::Error) -> Error<T> {
         use xqvm::Error as E;
         match e {
@@ -146,8 +187,18 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// Store an XQVM program on-chain.
         ///
-        /// The bytecode is validated by decoding it. The program is stored
-        /// keyed by its Blake2-256 hash for deduplication.
+        /// The bytecode is decoded, which checks the XQBC container, and then
+        /// statically verified, which checks the instruction stream. Both must
+        /// pass before anything is written, so a program that is accepted here
+        /// cannot fail `execute` for a reason the verifier covers.
+        ///
+        /// Verifying at store time rather than at execute time puts the cost
+        /// on the account that introduced the program, once, instead of on
+        /// every account that runs it. It is also what lets `execute` skip
+        /// re-verification later (QUI-1057).
+        ///
+        /// The program is stored keyed by its Blake2-256 hash for
+        /// deduplication.
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::store_program(bytecode.len() as u32))]
         pub fn store_program(
@@ -156,8 +207,9 @@ pub mod pallet {
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
-            // Validate bytecode
-            Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
+            // Container first, then the instruction stream.
+            let program = Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
+            xqvm::verifier::verify(&program).map_err(|e| map_verifier_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);
             ensure!(

@@ -300,6 +300,81 @@ fn execute_too_many_output_slots() {
     });
 }
 
+// ── static verification at store time ────────────────────────────────────
+
+#[test]
+fn store_rejects_stack_underflow() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // ADD with nothing on the stack. The XQBC container is perfectly well
+        // formed -- correct magic, version, length and CRC -- so this was
+        // stored happily before the verifier ran, and only faulted when
+        // somebody executed it.
+        let bytecode = build_program(|b| {
+            b.emit_add().emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierStackFault
+        );
+    });
+}
+
+#[test]
+fn store_rejects_read_of_unset_register() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let bytecode = build_program(|b| {
+            b.emit_load(Register(3)).emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierReadUnsetRegister
+        );
+    });
+}
+
+#[test]
+fn store_accepts_a_verifiable_program() {
+    // The counterpart to the rejection tests: verification must not have
+    // become so strict that ordinary programs stop being storable.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let bytecode = build_program(|b| {
+            b.emit_push(3).emit_push(4).emit_add().emit_halt();
+        });
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+    });
+}
+
+#[test]
+fn store_still_rejects_a_corrupt_container() {
+    // Container faults keep their own error, distinct from stream faults.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let mut bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        // Corrupt the CRC-32 in the header (bytes 11..15).
+        bytecode[11] ^= 0xFF;
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::InvalidBytecode
+        );
+    });
+}
+
 // ── weight accounting ────────────────────────────────────────────────────
 
 #[test]
