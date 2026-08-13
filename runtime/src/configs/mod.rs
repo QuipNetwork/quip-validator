@@ -286,11 +286,40 @@ parameter_types! {
     pub const MaxProgramSize: u32 = 65_536;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;
-    pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
+    /// Weight charged per executed XQVM step, measured rather than assumed.
+    ///
+    /// Taken as the slope of the `execute_step` benchmark -- the marginal cost
+    /// of one more step on the reference machine -- multiplied by a safety
+    /// factor. Deriving it from the generated weights means regeneration keeps
+    /// it honest; the previous hand-set 1 ns was roughly 13x below the
+    /// measured cost of the *cheapest* opcode in the ISA.
+    ///
+    /// The safety factor covers the spread between opcodes. Measured native,
+    /// the cheaply-constructible core spans 3.89 ns/step (`NOP`) to 6.87
+    /// ns/step (`NEXT`, which is what the benchmark exercises), a ratio of
+    /// 1.77; the factor of 2 rounds that up and leaves a little headroom for
+    /// register and vector opcodes that the benchmark does not reach.
+    ///
+    /// It does **not** cover opcodes whose cost scales with their operands.
+    /// `ENERGY` evaluates a whole model in one step and is unbounded until the
+    /// model is (QUI-1009, QUI-1012, QUI-1056). A flat per-step price cannot
+    /// be made sound for those, and this constant does not pretend to.
+    pub XqvmWeightPerStep: Weight = {
+        const STEP_WEIGHT_SAFETY_FACTOR: u64 = 2;
+        let slope = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0));
+        slope.saturating_mul(STEP_WEIGHT_SAFETY_FACTOR)
+    };
 
     /// Derived from block weight budget so a single execute call always
     /// fits in one block.  Uses 50 % of the normal dispatch budget to
     /// leave room for other extrinsics in the same block.
+    ///
+    /// Falls automatically as the per-step price rises: with the price
+    /// measured rather than assumed, this is roughly an order of magnitude
+    /// below the ~750M steps the hand-set constant used to permit. That is the
+    /// point -- the old limit allowed a single extrinsic to run for over ten
+    /// seconds against a two-second block budget.
     pub MaxStepLimit: u64 = {
         let normal = RuntimeBlockWeights::get()
             .get(frame_support::dispatch::DispatchClass::Normal)
@@ -298,10 +327,10 @@ parameter_types! {
             .unwrap_or(RuntimeBlockWeights::get().max_block);
         // Reserve half for other extrinsics.
         let budget = normal.ref_time() / 2;
-        // Subtract execute_base overhead, then divide by per-step cost.
-        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute_base()
+        // Subtract the worst-case decode overhead, then divide by per-step cost.
+        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
             .ref_time();
-        let per_step = XqvmWeightPerStep::get().ref_time();
+        let per_step = XqvmWeightPerStep::get().ref_time().max(1);
         budget.saturating_sub(base) / per_step
     };
 }
