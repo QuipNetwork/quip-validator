@@ -71,7 +71,7 @@ cargo build --release
 cargo +nightly doc --open
 ```
 
-CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
+CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. `browser-signer-test` also checks the signing fixture. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
 
 ## Architecture
 
@@ -140,6 +140,12 @@ These gate code at both pallet and runtime level.
 - Keep pallet indices stable once introduced.
 - Prefer runtime configuration via `parameter_types!` and explicit `impl pallet_x::Config for Runtime` blocks.
 - Avoid adding runtime-only behavior into pure helper crates.
+- When you change `spec_version`, `transaction_version`, or the signed-extension set in `runtime/src/lib.rs`, regenerate the Polkadot.js signing fixture before you push. `docs/polkadotjs/fixtures/hybrid-signing.json` embeds those values. `browser-signer-test` runs `cargo test -p quip-protocol-runtime --test signing_fixture` and fails if the fixture is stale:
+
+```bash
+cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture -- --write
+cargo test -p quip-protocol-runtime --test signing_fixture
+```
 
 ### Validation / Pure logic
 
