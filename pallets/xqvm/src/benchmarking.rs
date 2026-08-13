@@ -14,6 +14,82 @@ use xqvm::{InstructionBuilder, Program};
 /// Byte length of the XQBC wire-format header emitted by `Program::encode`.
 const XQBC_HEADER_LEN: usize = 15;
 
+/// Build a valid XQVM program of exactly `target_len` bytes that is the worst
+/// case for `store_program`.
+///
+/// `store_program` decodes and then statically verifies. Those two have
+/// *different* worst-case shapes, and the expensive one wins:
+///
+/// * `Program::decode` walks the instruction stream once, so its cost is
+///   driven by instruction count. A `NOP` sled maximises that -- one byte per
+///   instruction -- at roughly 2.4 ns/byte natively.
+/// * `verifier::verify` additionally builds a control-flow graph and runs
+///   three worklist analyses over it, so its cost is driven by basic-block
+///   and edge count. Measured natively, a `NOP` sled verifies at ~21 ns/byte
+///   because it is a single basic block; a program densely packed with blocks
+///   verifies at ~175 ns/byte. Eight times worse, and it dominates decode.
+///
+/// So the program is `N` blocks of `TARGET; PUSH 1; JUMPI .next`, cyclic, then
+/// `HALT`, then `NOP` padding to land on an exact length. At `MaxProgramSize`
+/// that is about 10,960 blocks.
+///
+/// Getting this backwards -- benchmarking the `NOP` sled while the extrinsic
+/// charges for every shape -- is how `store_program` came to be underpriced
+/// tenfold before QUI-1054.
+///
+/// Block widths are deterministic because `InstructionBuilder::build` narrows
+/// `JUMPI2` to `JUMPI1` when the sequential target id fits in a `u8`: five
+/// bytes per block for the first 256 blocks, six thereafter.
+fn build_verifier_worst_case_program(target_len: u32) -> Vec<u8> {
+    /// Bytes per block while the target id fits in a `u8`.
+    const NARROW_BLOCK: usize = 5;
+    /// Bytes per block once the target id needs a `u16`.
+    const WIDE_BLOCK: usize = 6;
+    /// Number of blocks addressable by a narrow jump.
+    const NARROW_BLOCKS: usize = 256;
+
+    let len = target_len as usize;
+    assert!(
+        len > XQBC_HEADER_LEN,
+        "minimum encoded program is header + HALT"
+    );
+
+    // Budget after the header and the trailing HALT.
+    let available = len - XQBC_HEADER_LEN - 1;
+    let narrow_budget = NARROW_BLOCKS * NARROW_BLOCK;
+
+    let (blocks, pad) = if available <= narrow_budget {
+        (available / NARROW_BLOCK, available % NARROW_BLOCK)
+    } else {
+        let wide = available - narrow_budget;
+        (NARROW_BLOCKS + wide / WIDE_BLOCK, wide % WIDE_BLOCK)
+    };
+
+    // Below one full block there is nothing to make dense; fall back to the
+    // straight-line shape so the low end of the component range still builds.
+    if blocks == 0 {
+        return build_padded_program(target_len);
+    }
+
+    let mut b = InstructionBuilder::new();
+    let labels: Vec<_> = (0..blocks).map(|_| b.label()).collect();
+    for i in 0..blocks {
+        b.place(labels[i]).expect("label placed once");
+        b.emit_push(1);
+        // Cyclic, so every label is used and every block has two predecessors.
+        b.emit_jump_if(labels[(i + 1) % blocks]);
+    }
+    b.emit_halt();
+    for _ in 0..pad {
+        b.emit_nop();
+    }
+    let bytes = b.build().expect("dense CFG is a valid program").encode();
+
+    debug_assert_eq!(bytes.len(), len);
+    debug_assert!(Program::decode(&bytes).is_ok());
+    bytes
+}
+
 /// Build a valid XQVM program whose encoded byte length equals
 /// `target_len`.
 ///
@@ -113,7 +189,7 @@ mod benchmarks {
     #[benchmark]
     fn store_program(s: Linear<16, { 65_536 }>) {
         let caller: T::AccountId = whitelisted_caller();
-        let bytecode = build_padded_program(s);
+        let bytecode = build_verifier_worst_case_program(s);
         let bounded: BoundedVec<u8, T::MaxProgramSize> =
             bytecode.try_into().expect("s <= MaxProgramSize");
 
