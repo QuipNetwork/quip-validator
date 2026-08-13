@@ -102,6 +102,12 @@ pub mod pallet {
         ProgramNotFound,
         /// Requested step limit exceeds MaxStepLimit.
         StepLimitTooHigh,
+        /// A step limit of zero was requested.
+        ///
+        /// Rejected rather than forwarded: `xqvm::Vm::set_step_limit` treats
+        /// `0` as "unlimited", so passing it through would run the program
+        /// with no bound while charging only the base weight.
+        ZeroStepLimit,
         /// Output slot count exceeds MaxOutputSlots.
         TooManyOutputSlots,
         /// XQVM: stack underflow.
@@ -172,11 +178,22 @@ pub mod pallet {
 
         /// Execute a stored XQVM program.
         ///
-        /// Weight is pre-charged based on `step_limit`. Unused weight is
-        /// refunded via `PostDispatchInfo`.
+        /// Both dimensions of the cost are caller-influenced and neither is
+        /// known from the call arguments alone, so both are pre-charged at
+        /// their worst case and refunded via `PostDispatchInfo`:
+        ///
+        /// * **Program size.** The call carries only a hash, so the length is
+        ///   unknown until storage is read. Decoding runs a full verifier scan
+        ///   over every instruction, which is linear in the byte length, so
+        ///   `MaxProgramSize` is pre-charged and the actual length refunded.
+        /// * **Steps.** Pre-charged on the caller's `step_limit`, refunded to
+        ///   the steps actually executed.
+        ///
+        /// The error path deliberately does not refund: over-charging a failed
+        /// execution is the conservative direction.
         #[pallet::call_index(1)]
         #[pallet::weight(
-            T::WeightInfo::execute_base()
+            T::WeightInfo::execute(T::MaxProgramSize::get())
                 .saturating_add(
                     T::WeightPerStep::get().saturating_mul(*step_limit)
                 )
@@ -190,6 +207,13 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
+            // Defence in depth. `xqvm 0.3.1` maps a step limit of `0` to
+            // `u64::MAX`, so an unguarded pass-through runs unbounded while
+            // pre-charging only the base weight. The sentinel is being removed
+            // upstream in xqvm 0.4.0 (QUI-1053); this check stays regardless,
+            // because a consensus-critical bound must not depend on a
+            // library's sentinel convention.
+            ensure!(step_limit > 0, Error::<T>::ZeroStepLimit);
             ensure!(
                 step_limit <= T::MaxStepLimit::get(),
                 Error::<T>::StepLimitTooHigh
@@ -200,6 +224,7 @@ pub mod pallet {
             );
 
             let bytecode = Programs::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+            let program_len = bytecode.len() as u32;
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::VmBadBytecode)?;
 
             let mut vm = Vm::new();
@@ -228,7 +253,7 @@ pub mod pallet {
                         outputs,
                     });
 
-                    let actual_weight = T::WeightInfo::execute_base()
+                    let actual_weight = T::WeightInfo::execute(program_len)
                         .saturating_add(T::WeightPerStep::get().saturating_mul(steps_used));
                     Ok(PostDispatchInfo {
                         actual_weight: Some(actual_weight),
