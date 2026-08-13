@@ -53,7 +53,8 @@ use core::marker::PhantomData;
 /// Weight functions needed for `pallet_xqvm`.
 pub trait WeightInfo {
 	fn store_program(s: u32, ) -> Weight;
-	fn execute_base() -> Weight;
+	fn execute(s: u32, ) -> Weight;
+	fn execute_step(t: u32, ) -> Weight;
 }
 
 /// Weights for `pallet_xqvm` using the Substrate node and recommended hardware.
@@ -77,12 +78,26 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
 	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
-	fn execute_base() -> Weight {
+	/// The range of component `s` is `[16, 65536]`.
+	fn execute(s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `80`
 		//  Estimated: `69037`
 		// Minimum execution time: 17_012_000 picoseconds.
 		Weight::from_parts(17_863_000, 69037)
+			.saturating_add(Weight::from_parts(14_957, 0).saturating_mul(s.into()))
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+	}
+	/// Storage: `Xqvm::Programs` (r:1 w:0)
+	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
+	/// The range of component `t` is `[0, 100000]`.
+	fn execute_step(t: u32, ) -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `80`
+		//  Estimated: `69037`
+		// Minimum execution time: 17_012_000 picoseconds.
+		Weight::from_parts(18_000_000, 69037)
+			.saturating_add(Weight::from_parts(13_500, 0).saturating_mul(t.into()))
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 	}
 }
@@ -107,12 +122,26 @@ impl WeightInfo for () {
 	}
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
 	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
-	fn execute_base() -> Weight {
+	/// The range of component `s` is `[16, 65536]`.
+	fn execute(s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `80`
 		//  Estimated: `69037`
 		// Minimum execution time: 17_012_000 picoseconds.
 		Weight::from_parts(17_863_000, 69037)
+			.saturating_add(Weight::from_parts(14_957, 0).saturating_mul(s.into()))
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+	}
+	/// Storage: `Xqvm::Programs` (r:1 w:0)
+	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
+	/// The range of component `t` is `[0, 100000]`.
+	fn execute_step(t: u32, ) -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `80`
+		//  Estimated: `69037`
+		// Minimum execution time: 17_012_000 picoseconds.
+		Weight::from_parts(18_000_000, 69037)
+			.saturating_add(Weight::from_parts(13_500, 0).saturating_mul(t.into()))
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 	}
 }
