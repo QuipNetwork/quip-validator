@@ -102,7 +102,7 @@ npm test --prefix js/quip-signer
 npm run build --prefix js/quip-signer
 
 # With a dev node already listening on ws://127.0.0.1:9944
-# (build it with: cargo build -p quip-network-node --features dev-chain-id)
+# (build it with: cargo build -p quip-network-node)
 npm run test:integration --prefix js/quip-signer
 ```
 

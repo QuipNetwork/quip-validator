@@ -150,7 +150,7 @@ esac
 check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
 
 echo "== Building debug node with runtime-benchmarks =="
-cargo build --features runtime-benchmarks,dev-chain-id -p quip-network-node
+cargo build --features runtime-benchmarks -p quip-network-node
 
 BIN="${CARGO_TARGET_DIR:-target}/debug/quip-network-node"
 OUTPUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/quip-benchmark-preflight.XXXXXX")"

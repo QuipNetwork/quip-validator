@@ -31,11 +31,11 @@ cargo check
 cargo clippy --all-targets
 
 # Build benchmarks
-cargo build --release --features runtime-benchmarks,dev-chain-id
+cargo build --release --features runtime-benchmarks
 
-# Run the dev chain. Local presets (dev/local/local3) are rejected by plain
-# builds — the binary must be built with the dev-chain-id feature first.
-cargo build --release --features dev-chain-id
+# Run the dev chain. Local presets (dev/local/local3) use EIP-155 chain ID
+# 1337 from genesis; the public testnet preset uses 20033.
+cargo build --release
 ./target/release/quip-network-node --dev
 
 # Purge dev chain state
@@ -61,6 +61,8 @@ Three-crate workspace:
 - `configs/mod.rs` — All pallet `Config` trait implementations (system params, weights, fees)
 - `apis.rs` — Runtime API implementations exposed to the node
 - `genesis_config_presets.rs` — Genesis state presets for dev/testnet
+
+**`pallets/evm-chain-id/`** — Stores the EIP-155 chain ID set at genesis (`1337` local, `20033` testnet). `pallet-revive` reads it through `Get<u64>`.
 
 **`pallets/template/`** — Custom FRAME pallet (`pallet-template`). Starting point for Quip-specific logic.
 - `lib.rs` — Pallet definition (storage, events, errors, dispatchable calls)

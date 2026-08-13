@@ -86,7 +86,7 @@ if [ "$#" -ne 0 ]; then
 fi
 
 echo "== Building node with runtime-benchmarks (this is the slow part) =="
-cargo build --release --features runtime-benchmarks,dev-chain-id -p quip-network-node
+cargo build --release --features runtime-benchmarks -p quip-network-node
 
 BIN="${CARGO_TARGET_DIR:-target}/release/quip-network-node"
 

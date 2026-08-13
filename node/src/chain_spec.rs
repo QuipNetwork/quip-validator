@@ -4,36 +4,7 @@ use sc_service::ChainType;
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec;
 
-const LOCAL_CHAIN_ID_FEATURE_ERROR: &str = "local chain presets require a node built with the `dev-chain-id` feature (EIP-155 chain ID 1337); rebuild with `cargo build -p quip-network-node --features dev-chain-id`";
-const TESTNET_CHAIN_ID_FEATURE_ERROR: &str = "the `quip-testnet` chain preset requires the default/testnet runtime artifact (EIP-155 chain ID 20033) and cannot run from a `dev-chain-id` build";
-
-pub(crate) fn ensure_local_chain_id_feature() -> Result<(), String> {
-    if cfg!(feature = "dev-chain-id") {
-        Ok(())
-    } else {
-        Err(LOCAL_CHAIN_ID_FEATURE_ERROR.to_string())
-    }
-}
-
-fn ensure_testnet_chain_id_feature() -> Result<(), String> {
-    if cfg!(feature = "dev-chain-id") {
-        Err(TESTNET_CHAIN_ID_FEATURE_ERROR.to_string())
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn ensure_chain_spec_id_compatibility(id: &str) -> Result<(), String> {
-    if id == "quip_testnet" {
-        ensure_testnet_chain_id_feature()
-    } else {
-        ensure_local_chain_id_feature()
-    }
-}
-
 pub fn development_chain_spec() -> Result<ChainSpec, String> {
-    ensure_local_chain_id_feature()?;
-
     Ok(ChainSpec::builder(
         WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
         None,
@@ -46,8 +17,6 @@ pub fn development_chain_spec() -> Result<ChainSpec, String> {
 }
 
 pub fn local_chain_spec() -> Result<ChainSpec, String> {
-    ensure_local_chain_id_feature()?;
-
     Ok(ChainSpec::builder(
         WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
         None,
@@ -60,8 +29,6 @@ pub fn local_chain_spec() -> Result<ChainSpec, String> {
 }
 
 pub fn local_three_validator_chain_spec() -> Result<ChainSpec, String> {
-    ensure_local_chain_id_feature()?;
-
     Ok(ChainSpec::builder(
         WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
         None,
@@ -83,8 +50,6 @@ pub fn local_three_validator_chain_spec() -> Result<ChainSpec, String> {
 /// of truth; this in-binary preset exists so the genesis is auditable and
 /// can be re-derived from source.
 pub fn quip_testnet_chain_spec() -> Result<ChainSpec, String> {
-    ensure_testnet_chain_id_feature()?;
-
     let properties = {
         let mut p = sc_service::Properties::new();
         p.insert("tokenSymbol".into(), "AGLS".into());
