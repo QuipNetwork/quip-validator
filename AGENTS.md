@@ -6,6 +6,21 @@ This file provides guidance to coding assistants (Claude Code, Codex, Cursor, et
 
 Quip Network solochain node built on Substrate (Polkadot SDK `polkadot-stable2512-2`). This is a standalone blockchain with Aura consensus (block authoring) and GRANDPA (finality), currently at the template stage with a single custom pallet.
 
+## Chain specs
+
+Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
+`--chain=local` is a disposable Alice-and-Bob chain. It is not the public testnet.
+
+| Flag | Preset | Network | EIP-155 |
+|------|--------|---------|--------:|
+| (omit `--chain`) | `quip-testnet` | live public testnet | 20033 |
+| `--chain=quip-testnet` | `quip-testnet` | live public testnet | 20033 |
+| `--dev` or `--chain=dev` | Development | Alice-only local | 1337 |
+| `--chain=local` | Local Testnet | Alice and Bob local | 1337 |
+| `--chain=local3` | Local Testnet (3 Validators) | Alice, Bob, and Charlie local | 1337 |
+
+Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
+
 ## Commands
 
 ```bash
@@ -33,13 +48,24 @@ cargo clippy --all-targets
 # Build benchmarks
 cargo build --release --features runtime-benchmarks
 
-# Run the dev chain. Local presets (dev/local/local3) use EIP-155 chain ID
-# 1337 from genesis; the public testnet preset uses 20033.
+# Join the live public testnet (default: omit --chain, EIP-155 20033)
 cargo build --release
+./target/release/quip-network-node
+
+# Same network, explicit flag
+./target/release/quip-network-node --chain=quip-testnet
+
+# Alice-only local chain (EIP-155 1337). Required for a single validator.
 ./target/release/quip-network-node --dev
 
-# Purge dev chain state
+# Purge Alice-only local chain state (EIP-155 1337)
 ./target/release/quip-network-node purge-chain --dev
+
+# Alice and Bob local chain (EIP-155 1337). Not the public testnet.
+./target/release/quip-network-node --chain=local
+
+# Three-validator local chain (EIP-155 1337)
+./target/release/quip-network-node --chain=local3
 
 # Generate rust docs
 cargo +nightly doc --open
@@ -52,7 +78,7 @@ CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D war
 Three-crate workspace:
 
 **`node/`** — Native binary (`quip-network-node`). Handles networking (libp2p), consensus orchestration, RPC server, and chain specification. Key files:
-- `chain_spec.rs` — Genesis configuration (dev and local testnet presets)
+- `chain_spec.rs` — Genesis configuration. Default (no `--chain`) is `quip-testnet`.
 - `service.rs` — Node service wiring (Aura + GRANDPA consensus, transaction pool, networking)
 - `rpc.rs` — Custom RPC endpoint registration
 

@@ -39,11 +39,13 @@ impl SubstrateCli for Cli {
     fn load_spec(&self, id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
         let spec = match id {
             "dev" => chain_spec::development_chain_spec()?,
-            "" | "local" => chain_spec::local_chain_spec()?,
+            "local" => chain_spec::local_chain_spec()?,
             "local3" | "local-3" | "local_three_validator" => {
                 chain_spec::local_three_validator_chain_spec()?
             }
-            "quip-testnet" | "quip_testnet" | "testnet" => chain_spec::quip_testnet_chain_spec()?,
+            "" | "quip-testnet" | "quip_testnet" | "testnet" => {
+                chain_spec::quip_testnet_chain_spec()?
+            }
             path => chain_spec::ChainSpec::from_json_file(std::path::PathBuf::from(path))?,
         };
 
@@ -236,6 +238,7 @@ pub fn run() -> sc_cli::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser as _;
+    use sc_cli::SubstrateCli;
 
     #[test]
     fn dev_flag_is_valid_cli_syntax() {
@@ -253,5 +256,21 @@ mod tests {
     #[test]
     fn testnet_chain_spec_is_available() {
         assert!(chain_spec::quip_testnet_chain_spec().is_ok());
+    }
+
+    #[test]
+    fn omitted_chain_flag_is_empty_id() {
+        let cli = Cli::try_parse_from(["quip-network-node"]).expect("bare argv");
+        assert!(!cli.run.shared_params.is_dev());
+        assert_eq!(cli.run.shared_params.chain_id(false), "");
+    }
+
+    #[test]
+    fn empty_chain_id_loads_quip_testnet() {
+        let spec = Cli::try_parse_from(["quip-network-node"])
+            .expect("bare argv")
+            .load_spec("")
+            .expect("default spec");
+        assert_eq!(spec.id(), "quip_testnet");
     }
 }

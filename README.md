@@ -1,19 +1,21 @@
-# Substrate Node Template
+# Quip Network node
 
-A fresh [Substrate](https://substrate.io/) node, ready for hacking :rocket:
+Quip Network solochain node (`quip-network-node`).
 
-A standalone version of this template is available for each release of Polkadot
-in the [Substrate Developer Hub Parachain
-Template](https://github.com/substrate-developer-hub/substrate-node-template/)
-repository. The parachain template is generated directly at each Polkadot
-release branch from the [Solochain Template in
-Substrate](https://github.com/paritytech/polkadot-sdk/tree/master/templates/solochain)
-upstream
+## Chain specs
 
-It is usually best to use the stand-alone version to start a new project. All
-bugs, suggestions, and feature requests should be made upstream in the
-[Substrate](https://github.com/paritytech/polkadot-sdk/tree/master/substrate)
-repository.
+Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
+`--chain=local` is a disposable Alice-and-Bob chain. It is not the public testnet.
+
+| Flag | Preset | Network | EIP-155 |
+|------|--------|---------|--------:|
+| (omit `--chain`) | `quip-testnet` | live public testnet | 20033 |
+| `--chain=quip-testnet` | `quip-testnet` | live public testnet | 20033 |
+| `--dev` or `--chain=dev` | Development | Alice-only local | 1337 |
+| `--chain=local` | Local Testnet | Alice and Bob local | 1337 |
+| `--chain=local3` | Local Testnet (3 Validators) | Alice, Bob, and Charlie local | 1337 |
+
+Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
 
 ## Getting Started
 
@@ -39,6 +41,15 @@ cd solochain-template
 cargo build --release
 ```
 
+### Join the live public testnet
+
+Omit `--chain` to select `quip-testnet` (EIP-155 `20033`).
+
+```sh
+# Live public testnet (EIP-155 20033). Default if you omit --chain.
+./target/release/quip-network-node
+```
+
 ### Embedded Docs
 
 After you build the project, you can use the following command to explore its
@@ -58,32 +69,37 @@ cargo +nightly doc --open
 
 ### Single-Node Development Chain
 
-The following command starts a single-node development chain that doesn't
-persist state:
+The following command starts a single-node development chain that does not
+persist state. `--dev` is the Alice-only local preset (EIP-155 `1337`), not
+the public testnet.
 
 ```sh
+# Alice-only local chain (EIP-155 1337)
 ./target/release/solochain-template-node --dev
 ```
 
 To purge the development chain's state, run the following command:
 
 ```sh
+# Alice-only local chain (EIP-155 1337)
 ./target/release/solochain-template-node purge-chain --dev
 ```
 
 To start the development chain with detailed logging, run the following command:
 
 ```sh
+# Alice-only local chain (EIP-155 1337)
 RUST_BACKTRACE=1 ./target/release/solochain-template-node -ldebug --dev
 ```
 
-Development chains:
+Development chains (`--dev` / `--chain=dev`):
 
 - Maintain state in a `tmp` folder while the node is running.
-- Use the **Alice** and **Bob** accounts as default validator authorities.
+- Use the **Alice** account as the sole validator authority.
 - Use the **Alice** account as the default `sudo` account.
 - Are preconfigured with a genesis state (`/node/src/chain_spec.rs`) that
   includes several pre-funded development accounts.
+- Use EIP-155 chain ID `1337`.
 
 
 To persist chain state between runs, specify a base path by running a command
@@ -93,7 +109,7 @@ similar to the following:
 // Create a folder to use as the db base path
 $ mkdir my-chain-state
 
-// Use of that folder to store the chain state
+// Alice-only local chain (EIP-155 1337)
 $ ./target/release/solochain-template-node --dev --base-path ./my-chain-state/
 
 // Check the folder structure created inside the base path after running the chain
@@ -121,7 +137,8 @@ require custom types for Quip anymore; for usage notes, see
 
 ### Multi-Node Local Testnet
 
-A scripted three-validator local network is available two ways:
+A scripted three-validator local network is available two ways.
+Both use `--chain=local3` (EIP-155 `1337`). This is not the public testnet.
 
 - **Native build:** `scripts/start-local3.sh` builds the debug binary and starts
   three validators (Alice/Bob/Charlie) against the embedded `local3` chain spec.
@@ -273,6 +290,7 @@ Tag scheme:
 #### Run as a validator
 
 ```sh
+# Three-validator local chain (EIP-155 1337). Not the public testnet.
 docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
   quip-network-node:local \
   --chain=local3 --base-path=/data \
@@ -291,6 +309,7 @@ not want any external RPC at all.
 Same command, omit `--validator` (and the `--alice/--bob/--charlie` shortcut):
 
 ```sh
+# Three-validator local chain (EIP-155 1337). Not the public testnet.
 docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
   quip-network-node:local \
   --chain=local3 --base-path=/data \
@@ -300,10 +319,12 @@ docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
 
 #### Local 3-node network via docker-compose
 
-`docker-compose.yml` reproduces `scripts/start-local3.sh` in containers:
+`docker-compose.yml` reproduces `scripts/start-local3.sh` in containers.
+Each service passes `--chain=local3` (EIP-155 `1337`). This is not the public
+testnet.
 
 ```sh
-docker compose up --build           # start
+docker compose up --build           # start local3 (EIP-155 1337)
 docker compose down                 # stop, keep chain state
 docker compose down -v              # stop and wipe state
 ```
@@ -313,10 +334,10 @@ Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 
 ## Public testnet
 
-`quip-testnet` is the public testnet ("AGLS" tokens, 12 decimals). The
-canonical genesis is baked into the `v0.2.0+` binary as the `quip-testnet`
-chain spec preset and also published as a raw JSON file at
-`nodes.quip.network/chain-specs/quip-testnet.json`.
+`quip-testnet` is the live public testnet ("AGLS" tokens, 12 decimals,
+EIP-155 `20033`). Omitting `--chain` selects this preset. The canonical
+genesis is baked into the `v0.2.0+` binary and also published as a raw JSON
+file at `nodes.quip.network/chain-specs/quip-testnet.json`.
 
 ### Quickstart (Docker)
 
@@ -324,7 +345,7 @@ chain spec preset and also published as a raw JSON file at
 # Pull the matching release image
 docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0
 
-# Join the testnet as a full node (no validator key required)
+# Live public testnet (EIP-155 20033). Omit --chain for the same preset.
 docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0 \
   --chain=quip-testnet --base-path=/data \
@@ -337,12 +358,14 @@ embedded in the chain spec, so peer discovery happens automatically.
 ### Using the hosted raw chain spec
 
 Alternatively, fetch the published JSON spec from `nodes.quip.network` and
-pass its path to `--chain`:
+pass its path to `--chain`. That file is the live public testnet
+(EIP-155 `20033`).
 
 ```sh
 curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/quip-testnet.json \
     -o quip-testnet.json
 
+# Live public testnet JSON (EIP-155 20033)
 docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0 \
   --chain=/spec/quip-testnet.json --base-path=/data
