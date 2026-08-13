@@ -570,3 +570,56 @@ mod tests {
         assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
     }
 }
+
+#[cfg(test)]
+mod xqvm_weights {
+    use super::*;
+
+    /// A single `execute` at the maximum step limit must fit inside the budget
+    /// the limit was derived from.
+    ///
+    /// This is the invariant the old hand-set `WeightPerStep` violated: it
+    /// admitted ~750M steps priced at 0.75 s that took over ten seconds to run,
+    /// against a two-second block. Both constants are now derived from the
+    /// generated weights, so this holds by construction -- the test is here to
+    /// catch a regeneration or a refactor that quietly breaks the derivation.
+    #[test]
+    fn max_step_limit_fits_the_reserved_budget() {
+        let normal = RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_total
+            .unwrap_or(RuntimeBlockWeights::get().max_block)
+            .ref_time();
+        let reserved = normal / 2;
+
+        let worst_case = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+            .ref_time()
+            .saturating_add(
+                XqvmWeightPerStep::get()
+                    .ref_time()
+                    .saturating_mul(MaxStepLimit::get()),
+            );
+
+        assert!(
+            worst_case <= reserved,
+            "worst-case execute is {worst_case} ps against {reserved} ps reserved",
+        );
+    }
+
+    /// The per-step price must stay above the measured marginal cost of a step.
+    ///
+    /// Derived from the same benchmark rather than a copied number, so it
+    /// tracks regeneration instead of going stale.
+    #[test]
+    fn per_step_price_exceeds_measured_cost() {
+        let measured = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0))
+            .ref_time();
+
+        assert!(
+            XqvmWeightPerStep::get().ref_time() > measured,
+            "priced {} ps/step is not above the measured {measured} ps/step",
+            XqvmWeightPerStep::get().ref_time(),
+        );
+    }
+}
