@@ -149,11 +149,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // tags (113 was only an intermediate branch value and never released).
     // Bumped to 115 for the post-tag main build after the benchmark weight
     // regeneration. No call encodings changed, so `transaction_version` stays
-    // at 6.
-    // Bumped to 116 for pallet-evm-chain-id (idx 15): EIP-155 chain ID moves
-    // from a compile-time ConstU64 to genesis storage. No signed-call
-    // encodings change, so `transaction_version` stays at 6.
-    spec_version: 116,
+    // at 6. 115 has not shipped. Later storage-only changes (pallet-evm-chain-id)
+    // stay on 115 until a 115 runtime is live.
+    spec_version: 115,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 6,

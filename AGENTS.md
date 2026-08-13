@@ -140,7 +140,8 @@ These gate code at both pallet and runtime level.
 - Keep pallet indices stable once introduced.
 - Prefer runtime configuration via `parameter_types!` and explicit `impl pallet_x::Config for Runtime` blocks.
 - Avoid adding runtime-only behavior into pure helper crates.
-- When you change `spec_version`, `transaction_version`, or the signed-extension set in `runtime/src/lib.rs`, regenerate the Polkadot.js signing fixture before you push. `docs/polkadotjs/fixtures/hybrid-signing.json` embeds those values. `browser-signer-test` runs `cargo test -p quip-protocol-runtime --test signing_fixture` and fails if the fixture is stale:
+- Bump `spec_version` only after the current spec has shipped (a release tag that nodes actually run). If the current spec has not gone live, keep that number and do not invent the next one. Example: 115 has not shipped, so pallet-evm-chain-id stayed on 115 instead of 116.
+- When you do change `spec_version`, `transaction_version`, or the signed-extension set in `runtime/src/lib.rs`, regenerate the Polkadot.js signing fixture before you push. `docs/polkadotjs/fixtures/hybrid-signing.json` embeds those values. `browser-signer-test` runs `cargo test -p quip-protocol-runtime --test signing_fixture` and fails if the fixture is stale:
 
 ```bash
 cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture -- --write
