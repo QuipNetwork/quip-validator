@@ -299,3 +299,92 @@ fn execute_too_many_output_slots() {
         );
     });
 }
+
+// ── weight accounting ────────────────────────────────────────────────────
+
+#[test]
+fn execute_rejects_zero_step_limit() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // A program that never halts on its own. `xqvm::Vm::set_step_limit`
+        // maps 0 to u64::MAX, so without the guard in `execute` this call runs
+        // forever and the test hangs rather than fails -- which is precisely
+        // the on-chain failure mode being guarded against.
+        let bytecode = build_program(|b| {
+            let top = b.label();
+            b.place(top).unwrap().emit_nop().emit_jump(top);
+        });
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        assert_noop!(
+            Xqvm::execute(RuntimeOrigin::signed(1), hash, BoundedVec::default(), 0, 0),
+            Error::<Test>::ZeroStepLimit
+        );
+    });
+}
+
+#[test]
+fn execute_refunds_unused_size_and_steps() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let len = bytecode.len() as u32;
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        let step_limit = 10_000u64;
+        let post = Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            step_limit,
+        )
+        .expect("HALT executes");
+
+        let actual = post.actual_weight.expect("execute reports actual weight");
+
+        // Refunded to what was actually done: this program's real length and
+        // the one step it took.
+        let expected = <() as crate::WeightInfo>::execute(len)
+            .saturating_add(TestWeightPerStep::get().saturating_mul(1));
+        assert_eq!(actual, expected);
+
+        // And that is strictly less than what was pre-charged, on both axes.
+        let pre_charged = <() as crate::WeightInfo>::execute(MaxProgramSize::get())
+            .saturating_add(TestWeightPerStep::get().saturating_mul(step_limit));
+        assert!(
+            actual.ref_time() < pre_charged.ref_time(),
+            "actual {} should be below pre-charged {}",
+            actual.ref_time(),
+            pre_charged.ref_time(),
+        );
+    });
+}
+
+#[test]
+fn execute_weight_grows_with_program_length() {
+    // The whole point of the size component: a longer program costs more to
+    // decode, because decoding rebuilds the jump table by walking every
+    // instruction.
+    let short = <() as crate::WeightInfo>::execute(16);
+    let long = <() as crate::WeightInfo>::execute(65_536);
+    assert!(
+        long.ref_time() > short.ref_time(),
+        "execute({}) should exceed execute(16)",
+        65_536,
+    );
+}
