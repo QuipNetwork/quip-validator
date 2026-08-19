@@ -2,7 +2,7 @@
 //! GRANDPA session key into the validator's keystore.
 //!
 //! Stock `sc-cli` does also accept these schemes via `key insert --scheme
-//! hybrid-babe-h344` / `--scheme hybrid-grandpa-h144` (see the sibling
+//! hybrid-babe-h444` / `--scheme hybrid-grandpa-h244` (see the sibling
 //! patch in `QuipNetwork/polkadot-sdk@v0.2`), but this subcommand exists as
 //! a more focused entry point:
 //!
@@ -17,7 +17,7 @@
 
 use clap::{Parser, ValueEnum};
 use quip_crypto_primitives::substrate::{
-    ed25519_mldsa44::Pair as HybridGrandpaPair, sr25519_mldsa44::Pair as HybridBabePair,
+    ed25519_fndsa512::Pair as HybridGrandpaPair, sr25519_fndsa512::Pair as HybridBabePair,
 };
 use sc_cli::{Error, KeystoreParams, SharedParams, SubstrateCli};
 use sc_keystore::LocalKeystore;
@@ -30,10 +30,10 @@ use sp_keystore::KeystorePtr;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum HybridScheme {
-    /// Hybrid `sr25519 + ML-DSA-44` (H344) — BABE consensus.
-    BabeH344,
-    /// Hybrid `ed25519 + ML-DSA-44` (H144) — GRANDPA finality.
-    GrandpaH144,
+    /// Hybrid `sr25519 + FN-DSA-512` (H444) — BABE consensus.
+    HybridBabeH444,
+    /// Hybrid `ed25519 + FN-DSA-512` (H244) — GRANDPA finality.
+    HybridGrandpaH244,
 }
 
 /// The `insert-hybrid-key` command.
@@ -49,7 +49,7 @@ pub struct InsertHybridKeyCmd {
     pub suri: String,
 
     /// Override the runtime key-type id. Defaults to the standard id for the
-    /// chosen scheme (`babe` for BabeH344, `gran` for GrandpaH144).
+    /// chosen scheme (`babe` for HybridBabeH444, `gran` for HybridGrandpaH244).
     #[arg(long, value_name = "ID")]
     pub key_type: Option<String>,
 
@@ -87,18 +87,18 @@ impl InsertHybridKeyCmd {
         // the SURI was rejected (bad checksum, unknown junction, etc.) instead
         // of a bare "invalid SURI" message.
         let (key_type, public_bytes) = match self.scheme {
-            HybridScheme::BabeH344 => {
+            HybridScheme::HybridBabeH444 => {
                 let pair = HybridBabePair::from_string(&suri, None).map_err(|e| {
-                    Error::Input(format!("invalid SURI for hybrid-babe-h344: {e:?}"))
+                    Error::Input(format!("invalid SURI for hybrid-babe-h444: {e:?}"))
                 })?;
                 let key_type = self.resolve_key_type(sp_consensus_babe::KEY_TYPE)?;
                 let public = pair.public();
                 let bytes: &[u8] = public.as_ref();
                 (key_type, bytes.to_vec())
             }
-            HybridScheme::GrandpaH144 => {
+            HybridScheme::HybridGrandpaH244 => {
                 let pair = HybridGrandpaPair::from_string(&suri, None).map_err(|e| {
-                    Error::Input(format!("invalid SURI for hybrid-grandpa-h144: {e:?}"))
+                    Error::Input(format!("invalid SURI for hybrid-grandpa-h244: {e:?}"))
                 })?;
                 let key_type = self.resolve_key_type(sp_consensus_grandpa::KEY_TYPE)?;
                 let public = pair.public();
@@ -146,5 +146,22 @@ fn read_suri(suri: &str) -> sc_cli::Result<String> {
         Ok(raw.trim().to_owned())
     } else {
         Ok(suri.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hybrid_scheme_cli_names_match_sdk_key_schemes() {
+        assert_eq!(
+            <HybridScheme as ValueEnum>::from_str("hybrid-babe-h444", false),
+            Ok(HybridScheme::HybridBabeH444),
+        );
+        assert_eq!(
+            <HybridScheme as ValueEnum>::from_str("hybrid-grandpa-h244", false),
+            Ok(HybridScheme::HybridGrandpaH244),
+        );
     }
 }

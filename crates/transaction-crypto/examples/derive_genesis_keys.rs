@@ -1,6 +1,6 @@
 //! Derive hybrid genesis public material (BABE, GRANDPA, TX account) from a
 //! single seed URI. Use this to produce the per-operator public bytes that get
-//! committed into the `quip_testnet` genesis preset.
+//! committed into a regenerated `quip_testnet` genesis preset.
 //!
 //! Generate a fresh BIP39 mnemonic with:
 //!     ./target/release/quip-network-node key generate

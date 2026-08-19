@@ -21,10 +21,10 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
-use quip_crypto_primitives::substrate::ed25519_mldsa44::{
+use quip_crypto_primitives::substrate::ed25519_fndsa512::{
     Pair as HybridGrandpaPair, Public as HybridGrandpaPublic,
 };
-use quip_crypto_primitives::substrate::sr25519_mldsa44::{
+use quip_crypto_primitives::substrate::sr25519_fndsa512::{
     Pair as HybridBabePair, Public as HybridBabePublic,
 };
 use quip_transaction_crypto::{account_id_from_public, HybridPair as HybridTxPair};
@@ -79,9 +79,10 @@ fn decode_hex(hex: &str, source: &str) -> Vec<u8> {
 
 /// Build a BABE authority id from raw hybrid public key bytes.
 ///
-/// The bytes must be the SCALE-encoded `sr25519_mldsa44::Public` (sr25519 32-byte
-/// prefix followed by the ML-DSA-44 public key). Used by [`quip_testnet_config_genesis`]
-/// to commit operator-submitted public material directly into genesis.
+/// The bytes must be the 929-byte SCALE-encoded `sr25519_fndsa512::Public`
+/// (sr25519 32-byte prefix followed by the FN-DSA-512 public key). Used by
+/// [`quip_testnet_config_genesis`] to commit operator-submitted public material
+/// directly into genesis.
 fn babe_authority_from_public_hex(hex: &str, source: &str) -> BabeId {
     HybridBabePublic::from_slice(&decode_hex(hex, source))
         .unwrap_or_else(|_| panic!("{source}: hybrid BABE public has wrong byte length"))
@@ -275,15 +276,15 @@ pub fn quip_testnet_config_genesis() -> Value {
     );
 
     let op1_account = tx_account_from_hex(
-        "c6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b",
+        "c5c1e685e181d2939fddaf43e61455c0f00a99d2716d59b1f90674e5c0292510",
         "operator_1 tx_account_hex literal",
     );
     let op2_account = tx_account_from_hex(
-        "96ab60c5a90f6b18566155d2187fae8f52e3cd43627fb4a40d5c89f3a512bb5b",
+        "40f5f2aeab073dfa95c96e48eba57b4afbdd2d118ff4acf60987a8c8bf8bf32b",
         "operator_2 tx_account_hex literal",
     );
     let op3_account = tx_account_from_hex(
-        "f8a5d50a6b32c3784b1e9fd9811e57b63524e5ec0defaafc289304bf99061db7",
+        "d88854de054c7534450cddace65332a98d12ba06ff3adb39f9ad40f129b37aa7",
         "operator_3 tx_account_hex literal",
     );
 
@@ -333,11 +334,11 @@ mod tests {
 
     /// Pinned hex of `tx_account_from_seed("//Alice")`. Acts as a canary for
     /// silent changes to `quip_transaction_crypto::ACCOUNT_ID_DOMAIN` or the
-    /// H3 keyring derivation: any such change re-keys every account at
+    /// H4 keyring derivation: any such change re-keys every account at
     /// genesis, and this constant is the cheapest grep target for catching
     /// that regression.
     const ALICE_PINNED_ACCOUNT_HEX: &str =
-        "504c921d4b618d2cbb53ebebfbc98db585b325c355259545739daafb3146cdb4";
+        "4de1b06b817f61f830d5b046e4fed5c124aa52ea97ba077817c225e56e757ac9";
 
     fn hex_encode(bytes: &[u8]) -> alloc::string::String {
         const TABLE: &[u8; 16] = b"0123456789abcdef";
@@ -438,7 +439,7 @@ mod tests {
     /// hybrid public-key wire format or the `account_id_from_public` derivation
     /// (which would re-key every genesis account and brick the testnet).
     const OPERATOR_1_PINNED_ACCOUNT_HEX: &str =
-        "c6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b";
+        "c5c1e685e181d2939fddaf43e61455c0f00a99d2716d59b1f90674e5c0292510";
 
     #[test]
     fn quip_testnet_operator_1_account_is_pinned() {

@@ -49,10 +49,10 @@ Apps transaction
 The runtime contract is:
 
 ```text
-AccountId = blake2b_256("quip-account-v1" || full_h3_public_key_bytes)
-HybridTxSignature.public    = [u8; 1344]
-HybridTxSignature.signature = [u8; 2484]
-encoded signature envelope  = 3828 bytes
+AccountId = blake2b_256("quip-account-v1" || full_h4_public_key_bytes)
+HybridTxSignature.public    = [u8; 929]
+HybridTxSignature.signature = [u8; 731]
+encoded signature envelope  = 1660 bytes
 ```
 
 The returned signer result must contain the raw SCALE-encoded hybrid envelope.
@@ -73,7 +73,7 @@ Add a generated fixture that Rust and TypeScript tests consume. It should
 contain:
 
 - deterministic test seed;
-- H3 public key;
+- H4 public key;
 - derived account id and SS58 address;
 - representative `SignerPayloadJSON`;
 - SCALE-encoded raw signing payload;
@@ -106,7 +106,7 @@ Retain the existing architecture in `js/quip-signer`:
 Add or complete:
 
 - strict address and account-id validation;
-- a 3828-byte envelope length check;
+- a 1660-byte envelope length check;
 - WASM `verifyEnvelope` verification before a development signature is
   returned;
 - clear errors for unknown accounts, malformed addresses, unavailable WASM
@@ -135,7 +135,7 @@ In `../apps`:
 
 Retain fee-estimation support for the custom signature size. Scope and test the
 `GenericExtrinsicSignatureV4.signFake` patch so `paymentInfo` constructs a
-3828-byte fake `ExtrinsicSignature` for Quip without changing other chains'
+1660-byte fake `ExtrinsicSignature` for Quip without changing other chains'
 signature handling.
 
 Use runtime metadata and Polkadot.js signed extensions. Do not manually assemble
@@ -158,7 +158,7 @@ For each relevant case, assert:
 - the Quip injected signer is called;
 - the signed extrinsic version and signed bit are correct;
 - the signer matches the account derived from the embedded public key;
-- the signature field is the 3828-byte hybrid envelope;
+- the signature field is the 1660-byte hybrid envelope;
 - the existing decoder round-trips the signed extrinsic;
 - the node includes the transaction;
 - expected success events, nonce changes, and balance changes occur.

@@ -1,5 +1,10 @@
 # PyO3 Python Bindings Plan
 
+> **Current state:** The shipped binding now uses H4
+> (`sr25519 + FN-DSA-512`) through `pqhybridsign`, with 929-byte public keys
+> and 731-byte padded signatures. H3/ML-DSA-44 names and 1,344-byte sizes below
+> describe the original implementation plan and remain as historical context.
+
 ## Goal
 
 Expose Quip's hybrid (H3 = `sr25519 + ML-DSA-44`) transaction signer to Python,

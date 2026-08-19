@@ -16,7 +16,7 @@ use sp_core::{
 use sp_runtime::{generic, BuildStorage};
 
 pub const FIXTURE_SEED: [u8; 32] = [7u8; 32];
-pub const ENVELOPE_LEN: usize = 1344 + 2484;
+pub const ENVELOPE_LEN: usize = 929 + 731;
 
 fn hex(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();

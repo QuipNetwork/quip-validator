@@ -4,9 +4,10 @@
 
 This is the living design, implementation, and decision record for integrating
 `pallet-revive` into the Quip runtime. The initial runtime integration is
-implemented at runtime `spec_version = 115` / `transaction_version = 6`
+implemented at runtime `spec_version = 116` / `transaction_version = 7`
 (introduced at 113 on-branch, first shipped as 114 in the v0.2.2-rc tags,
-bumped to 115 for the benchmark weight regeneration).
+bumped to 115 for the benchmark weight regeneration, then to 116/7 for the
+H2/H4 hybrid-signature migration).
 Remaining unchecked items are deployment and end-to-end validation work.
 
 Status labels:
@@ -268,8 +269,8 @@ and testnet IDs.
       available and avoids divergence from an upgraded existing testnet.
 - [x] Add initialization required for an existing-testnet
       runtime upgrade.
-- [x] Increment runtime `spec_version` to `115` and `transaction_version` to
-      `6`.
+- [x] Increment runtime `spec_version` to `116` and `transaction_version` to
+      `7` (the H2/H4 hybrid-signature migration changes signed extrinsics).
 - [ ] Run runtime benchmarks and replace provisional weights where necessary.
 
 ### Pinned-SDK tooling notes
