@@ -46,6 +46,8 @@ frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.gi
 frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 fips204 = { version = "0.4", default-features = false, features = ["ml-dsa-44"] }
+pqhybridsign = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "d17e054a4d54bc078f60bf5ddefd3b9a2fbaa2cd", default-features = false }
+pqhybridsign-core = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "d17e054a4d54bc078f60bf5ddefd3b9a2fbaa2cd", default-features = false, features = ["alloc"] }
 futures = { version = "0.3.31" }
 getrandom = { version = "0.2.17", default-features = false }
 hkdf = { version = "0.12", default-features = false }
@@ -127,6 +129,73 @@ schnorrkel = { version = "0.11.5", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["derive"] }
 wasm-bindgen = { version = "0.2.117" }
+
+# Local-only development overrides for the fork and pqhybridsign checkouts.
+[patch."https://github.com/QuipNetwork/polkadot-sdk.git"]
+frame-benchmarking-cli = { path = "../polkadot-sdk/substrate/utils/frame/benchmarking-cli" }
+frame-metadata-hash-extension = { path = "../polkadot-sdk/substrate/frame/metadata-hash-extension" }
+frame-system = { path = "../polkadot-sdk/substrate/frame/system" }
+pallet-transaction-payment = { path = "../polkadot-sdk/substrate/frame/transaction-payment" }
+pallet-transaction-payment-rpc = { path = "../polkadot-sdk/substrate/frame/transaction-payment/rpc" }
+sc-basic-authorship = { path = "../polkadot-sdk/substrate/client/basic-authorship" }
+sc-cli = { path = "../polkadot-sdk/substrate/client/cli" }
+sc-client-api = { path = "../polkadot-sdk/substrate/client/api" }
+sc-consensus = { path = "../polkadot-sdk/substrate/client/consensus/common" }
+sc-consensus-babe = { path = "../polkadot-sdk/substrate/client/consensus/babe" }
+sc-consensus-babe-rpc = { path = "../polkadot-sdk/substrate/client/consensus/babe/rpc" }
+sc-consensus-grandpa = { path = "../polkadot-sdk/substrate/client/consensus/grandpa" }
+sc-executor = { path = "../polkadot-sdk/substrate/client/executor" }
+sc-keystore = { path = "../polkadot-sdk/substrate/client/keystore" }
+sc-network = { path = "../polkadot-sdk/substrate/client/network" }
+sc-offchain = { path = "../polkadot-sdk/substrate/client/offchain" }
+sc-service = { path = "../polkadot-sdk/substrate/client/service" }
+sc-telemetry = { path = "../polkadot-sdk/substrate/client/telemetry" }
+sc-transaction-pool = { path = "../polkadot-sdk/substrate/client/transaction-pool" }
+sc-transaction-pool-api = { path = "../polkadot-sdk/substrate/client/transaction-pool/api" }
+sp-api = { path = "../polkadot-sdk/substrate/primitives/api" }
+sp-application-crypto = { path = "../polkadot-sdk/substrate/primitives/application-crypto" }
+sp-block-builder = { path = "../polkadot-sdk/substrate/primitives/block-builder" }
+sp-blockchain = { path = "../polkadot-sdk/substrate/primitives/blockchain" }
+sp-consensus = { path = "../polkadot-sdk/substrate/primitives/consensus/common" }
+sp-consensus-babe = { path = "../polkadot-sdk/substrate/primitives/consensus/babe" }
+sp-core = { path = "../polkadot-sdk/substrate/primitives/core" }
+sp-genesis-builder = { path = "../polkadot-sdk/substrate/primitives/genesis-builder" }
+sp-inherents = { path = "../polkadot-sdk/substrate/primitives/inherents" }
+sp-io = { path = "../polkadot-sdk/substrate/primitives/io" }
+sp-keystore = { path = "../polkadot-sdk/substrate/primitives/keystore" }
+sp-keyring = { path = "../polkadot-sdk/substrate/primitives/keyring" }
+sp-runtime = { path = "../polkadot-sdk/substrate/primitives/runtime" }
+sp-timestamp = { path = "../polkadot-sdk/substrate/primitives/timestamp" }
+substrate-frame-rpc-system = { path = "../polkadot-sdk/substrate/utils/frame/rpc/system" }
+substrate-build-script-utils = { path = "../polkadot-sdk/substrate/utils/build-script-utils" }
+frame-benchmarking = { path = "../polkadot-sdk/substrate/frame/benchmarking" }
+frame-executive = { path = "../polkadot-sdk/substrate/frame/executive" }
+frame-support = { path = "../polkadot-sdk/substrate/frame/support" }
+frame-system-benchmarking = { path = "../polkadot-sdk/substrate/frame/system/benchmarking" }
+frame-system-rpc-runtime-api = { path = "../polkadot-sdk/substrate/frame/system/rpc/runtime-api" }
+frame-try-runtime = { path = "../polkadot-sdk/substrate/frame/try-runtime" }
+pallet-babe = { path = "../polkadot-sdk/substrate/frame/babe" }
+pallet-balances = { path = "../polkadot-sdk/substrate/frame/balances" }
+pallet-grandpa = { path = "../polkadot-sdk/substrate/frame/grandpa" }
+pallet-revive = { path = "../polkadot-sdk/substrate/frame/revive" }
+pallet-session = { path = "../polkadot-sdk/substrate/frame/session" }
+pallet-sudo = { path = "../polkadot-sdk/substrate/frame/sudo" }
+pallet-timestamp = { path = "../polkadot-sdk/substrate/frame/timestamp" }
+pallet-transaction-payment-rpc-runtime-api = { path = "../polkadot-sdk/substrate/frame/transaction-payment/rpc/runtime-api" }
+sp-consensus-grandpa = { path = "../polkadot-sdk/substrate/primitives/consensus/grandpa" }
+sp-offchain = { path = "../polkadot-sdk/substrate/primitives/offchain" }
+sp-session = { path = "../polkadot-sdk/substrate/primitives/session" }
+sp-storage = { path = "../polkadot-sdk/substrate/primitives/storage" }
+sp-transaction-pool = { path = "../polkadot-sdk/substrate/primitives/transaction-pool" }
+sp-version = { path = "../polkadot-sdk/substrate/primitives/version" }
+sp-weights = { path = "../polkadot-sdk/substrate/primitives/weights" }
+substrate-wasm-builder = { path = "../polkadot-sdk/substrate/utils/wasm-builder" }
+quip-crypto-primitives = { path = "../polkadot-sdk/quip/primitives/crypto" }
+quip-crypto-primitives-core = { path = "../polkadot-sdk/quip/primitives/crypto-core" }
+
+[patch."ssh://git@gitlab.com/quip.network/pqhybridsign.git"]
+pqhybridsign = { path = "../pqhybridsign/crates/pqhybridsign" }
+pqhybridsign-core = { path = "../pqhybridsign/crates/pqhybridsign-core" }
 
 
 [workspace.lints.rust]
