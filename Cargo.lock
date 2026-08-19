@@ -9249,7 +9249,6 @@ dependencies = [
  "parity-scale-codec",
  "pqhybridsign",
  "pqhybridsign-core",
- "quip-crypto-primitives-core",
  "substrate-bip39 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zeroize",
 ]

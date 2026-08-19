@@ -3,7 +3,7 @@
 //! Transaction/account identity glue for Quip's hybrid runtime signer.
 //!
 //! This crate is intentionally small and policy-focused:
-//! - it fixes the transaction signing scheme to H3 (`sr25519 + ML-DSA-44`)
+//! - it fixes the transaction signing scheme to H4 (`sr25519 + FN-DSA-512`)
 //! - it derives compact 32-byte account ids from the hybrid public key
 //! - it defines the transaction signature envelope that carries both:
 //!   - the hybrid public key
@@ -34,7 +34,7 @@
 //! the property that the full pubkey bytes feed the hash.
 
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
-use quip_crypto_primitives::substrate::sr25519_mldsa44;
+use quip_crypto_primitives::substrate::sr25519_fndsa512;
 use quip_transaction_crypto_core::{account_id_from_public_bytes, HybridTxSignatureBytes};
 use scale_info::TypeInfo;
 use sp_core::Pair as _;
@@ -43,19 +43,19 @@ use sp_runtime::{
     AccountId32,
 };
 
-/// Hybrid H3 public key used for transaction signing.
-pub type HybridPublic = sr25519_mldsa44::Public;
+/// Hybrid H4 public key used for transaction signing.
+pub type HybridPublic = sr25519_fndsa512::Public;
 
-/// Hybrid H3 signature bytes used for transaction signing.
-pub type HybridSignatureBytes = sr25519_mldsa44::Signature;
+/// Hybrid H4 signature bytes used for transaction signing.
+pub type HybridSignatureBytes = sr25519_fndsa512::Signature;
 
-/// Hybrid H3 pair used for transaction signing.
-pub type HybridPair = sr25519_mldsa44::Pair;
+/// Hybrid H4 pair used for transaction signing.
+pub type HybridPair = sr25519_fndsa512::Pair;
 
 /// Compact account id used by the runtime for transaction signers.
 pub type DerivedAccountId = AccountId32;
 
-/// Derives the compact runtime account id from the H3 hybrid public key.
+/// Derives the compact runtime account id from the H4 hybrid public key.
 ///
 /// The mapping is: `blake2_256(ACCOUNT_ID_DOMAIN || hybrid_public_bytes)`.
 ///
@@ -64,7 +64,7 @@ pub type DerivedAccountId = AccountId32;
 /// security note for why this invariant is load-bearing.
 ///
 /// The `Vec` allocation is bounded (one allocation, no reallocation) and is
-/// negligible next to the ML-DSA-44 verification that follows on every signed
+/// negligible next to the FN-DSA-512 verification that follows on every signed
 /// extrinsic. A stack-buffer alternative would require either a const
 /// pubkey-length at this layer of the type stack (not currently available
 /// from `quip-crypto-primitives`) or a streaming hasher (would force a
@@ -136,7 +136,7 @@ impl IdentifyAccount for HybridTxPublic {
 /// be unrelated until `verify` succeeds.
 ///
 /// `MaxEncodedLen` is intentionally not derived because [`HybridSignatureBytes`]
-/// (`sr25519_mldsa44::Signature`) does not yet implement it upstream, even
+/// (`sr25519_fndsa512::Signature`) does not yet implement it upstream, even
 /// though its size is known at compile time via const generics. Add the
 /// derive once the upstream gap is closed.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Encode, Decode, DecodeWithMemTracking, TypeInfo)]
@@ -155,10 +155,10 @@ impl HybridTxSignature {
         Self { public, signature }
     }
 
-    /// Signs the message with the given hybrid H3 pair and returns the full
+    /// Signs the message with the given hybrid H4 pair and returns the full
     /// transaction signature envelope.
     ///
-    /// `message` is signed exactly as given. The H3 domain prefix is applied
+    /// `message` is signed exactly as given. The H4 domain prefix is applied
     /// intrinsically by the scheme (callers must not pre-apply it), and this
     /// does not hash long messages — applying Substrate's `SignedPayload`
     /// >256-byte `blake2_256` rule is the caller's responsibility.

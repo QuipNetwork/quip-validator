@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "quip-signer"
-description = "Quip hybrid (sr25519 + ML-DSA-44) transaction signer"
+description = "Quip hybrid (sr25519 + FN-DSA-512) transaction signer"
 requires-python = ">=3.9"
 license = { text = "MIT-0" }
 classifiers = [

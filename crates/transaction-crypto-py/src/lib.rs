@@ -1,4 +1,4 @@
-//! CPython bindings for Quip's hybrid (H3 = `sr25519 + ML-DSA-44`) transaction
+//! CPython bindings for Quip's hybrid (H4 = `sr25519 + FN-DSA-512`) transaction
 //! signer.
 //!
 //! This is a thin PyO3 wrapper over `quip-transaction-crypto-core` — the same
@@ -32,10 +32,10 @@ fn map_err(error: HybridTxCryptoError) -> PyErr {
     QuipSignerError::new_err(format!("{error:?}"))
 }
 
-/// Derives serialized H3 public bytes (1344B) from a 32-byte master seed.
+/// Derives serialized H4 public bytes (929B) from a 32-byte master seed.
 #[pyfunction]
 fn public_from_seed<'py>(py: Python<'py>, seed: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-    // ML-DSA-44 key generation is CPU-heavy; copy the borrowed seed into an
+    // FN-DSA-512 key generation is CPU-heavy; copy the borrowed seed into an
     // owned (zeroized-on-drop) buffer and release the GIL so other Python
     // threads can progress.
     let seed = Zeroizing::new(seed.to_vec());
@@ -45,19 +45,19 @@ fn public_from_seed<'py>(py: Python<'py>, seed: &[u8]) -> PyResult<Bound<'py, Py
     Ok(PyBytes::new(py, &public))
 }
 
-/// Derives the compact 32-byte Quip account id from serialized H3 public bytes.
+/// Derives the compact 32-byte Quip account id from serialized H4 public bytes.
 #[pyfunction]
 fn account_id_from_public<'py>(py: Python<'py>, public: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
     if public.len() != HYBRID_PUBLIC_LEN {
         return Err(QuipSignerError::new_err(format!(
-            "expected {HYBRID_PUBLIC_LEN}-byte H3 public key, got {}",
+            "expected {HYBRID_PUBLIC_LEN}-byte H4 public key, got {}",
             public.len()
         )));
     }
     Ok(PyBytes::new(py, &account_id_from_public_bytes(public)))
 }
 
-/// Derives the 32-byte H3 master seed from a limited secret URI.
+/// Derives the 32-byte H4 master seed from a limited secret URI.
 ///
 /// Accepts a `0x`-prefixed 64-digit hex seed, or an English BIP39 phrase
 /// optionally followed by `///<password>`. Derivation junctions (`//`, `/`) are
@@ -72,14 +72,14 @@ fn seed_from_mnemonic<'py>(py: Python<'py>, secret_uri: &str) -> PyResult<Bound<
 /// SCALE-encoded `HybridTxSignature` envelope.
 ///
 /// `payload` is signed **exactly as given**: this binding never hashes and never
-/// length-checks. The H3 domain prefix
-/// (`0x01 || "hybrid-sr25519-mldsa44-v1\0" || ...`) is applied intrinsically by
+/// length-checks. The H4 domain prefix
+/// (`0x01 || "hybrid-sr25519-falcon512-v1\0" || ...`) is applied intrinsically by
 /// the signing scheme, so do NOT pre-apply it — doing so double-frames the
 /// message and the runtime rejects the signature.
 ///
 /// Substrate's `SignedPayload` rule — sign `blake2_256(payload)` instead of the
 /// raw bytes when the SCALE-encoded payload exceeds 256 bytes — is an extrinsic
-/// convention, not part of H3, and is therefore **the caller's responsibility**.
+/// convention, not part of H4, and is therefore **the caller's responsibility**.
 /// Passing a >256-byte extrinsic payload here verbatim yields a signature the
 /// runtime silently rejects; hash it to 32 bytes first, then sign the digest.
 #[pyfunction]
@@ -88,7 +88,7 @@ fn sign_payload_from_seed<'py>(
     seed: &[u8],
     payload: &[u8],
 ) -> PyResult<Bound<'py, PyBytes>> {
-    // ML-DSA-44 key derivation + signing is CPU-heavy; copy the borrowed inputs
+    // FN-DSA-512 key derivation + signing is CPU-heavy; copy the borrowed inputs
     // into owned buffers (zeroizing the secret seed copy) and release the GIL
     // for the duration.
     let seed = Zeroizing::new(seed.to_vec());
@@ -124,7 +124,7 @@ impl HybridSigner {
     #[staticmethod]
     fn from_seed(py: Python<'_>, seed: &[u8]) -> PyResult<Self> {
         // Validates length (and key derivation) before we retain the seed.
-        // ML-DSA-44 derivation is CPU-heavy, so copy the seed into an owned
+        // FN-DSA-512 derivation is CPU-heavy, so copy the seed into an owned
         // (zeroized-on-drop) buffer and release the GIL while deriving the
         // public key.
         let owned = Zeroizing::new(seed.to_vec());
@@ -146,7 +146,7 @@ impl HybridSigner {
         Self::from_seed(py, &seed[..])
     }
 
-    /// Serialized H3 public bytes (1344B).
+    /// Serialized H4 public bytes (929B).
     #[getter]
     fn public_key<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.public)
@@ -160,12 +160,12 @@ impl HybridSigner {
 
     /// Signs raw payload bytes, returning the SCALE-encoded envelope.
     ///
-    /// `payload` is signed exactly as given: no hashing, no length check. The H3
+    /// `payload` is signed exactly as given: no hashing, no length check. The H4
     /// domain prefix is applied intrinsically by the scheme (do not pre-apply
     /// it). Applying Substrate's >256-byte `blake2_256` `SignedPayload` rule is
     /// the caller's responsibility — see [`sign_payload_from_seed`].
     fn sign<'py>(&self, py: Python<'py>, payload: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-        // ML-DSA-44 signing is CPU-heavy; copy inputs into owned buffers
+        // FN-DSA-512 signing is CPU-heavy; copy inputs into owned buffers
         // (zeroizing the secret seed copy) and release the GIL so other Python
         // threads aren't serialized behind it.
         let seed = Zeroizing::new(self.seed.to_vec());

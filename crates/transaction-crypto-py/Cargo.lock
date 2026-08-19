@@ -255,6 +255,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "fn-dsa"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13662b90285f1d8d0cf7bc600808b036a52802eeadbd9912992bc9a357fbdfd0"
+dependencies = [
+ "fn-dsa-comm",
+ "fn-dsa-kgen",
+ "fn-dsa-sign",
+ "fn-dsa-vrfy",
+]
+
+[[package]]
+name = "fn-dsa-comm"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1635e68ba9d301da36ab5fb4a78e5dc006c3b0faa8ea07f2acb986d880512579"
+dependencies = [
+ "cpufeatures",
+ "rand_core",
+]
+
+[[package]]
+name = "fn-dsa-kgen"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1dcea5794c0cd70a7b084851a6ab8b070c956b332d8b91760d569e5a6778218"
+dependencies = [
+ "fn-dsa-comm",
+ "zeroize",
+]
+
+[[package]]
+name = "fn-dsa-sign"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a64adea5213c0f5d5f77d862b5d06b56a47dc317f19d7e3b164830c92f4693"
+dependencies = [
+ "fn-dsa-comm",
+ "zeroize",
+]
+
+[[package]]
+name = "fn-dsa-vrfy"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1028459ccd32c695ce0ca44ae5d59ea7046a04bc145004cc1b8aabd91d3457a7"
+dependencies = [
+ "fn-dsa-comm",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,6 +575,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "pqhybridsign"
+version = "0.0.0-rc1"
+dependencies = [
+ "ed25519-zebra",
+ "fips204",
+ "fn-dsa",
+ "pqhybridsign-core",
+ "rand_core",
+ "schnorrkel",
+ "sha2",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "pqhybridsign-core"
+version = "0.0.0-rc1"
+dependencies = [
+ "hkdf",
+ "rand_core",
+ "sha2",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -605,30 +682,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "quip-crypto-primitives-core"
-version = "0.1.0"
-source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2#4330574c320bccf82ac254514e95657fb5b4601e"
-dependencies = [
- "blake2",
- "ed25519-zebra",
- "fips204",
- "hkdf",
- "rand_core",
- "schnorrkel",
- "sha2",
- "subtle",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
 name = "quip-transaction-crypto-core"
 version = "0.1.0"
 dependencies = [
  "bip39",
  "blake2",
  "parity-scale-codec",
- "quip-crypto-primitives-core",
+ "pqhybridsign",
+ "pqhybridsign-core",
  "substrate-bip39",
  "zeroize",
 ]
@@ -847,26 +908,6 @@ name = "target-lexicon"
 version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
-
-[[package]]
-name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "toml_datetime"

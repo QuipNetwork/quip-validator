@@ -12,7 +12,7 @@
 //! only the printed `*_pub` / `tx_account_*` lines are safe to share.
 
 use codec::Encode;
-use quip_crypto_primitives::substrate::{ed25519_mldsa44, sr25519_mldsa44};
+use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
 use quip_transaction_crypto::account_id_from_public;
 use sp_core::{crypto::Ss58Codec, Pair as _};
 
@@ -42,12 +42,12 @@ fn main() {
     // with a backtrace — this binary's only caller is `scripts/derive-operator-keys.sh`,
     // which captures stderr and shows it as the failure reason. A clean
     // message ("invalid checksum") is far more actionable than a panic trace.
-    let babe = sr25519_mldsa44::Pair::from_string(&uri, None).unwrap_or_else(|e| {
-        eprintln!("invalid SURI for hybrid-babe-h344: {e:?}");
+    let babe = sr25519_fndsa512::Pair::from_string(&uri, None).unwrap_or_else(|e| {
+        eprintln!("invalid SURI for hybrid-babe-h444: {e:?}");
         std::process::exit(2);
     });
-    let grandpa = ed25519_mldsa44::Pair::from_string(&uri, None).unwrap_or_else(|e| {
-        eprintln!("invalid SURI for hybrid-grandpa-h144: {e:?}");
+    let grandpa = ed25519_fndsa512::Pair::from_string(&uri, None).unwrap_or_else(|e| {
+        eprintln!("invalid SURI for hybrid-grandpa-h244: {e:?}");
         std::process::exit(2);
     });
 

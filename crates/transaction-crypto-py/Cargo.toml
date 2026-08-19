@@ -24,6 +24,12 @@ pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
 quip-transaction-crypto-core = { path = "../transaction-crypto-core", default-features = false, features = ["std"] }
 zeroize = { version = "1", default-features = false }
 
+# Keep the standalone Python workspace on the same local H4 implementation as
+# the parent workspace during coordinated development.
+[patch."ssh://git@gitlab.com/quip.network/pqhybridsign.git"]
+pqhybridsign = { path = "../../../pqhybridsign/crates/pqhybridsign" }
+pqhybridsign-core = { path = "../../../pqhybridsign/crates/pqhybridsign-core" }
+
 # Size-tuned: the signer is not on a hot path, so favor a small extension.
 # `panic = "unwind"` is kept on purpose — PyO3 turns Rust panics into Python
 # exceptions; `abort` would take down the interpreter instead.

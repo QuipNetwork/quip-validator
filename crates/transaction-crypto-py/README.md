@@ -1,6 +1,6 @@
 # quip-signer (Python)
 
-CPython bindings for Quip's hybrid (H3 = `sr25519 + ML-DSA-44`) transaction
+CPython bindings for Quip's hybrid (H4 = `sr25519 + FN-DSA-512`) transaction
 signer. A thin PyO3 wrapper over `quip-transaction-crypto-core` — the same
 `sp`-free engine the browser WASM signer is built from — so the Python signer,
 the browser signer, and the runtime verifier are byte-identical.
@@ -48,7 +48,7 @@ import quip_signer
 signer = quip_signer.HybridSigner.from_mnemonic(
     "bottom drive obey lake curtain smoke basket hold race lonely fit walk"
 )
-public = signer.public_key        # 1344 bytes
+public = signer.public_key        # 929 bytes
 account = signer.account_id       # 32 bytes
 envelope = signer.sign(b"payload bytes")   # SCALE-encoded HybridTxSignature
 
@@ -70,9 +70,9 @@ URI, …) raises `quip_signer.QuipSignerError`.
 given**. There is no internal hashing and no length check, so two obligations
 are yours:
 
-1. **Do not apply the H3 domain prefix yourself.** The H3 scheme frames every
+1. **Do not apply the H4 domain prefix yourself.** The H4 scheme frames every
    message internally as
-   `0x01 || "hybrid-sr25519-mldsa44-v1\0" || len(ctx) || ctx || msg` before
+   `0x01 || "hybrid-sr25519-falcon512-v1\0" || len(ctx) || ctx || msg` before
    signing. The browser signer, the Python signer, and the runtime verifier all
    share this core, so they agree byte-for-byte. Pass the unframed payload;
    pre-applying the prefix double-frames the message and the runtime rejects the
@@ -82,7 +82,7 @@ are yours:
    Substrate signs `SignedPayload::using_encoded`, which substitutes
    `blake2_256(payload)` for the raw bytes whenever the SCALE-encoded payload
    exceeds **256 bytes**, and otherwise signs verbatim. This is an extrinsic
-   convention, **not** part of H3, so the binding does not do it for you. If you
+   convention, **not** part of H4, so the binding does not do it for you. If you
    pass a >256-byte extrinsic payload here verbatim, you get a signature the
    runtime **silently rejects** with no useful error.
 

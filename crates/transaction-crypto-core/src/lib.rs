@@ -4,14 +4,14 @@
 //!
 //! This crate is intentionally bytes-oriented:
 //! - it derives compact 32-byte account ids from hybrid public bytes
-//! - it signs raw payload bytes with the H3 suite
+//! - it signs raw payload bytes with the H4 suite
 //! - it encodes/decodes the runtime signature envelope as raw bytes
 //!
-//! The H3 suite itself (the `sr25519 + ML-DSA-44` keygen / sign / verify logic,
-//! message framing, and seed derivation) is **not** reimplemented here. It is
-//! the shared, `sp`-free [`Sr25519MlDsa44`] engine from
-//! `quip-crypto-primitives-core`, which the runtime is also built from — so the
-//! browser signer and the runtime verifier are byte-identical by construction.
+//! The H4 suite itself (the `sr25519 + FN-DSA-512` keygen / sign / verify logic,
+//! message framing, and seed derivation) is **not** reimplemented here. It uses
+//! the shared, `sp`-free [`pqhybridsign_core::composite_delta`] implementation
+//! with [`pqhybridsign::H4`], which the runtime wrapper also uses — so browser
+//! and runtime signing remain byte-identical by construction.
 //!
 //! What stays quip-specific and lives here: account-id derivation
 //! (`quip-account-v1`), the SCALE transaction-signature envelope, and the
@@ -28,20 +28,22 @@ use bip39::{Language, Mnemonic};
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use codec::{Decode, DecodeWithMemTracking, Encode};
-use quip_crypto_primitives_core::suite::sr25519_mldsa44::{
-    Sr25519MlDsa44, HYBRID_PK_LEN, HYBRID_SIG_LEN, HYBRID_SK_LEN,
-};
-use quip_crypto_primitives_core::{HybridSignatureError, HybridSignatureScheme};
+use pqhybridsign::{H4, MIN_FALCON512_SIG_LEN};
+use pqhybridsign_core::composite_delta;
+use pqhybridsign_core::suite::DeltaSuite;
 use zeroize::Zeroize;
 
 const MASTER_SEED_LEN: usize = 32;
+const CLASSICAL_SIGNATURE_LEN: usize = 64;
+const DELTA_LEN: usize = 1;
+const MIN_HYBRID_SIGNATURE_LEN: usize = CLASSICAL_SIGNATURE_LEN + DELTA_LEN + MIN_FALCON512_SIG_LEN;
 
-/// Serialized H3 public-key length in bytes.
-pub const HYBRID_PUBLIC_LEN: usize = HYBRID_PK_LEN;
-/// Serialized H3 signature length in bytes.
-pub const HYBRID_SIGNATURE_LEN: usize = HYBRID_SIG_LEN;
-/// Serialized H3 secret-key length in bytes.
-pub const HYBRID_SECRET_LEN: usize = HYBRID_SK_LEN;
+/// Serialized H4 public-key length in bytes.
+pub const HYBRID_PUBLIC_LEN: usize = H4::PUBLIC_KEY_LEN;
+/// Maximum serialized H4 signature length in bytes.
+pub const HYBRID_SIGNATURE_LEN: usize = H4::MAX_SIGNATURE_LEN;
+/// Serialized H4 secret-key length in bytes.
+pub const HYBRID_SECRET_LEN: usize = H4::SECRET_KEY_LEN;
 /// Fixed length of derived Quip account ids.
 pub const ACCOUNT_ID_LEN: usize = 32;
 
@@ -68,19 +70,28 @@ pub enum HybridTxCryptoError {
 
 pub type HybridResult<T> = core::result::Result<T, HybridTxCryptoError>;
 
-/// Maps the shared suite's error type onto this crate's public error type, so
-/// the boundary error surface is preserved across the dependency swap.
-fn map_suite_error(error: HybridSignatureError) -> HybridTxCryptoError {
-    match error {
-        HybridSignatureError::InvalidLength { expected, actual } => {
-            HybridTxCryptoError::InvalidLength { expected, actual }
-        }
-        HybridSignatureError::InvalidSeedLength { expected, actual } => {
-            HybridTxCryptoError::InvalidLength { expected, actual }
-        }
-        HybridSignatureError::InvalidPublicKey => HybridTxCryptoError::InvalidPublicKey,
-        HybridSignatureError::InvalidSecretKey => HybridTxCryptoError::InvalidSecretKey,
+fn exact_array<const N: usize>(bytes: &[u8]) -> HybridResult<[u8; N]> {
+    bytes
+        .try_into()
+        .map_err(|_| HybridTxCryptoError::InvalidLength {
+            expected: N,
+            actual: bytes.len(),
+        })
+}
+
+fn signature_wire_len(signature: &[u8; HYBRID_SIGNATURE_LEN]) -> usize {
+    MIN_HYBRID_SIGNATURE_LEN + usize::from(signature[CLASSICAL_SIGNATURE_LEN])
+}
+
+fn validate_signature_padding(signature: &[u8; HYBRID_SIGNATURE_LEN]) -> HybridResult<usize> {
+    let wire_len = signature_wire_len(signature);
+    if signature[wire_len..].iter().any(|byte| *byte != 0) {
+        return Err(HybridTxCryptoError::InvalidLength {
+            expected: wire_len,
+            actual: HYBRID_SIGNATURE_LEN,
+        });
     }
+    Ok(wire_len)
 }
 
 /// Bytes-level transaction signature envelope.
@@ -93,14 +104,11 @@ pub struct HybridTxSignatureBytes {
 impl HybridTxSignatureBytes {
     /// Creates a bytes-level envelope after validating the input lengths and encodings.
     pub fn new(public: &[u8], signature: &[u8]) -> HybridResult<Self> {
-        let public_key = Sr25519MlDsa44::public_key_from_bytes(public).map_err(map_suite_error)?;
-        let signature_value =
-            Sr25519MlDsa44::signature_from_bytes(signature).map_err(map_suite_error)?;
+        let public = exact_array(public)?;
+        let signature = exact_array(signature)?;
+        validate_signature_padding(&signature)?;
 
-        Ok(Self {
-            public: public_key.to_bytes(),
-            signature: signature_value.to_bytes(),
-        })
+        Ok(Self { public, signature })
     }
 
     /// Returns the derived compact account id for the embedded public key.
@@ -110,13 +118,10 @@ impl HybridTxSignatureBytes {
 
     /// Verifies the embedded signature against the provided raw message bytes.
     pub fn verify(&self, message: &[u8]) -> bool {
-        let Ok(public) = Sr25519MlDsa44::public_key_from_bytes(&self.public) else {
+        let Ok(wire_len) = validate_signature_padding(&self.signature) else {
             return false;
         };
-        let Ok(signature) = Sr25519MlDsa44::signature_from_bytes(&self.signature) else {
-            return false;
-        };
-        Sr25519MlDsa44::verify(&public, message, b"", &signature)
+        composite_delta::verify::<H4>(&self.public, message, b"", &self.signature[..wire_len])
     }
 
     /// SCALE-encodes the bytes-level envelope.
@@ -135,7 +140,7 @@ impl HybridTxSignatureBytes {
     }
 }
 
-/// Derives the compact Quip account id from serialized H3 public bytes.
+/// Derives the compact Quip account id from serialized H4 public bytes.
 pub fn account_id_from_public_bytes(public: &[u8]) -> [u8; ACCOUNT_ID_LEN] {
     let mut hasher = Blake2bVar::new(ACCOUNT_ID_LEN).expect("32-byte Blake2 output is valid");
     hasher.update(ACCOUNT_ID_DOMAIN);
@@ -148,13 +153,18 @@ pub fn account_id_from_public_bytes(public: &[u8]) -> [u8; ACCOUNT_ID_LEN] {
     out
 }
 
-/// Derives serialized H3 public bytes from a 32-byte H3 master seed.
+/// Derives serialized H4 public bytes from a 32-byte H4 master seed.
 pub fn public_key_from_seed(seed: &[u8]) -> HybridResult<[u8; HYBRID_PUBLIC_LEN]> {
-    let (_secret, public) = Sr25519MlDsa44::from_seed_slice(seed).map_err(map_suite_error)?;
-    Ok(public.to_bytes())
+    let seed = exact_array::<MASTER_SEED_LEN>(seed)?;
+    let mut secret = [0u8; HYBRID_SECRET_LEN];
+    let mut public = [0u8; HYBRID_PUBLIC_LEN];
+    let result = composite_delta::keypair_from_seed::<H4>(&seed, &mut secret, &mut public)
+        .map_err(|_| HybridTxCryptoError::InvalidSeed);
+    secret.zeroize();
+    result.map(|()| public)
 }
 
-/// Derives the 32-byte H3 master seed from a limited secret URI.
+/// Derives the 32-byte H4 master seed from a limited secret URI.
 ///
 /// This mirrors the supported subset of substrate's `Pair::from_string`:
 ///
@@ -187,7 +197,7 @@ pub fn master_seed_from_secret_uri(uri: &str) -> HybridResult<[u8; MASTER_SEED_L
     master_seed_from_mnemonic(phrase, password)
 }
 
-/// Derives the 32-byte H3 master seed from an English BIP39 phrase.
+/// Derives the 32-byte H4 master seed from an English BIP39 phrase.
 ///
 /// This matches substrate's `Pair::from_phrase`: the mnemonic entropy is run
 /// through `substrate_bip39::seed_from_entropy` (PBKDF2-HMAC-SHA512, salt
@@ -242,16 +252,16 @@ fn hex_digit(ch: u8) -> HybridResult<u8> {
     }
 }
 
-/// Signs raw payload bytes with a 32-byte H3 master seed and returns the bytes-level envelope.
+/// Signs raw payload bytes with a 32-byte H4 master seed and returns the bytes-level envelope.
 ///
 /// # Payload contract
 ///
 /// `payload` is signed **exactly as given** — this function performs no hashing
 /// and no length check. Two caller obligations follow:
 ///
-/// - **H3 domain prefix is intrinsic; do NOT pre-apply it.** The H3 scheme
-///   (`Sr25519MlDsa44`) frames every message internally as
-///   `0x01 ‖ "hybrid-sr25519-mldsa44-v1\0" ‖ len(ctx) ‖ ctx ‖ msg` before
+/// - **H4 domain prefix is intrinsic; do NOT pre-apply it.** The H4 scheme
+///   frames every message internally as
+///   `0x01 ‖ "hybrid-sr25519-falcon512-v1\0" ‖ len(ctx) ‖ ctx ‖ msg` before
 ///   hashing/signing. Browser, runtime, and Python all go through the same
 ///   core, so they agree byte-for-byte. Callers pass the unframed payload;
 ///   pre-applying the prefix yourself would double-frame and the runtime would
@@ -259,21 +269,27 @@ fn hex_digit(ch: u8) -> HybridResult<u8> {
 /// - **The Substrate >256-byte rule is the caller's job.** Substrate signs
 ///   `SignedPayload::using_encoded`, which substitutes `blake2_256(payload)`
 ///   for the raw bytes whenever the SCALE-encoded payload exceeds 256 bytes.
-///   That is an extrinsic convention, not part of H3, so this function does not
+///   That is an extrinsic convention, not part of H4, so this function does not
 ///   apply it. A caller that hands a >256-byte extrinsic payload here verbatim
 ///   gets a signature the runtime silently rejects. Hash first, then sign the
 ///   32-byte digest.
 pub fn sign_payload_from_seed(seed: &[u8], payload: &[u8]) -> HybridResult<HybridTxSignatureBytes> {
-    let (secret, public) = Sr25519MlDsa44::from_seed_slice(seed).map_err(map_suite_error)?;
-    let signature = Sr25519MlDsa44::sign_deterministic(&secret, payload, b"", b"");
-
-    HybridTxSignatureBytes::new(public.as_ref(), signature.as_ref())
+    let seed = exact_array::<MASTER_SEED_LEN>(seed)?;
+    let mut secret = [0u8; HYBRID_SECRET_LEN];
+    let mut public = [0u8; HYBRID_PUBLIC_LEN];
+    if composite_delta::keypair_from_seed::<H4>(&seed, &mut secret, &mut public).is_err() {
+        secret.zeroize();
+        return Err(HybridTxCryptoError::InvalidSeed);
+    }
+    let result = sign_payload_with_arrays(&secret, &public, payload);
+    secret.zeroize();
+    result
 }
 
-/// Signs raw payload bytes with expanded H3 secret bytes and matching public bytes.
+/// Signs raw payload bytes with expanded H4 secret bytes and matching public bytes.
 ///
 /// The payload contract is identical to [`sign_payload_from_seed`]: the bytes
-/// are signed verbatim (no hashing, no length check), the H3 domain prefix is
+/// are signed verbatim (no hashing, no length check), the H4 domain prefix is
 /// applied intrinsically by the scheme, and applying Substrate's >256-byte
 /// `blake2_256` rule is the caller's responsibility.
 pub fn sign_payload_from_secret(
@@ -281,10 +297,26 @@ pub fn sign_payload_from_secret(
     public: &[u8],
     payload: &[u8],
 ) -> HybridResult<HybridTxSignatureBytes> {
-    let secret_key = Sr25519MlDsa44::secret_key_from_bytes(secret).map_err(map_suite_error)?;
-    let signature = Sr25519MlDsa44::sign_deterministic(&secret_key, payload, b"", b"");
+    let mut secret = exact_array::<HYBRID_SECRET_LEN>(secret)?;
+    let public = exact_array::<HYBRID_PUBLIC_LEN>(public)?;
+    let result = sign_payload_with_arrays(&secret, &public, payload);
+    secret.zeroize();
+    result
+}
 
-    HybridTxSignatureBytes::new(public, signature.as_ref())
+fn sign_payload_with_arrays(
+    secret: &[u8; HYBRID_SECRET_LEN],
+    public: &[u8; HYBRID_PUBLIC_LEN],
+    payload: &[u8],
+) -> HybridResult<HybridTxSignatureBytes> {
+    let mut signature = [0u8; HYBRID_SIGNATURE_LEN];
+    let wire_len =
+        composite_delta::sign_deterministic::<H4>(secret, payload, b"", b"", &mut signature)
+            .map_err(|_| HybridTxCryptoError::SigningFailed)?;
+    if wire_len != signature_wire_len(&signature) {
+        return Err(HybridTxCryptoError::SigningFailed);
+    }
+    HybridTxSignatureBytes::new(public, &signature)
 }
 
 #[cfg(test)]
@@ -352,6 +384,20 @@ mod tests {
         envelope.signature[envelope.signature.len() / 2] ^= 0xFF;
 
         assert!(!envelope.verify(b"quip-message"));
+    }
+
+    #[test]
+    fn noncanonical_signature_padding_rejects() {
+        let envelope = sign_payload_from_seed(&[11u8; 32], b"quip-message").unwrap();
+        let mut padded = envelope.signature;
+        padded[CLASSICAL_SIGNATURE_LEN] = 0;
+        assert_eq!(
+            HybridTxSignatureBytes::new(&envelope.public, &padded),
+            Err(HybridTxCryptoError::InvalidLength {
+                expected: MIN_HYBRID_SIGNATURE_LEN,
+                actual: HYBRID_SIGNATURE_LEN,
+            })
+        );
     }
 
     #[test]
