@@ -253,6 +253,46 @@ benchmark-preflight:
     - ./scripts/check-benchmark-preflight.sh --check-wrapper-guard
     - ./scripts/check-benchmark-preflight.sh
 
+# Warns when a merge request changes a pallet's benchmarkable surface without
+# regenerating that pallet's weights. benchmark-weights is manual by design (it
+# costs a serialized run on the reference machine), so forgetting it is silent
+# today: the MR merges with stale weights and the drift only surfaces later.
+#
+# Deliberately NOT on the bench runner. This is a git-diff check that takes
+# seconds; `tags: [bench]` + `resource_group: reference-machine` would make it
+# queue behind a real measurement and hold node02's single concurrent slot for
+# no reason. Note the [docker, amd64] pool does still include node02's own
+# fleet runner (54515322), so this can land on the bench box anyway — harmless
+# at this cost, but it is the same pool overlap tracked as QUI-951.
+#
+# allow_failure: true is the design, not a concession. A hard gate would force a
+# reference-machine run on merge requests that only refactor internals with no
+# weight impact, turning a cognitive-load fix into a throughput problem on a
+# single serialized box. Yellow plus the pallet name gives the same "did you
+# forget?" signal without the queue.
+#
+# GIT_DEPTH 0 is required: the script diffs against CI_MERGE_REQUEST_DIFF_BASE_SHA,
+# which a shallow clone need not contain.
+#
+# This job needs only git/sed/sort/comm/grep, not the Rust toolchain. It uses
+# $TOOLCHAIN_IMAGE anyway because that image is already resident on these
+# runners, and picking a smaller one is entangled with the image-mirroring
+# decision in QUI-947 — worth revisiting there rather than pre-empting it here.
+# (The digest pin half of that landed separately as QUI-960, !63.)
+weights-staleness-check:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 10m
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      allow_failure: true
+  script:
+    - ./scripts/check-weights-staleness.sh
+
 # The Python signer crate (crates/transaction-crypto-py) is *excluded* from the
 # workspace — its macOS `dynamic_lookup` link requirement would perturb the
 # runtime/node builds (see the exclude comment in the root Cargo.toml). A side
