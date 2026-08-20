@@ -577,7 +577,7 @@ dependencies = [
 [[package]]
 name = "pqhybridsign"
 version = "0.0.0-rc1"
-source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=cfa59138388aa7d63af90db5d02b1aa8be4dc70c#cfa59138388aa7d63af90db5d02b1aa8be4dc70c"
+source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=5dc540e90ff6173e2347cf11c0031ccfe216e59f#5dc540e90ff6173e2347cf11c0031ccfe216e59f"
 dependencies = [
  "ed25519-zebra",
  "fips204",
@@ -593,7 +593,7 @@ dependencies = [
 [[package]]
 name = "pqhybridsign-core"
 version = "0.0.0-rc1"
-source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=cfa59138388aa7d63af90db5d02b1aa8be4dc70c#cfa59138388aa7d63af90db5d02b1aa8be4dc70c"
+source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=5dc540e90ff6173e2347cf11c0031ccfe216e59f#5dc540e90ff6173e2347cf11c0031ccfe216e59f"
 dependencies = [
  "hkdf",
  "rand_core",

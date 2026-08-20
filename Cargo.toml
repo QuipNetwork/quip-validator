@@ -46,8 +46,8 @@ frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.gi
 frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 fips204 = { version = "0.4", default-features = false, features = ["ml-dsa-44"] }
-pqhybridsign = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "cfa59138388aa7d63af90db5d02b1aa8be4dc70c", default-features = false }
-pqhybridsign-core = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "cfa59138388aa7d63af90db5d02b1aa8be4dc70c", default-features = false, features = ["alloc"] }
+pqhybridsign = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "5dc540e90ff6173e2347cf11c0031ccfe216e59f", default-features = false }
+pqhybridsign-core = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "5dc540e90ff6173e2347cf11c0031ccfe216e59f", default-features = false, features = ["alloc"] }
 futures = { version = "0.3.31" }
 getrandom = { version = "0.2.17", default-features = false }
 hkdf = { version = "0.12", default-features = false }
