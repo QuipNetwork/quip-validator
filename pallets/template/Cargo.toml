@@ -1,7 +1,7 @@
 [package]
 name = "pallet-template"
 description = "FRAME pallet template for defining custom runtime logic."
-version = "0.2.1"
+version = "0.2.2"
 license = "Unlicense"
 authors.workspace = true
 homepage.workspace = true

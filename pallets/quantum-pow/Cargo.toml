@@ -1,7 +1,7 @@
 [package]
 name = "pallet-quantum-pow"
 description = "FRAME pallet for QUIP's protocol-level useful-work mining."
-version = "0.2.1"
+version = "0.2.2"
 license = "Unlicense"
 authors.workspace = true
 homepage.workspace = true

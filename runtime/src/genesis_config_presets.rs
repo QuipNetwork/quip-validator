@@ -115,8 +115,13 @@ fn testnet_genesis(
     initial_authorities: Vec<(AccountId, BabeId, GrandpaId)>,
     endowed_accounts: Vec<AccountId>,
     root: AccountId,
+    chain_id: u64,
 ) -> Value {
     build_struct_json_patch!(RuntimeGenesisConfig {
+        evm_chain_id: pallet_evm_chain_id::GenesisConfig {
+            chain_id,
+            ..Default::default()
+        },
         balances: BalancesConfig {
             balances: endowed_accounts
                 .iter()
@@ -175,6 +180,7 @@ pub fn development_config_genesis() -> Value {
             tx_account_from_seed(&Sr25519Keyring::BobStash.to_seed()),
         ],
         tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+        pallet_evm_chain_id::LOCAL_CHAIN_ID,
     )
 }
 
@@ -198,6 +204,7 @@ pub fn local_config_genesis() -> Value {
             .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
         tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+        pallet_evm_chain_id::LOCAL_CHAIN_ID,
     )
 }
 
@@ -226,6 +233,7 @@ pub fn local_three_validator_config_genesis() -> Value {
             .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
         tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+        pallet_evm_chain_id::LOCAL_CHAIN_ID,
     )
 }
 
@@ -287,6 +295,7 @@ pub fn quip_testnet_config_genesis() -> Value {
         ],
         vec![op1_account.clone(), op2_account, op3_account],
         op1_account,
+        pallet_evm_chain_id::TESTNET_CHAIN_ID,
     )
 }
 
@@ -368,7 +377,9 @@ mod tests {
     // touched `BuildGenesisConfig::build`, so they happily returned valid
     // JSON while the storage build panicked on `pallet-babe` /
     // `pallet-session` double-initialisation of the authority set.
-    fn assert_preset_builds_storage(patch: Value) {
+    fn assert_preset_builds_storage_with_chain_id(patch: Value, expected_chain_id: u64) {
+        use frame_support::traits::Get;
+
         let mut full = serde_json::to_value(crate::RuntimeGenesisConfig::default())
             .expect("default runtime genesis config serialises");
         merge_json(&mut full, patch);
@@ -376,27 +387,43 @@ mod tests {
         sp_io::TestExternalities::new_empty().execute_with(|| {
             build_state::<crate::RuntimeGenesisConfig>(bytes)
                 .expect("genesis preset builds storage without panic");
+            assert_eq!(
+                <pallet_evm_chain_id::ChainId<crate::Runtime> as Get<u64>>::get(),
+                expected_chain_id
+            );
         });
     }
 
     #[test]
     fn development_preset_builds() {
-        assert_preset_builds_storage(development_config_genesis());
+        assert_preset_builds_storage_with_chain_id(
+            development_config_genesis(),
+            pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        );
     }
 
     #[test]
     fn local_preset_builds() {
-        assert_preset_builds_storage(local_config_genesis());
+        assert_preset_builds_storage_with_chain_id(
+            local_config_genesis(),
+            pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        );
     }
 
     #[test]
     fn local_three_validator_preset_builds() {
-        assert_preset_builds_storage(local_three_validator_config_genesis());
+        assert_preset_builds_storage_with_chain_id(
+            local_three_validator_config_genesis(),
+            pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        );
     }
 
     #[test]
     fn quip_testnet_preset_builds() {
-        assert_preset_builds_storage(quip_testnet_config_genesis());
+        assert_preset_builds_storage_with_chain_id(
+            quip_testnet_config_genesis(),
+            pallet_evm_chain_id::TESTNET_CHAIN_ID,
+        );
     }
 
     #[test]
