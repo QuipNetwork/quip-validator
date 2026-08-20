@@ -4,7 +4,9 @@ This file provides guidance to coding assistants (Claude Code, Codex, Cursor, et
 
 ## Overview
 
-Quip Network solochain node built on Substrate (Polkadot SDK `polkadot-stable2512-2`). This is a standalone blockchain with Aura consensus (block authoring) and GRANDPA (finality), currently at the template stage with a single custom pallet.
+Quip Network solochain node built on Substrate (Polkadot SDK
+`polkadot-stable2512-2`). This is a standalone blockchain with hybrid H4 BABE
+block authoring and H2 GRANDPA finality.
 
 ## Chain specs
 
@@ -20,6 +22,11 @@ Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
 | `--chain=local3` | Local Testnet (3 Validators) | Alice, Bob, and Charlie local | 1337 |
 
 Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
+
+Runtime 116 is the H2/H4 chain-wipe relaunch, not an in-place upgrade from the
+earlier H1/H3 network. Work on this launch must assume fresh genesis/state,
+fresh validator databases, re-inserted H4 BABE and H2 GRANDPA keys, and
+incompatible old signed extrinsics (`transaction_version = 7`).
 
 ## Commands
 
@@ -81,10 +88,10 @@ Three-crate workspace:
 
 **`node/`** — Native binary (`quip-network-node`). Handles networking (libp2p), consensus orchestration, RPC server, and chain specification. Key files:
 - `chain_spec.rs` — Genesis configuration. Default (no `--chain`) is `quip-testnet`.
-- `service.rs` — Node service wiring (Aura + GRANDPA consensus, transaction pool, networking)
+- `service.rs` — Node service wiring (hybrid BABE + GRANDPA consensus, transaction pool, networking)
 - `rpc.rs` — Custom RPC endpoint registration
 
-**`runtime/`** — Blockchain state transition function (`quip-protocol-runtime`). Compiles to both native and Wasm. The Wasm blob is embedded in the native binary and can be upgraded on-chain without hard forks.
+**`runtime/`** — Blockchain state transition function (`quip-protocol-runtime`). Compiles to both native and Wasm. The Wasm blob is embedded in the native binary and supports ordinary on-chain upgrades; the Runtime 116 H2/H4 launch is explicitly a chain-wipe relaunch instead.
 - `lib.rs` — Runtime type definitions, pallet composition via `#[frame_support::runtime]` macro, block time constants (6s slots)
 - `configs/mod.rs` — All pallet `Config` trait implementations (system params, weights, fees)
 - `apis.rs` — Runtime API implementations exposed to the node

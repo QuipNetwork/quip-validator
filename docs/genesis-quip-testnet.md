@@ -5,11 +5,13 @@ Public material for the three bootnode operators pinned into the
 public bytes live as `include_str!`-loaded hex blobs under
 `runtime/src/genesis_quip_testnet/`. This file is the human-readable index.
 
-Runtime 116 changes consensus authorities to H4/H2 FN-DSA-512 keys (929 bytes
-each). Because the previous H3/H1 public material could not be converted, the
-three operators derived replacement public bundles from their existing
-mnemonics. Runtime 116 pins those rotated keys and accounts while retaining the
-existing bootnode peer IDs and multiaddrs; operator 1 remains the sudo account.
+Runtime 116 is the genesis runtime for an H4/H2 FN-DSA-512 chain-wipe relaunch,
+not an in-place upgrade of the previous chain. The old state is discarded and
+the new genesis starts with 929-byte consensus authority keys. Because the
+previous H3/H1 public material could not be converted, the three operators
+derived replacement public bundles from their existing mnemonics. The fresh
+genesis pins those keys and accounts while retaining the existing bootnode peer
+IDs and multiaddrs; operator 1 remains the sudo account.
 
 ## Operators
 

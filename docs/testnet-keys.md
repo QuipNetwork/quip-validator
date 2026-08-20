@@ -68,12 +68,14 @@ and into the inline `tx_account_from_hex(...)` calls in
 the regenerated `quip_testnet` preset in
 `runtime/src/genesis_config_presets.rs`.
 
-## Runtime 116 H2/H4 rotation
+## Runtime 116 H2/H4 chain-wipe relaunch
 
-The three original operators retained their mnemonics during the Runtime 116
-rotation; no new mnemonic or libp2p node key is required. Before starting the
-upgraded validator, each operator must re-insert both consensus keys from the
-existing mnemonic into the validator keystore:
+Runtime 116 launches from fresh genesis after wiping the previous chain state;
+it is not an in-place runtime upgrade. The three original operators retained
+their mnemonics for the relaunch, so no new mnemonic or libp2p node key is
+required. Before starting a validator against the new genesis, each operator
+must re-insert both consensus keys from the existing mnemonic into a fresh
+validator keystore:
 
 ```bash
 ./target/release/quip-network-node insert-hybrid-key \
