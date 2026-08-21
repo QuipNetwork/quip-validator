@@ -9,7 +9,7 @@
 //!
 //! The H4 suite itself (the `sr25519 + FN-DSA-512` keygen / sign / verify logic,
 //! message framing, and seed derivation) is **not** reimplemented here. It uses
-//! the shared, `sp`-free [`pqhybridsign_core::composite_delta`] implementation
+//! the shared, `sp`-free [`pqhybridsign::composite_delta`] implementation
 //! with [`pqhybridsign::H4`], which the runtime wrapper also uses — so browser
 //! and runtime signing remain byte-identical by construction.
 //!
@@ -29,8 +29,8 @@ use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use codec::{Decode, DecodeWithMemTracking, Encode};
 use pqhybridsign::{H4, MIN_FALCON512_SIG_LEN};
-use pqhybridsign_core::composite_delta;
-use pqhybridsign_core::suite::DeltaSuite;
+use pqhybridsign::composite_delta;
+use pqhybridsign::suite::DeltaSuite;
 use zeroize::Zeroize;
 
 const MASTER_SEED_LEN: usize = 32;

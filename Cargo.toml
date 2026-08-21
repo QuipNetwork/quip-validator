@@ -42,49 +42,48 @@ quip-transaction-crypto-core = { path = "./crates/transaction-crypto-core", defa
 quip-transaction-crypto-wasm = { path = "./crates/transaction-crypto-wasm", default-features = false }
 quip-transaction-crypto = { path = "./crates/transaction-crypto", default-features = false }
 clap = { version = "4.5.13" }
-frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
 fips204 = { version = "0.4", default-features = false, features = ["ml-dsa-44"] }
-pqhybridsign = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "5dc540e90ff6173e2347cf11c0031ccfe216e59f", default-features = false }
-pqhybridsign-core = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "5dc540e90ff6173e2347cf11c0031ccfe216e59f", default-features = false, features = ["alloc"] }
+pqhybridsign = { git = "ssh://git@gitlab.com/quip.network/pqhybridsign.git", rev = "8a5d9b4389dbee40f288345e455205f0b9628f9f", default-features = false, features = ["alloc"] }
 futures = { version = "0.3.31" }
 getrandom = { version = "0.2.17", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 jsonrpsee = { version = "0.24.3" }
-pallet-transaction-payment = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-transaction-payment-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-basic-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-client-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-consensus = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-consensus-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-consensus-babe-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-executor = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-keystore = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-network = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-service = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-telemetry = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sc-transaction-pool-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-application-crypto = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-block-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-blockchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-consensus = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-consensus-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-genesis-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-inherents = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-io = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-keystore = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-keyring = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-substrate-frame-rpc-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-substrate-build-script-utils = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+pallet-transaction-payment = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-transaction-payment-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-basic-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-client-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-consensus = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-consensus-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-consensus-babe-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-executor = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-keystore = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-network = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-service = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-telemetry = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sc-transaction-pool-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-application-crypto = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-block-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-blockchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-consensus = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-consensus-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-genesis-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-inherents = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-io = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-keystore = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-keyring = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+substrate-frame-rpc-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+substrate-build-script-utils = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
 codec = { version = "3.7.5", default-features = false, package = "parity-scale-codec" }
 blake2 = { version = "0.10", default-features = false }
 # `alloc`/`std` features are intentionally omitted: they pull in
@@ -97,102 +96,38 @@ hex = { version = "0.4.3", default-features = false }
 # tests; versions match what the SDK fork resolves transitively.
 frame-metadata = { version = "23.0.1", default-features = false, features = ["std", "current"] }
 subxt-core = { version = "0.44.3", default-features = false, features = ["std"] }
-frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-system-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-system-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-frame-try-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-revive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-sudo = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-system-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-system-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+frame-try-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-revive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-sudo = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
-sc-executor-common = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+sc-executor-common = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
 serde_json = { version = "1.0.132", default-features = false }
 rand_core = { version = "0.6", default-features = false }
-sp-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-storage = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-version = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-sp-weights = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-substrate-wasm-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-quip-crypto-primitives = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
-quip-crypto-primitives-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+sp-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-storage = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-version = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+sp-weights = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+substrate-wasm-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+quip-crypto-primitives = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
+quip-crypto-primitives-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "ebd99f2a2796a2f523722e9a75b42cf9781eacf2", default-features = false }
 schnorrkel = { version = "0.11.5", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["derive"] }
 wasm-bindgen = { version = "0.2.117" }
-
-# Local-only development override for the unpushed Polkadot SDK fork.
-[patch."https://github.com/QuipNetwork/polkadot-sdk.git"]
-frame-benchmarking-cli = { path = "../polkadot-sdk/substrate/utils/frame/benchmarking-cli" }
-frame-metadata-hash-extension = { path = "../polkadot-sdk/substrate/frame/metadata-hash-extension" }
-frame-system = { path = "../polkadot-sdk/substrate/frame/system" }
-pallet-transaction-payment = { path = "../polkadot-sdk/substrate/frame/transaction-payment" }
-pallet-transaction-payment-rpc = { path = "../polkadot-sdk/substrate/frame/transaction-payment/rpc" }
-sc-basic-authorship = { path = "../polkadot-sdk/substrate/client/basic-authorship" }
-sc-cli = { path = "../polkadot-sdk/substrate/client/cli" }
-sc-client-api = { path = "../polkadot-sdk/substrate/client/api" }
-sc-consensus = { path = "../polkadot-sdk/substrate/client/consensus/common" }
-sc-consensus-babe = { path = "../polkadot-sdk/substrate/client/consensus/babe" }
-sc-consensus-babe-rpc = { path = "../polkadot-sdk/substrate/client/consensus/babe/rpc" }
-sc-consensus-grandpa = { path = "../polkadot-sdk/substrate/client/consensus/grandpa" }
-sc-executor = { path = "../polkadot-sdk/substrate/client/executor" }
-sc-executor-common = { path = "../polkadot-sdk/substrate/client/executor/common" }
-sc-keystore = { path = "../polkadot-sdk/substrate/client/keystore" }
-sc-network = { path = "../polkadot-sdk/substrate/client/network" }
-sc-offchain = { path = "../polkadot-sdk/substrate/client/offchain" }
-sc-service = { path = "../polkadot-sdk/substrate/client/service" }
-sc-telemetry = { path = "../polkadot-sdk/substrate/client/telemetry" }
-sc-transaction-pool = { path = "../polkadot-sdk/substrate/client/transaction-pool" }
-sc-transaction-pool-api = { path = "../polkadot-sdk/substrate/client/transaction-pool/api" }
-sp-api = { path = "../polkadot-sdk/substrate/primitives/api" }
-sp-application-crypto = { path = "../polkadot-sdk/substrate/primitives/application-crypto" }
-sp-block-builder = { path = "../polkadot-sdk/substrate/primitives/block-builder" }
-sp-blockchain = { path = "../polkadot-sdk/substrate/primitives/blockchain" }
-sp-consensus = { path = "../polkadot-sdk/substrate/primitives/consensus/common" }
-sp-consensus-babe = { path = "../polkadot-sdk/substrate/primitives/consensus/babe" }
-sp-core = { path = "../polkadot-sdk/substrate/primitives/core" }
-sp-genesis-builder = { path = "../polkadot-sdk/substrate/primitives/genesis-builder" }
-sp-inherents = { path = "../polkadot-sdk/substrate/primitives/inherents" }
-sp-io = { path = "../polkadot-sdk/substrate/primitives/io" }
-sp-keystore = { path = "../polkadot-sdk/substrate/primitives/keystore" }
-sp-keyring = { path = "../polkadot-sdk/substrate/primitives/keyring" }
-sp-runtime = { path = "../polkadot-sdk/substrate/primitives/runtime" }
-sp-timestamp = { path = "../polkadot-sdk/substrate/primitives/timestamp" }
-substrate-frame-rpc-system = { path = "../polkadot-sdk/substrate/utils/frame/rpc/system" }
-substrate-build-script-utils = { path = "../polkadot-sdk/substrate/utils/build-script-utils" }
-frame-benchmarking = { path = "../polkadot-sdk/substrate/frame/benchmarking" }
-frame-executive = { path = "../polkadot-sdk/substrate/frame/executive" }
-frame-support = { path = "../polkadot-sdk/substrate/frame/support" }
-frame-system-benchmarking = { path = "../polkadot-sdk/substrate/frame/system/benchmarking" }
-frame-system-rpc-runtime-api = { path = "../polkadot-sdk/substrate/frame/system/rpc/runtime-api" }
-frame-try-runtime = { path = "../polkadot-sdk/substrate/frame/try-runtime" }
-pallet-babe = { path = "../polkadot-sdk/substrate/frame/babe" }
-pallet-balances = { path = "../polkadot-sdk/substrate/frame/balances" }
-pallet-grandpa = { path = "../polkadot-sdk/substrate/frame/grandpa" }
-pallet-revive = { path = "../polkadot-sdk/substrate/frame/revive" }
-pallet-session = { path = "../polkadot-sdk/substrate/frame/session" }
-pallet-sudo = { path = "../polkadot-sdk/substrate/frame/sudo" }
-pallet-timestamp = { path = "../polkadot-sdk/substrate/frame/timestamp" }
-pallet-transaction-payment-rpc-runtime-api = { path = "../polkadot-sdk/substrate/frame/transaction-payment/rpc/runtime-api" }
-sp-consensus-grandpa = { path = "../polkadot-sdk/substrate/primitives/consensus/grandpa" }
-sp-offchain = { path = "../polkadot-sdk/substrate/primitives/offchain" }
-sp-session = { path = "../polkadot-sdk/substrate/primitives/session" }
-sp-storage = { path = "../polkadot-sdk/substrate/primitives/storage" }
-sp-transaction-pool = { path = "../polkadot-sdk/substrate/primitives/transaction-pool" }
-sp-version = { path = "../polkadot-sdk/substrate/primitives/version" }
-sp-weights = { path = "../polkadot-sdk/substrate/primitives/weights" }
-substrate-wasm-builder = { path = "../polkadot-sdk/substrate/utils/wasm-builder" }
-quip-crypto-primitives = { path = "../polkadot-sdk/quip/primitives/crypto" }
-quip-crypto-primitives-core = { path = "../polkadot-sdk/quip/primitives/crypto-core" }
 
 [workspace.lints.rust]
 suspicious_double_ref_op = { level = "allow", priority = 2 }

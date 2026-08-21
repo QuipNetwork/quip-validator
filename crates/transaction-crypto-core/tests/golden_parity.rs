@@ -9,7 +9,7 @@
 //! for several fixed seeds plus a BIP39-derived seed.
 
 use pqhybridsign::H4;
-use pqhybridsign_core::{composite_delta, suite::DeltaSuite};
+use pqhybridsign::{composite_delta, suite::DeltaSuite};
 use quip_transaction_crypto_core::{
     master_seed_from_mnemonic, public_key_from_seed, sign_payload_from_seed, HYBRID_SIGNATURE_LEN,
 };

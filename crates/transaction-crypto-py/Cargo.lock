@@ -576,27 +576,15 @@ dependencies = [
 
 [[package]]
 name = "pqhybridsign"
-version = "0.0.0-rc1"
-source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=5dc540e90ff6173e2347cf11c0031ccfe216e59f#5dc540e90ff6173e2347cf11c0031ccfe216e59f"
+version = "0.0.0-rc3"
+source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=8a5d9b4389dbee40f288345e455205f0b9628f9f#8a5d9b4389dbee40f288345e455205f0b9628f9f"
 dependencies = [
  "ed25519-zebra",
  "fips204",
  "fn-dsa",
- "pqhybridsign-core",
- "rand_core",
- "schnorrkel",
- "sha2",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "pqhybridsign-core"
-version = "0.0.0-rc1"
-source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=5dc540e90ff6173e2347cf11c0031ccfe216e59f#5dc540e90ff6173e2347cf11c0031ccfe216e59f"
-dependencies = [
  "hkdf",
  "rand_core",
+ "schnorrkel",
  "sha2",
  "subtle",
  "zeroize",
@@ -691,7 +679,6 @@ dependencies = [
  "blake2",
  "parity-scale-codec",
  "pqhybridsign",
- "pqhybridsign-core",
  "substrate-bip39",
  "zeroize",
 ]

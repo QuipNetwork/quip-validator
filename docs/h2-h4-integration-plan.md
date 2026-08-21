@@ -313,3 +313,26 @@ Files: `polkadot-sdk/quip/primitives/crypto/`, `substrate/{primitives,client}/..
   the nonce itself — only verify-side agreement is consensus-critical).
 - Fork changes ultimately need to be pushed to `QuipNetwork/polkadot-sdk` (branch v0.2) and the
   `[patch]` overrides removed — push only with explicit user approval at the end.
+
+## Phase 7 — apps/ alignment, final repin, and override cleanup (added 2026-08-20)
+
+Because quip-validator still carries local `[patch]` path overrides for the
+polkadot-sdk fork, the apps/ (polkadot-js fork) integration must be developed
+and tested against the **local quip-validator checkout**, not the submodule
+pin:
+
+1. **Testing phase (local only):** point apps/ at the local quip-validator
+   copy (which itself resolves the SDK via the local `[patch]` overrides) for
+   the signer build and all integration tests (`yarn test:quip-signing`
+   against a fresh local H2/H4 node). Do not fetch/reset the submodule for
+   testing.
+2. **After the pushes land** (polkadot-sdk `v0.2` first, then quip-validator):
+   - repin the `apps/quip-validator` submodule to the pushed quip-validator
+     commit;
+   - remove the local path overrides: the `[patch."…QuipNetwork/polkadot-sdk.git"]`
+     section in quip-validator and any local-path pointing introduced in apps/
+     for testing;
+   - refresh lockfiles and re-run the final gate set (fork suites, golden
+     parity, signing fixture, apps signer + local-node integration test).
+3. Only then is the whole stack (pqhybridsign → polkadot-sdk fork →
+   quip-validator → apps) self-consistent from the remotes alone.
