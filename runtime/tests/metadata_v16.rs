@@ -256,7 +256,7 @@ fn v16_registry_fully_describes_hybrid_signature_envelope() {
         !matches!(envelope.type_def, TypeDef::Sequence(_)),
         "HybridTxSignature must not be an opaque byte sequence",
     );
-    assert_eq!(envelope.path.ident().as_deref(), Some("HybridTxSignature"),);
+    assert_eq!(envelope.path.ident().as_deref(), Some("HybridTxSignature"));
     let TypeDef::Composite(composite) = &envelope.type_def else {
         panic!(
             "HybridTxSignature must be a composite, got {:?}",
@@ -271,12 +271,12 @@ fn v16_registry_fully_describes_hybrid_signature_envelope() {
             .unwrap_or_else(|| panic!("HybridTxSignature must have a `{name}` field"))
     };
 
-    // H3 hybrid public key: sr25519 (32) + ML-DSA-44 (1312).
-    expect_u8_array(registry, field("public").ty.id, 1344, "public key");
+    // H4 hybrid public key: sr25519 (32) + FN-DSA-512 (897).
+    expect_u8_array(registry, field("public").ty.id, 929, "public key");
 
-    // Hybrid signature: 2,484 bytes on the wire, exposed to metadata as the
-    // fork's two-array shim `[u8; 2048]` followed by `[u8; 436]`
-    // (2048 + 436 = 2484, encoding-equivalent to the wire layout).
+    // Hybrid signature: 731 fixed envelope bytes, exposed to metadata as the
+    // fork's two-array shim `[u8; 512]` followed by `[u8; 219]`
+    // (512 + 219 = 731, encoding-equivalent to the wire layout).
     let signature = unwrap_newtypes(registry, field("signature").ty.id);
     let TypeDef::Composite(parts) = &signature.type_def else {
         panic!(
@@ -289,8 +289,8 @@ fn v16_registry_fully_describes_hybrid_signature_envelope() {
         2,
         "signature shim must be a pair of arrays",
     );
-    expect_u8_array(registry, parts.fields[0].ty.id, 2048, "signature part 1");
-    expect_u8_array(registry, parts.fields[1].ty.id, 436, "signature part 2");
+    expect_u8_array(registry, parts.fields[0].ty.id, 512, "signature part 1");
+    expect_u8_array(registry, parts.fields[1].ty.id, 219, "signature part 2");
 }
 
 #[test]

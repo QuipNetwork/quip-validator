@@ -145,6 +145,7 @@ sc-consensus-babe = { path = "../polkadot-sdk/substrate/client/consensus/babe" }
 sc-consensus-babe-rpc = { path = "../polkadot-sdk/substrate/client/consensus/babe/rpc" }
 sc-consensus-grandpa = { path = "../polkadot-sdk/substrate/client/consensus/grandpa" }
 sc-executor = { path = "../polkadot-sdk/substrate/client/executor" }
+sc-executor-common = { path = "../polkadot-sdk/substrate/client/executor/common" }
 sc-keystore = { path = "../polkadot-sdk/substrate/client/keystore" }
 sc-network = { path = "../polkadot-sdk/substrate/client/network" }
 sc-offchain = { path = "../polkadot-sdk/substrate/client/offchain" }

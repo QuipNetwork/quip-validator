@@ -24,9 +24,9 @@ local conformance probe established that:
 
 - `HybridTxSignature` is a concrete metadata composite with `public` and
   `signature` fields;
-- the public key resolves to `[u8; 1344]`;
-- the signature resolves to `[u8; 2048]` followed by `[u8; 436]`, for a total
-  of 2,484 bytes;
+- the H4 public key resolves to `[u8; 929]`;
+- the H4 signature resolves to `[u8; 512]` followed by `[u8; 219]`, for a total
+  of 731 bytes;
 - stock `subxt-core 0.44.3` accepts the metadata with no custom types;
 - stock subxt decodes a mixed block containing a V5 bare `Timestamp::set` and
   a V4 signed `Balances::transfer_allow_death`.
@@ -55,8 +55,9 @@ not remove the need for that fix.
      `implicit` as `implict`, silently dropping the additional-signed type id.
 2. Keep this as a Quip runtime override; do not change the SDK-wide
    `Runtime::metadata()` generator.
-3. Bump `spec_version` for the runtime upgrade, but keep `transaction_version`
-   unchanged because the extrinsic wire format does not change.
+3. Publish this metadata change as part of the Runtime 116 H2/H4 chain-wipe
+   relaunch. Set `transaction_version` to 7 because the H4 signed-extrinsic
+   wire format is incompatible with H3.
 4. Keep the Apps decoder patch until the equivalent fix ships upstream.
 5. Treat `@quip/types` as a conditional second phase, not a prerequisite for
    the Metadata V16 rollout.
@@ -86,8 +87,8 @@ The test must:
   types;
 - assert that `HybridTxSignature` is not represented as `Vec<u8>` or another
   opaque sequence;
-- pin the public-key length at 1,344 bytes;
-- pin the signature layout at 2,048 plus 436 bytes;
+- pin the H4 public-key length at 929 bytes;
+- pin the H4 signature layout at 512 plus 219 bytes;
 - generate a V5 bare timestamp inherent and a V4 signed balance transfer;
 - decode both with stock subxt using metadata only;
 - assert signedness, pallet name, and call name for both extrinsics.
@@ -110,9 +111,10 @@ runtime using the fork.
 ### 3. Version the runtime
 
 - Bump `spec_version` from `115` to `116`.
-- Keep `transaction_version` at `6`.
-- Add a version comment explaining that 116 changes metadata publication only;
-  consensus and extrinsic encoding are unchanged.
+- Set `transaction_version` to `7` for the incompatible H4 signed-extrinsic
+  encoding.
+- Add a version comment explaining that Runtime 116 is the H2/H4 chain-wipe
+  relaunch and publishes Metadata V16 through the legacy runtime API.
 
 ### 4. Regenerate the polkadot-js signing fixture
 
@@ -144,7 +146,7 @@ assert the returned metadata version so CI catches an accidental revert.
 ## Polkadot SDK Scope
 
 No production SDK change is required for Phase 1. The fork already contains the
-large-array `TypeInfo` support needed for the H3 public key and signature.
+large-array `TypeInfo` support needed for the H4 public key and signature.
 
 One known incompleteness in the fork's V16 path: `metadata-ir` converts the
 extrinsic IR to V16 with a hardcoded `transaction_extensions_by_version` map
@@ -157,9 +159,9 @@ per-version extension data as a fork follow-up.
 
 An optional SDK hardening change can add unit tests that pin:
 
-- public-key metadata as `[u8; 1344]`;
-- signature metadata as the 2,048/436 split;
-- the SCALE signature length at exactly 2,484 bytes;
+- public-key metadata as `[u8; 929]`;
+- signature metadata as the 512/219 split;
+- the SCALE signature length at exactly 731 bytes;
 - encoding equivalence between the runtime type and its metadata-only shape.
 
 These tests protect the existing workaround but do not need to block the
@@ -224,7 +226,7 @@ If required, `@quip/types` should provide:
 - [ ] The polkadot-js signing fixture is regenerated and matches the Rust
       generator.
 - [ ] The runtime is released with `spec_version = 116` and
-      `transaction_version = 6`.
+      `transaction_version = 7`.
 - [ ] A decision on `@quip/types` is recorded after downstream compatibility
       testing.
 
@@ -248,7 +250,7 @@ If required, `@quip/types` should provide:
   polkadot-js/Apps version, polkadot-rest-api, the selected indexer, exchange
   tooling — and run smoke tests for each supported entry.
 - **Metadata/wire drift:** the signature's metadata-only split must remain
-  encoding-equivalent to the 2,484-byte wire signature. Pin both in tests.
+  encoding-equivalent to the 731-byte wire signature. Pin both in tests.
 - **Extension-version placeholder:** the SDK fork's V16 conversion assumes
   extension version 0 for every transaction extension. Correct today; pinned by
   the conformance test and tracked as a fork follow-up.

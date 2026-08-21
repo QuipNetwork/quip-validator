@@ -155,7 +155,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // V16 from the legacy metadata runtime API (`state_getMetadata`), which
     // previously returned the V14 inherent default. The versioned metadata API
     // keeps serving 14/15/16. The H1/H3 (ML-DSA-44) to H2/H4 (FN-DSA-512)
-    // migration changes public-key and signature encodings, so old signed
+    // scheme change uses new public-key and signature encodings, so old signed
     // extrinsics are incompatible and `transaction_version` moves to 7.
     spec_version: 116,
     impl_version: 1,

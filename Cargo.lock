@@ -3824,7 +3824,7 @@ dependencies = [
  "sc-client-api",
  "sc-client-db",
  "sc-executor",
- "sc-executor-common 0.44.0",
+ "sc-executor-common",
  "sc-executor-wasmtime",
  "sc-runtime-utilities",
  "sc-service",
@@ -3849,7 +3849,7 @@ dependencies = [
  "sp-transaction-pool",
  "sp-trie",
  "sp-version",
- "sp-wasm-interface 24.0.0",
+ "sp-wasm-interface",
  "subxt",
  "subxt-signer",
  "thiserror 1.0.69",
@@ -8134,7 +8134,7 @@ dependencies = [
  "sp-consensus-babe",
  "sp-consensus-slots",
  "sp-keystore",
- "sp-maybe-compressed-blob 11.1.0",
+ "sp-maybe-compressed-blob",
  "thiserror 1.0.69",
  "zstd 0.12.4",
 ]
@@ -9203,7 +9203,7 @@ dependencies = [
  "quip-transaction-crypto",
  "quip-transaction-crypto-core",
  "sc-executor",
- "sc-executor-common 0.44.0 (git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2)",
+ "sc-executor-common",
  "scale-info",
  "serde_json",
  "sp-api",
@@ -10134,18 +10134,7 @@ version = "36.0.0"
 dependencies = [
  "log",
  "sp-core",
- "sp-wasm-interface 24.0.0",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sc-allocator"
-version = "36.0.0"
-source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2#f17113ffe89361a26cb286f6afc5a92f443179a8"
-dependencies = [
- "log",
- "sp-core",
- "sp-wasm-interface 24.0.0 (git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2)",
+ "sp-wasm-interface",
  "thiserror 1.0.69",
 ]
 
@@ -10509,7 +10498,7 @@ version = "0.48.0"
 dependencies = [
  "parity-scale-codec",
  "parking_lot 0.12.5",
- "sc-executor-common 0.44.0",
+ "sc-executor-common",
  "sc-executor-polkavm",
  "sc-executor-wasmtime",
  "schnellru",
@@ -10521,7 +10510,7 @@ dependencies = [
  "sp-runtime-interface",
  "sp-trie",
  "sp-version",
- "sp-wasm-interface 24.0.0",
+ "sp-wasm-interface",
  "tracing",
 ]
 
@@ -10530,22 +10519,9 @@ name = "sc-executor-common"
 version = "0.44.0"
 dependencies = [
  "polkavm",
- "sc-allocator 36.0.0",
- "sp-maybe-compressed-blob 11.1.0",
- "sp-wasm-interface 24.0.0",
- "thiserror 1.0.69",
- "wasm-instrument",
-]
-
-[[package]]
-name = "sc-executor-common"
-version = "0.44.0"
-source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2#f17113ffe89361a26cb286f6afc5a92f443179a8"
-dependencies = [
- "polkavm",
- "sc-allocator 36.0.0 (git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2)",
- "sp-maybe-compressed-blob 11.1.0 (git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2)",
- "sp-wasm-interface 24.0.0 (git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2)",
+ "sc-allocator",
+ "sp-maybe-compressed-blob",
+ "sp-wasm-interface",
  "thiserror 1.0.69",
  "wasm-instrument",
 ]
@@ -10556,9 +10532,9 @@ version = "0.41.0"
 dependencies = [
  "log",
  "polkavm",
- "sc-executor-common 0.44.0",
+ "sc-executor-common",
  "sp-runtime-interface",
- "sp-wasm-interface 24.0.0",
+ "sp-wasm-interface",
 ]
 
 [[package]]
@@ -10569,10 +10545,10 @@ dependencies = [
  "log",
  "parking_lot 0.12.5",
  "rustix",
- "sc-allocator 36.0.0",
- "sc-executor-common 0.44.0",
+ "sc-allocator",
+ "sc-executor-common",
  "sp-runtime-interface",
- "sp-wasm-interface 24.0.0",
+ "sp-wasm-interface",
  "wasmtime",
 ]
 
@@ -10975,11 +10951,11 @@ version = "0.8.0"
 dependencies = [
  "parity-scale-codec",
  "sc-executor",
- "sc-executor-common 0.44.0",
+ "sc-executor-common",
  "sp-core",
  "sp-crypto-hashing 0.1.0",
  "sp-state-machine",
- "sp-wasm-interface 24.0.0",
+ "sp-wasm-interface",
  "thiserror 1.0.69",
 ]
 
@@ -12407,15 +12383,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sp-maybe-compressed-blob"
-version = "11.1.0"
-source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2#f17113ffe89361a26cb286f6afc5a92f443179a8"
-dependencies = [
- "thiserror 1.0.69",
- "zstd 0.12.4",
-]
-
-[[package]]
 name = "sp-metadata-ir"
 version = "0.12.3"
 dependencies = [
@@ -12531,7 +12498,7 @@ dependencies = [
  "sp-std",
  "sp-storage",
  "sp-tracing",
- "sp-wasm-interface 24.0.0",
+ "sp-wasm-interface",
  "static_assertions",
 ]
 
@@ -12736,17 +12703,6 @@ dependencies = [
  "log",
  "parity-scale-codec",
  "wasmtime",
-]
-
-[[package]]
-name = "sp-wasm-interface"
-version = "24.0.0"
-source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2#f17113ffe89361a26cb286f6afc5a92f443179a8"
-dependencies = [
- "anyhow",
- "impl-trait-for-tuples",
- "log",
- "parity-scale-codec",
 ]
 
 [[package]]
@@ -13049,7 +13005,7 @@ dependencies = [
  "shlex",
  "sp-core",
  "sp-io",
- "sp-maybe-compressed-blob 11.1.0",
+ "sp-maybe-compressed-blob",
  "sp-tracing",
  "sp-version",
  "strum 0.26.3",
