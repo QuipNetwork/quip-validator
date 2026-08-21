@@ -91,6 +91,10 @@ blake2 = { version = "0.10", default-features = false }
 bip39 = { version = "2.2", default-features = false }
 substrate-bip39 = { version = "0.6.1", default-features = false }
 hex = { version = "0.4.3", default-features = false }
+# Used only as runtime test/dev dependencies for the Metadata V16 conformance
+# tests; versions match what the SDK fork resolves transitively.
+frame-metadata = { version = "23.0.1", default-features = false, features = ["std", "current"] }
+subxt-core = { version = "0.44.3", default-features = false, features = ["std"] }
 frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
@@ -106,6 +110,7 @@ pallet-sudo = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch 
 pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
+sc-executor-common = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 serde_json = { version = "1.0.132", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 sp-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
