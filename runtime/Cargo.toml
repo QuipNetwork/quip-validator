@@ -65,9 +65,13 @@ sp-version = { features = ["serde"], workspace = true }
 sp-weights.workspace = true
 
 [dev-dependencies]
+frame-metadata.workspace = true
 hex.workspace = true
 quip-transaction-crypto-core.workspace = true
+sc-executor = { workspace = true, default-features = true }
+sc-executor-common = { workspace = true, default-features = true }
 sp-io.workspace = true
+subxt-core.workspace = true
 
 [build-dependencies]
 substrate-wasm-builder = { optional = true, workspace = true, default-features = true }
