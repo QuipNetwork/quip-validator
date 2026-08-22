@@ -576,8 +576,8 @@ dependencies = [
 
 [[package]]
 name = "pqhybridsign"
-version = "0.0.0-rc3"
-source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=8a5d9b4389dbee40f288345e455205f0b9628f9f#8a5d9b4389dbee40f288345e455205f0b9628f9f"
+version = "0.0.0-rc5"
+source = "git+ssh://git@gitlab.com/quip.network/pqhybridsign.git?rev=330596f453ffb9de30d965352227f536731a6c8e#330596f453ffb9de30d965352227f536731a6c8e"
 dependencies = [
  "ed25519-zebra",
  "fips204",
