@@ -28,9 +28,9 @@ use bip39::{Language, Mnemonic};
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use codec::{Decode, DecodeWithMemTracking, Encode};
-use pqhybridsign::{H4, MIN_FALCON512_SIG_LEN};
 use pqhybridsign::composite_delta;
 use pqhybridsign::suite::DeltaSuite;
+use pqhybridsign::{H4, MIN_FALCON512_SIG_LEN};
 use zeroize::Zeroize;
 
 const MASTER_SEED_LEN: usize = 32;
