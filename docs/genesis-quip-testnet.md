@@ -5,7 +5,7 @@ Public material for the three bootnode operators pinned into the
 public bytes live as `include_str!`-loaded hex blobs under
 `runtime/src/genesis_quip_testnet/`. This file is the human-readable index.
 
-Runtime 116 is the genesis runtime for an H4/H2 FN-DSA-512 chain-wipe relaunch,
+Runtime 117 is the genesis runtime for an H4/H2 FN-DSA-512 chain-wipe relaunch,
 not an in-place upgrade of the previous chain. The old state is discarded and
 the new genesis starts with 929-byte consensus authority keys. Because the
 previous H3/H1 public material could not be converted, the three operators

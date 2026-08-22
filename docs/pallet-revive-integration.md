@@ -4,7 +4,7 @@
 
 This is the living design, implementation, and decision record for integrating
 `pallet-revive` into the Quip runtime. The initial runtime integration is
-implemented at runtime `spec_version = 116` / `transaction_version = 7`
+implemented at runtime `spec_version = 117` / `transaction_version = 7`
 (introduced at 113 on-branch, first shipped as 114 in the v0.2.2-rc tags,
 bumped to 115 for the benchmark weight regeneration, then to 116/7 for the
 H2/H4 hybrid-signature migration).

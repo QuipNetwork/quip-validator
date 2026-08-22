@@ -23,7 +23,7 @@ Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
 
 Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
 
-Runtime 116 is the H2/H4 chain-wipe relaunch, not an in-place upgrade from the
+Runtime 117 is the H2/H4 chain-wipe relaunch, not an in-place upgrade from the
 earlier H1/H3 network. Work on this launch must assume fresh genesis/state,
 fresh validator databases, re-inserted H4 BABE and H2 GRANDPA keys, and
 incompatible old signed extrinsics (`transaction_version = 7`).
@@ -91,7 +91,7 @@ Three-crate workspace:
 - `service.rs` — Node service wiring (hybrid BABE + GRANDPA consensus, transaction pool, networking)
 - `rpc.rs` — Custom RPC endpoint registration
 
-**`runtime/`** — Blockchain state transition function (`quip-protocol-runtime`). Compiles to both native and Wasm. The Wasm blob is embedded in the native binary and supports ordinary on-chain upgrades; the Runtime 116 H2/H4 launch is explicitly a chain-wipe relaunch instead.
+**`runtime/`** — Blockchain state transition function (`quip-protocol-runtime`). Compiles to both native and Wasm. The Wasm blob is embedded in the native binary and supports ordinary on-chain upgrades; Runtime 117 (the H2/H4 launch) is explicitly a chain-wipe relaunch instead.
 - `lib.rs` — Runtime type definitions, pallet composition via `#[frame_support::runtime]` macro, block time constants (6s slots)
 - `configs/mod.rs` — All pallet `Config` trait implementations (system params, weights, fees)
 - `apis.rs` — Runtime API implementations exposed to the node

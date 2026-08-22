@@ -157,7 +157,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // keeps serving 14/15/16. The H1/H3 (ML-DSA-44) to H2/H4 (FN-DSA-512)
     // scheme change uses new public-key and signature encodings, so old signed
     // extrinsics are incompatible and `transaction_version` moves to 7.
-    spec_version: 116,
+    // Bumped to 117 to hard-invalidate 116 nodes: the crates.io pqhybridsign
+    // rc5 switch and repins carry no interface change, but a spec bump makes
+    // any node still on 116 refuse the new runtime outright.
+    spec_version: 117,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,

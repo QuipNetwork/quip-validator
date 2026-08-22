@@ -17,7 +17,7 @@ Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
 
 Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
 
-Runtime 116 is the H2/H4 chain-wipe relaunch. It starts from fresh genesis and
+Runtime 117 is the H2/H4 chain-wipe relaunch. It starts from fresh genesis and
 is not an in-place upgrade of the earlier H1/H3 network. Operators must use a
 fresh chain database, re-insert the H4 BABE and H2 GRANDPA keys, and sync from
 the new genesis; old signed extrinsics are incompatible (`transaction_version`
