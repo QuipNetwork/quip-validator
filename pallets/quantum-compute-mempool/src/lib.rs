@@ -545,15 +545,19 @@ pub mod pallet {
             }
 
             ensure!(
-                quantum_validation::validate_topology_consistency(
+                // The boolean form: the same single scan, short-circuiting on
+                // the first defect. `propose_job` is SIGNED and flat-weighted,
+                // so the reporting variant let one fee buy tens of thousands of
+                // `String`s that this caller discards on its way to a single
+                // `InvalidTopology`.
+                quantum_validation::topology_consistency_ok(
                     ising_params.nodes.as_slice(),
                     ising_params.edges.as_slice(),
                     ising_params.h_values.as_slice(),
                     ising_params.j_values.as_slice(),
                     None,
                     None,
-                )
-                .is_empty(),
+                ),
                 Error::<T>::InvalidTopology
             );
 

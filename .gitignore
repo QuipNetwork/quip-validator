@@ -38,3 +38,8 @@ __pycache__
 # The script also writes a `*` .gitignore inside the directory; this entry
 # is the outer guardrail in case the directory is moved or recreated.
 /quip-testnet-keys/
+
+# frame-benchmarking-cli scratch output. weights.rs is hand-written (custom formula plus
+# provenance), so `benchmark pallet --output .../weights.rs` would destroy it. Benchmark
+# here and hand-transfer the numbers instead.
+scratch_weights.rs

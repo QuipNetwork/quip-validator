@@ -19,6 +19,10 @@ thiserror = { version = "2.0.18", optional = true }
 
 [features]
 default = ["std"]
+# Test/benchmark fixtures (e.g. `caterpillar_of_cliques`) that must NOT ship in
+# the runtime blob. Enabled by `pallet-quantum-pow/runtime-benchmarks`, which is
+# what makes them reachable from a no_std benchmark build.
+runtime-benchmarks = []
 std = [
     "blake3/std",
     "codec/std",

@@ -31,19 +31,31 @@ pub mod diversity;
 pub mod energy;
 pub mod errors;
 pub mod fixed;
+pub mod hardness;
 pub mod ising;
 pub mod packed;
 pub mod puzzle_spec;
 pub mod validation;
 
 pub use crate::diversity::{calculate_diversity, select_diverse, symmetric_hamming};
-pub use crate::energy::{energy_of_solution, energy_of_solution_indexed, expected_gse};
+pub use crate::energy::{
+    energy_of_solution, energy_of_solution_indexed, expected_bound_milli, expected_gse,
+};
 pub use crate::errors::ValidationError;
 pub use crate::fixed::{MilliDiversity, MilliEnergy, MilliValue, MILLI_SCALE};
-pub use crate::ising::{derive_nonce, generate_ising_model, generate_ising_model_indexed};
+#[cfg(any(feature = "std", feature = "runtime-benchmarks"))]
+pub use crate::hardness::caterpillar_of_cliques;
+pub use crate::hardness::{
+    canonical_graph, cycle_rank, energy_bound_milli, expected_frustration_for, frustration_index,
+    frustration_index_milli, frustration_sigmas, induced_width_at_most, loosest_energy_bound_milli,
+    verify_planar_embedding, Regime, WitnessError, HANDICAP_MAX_SIGMA,
+};
+pub use crate::ising::{
+    derive_nonce, generate_ising_model, generate_ising_model_and_frustration, IsingInstance,
+};
 pub use crate::packed::{packed_solution_byte_len, unpack_solution};
 pub use crate::puzzle_spec::{AllowedValueSpec, MAX_INDEXED_BITS};
 pub use crate::validation::{
-    validate_solution, validate_solution_set, validate_spins, validate_topology_consistency,
-    SolutionValidation, TopologyIndex,
+    topology_consistency_ok, validate_solution, validate_solution_set, validate_spins,
+    validate_topology_consistency, SolutionValidation, TopologyIndex,
 };

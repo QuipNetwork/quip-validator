@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use codec::Encode;
 use quantum_validation::{AllowedValueSpec, MilliValue};
 use sp_core::H256;
@@ -17,14 +16,7 @@ pub fn hash_topology(
     allowed_j: &AllowedValueSpec<&[MilliValue]>,
     allowed_spin: &AllowedValueSpec<&[MilliValue]>,
 ) -> H256 {
-    let mut canonical_nodes = nodes.to_vec();
-    canonical_nodes.sort_unstable();
-
-    let mut canonical_edges: Vec<(u32, u32)> = edges
-        .iter()
-        .map(|&(u, v)| if u <= v { (u, v) } else { (v, u) })
-        .collect();
-    canonical_edges.sort_unstable();
+    let (canonical_nodes, canonical_edges) = quantum_validation::canonical_graph(nodes, edges);
 
     H256::from(sp_io::hashing::blake2_256(
         &(

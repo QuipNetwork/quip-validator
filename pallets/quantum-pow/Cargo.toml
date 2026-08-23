@@ -23,6 +23,7 @@ frame-benchmarking = { optional = true, workspace = true }
 frame-support.workspace = true
 frame-system.workspace = true
 pallet-balances.workspace = true
+log = { version = "0.4", default-features = false }
 quantum-validation.workspace = true
 scale-info = { features = ["derive"], workspace = true }
 sp-api.workspace = true
@@ -44,6 +45,7 @@ std = [
   "frame-support/std",
   "frame-system/std",
   "pallet-balances/std",
+  "log/std",
   "quantum-validation/std",
   "scale-info/std",
   "sp-api/std",
@@ -56,6 +58,7 @@ runtime-benchmarks = [
   "frame-support/runtime-benchmarks",
   "frame-system/runtime-benchmarks",
   "pallet-balances/runtime-benchmarks",
+  "quantum-validation/runtime-benchmarks",
   "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [

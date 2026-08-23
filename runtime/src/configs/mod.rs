@@ -342,6 +342,24 @@ parameter_types! {
     /// purpose (decay cadence vs rate-band anchor); retuning this value
     /// does NOT move the rate bands, so revisit both together.
     pub const QuantumPowEpochLength: BlockNumber = 100;
+    /// Retarget over twenty target intervals.
+    ///
+    /// Qblock arrivals are ~Poisson, so shot noise is `sqrt(expected)`. The
+    /// clamp fires whenever `|N - E| >= E/4`: at `E = 10` that is
+    /// `sigma/E = 0.32`, and ~43% of on-target windows still slam the bar by the
+    /// full quarter-span. The proportional band dominates only once
+    /// `sigma/E <= 0.25`, i.e. `E >= 16`; twenty gives margin.
+    pub const QuantumPowRetargetWindowEpochs: u32 = 20;
+    /// Handicap slope, per-mille of the curve bar per sigma of frustration.
+    /// Tunable by upgrade: riff-morph's calibration puts it between 4 and 29
+    /// with correlations under 0.3, and 6 is the low end of that scatter.
+    pub const QuantumPowHandicapPerSigmaPermille: i64 =
+        pallet_quantum_pow::difficulty::DEFAULT_HANDICAP_PER_SIGMA_PERMILLE;
+    /// Largest single-window difficulty move. NARROWING this without widening
+    /// `QuantumPowRetargetWindowEpochs` fails `integrity_test`, which derives
+    /// the minimum window from it.
+    pub const QuantumPowRetargetMaxStepPermille: i64 =
+        pallet_quantum_pow::difficulty::DEFAULT_RETARGET_MAX_STEP_PERMILLE;
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
@@ -360,7 +378,10 @@ parameter_types! {
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
     pub const QuantumPowCurveCKneeMilli: u32 = 725;
     pub const QuantumPowCurveCHardMilli: u32 = 750;
-    pub const QuantumPowConsecutiveWinnerEasingThreshold: u32 = 3;
+    /// Induced width at or below which a topology's core is exactly solvable.
+    /// Matches the riff toolkit's `EXACT_CEILING`; raising it re-classifies
+    /// every registered topology at once as classical solvers improve.
+    pub const QuantumPowExactSolveCeiling: u32 = 20;
 
     pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
     pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
@@ -430,6 +451,7 @@ impl pallet_quantum_pow::Config for Runtime {
     type MaxSolutions = QuantumPowMaxSolutions;
     type MinNodes = QuantumPowMinNodes;
     type EpochLength = QuantumPowEpochLength;
+    type RetargetWindowEpochs = QuantumPowRetargetWindowEpochs;
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
@@ -437,7 +459,9 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
-    type ConsecutiveWinnerEasingThreshold = QuantumPowConsecutiveWinnerEasingThreshold;
+    type ExactSolveCeiling = QuantumPowExactSolveCeiling;
+    type HandicapPerSigmaPermille = QuantumPowHandicapPerSigmaPermille;
+    type RetargetMaxStepPermille = QuantumPowRetargetMaxStepPermille;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

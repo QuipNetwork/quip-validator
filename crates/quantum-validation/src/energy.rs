@@ -2,8 +2,9 @@
 
 use crate::errors::ValidationError;
 use crate::fixed::{MilliEnergy, MilliValue, MILLI_SCALE};
+use crate::hardness::NodeIndex;
 use crate::puzzle_spec::AllowedValueSpec;
-use crate::validation::{ensure_valid_spins, TopologyIndex};
+use crate::validation::{ensure_valid_spins, ensure_valid_topology, TopologyIndex};
 
 /// Empirical SA alignment-efficiency factor for the field term. Calibrated
 /// against the v0.1 Python reference; applies only to the h contribution.
@@ -36,9 +37,41 @@ pub fn energy_of_solution(
     j: &[MilliValue],
     nodes: &[u32],
 ) -> Result<MilliEnergy, ValidationError> {
-    validate_shape_lengths(solution, h, edges, j, nodes.len())?;
-    let topology = TopologyIndex::new(nodes, edges)?;
-    energy_of_solution_indexed(solution, h, edges, j, &topology)
+    let index = validate_shape(solution, h, edges, j, nodes)?;
+    ensure_valid_spins(solution)?;
+
+    let mut energy = 0_i64;
+
+    for (position, &field) in h.iter().enumerate() {
+        energy = energy
+            .checked_add(i64::from(field) * i64::from(solution[position]))
+            .ok_or(ValidationError::ArithmeticOverflow)?;
+    }
+
+    // Reuses the index `validate_shape` returned, built ONCE rather than
+    // rescanned per edge. This loop used to call `position_of_node` — a linear
+    // scan — twice per edge, making the function O(n*m): 2.5e8 comparisons at
+    // the runtime's 5_000 nodes / 50_000 edges, on the `submit_proof` consensus
+    // path, measured against the real runtime at ~0.65-2 ns per node*edge pair.
+    // `submit_proof`'s weight formula has no `n*e` term, so that cost had
+    // nowhere to be charged — the benchmark attributed it to whichever
+    // component was swept, inflating BOTH fitted slopes. `NodeIndex` is O(1) on
+    // the contiguous ids the chain canonicalises to, O(log n) otherwise.
+    for (&(u, v), &coupling) in edges.iter().zip(j.iter()) {
+        let u_pos = index
+            .position(u)
+            .ok_or(ValidationError::UnknownNodeInEdge { node: u })?;
+        let v_pos = index
+            .position(v)
+            .ok_or(ValidationError::UnknownNodeInEdge { node: v })?;
+        energy = energy
+            .checked_add(
+                i64::from(coupling) * i64::from(solution[u_pos]) * i64::from(solution[v_pos]),
+            )
+            .ok_or(ValidationError::ArithmeticOverflow)?;
+    }
+
+    Ok(energy)
 }
 
 /// Compute Ising energy using a topology index validated once by the caller.
@@ -52,7 +85,31 @@ pub fn energy_of_solution_indexed(
     j: &[MilliValue],
     topology: &TopologyIndex,
 ) -> Result<MilliEnergy, ValidationError> {
-    validate_shape_lengths(solution, h, edges, j, topology.len())?;
+    if topology.len() == 0 {
+        return Err(ValidationError::EmptyNodes);
+    }
+
+    if solution.len() != topology.len() {
+        return Err(ValidationError::SolutionLengthMismatch {
+            expected: topology.len(),
+            actual: solution.len(),
+        });
+    }
+
+    if h.len() != topology.len() {
+        return Err(ValidationError::FieldLengthMismatch {
+            expected: topology.len(),
+            actual: h.len(),
+        });
+    }
+
+    if edges.len() != j.len() {
+        return Err(ValidationError::EdgeWeightLengthMismatch {
+            edges: edges.len(),
+            weights: j.len(),
+        });
+    }
+
     ensure_valid_spins(solution)?;
 
     let mut energy = 0_i64;
@@ -129,6 +186,26 @@ pub fn expected_gse(
     Ok(libm::round((j_contribution + h_contribution) * (MILLI_SCALE as f64)) as MilliEnergy)
 }
 
+/// `Σ|h| + Σ|J|` for the *average* draw from these specs, in milli.
+///
+/// The per-instance counterpart is `energy_bound_milli`, which measures one
+/// realized draw; the ratio between them is how much reach a particular salt
+/// bought. Nothing prices that ratio today — the bar is still absolute, and
+/// dividing by this was tried and reverted (see `instance_bar_milli`, tracked
+/// as `riff-hv9.41`). Its only reader is the registration guard that refuses a
+/// curve calibrated past the topology's own typical weight.
+pub fn expected_bound_milli(
+    num_nodes: u32,
+    num_edges: u32,
+    allowed_h: &AllowedValueSpec<&[MilliValue]>,
+    allowed_j: &AllowedValueSpec<&[MilliValue]>,
+) -> Result<u64, ValidationError> {
+    let h = mean_abs_unit(allowed_h)?;
+    let j = mean_abs_unit(allowed_j)?;
+    let total = f64::from(num_nodes) * h + f64::from(num_edges) * j;
+    Ok((total * MILLI_SCALE as f64).max(0.0) as u64)
+}
+
 /// Mean |value| of a spec on the unit scale (1.0 == [`MILLI_SCALE`] milli),
 /// under the spec's own uniform sampling distribution.
 fn mean_abs_unit(spec: &AllowedValueSpec<&[MilliValue]>) -> Result<f64, ValidationError> {
@@ -176,27 +253,27 @@ fn discrete_mean_abs(min: i64, max: i64) -> Result<f64, ValidationError> {
     Ok(sum_abs as f64 / span as f64)
 }
 
-fn validate_shape_lengths(
+fn validate_shape<'a>(
     solution: &[i8],
     h: &[MilliValue],
     edges: &[(u32, u32)],
     j: &[MilliValue],
-    node_count: usize,
-) -> Result<(), ValidationError> {
-    if node_count == 0 {
+    nodes: &'a [u32],
+) -> Result<NodeIndex<'a>, ValidationError> {
+    if nodes.is_empty() {
         return Err(ValidationError::EmptyNodes);
     }
 
-    if solution.len() != node_count {
+    if solution.len() != nodes.len() {
         return Err(ValidationError::SolutionLengthMismatch {
-            expected: node_count,
+            expected: nodes.len(),
             actual: solution.len(),
         });
     }
 
-    if h.len() != node_count {
+    if h.len() != nodes.len() {
         return Err(ValidationError::FieldLengthMismatch {
-            expected: node_count,
+            expected: nodes.len(),
             actual: h.len(),
         });
     }
@@ -208,7 +285,8 @@ fn validate_shape_lengths(
         });
     }
 
-    Ok(())
+    // Returned so `energy_of_solution` reuses it instead of building a second.
+    ensure_valid_topology(nodes, edges)
 }
 
 #[cfg(test)]

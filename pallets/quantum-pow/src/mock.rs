@@ -68,13 +68,23 @@ parameter_types! {
     pub const MaxSolutions: u32 = 8;
     pub const MinNodes: u32 = 2;
     pub const EpochLength: u64 = 20;
+    // Twenty target intervals per window, matching the runtime, so the mock
+    // exercises the controller's proportional band rather than a degenerate
+    // one-event window.
+    pub const RetargetWindowEpochs: u32 = 20;
     pub const MinerDeposit: Balance = 100;
     pub const BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
-    // `static` (not `const`) so tests can override it per-case, e.g. to
-    // verify that `0` disables dominant-winner easing.
-    pub static ConsecutiveWinnerEasingThreshold: u32 = 3;
+    // `static` so a test can lower the ceiling below a graph's true width.
+    pub static ExactSolveCeilingOverride: u32 = 20;
+    // `pub static`, NOT `pub const`: a `parameter_types!` const has no setter,
+    // so nothing can sweep it. As consts, reverting either call site to the
+    // `DEFAULT_*` constant left the whole suite green.
+    pub static HandicapPerSigmaPermille: i64 =
+        crate::difficulty::DEFAULT_HANDICAP_PER_SIGMA_PERMILLE;
+    pub static RetargetMaxStepPermille: i64 =
+        crate::difficulty::DEFAULT_RETARGET_MAX_STEP_PERMILLE;
 }
 
 impl pallet_quantum_pow::Config for Test {
@@ -85,6 +95,7 @@ impl pallet_quantum_pow::Config for Test {
     type MaxSolutions = MaxSolutions;
     type MinNodes = MinNodes;
     type EpochLength = EpochLength;
+    type RetargetWindowEpochs = RetargetWindowEpochs;
     type MinerDeposit = MinerDeposit;
     type BlockReward = BlockReward;
     type MaxProofsPerBlock = MaxProofsPerBlock;
@@ -92,7 +103,9 @@ impl pallet_quantum_pow::Config for Test {
     type CurveCEasyMilli = ConstU32<700>;
     type CurveCKneeMilli = ConstU32<725>;
     type CurveCHardMilli = ConstU32<750>;
-    type ConsecutiveWinnerEasingThreshold = ConsecutiveWinnerEasingThreshold;
+    type ExactSolveCeiling = ExactSolveCeilingOverride;
+    type HandicapPerSigmaPermille = HandicapPerSigmaPermille;
+    type RetargetMaxStepPermille = RetargetMaxStepPermille;
     type WeightInfo = ();
 }
 
@@ -104,8 +117,16 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     pallet_balances::GenesisConfig::<Test> {
         // Account 3 is funded so tests can use a miner whose puzzle ground
         // state sits below the energy curve (accounts 1 and 2 happen to map to
-        // puzzles easier than the curve's easy cap).
-        balances: vec![(1, 1_000_000), (2, 1_000_000), (3, 1_000_000)],
+        // puzzles easier than the curve's easy cap). Account 7's triangle
+        // instance is frustrated, putting its optimum strictly between the
+        // absolute floor and the easy cap — the only shape a decay
+        // discriminator can be built from.
+        balances: vec![
+            (1, 1_000_000),
+            (2, 1_000_000),
+            (3, 1_000_000),
+            (7, 1_000_000),
+        ],
         dev_accounts: None,
     }
     .assimilate_storage(&mut storage)

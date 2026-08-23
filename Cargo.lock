@@ -7419,6 +7419,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "libm",
+ "log",
  "pallet-balances",
  "parity-scale-codec",
  "quantum-validation",

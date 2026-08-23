@@ -134,7 +134,31 @@ cargo-test:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
-    - cargo build --release -p quip-protocol-runtime
+    # The benchmarking module is `#[cfg(feature = "runtime-benchmarks")]`, so
+    # the line above never COMPILES it; without this, `pallet-quantum-pow`'s
+    # sweeps are dead code and a broken fixture ships unnoticed.
+    # `impl_benchmark_test_suite!` runs each benchmark once in the mock with no
+    # timing and no regression fit, so this proves they RUN against real state —
+    # NOT that any weight constant is correct. Re-deriving the constants needs
+    # `frame-benchmarking-cli` against a release build.
+    - cargo test --features runtime-benchmarks -p pallet-quantum-pow --lib
+    # SUBSUMES `cargo build --release -p quip-protocol-runtime`: the test
+    # target's `build.rs` runs `substrate_wasm_builder`, so this compiles the
+    # runtime in release AND regenerates the 3.3 MB wasm blob (verified by
+    # wiping `wbuild`). Nothing in the pipeline consumes the blob, so the old
+    # line was purely a compile check.
+    #
+    # What it adds: `construct_runtime!` emits `integrity_test` inside
+    # `#[cfg(test)]`, so the runtime crate's own test target is the ONLY thing
+    # that runs it. It guards the retarget clamp's positivity (a negative value
+    # panics `on_finalize` and halts the chain), `ExactSolveCeiling <= 20`, and
+    # the loosest-bound headroom — none of which was enforced before. Verified
+    # by mutation: ceiling 21 fails `runtime_integrity_tests`.
+    #
+    # `--lib` matches the workspace line above: doctests never run in this
+    # pipeline and neither crate has a `tests/` directory, so nothing is
+    # skipped. Marginal cost over the build it replaces: 11.6 s of test time.
+    - cargo test --release -p quip-protocol-runtime --lib
 
 # Browser-facing half of the hybrid extrinsic-signing contract. This is kept
 # separate from cargo-test because it additionally installs Node and the pinned
@@ -690,12 +714,11 @@ manifest-evm-sidecar:
 #   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
 #   release:publish-pypi       release tag, if PUBLISH=true  manual  → PyPI
 #
-# build + the amd64 smoke also run as an MR dry-run (no upload) to catch packaging
-# regressions before a tag. The arm64 smoke and both publishes are tag-only — the
-# arm64 runners are slow and in demand, so the aarch64 wheel is import-tested at
-# tag time, not on every MR. On a release tag the whole chain is gated on
-# QUIP_SIGNER_PUBLISH (off by default), so a node release tag never reds on an
-# unconfigured wheel publish during Phase 1. Every pypi job `needs` only other
+# build + the amd64 smoke also run as an MR dry-run (no upload) to catch
+# packaging regressions before a tag. The arm64 smoke and both publishes are
+# tag-only: those runners are slow and in demand. On a release tag the whole
+# chain is gated on QUIP_SIGNER_PUBLISH (off by default), so a node release tag
+# never reds on an unconfigured wheel publish. Every pypi job `needs` only other
 # pypi jobs, so the chain never waits on the container build/manifest stages
 # (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both smokes, so a
 # wheel that won't import on its own arch blocks the upload.
@@ -706,21 +729,20 @@ manifest-evm-sidecar:
 # version is the pyproject/Cargo version, bumped per release so the tag matches.
 
 # Tag-only rule for the pypi jobs that do NOT run as an MR dry-run: the arm64
-# import-smoke and both publishes. Runs on pushed release tags like v0.2.1,
-# v0.3.0-rc1, … (the same `v*` stream that releases the node container) AND only
-# once publishing is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an
-# unconfigured publish from reding the node release pipeline during Phase 1.
+# import-smoke and both publishes. Fires on `v*` tags (v0.2.1, v0.3.0-rc1, … —
+# the same stream that releases the node container) AND only once
+# QUIP_SIGNER_PUBLISH is enabled, so an unconfigured publish cannot red the node
+# release pipeline.
 .on-release-tag:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
 
-# build-pypi + the amd64 smoke additionally run as an MR dry-run (no upload) to
-# catch packaging regressions before a tag is cut. The arm64 smoke is left out
-# (it uses .on-release-tag) — those runners are slower and in higher demand, so
-# we don't spend them on every MR; the aarch64 wheel is import-tested at tag
-# time instead. On a release tag these two still require QUIP_SIGNER_PUBLISH (the
-# first rule); a tag with the gate off matches nothing here and is skipped, so no
-# wheel is built that will never ship.
+# build-pypi + the amd64 smoke also run as an MR dry-run (no upload) to catch
+# packaging regressions before a tag is cut. The arm64 smoke is left out (it
+# uses .on-release-tag): those runners are slower and in higher demand. On a
+# release tag these two still require QUIP_SIGNER_PUBLISH (first rule); a tag
+# with the gate off matches nothing here, so no wheel is built that will never
+# ship.
 .on-mr-or-release-tag:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
@@ -826,10 +848,9 @@ release:build-pypi:
 # tested on real arm64 before publish. The smoke workload is featherweight
 # (install a ~1 MB wheel + import), so gating on the memory-constrained arm64
 # runner is safe — nothing like the Substrate compile that strains it elsewhere.
-# The two jobs carry different rules on purpose: amd64 runs as an MR dry-run
+# The two carry different rules on purpose: amd64 runs as an MR dry-run
 # (.on-mr-or-release-tag), arm64 is tag-only (.on-release-tag) because those
-# runners are slower and in higher demand — the aarch64 wheel is import-tested at
-# tag time rather than on every MR.
+# runners are slower and in higher demand.
 release:smoke-pypi-amd64:
   extends: .pypi-smoke
   stage: test

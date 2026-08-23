@@ -68,97 +68,188 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     spec_name: alloc::borrow::Cow::Borrowed("quip"),
     impl_name: alloc::borrow::Cow::Borrowed("quip"),
     authoring_version: 1,
-    // The version of the runtime specification. A full node will not attempt to use its native
-    //   runtime in substitute for the on-chain Wasm runtime unless all of `spec_name`,
-    //   `spec_version`, and `authoring_version` are the same between Wasm and native.
-    // Bumped to 101 (and `transaction_version` to 2) when the signed-extrinsic
-    // wire format switched from `MultiSignature` to the hybrid envelope. Without
-    // these bumps, peers/clients could treat the new format as the old one.
-    // Bumped to 102 for v0.2.0: adds `pallet_faucet_ops` (idx 11) and
-    // `pallet_session` (idx 12). New dispatchables, events, and storage entries
-    // change the runtime metadata; the signed-extrinsic wire format is
-    // unchanged, so `transaction_version` stays at 2.
-    // Bumped to 103 for QUI-567: adds the canonical default plain Ising job
-    // spec, root-gates `QuantumComputeMempool::register_job_spec`, and changes
-    // that call's argument encoding, so `transaction_version` moves to 3.
-    // Bumped to 104 for the topology-upgrade path: adds
-    // `QuantumPow::set_default_topology` (call_index 5) and makes the
-    // difficulty energy curve spec-aware (h/J magnitudes derived from the
-    // default topology's allowed-value specs instead of hardcoded ternary-h /
-    // binary-J). Existing call encodings are unchanged, so
-    // `transaction_version` stays at 3.
-    // Bumped to 105 for indexer-free quantum reads: adds monotonic qblock ids,
-    // qblock/hardness runtime APIs, and the mempool open-order recovery index.
-    // Existing call encodings are unchanged, so `transaction_version` stays at
-    // 3.
-    // Bumped to 106 for on-chain miner descriptors and qblock participation:
-    // adds `MinerRegistry` (idx 13) with descriptor/participation calls,
-    // events, and storage. Existing call encodings are unchanged, so
-    // `transaction_version` stays at 3.
-    // Bumped to 107 for the participants-per-qblock reverse index
-    // (`ParticipantsByQBlock`, `ParticipantCountByQBlock`) and the
-    // `MinerRegistryApi` runtime API. Call encodings are unchanged, so
-    // `transaction_version` stays at 3.
-    // Bumped to 108 for per-topology difficulty + the mineable-topology
-    // whitelist: `QuantumPow.Difficulty` (global StorageValue) becomes
-    // `Difficulties` (StorageMap keyed by topology hash), `MineableTopologies`
-    // is added, `set_difficulty` gains a `topology_hash` argument, and
-    // `add_mineable_topology`/`remove_mineable_topology` (call_index 6/7) are
-    // added. `set_difficulty`'s argument encoding changed, so
-    // `transaction_version` moves to 4. Pallet storage version 2 → 3 with a
-    // carry-forward migration.
-    // Bumped to 109 to restore on-chain `system_info`: `MinerRegistry` adds a
-    // schema-v2 descriptor input (`NodeDescriptorInput::V2`) carrying an
-    // optional typed hardware survey, plus a v1 → v2 storage migration that
-    // drops existing descriptors (miners re-file on restart). The V1 call
-    // variant keeps index 0 and encodes identically, so `transaction_version`
-    // stays at 4. MinerRegistry pallet storage version 1 → 2.
-    // Bumped to 110 to add the optional `runtime` block (node software identity:
-    // python / quip_version / protocol_version / in_docker / docker_image) to
-    // the MinerRegistry V2 descriptor. Additive trailing field on the V2 input;
-    // V1 is unaffected and V2 was not yet deployed, so `transaction_version`
-    // stays at 4 and no new migration is needed (the v1 → v2 migration already
-    // wipes descriptors; pallet storage version stays 2).
-    // Bumped to 111 (110 had already shipped in v0.2.1-rc11 when these
-    // landed) for two QuantumPow changes — this is what the chain deployed:
-    // - `QBlock` gains a trailing `topology_hash` so a block records which
-    //   topology it was mined against. This changes the persisted `QBlocks`
-    //   value layout, so QuantumPow pallet storage version goes 3 → 4 with a
-    //   v3 → v4 migration that re-encodes existing entries, backfilling
-    //   `topology_hash` with the default topology. Read-only runtime API
-    //   shape change (`QBlock`/`QBlockWithNonce`). Includes the sudo-only
-    //   per-topology curve `c` override (`set_topology_curve`, new call).
-    // - `submit_proof` weight becomes dimension-scaled (QIP-03): charged
-    //   weight now depends on the registered topology's node/edge counts and
-    //   the proof's solution count instead of a flat 60M placeholder.
-    // No call encodings changed in 111, so `transaction_version` stayed at 4.
-    // Bumped to 112 (111 was already deployed when this landed):
-    // `QuantumProof` gains a trailing `device_access_time_us: u64`
-    // (miner-reported compute time: QPU access time for QPU wins, wall clock
-    // for CPU/GPU), carried through `ProofRecord` and persisted as a trailing
-    // field on `QBlock`. QuantumPow pallet storage version goes 4 → 5: the
-    // deployed-v4 path appends `device_access_time_us = 0` preserving each
-    // block's stored `topology_hash`; the pre-v4 path re-encodes from the
-    // 7-field layout backfilling both trailing fields. Read-only runtime API
-    // shape change (`QBlock`/`QBlockWithNonce`). `submit_proof`'s argument
-    // encoding changed, so `transaction_version` moves to 5.
-    // Bumped for pallet-revive (idx 14), its Ethereum runtime APIs, EVM-aware
-    // unchecked-extrinsic wrapper, and `EthSetOrigin` transaction extension.
-    // The extension set and accepted extrinsic forms change, so
-    // `transaction_version` moves to 6. First shipped as 114 in the v0.2.2-rc
-    // tags (113 was only an intermediate branch value and never released).
-    // Bumped to 115 for the post-tag main build after the benchmark weight
-    // regeneration. No call encodings changed, so `transaction_version` stays
-    // at 6.
-    // Bumped to 116 to publish Metadata V16 from the legacy metadata runtime
-    // API (`state_getMetadata`); previously it returned the V14 inherent
-    // default. The versioned metadata API keeps serving 14/15/16, and
-    // consensus and the extrinsic wire format are unchanged, so
-    // `transaction_version` stays at 6.
-    spec_version: 116,
+    // A full node will not use its native runtime in place of the on-chain Wasm
+    // runtime unless `spec_name`, `spec_version` and `authoring_version` match.
+    //
+    // DEPLOYED HISTORY.
+    // 101: signed-extrinsic wire format `MultiSignature` -> hybrid envelope.
+    //   `transaction_version` -> 2.
+    // 102 (v0.2.0): adds `pallet_faucet_ops` (11) and `pallet_session` (12).
+    //   Metadata only, so `transaction_version` stays 2.
+    // 103 (QUI-567): canonical default plain Ising job spec; root-gates
+    //   `QuantumComputeMempool::register_job_spec` and changes its argument
+    //   encoding, so `transaction_version` -> 3.
+    // 104-107 all leave `transaction_version` at 3:
+    //   104: adds `QuantumPow::set_default_topology` (5); difficulty energy
+    //     curve becomes spec-aware (h/J magnitudes from the default topology's
+    //     allowed-value specs, not hardcoded ternary-h / binary-J).
+    //   105: monotonic qblock ids, qblock/hardness runtime APIs, mempool
+    //     open-order recovery index.
+    //   106: adds `MinerRegistry` (13) with descriptor/participation calls.
+    //   107: `ParticipantsByQBlock`/`ParticipantCountByQBlock` reverse index
+    //     and `MinerRegistryApi`.
+    // 108: per-topology difficulty + mineable whitelist. `Difficulty`
+    //   (StorageValue) becomes `Difficulties` (StorageMap by topology hash),
+    //   `MineableTopologies` added, `set_difficulty` gains `topology_hash`,
+    //   `add_mineable_topology`/`remove_mineable_topology` (6/7) added.
+    //   `transaction_version` -> 4. QuantumPow storage 2 -> 3, carry-forward.
+    // 109-111 all leave `transaction_version` at 4:
+    //   109: `MinerRegistry` gains `NodeDescriptorInput::V2` (optional typed
+    //     hardware survey) and a v1 -> v2 migration that DROPS existing
+    //     descriptors (miners re-file on restart). V1 keeps index 0 and encodes
+    //     identically. MinerRegistry storage 1 -> 2.
+    //   110: optional `runtime` block (python / quip_version /
+    //     protocol_version / in_docker / docker_image) on the V2 descriptor.
+    //     Additive trailing field on an input that had not shipped, so no new
+    //     migration; MinerRegistry storage stays 2.
+    //   111 (110 had already shipped in v0.2.1-rc11): `QBlock` gains a trailing
+    //     `topology_hash`, so QuantumPow storage 3 -> 4 re-encodes existing
+    //     entries, backfilling the default topology. Adds sudo-only
+    //     `set_topology_curve`; `submit_proof` weight becomes dimension-scaled
+    //     (QIP-03) instead of a flat 60M placeholder.
+    // 112: `QuantumProof` gains a trailing `device_access_time_us: u64` (QPU
+    //   access time for QPU wins, wall clock for CPU/GPU), carried on
+    //   `ProofRecord` and persisted on `QBlock`. QuantumPow storage 4 -> 5: the
+    //   deployed-v4 path appends `device_access_time_us = 0` keeping each
+    //   block's `topology_hash`; the pre-v4 path re-encodes the 7-field layout,
+    //   backfilling both. `submit_proof`'s encoding changed, so
+    //   `transaction_version` -> 5.
+    // 114 (v0.2.2-rc): pallet-revive EVM (idx 14), its Ethereum runtime APIs,
+    //   the EVM-aware unchecked-extrinsic wrapper and the `EthSetOrigin`
+    //   transaction extension. The extension set and accepted extrinsic forms
+    //   change, so `transaction_version` -> 6. (113 was only an intermediate
+    //   branch value and never released.)
+    // 115: post-tag main build after the benchmark weight regeneration. No
+    //   call encodings changed, so `transaction_version` stays 6.
+    // 116: the legacy metadata runtime API (`state_getMetadata`) publishes
+    //   Metadata V16 (previously the V14 inherent default); the versioned
+    //   metadata API keeps serving 14/15/16. Consensus and the extrinsic wire
+    //   format are unchanged, so `transaction_version` stays 6.
+    // ─────────────────────────────────────────────────────────────────────
+    // 117: single-dial PoUW difficulty. ONE bump covers all of
+    // `v0.2.1/generic-graph-difficulty`. The branch briefly minted 113 through
+    // 119 before its rebase onto main's 116; none was deployed, so they fold
+    // into one step from what is actually out there. QuantumPow pallet storage
+    // moves 5 -> 6 exactly once, for the same reason: 7 and 8 were minted on
+    // this branch and no chain ever ran them, so the three steps are one v6
+    // that chains from the deployed 5 in a single upgrade.
+    // `transaction_version` moves 6 -> 7 once, covering both
+    // `register_topology`'s trailing `TopologyHardness` and `submit_proof`'s
+    // `solutions` field, which changes from
+    // `BoundedVec<PackedSpinBytes, MaxSolutions>` to a single `PackedSpinBytes`
+    // (see `QuantumProof::solutions`). Two encoding changes, one step, because
+    // neither has shipped. Those entries survive below as `ALSO IN 117`.
+    // ─────────────────────────────────────────────────────────────────────
+    // `DifficultyConfig` sheds `min_solutions` and `min_diversity_milli`. A
+    // proof carries exactly one configuration (now by type)
+    // and the energy bar alone decides — one exact energy evaluation per proof,
+    // not one per solution. The bar is priced PER INSTANCE: the salt picks the
+    // instance, so the bar interpolates between the topology curve and that
+    // instance's exact optimum `-(Sum|h| + Sum|J|)` by realized gauge-invariant
+    // frustration. Grinding for a less frustrated draw buys a tighter bar, not
+    // free difficulty; the clamp at the optimum also keeps bars attainable on
+    // low-degree graphs where `expected_gse` overshoots. Block selection ranks
+    // by margin over each proof's OWN instance bar, not absolute energy, so a
+    // larger draw no longer beats a better solve.
+    //
+    // New calls: root `set_topology_hardness` (9); permissionless
+    // `prove_topology_exact` (10) — an elimination order of induced width at or
+    // below `ExactSolveCeiling` ratchets the recorded width down and retires
+    // the topology from mining unless it is the live default; permissionless
+    // `prove_topology_planar` (11) — a zero-field planar Ising is max-cut on a
+    // planar graph, polynomial-time at any width, which width alone cannot
+    // detect. OPERATIONAL: `prove_topology_planar` can retire the LIVE DEFAULT
+    // topology and halt qblock production until governance repoints.
+    // Deliberate — paying for polynomial-time work is worse than pausing — but
+    // one transaction can now stop block rewards. `register_topology` gains a
+    // trailing `TopologyHardness` so classification is structural; an
+    // unclassified topology would price off the bare curve and be immune to the
+    // fraud proof. That encoding change is what moves `transaction_version` to
+    // 7. Regime is derived from width and ceiling rather than stored, so
+    // raising the ceiling re-classifies every topology in one upgrade;
+    // `TopologyHardness` keeps `residual_difficulty` and `core_width`
+    // separately and the regime takes the minimum.
+    //
+    // Difficulty retargets per epoch (`DifficultyRetargeted`) and that loop is
+    // now the ONLY control: the per-proof adjustment, dominant-winner easing
+    // and `ConsecutiveWinnerEasingThreshold` are removed, having fought it.
+    // Consequences: `DifficultyUpdated` no longer fires on a qblock win (watch
+    // `DifficultyRetargeted`), nothing counters monopoly beyond the bar itself,
+    // and `blocks_per_qblock` reports 0 for an epoch that produced none. Only
+    // the default topology eases on an empty epoch; a whitelisted incoming
+    // topology is idle, not stalled. The window is twenty target intervals, not
+    // ten: arrivals are Poisson, and at ten the clamp fired on ~43% of
+    // on-target windows.
+    //
+    // MINER-VISIBLE REFUSALS. An instance is REFUSED, not re-priced, when it
+    // has no frustrated cycles (`InstanceIsGaugeTrivial`) or when its
+    // frustration lands over three sigma either side of the topology's
+    // expectation (`InstanceOutsideFrustrationBand`). Both are cheap to predict
+    // off-chain before spending solve effort — re-salt. Registration derives
+    // expected frustration for sign-symmetric coupling specs instead of
+    // accepting the declared value, refuses specs that can draw a reachable
+    // all-zero instance, and refuses a curve calibrated past the topology's own
+    // typical weight.
+    //
+    // QuantumPow storage 5 -> 6, three steps in one migration.
+    //
+    // (a) Re-encodes `Difficulties` and `QBlocks`, backfilling each historical
+    // block's `instance_bar_milli` from the bar it cleared.
+    //
+    // (b) Canonicalizes each stored graph (nodes sorted, edges oriented then
+    // sorted): `hash_topology` always hashed the canonical form while
+    // `generate_ising_model` maps values POSITIONALLY, so the hash did not name
+    // the instance the chain generates. Hashes are unchanged and keyed maps stay
+    // valid, but `prove_topology_planar` indexes its rotation into the stored
+    // edge list, so an off-chain witness generator built against submission
+    // order MUST be regenerated.
+    //
+    // (c) Adds `TopologyDims`, an eight-byte `(nodes, edges)` copy per topology
+    // backfilled from `RegisteredTopologies`: pure redundancy, because the
+    // weight closures for
+    // `submit_proof` / `prove_topology_exact` / `prove_topology_planar` are
+    // evaluated inside `validate_transaction` on every gossiped extrinsic
+    // before any fee, and reading `RegisteredTopologies` there SCALE-decoded up
+    // to ~370 KB per gossiped proof for two `len()`s. No call encoding change,
+    // so `transaction_version` stays 7. The winning proof's difficulty also
+    // rides on `ProofRecord` instead of being recomputed in `on_finalize`, so a
+    // `QBlock` records the bar it was actually priced against.
+    //
+    // ALSO IN 117, none of which changes a call encoding:
+    // (114 -> 115) the permissionless witness extrinsics report WHICH defect
+    //   refused them instead of collapsing four (elimination order) and seven
+    //   (rotation) failures into one error each. New variants are APPENDED, so
+    //   no existing error index moves; unused `InvalidEliminationOrder` is
+    //   retained for the same reason.
+    // (115 -> 116) `HandicapPerSigmaPermille` (whose own measurement says the
+    //   slope is not determinable over the range that matters) and
+    //   `RetargetMaxStepPermille` become `#[pallet::constant]` Config values:
+    //   retuning either is now a runtime upgrade, and both appear in metadata.
+    //   `HANDICAP_MAX_SIGMA` gates `submit_proof` validity and IS
+    //   consensus-critical, so it deliberately stays a code constant.
+    // (116 -> 117) cleanup. `prove_topology_planar` no longer copies the
+    //   submitted rotation (up to ~400 KB, one allocation per vertex, on a
+    //   permissionless path); the dims backfill streams `iter()` instead of
+    //   `iter_keys()` + per-key `get`, halving its reads; `proof_quality` takes
+    //   a named struct, not three transposable `i64`s.
+    // (117 -> 118) closes a chain-halt path: a negative
+    //   `RetargetMaxStepPermille` made `Ord::clamp(min > max)` panic inside
+    //   `on_finalize`, which cannot be refused. Guarded in `integrity_test` AND
+    //   in `retarget_bar_milli`, since `integrity_test` is `#[cfg(test)]`-only
+    //   and never runs on a live chain. Also splits two witness rejections that
+    //   blamed the submitter for defects in the STORED topology, names
+    //   `TopologyDims`' pair, and charges the dims backfill for every entry it
+    //   traverses, not only those it writes.
+    // (118 -> 119) `NodeIndex` resolves the LEFTMOST match on its fallback
+    //   table; `binary_search_by_key` picks an arbitrary match among equal keys,
+    //   so which node id a duplicate-node rejection named was an unspecified std
+    //   detail a toolchain bump could flip. No caller inspects more than
+    //   `is_empty()`, so nothing diverged. Also replaces a silent
+    //   difficulty-controller freeze with a logged fallback to the default clamp.
+    spec_version: 117,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 6,
+    transaction_version: 7,
     system_version: 1,
 };
 

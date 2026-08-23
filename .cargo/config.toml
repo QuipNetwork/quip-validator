@@ -19,3 +19,37 @@ rustflags = [
     "-C",
     "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/usr/lib",
 ]
+
+# Runtime WASM link fix. Do not remove.
+#
+# `substrate-wasm-builder` never passes `--allow-undefined`; it relies on the
+# toolchain defaulting to it for wasm targets. As of rustc 1.97 the
+# `wasm32v1-none` target does not, so `rust-lld` treats the `sp_io` HOST
+# functions as hard link errors (`undefined symbol: ext_storage_get_version_1`,
+# `ext_allocator_malloc_version_1`, 20+ more). Those symbols are SUPPOSED to be
+# wasm imports, supplied by the executor at instantiation. Without this flag the
+# runtime blob cannot be built at all and `frame-benchmarking-cli` — which
+# re-derives the pallet weight constants — cannot run.
+#
+# The trade: `--allow-undefined` disables a real check, so a blob calling a host
+# function the executor lacks links FINE, passes `set_code`, and fails to
+# instantiate on the next block, on every node at once — a chain halt needing a
+# coordinated fix. A local `./target/.../node --dev` catches it on the first
+# `Core_version` call; a governance upgrade does not. Worth a CI step diffing
+# the blob's import list against the node's host-function registry. Pinning a
+# rustc contemporary with the SDK fork would be better, but the fork ships no
+# `rust-toolchain.toml`, so there is no version to look up. Revisit if the SDK
+# passes this itself or a `rust-toolchain.toml` appears.
+#
+# `force = true` cuts BOTH ways. Without it a cargo `[env]` entry loses to an
+# inherited variable, so a shell exporting WASM_BUILD_RUSTFLAGS for any other
+# reason silently drops `--allow-undefined` and hits the link wall. With it,
+# that shell's own flags (`-C target-cpu=mvp`, an extra `--cfg`) are silently
+# DISCARDED — the likelier incident. Anyone needing both must set them here.
+#
+# `.cargo/config.toml` is discovered by CWD, not by package, so a consumer
+# building this runtime from a parent workspace does not get it. The narrower
+# home is the runtime's own `build.rs`, which already invokes
+# `substrate_wasm_builder`; that is the better fix if this needs to travel.
+[env]
+WASM_BUILD_RUSTFLAGS = { value = "-C link-arg=--allow-undefined", force = true }

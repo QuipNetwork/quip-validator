@@ -3,6 +3,68 @@ use quantum_validation::AllowedValueSpec;
 use scale_info::TypeInfo;
 use sp_core::{H256, U256};
 
+/// Structural facts about a topology.
+///
+/// Every field is a function of the interaction graph and its value specs alone
+/// — identical for every nonce — so no salt can move any of them. Computed
+/// off-chain and registered by governance; `residual_difficulty` is also
+/// falsifiable on-chain via `Pallet::prove_topology_exact`.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    Eq,
+    PartialEq,
+    TypeInfo,
+    MaxEncodedLen,
+)]
+pub struct TopologyHardness {
+    /// A chain-verified **upper bound** on the induced width of the topology's
+    /// **raw interaction graph** — what an elimination-order witness is
+    /// replayed against, and the exact-solve exponent: width `w` costs `2^w`.
+    ///
+    /// Deliberately *separate* from `core_width`. Conflating them — the toolkit
+    /// reports post-reduction core width, the challenge replays an order over
+    /// the raw graph — left a wide raw graph with a collapsing reduction stack
+    /// unchallengeable, the case governance is most likely to misjudge.
+    ///
+    /// Not merely trusted: it only ratchets *down*, anyone can drive it there
+    /// by exhibiting a narrower elimination order (`prove_topology_exact`), and
+    /// not even root may raise it. The regime is derived from it and
+    /// `ExactSolveCeiling` rather than stored, so one constant change
+    /// re-classifies every topology as classical solvers improve.
+    pub residual_difficulty: u32,
+    /// Induced width of the **irreducible core**, after the toolkit's exact
+    /// reduction stack (tropical spin elimination, Δ-Y/SP, roof-duality
+    /// QPBO, virtualization).
+    ///
+    /// This is what actually decides tractability, and it is *not*
+    /// `residual_difficulty`: a graph can be wide while the stack collapses it
+    /// to a trivial core, and solving the core solves the original. So the
+    /// regime takes the **minimum** of the two — either cheap route makes the
+    /// topology cheap, the conservative direction for a mineability gate.
+    ///
+    /// Governance-trusted, unlike `residual_difficulty`: no witness for "the
+    /// reduction stack collapses this" is as cheap as an elimination order.
+    /// Falsifying it needs a replayable reduction certificate — the remaining
+    /// half of `riff-hv9.16`.
+    ///
+    /// **Zero is irreversible.** Widths only ratchet down and not even root may
+    /// raise one, so registering `0` — or a planarity proof collapsing it —
+    /// retires the topology permanently. Intended for a proven tractable graph,
+    /// but a fat-fingered `0` then needs re-registration under a new hash.
+    pub core_width: u32,
+    /// Frustration, in milli, an honestly-sampled instance is expected to show:
+    /// where the mean-field curve is calibrated and the reference of the
+    /// per-instance bar (`crate::difficulty::instance_bar_milli`). `500` for a
+    /// symmetric ±J spec on a graph with cycles; `0` disables the handicap and
+    /// falls back to the bare curve.
+    pub expected_frustration_milli: u32,
+}
+
 /// A submitted proof-of-work payload.
 ///
 /// The proof carries only the strictly-non-derivable inputs to validation:
@@ -18,18 +80,28 @@ use sp_core::{H256, U256};
 ///   reject mismatched salts before doing any topology work.
 /// - `salt` is the only freely-chosen miner input. Fixed at 32 bytes so the
 ///   PoW search space is statically known and identical across every call.
-/// - `solutions` is a list of bit-packed spin vectors. Each entry is decoded
-///   under the registered topology's `allowed_spin_values` spec, so the
-///   wire-format width per spin matches the on-chain spec (e.g., 1 bit per
-///   spin for the default binary Ising topology).
+/// - `solutions` is one bit-packed spin vector, decoded under the registered
+///   topology's `allowed_spin_values` spec, so the wire-format width per spin
+///   matches the on-chain spec (e.g., 1 bit per spin for the default binary
+///   Ising topology).
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct QuantumProof<PackedSolutions> {
+pub struct QuantumProof<PackedSolution> {
     pub topology_hash: H256,
     pub nonce: U256,
     pub salt: [u8; 32],
-    pub solutions: PackedSolutions,
+    /// The submitted configuration — a single packed value, not a collection.
+    ///
+    /// It was `BoundedVec<PackedSpinBytesOf<T>, MaxSolutions>` with the extrinsic refusing
+    /// `len() != 1`. That refusal fired only after SCALE had decoded up to `MaxSolutions`
+    /// (32) configurations, on the unpaid pool-validation path, so the weight formula had to
+    /// carry solution-scaled terms purely to price rejected work. Encoding one configuration
+    /// makes `TooManySolutions` unrepresentable and removes the decode instead of charging
+    /// for it. The name stays plural only to keep this change to the type: SCALE encodes
+    /// structs positionally, so renaming to `solution` would cost no wire bytes — it would
+    /// move only the metadata hash, which this type change already moves.
+    pub solutions: PackedSolution,
     /// Miner-reported compute time spent producing this proof, in
     /// microseconds. QPU miners report the summed D-Wave QPU access time
     /// across the solution's attempts; CPU/GPU miners report wall-clock
@@ -39,6 +111,13 @@ pub struct QuantumProof<PackedSolutions> {
     pub device_access_time_us: u64,
 }
 
+/// The topology-level difficulty baseline: one dial, the energy bar.
+///
+/// `min_solutions` and `min_diversity_milli` are gone: they charged the
+/// verifier an exact energy evaluation per solution — the dominant per-proof
+/// cost — for a property that is not difficulty, since a miner near a good
+/// basin emits distant near-ties as cheaply as one. One configuration and one
+/// bar leaves a single monotone control the epoch retarget can drive.
 #[derive(
     Clone,
     Copy,
@@ -52,17 +131,15 @@ pub struct QuantumProof<PackedSolutions> {
     MaxEncodedLen,
 )]
 pub struct DifficultyConfig {
-    pub min_solutions: u32,
+    /// Topology-level bar before the per-instance handicap (see
+    /// `crate::difficulty::instance_bar_milli`). Negative.
     pub max_energy_milli: i64,
-    pub min_diversity_milli: u32,
 }
 
 impl Default for DifficultyConfig {
     fn default() -> Self {
         Self {
-            min_solutions: 5,
             max_energy_milli: -1_200_000,
-            min_diversity_milli: 200,
         }
     }
 }
@@ -120,12 +197,17 @@ pub struct WinnerStreak<AccountId> {
 pub struct ProofRecord<AccountId, BlockNumber> {
     pub miner: AccountId,
     pub submitted_at: BlockNumber,
-    /// Best energy found within the submitted proof.
-    ///
-    /// The doc uses `energy_milli`; this field keeps that meaning while making
-    /// the "best among submitted solutions" interpretation explicit in the
-    /// record documentation rather than in the field name.
+    /// Exact energy of the proof's single submitted configuration.
     pub energy_milli: i64,
+    /// A LOWER BOUND on the instance's optimum, `-(Σ|h| + Σ|J|)`, in milli.
+    /// Exact only for an unfrustrated draw — frustration lifts the true optimum
+    /// above it, so the normalized room over-estimates reachable depth.
+    ///
+    /// Fields here need no storage migration only because `BlockBestProof` is
+    /// `take()`n unconditionally at the top of `on_finalize`: a record never
+    /// survives a block boundary, so it cannot be decoded under an older
+    /// layout.
+    pub anchor_milli: i64,
     /// Salt of the submitted proof. Copied here so `on_finalize` can persist
     /// it into `QBlocks` without re-reading the (PQ-signed)
     /// extrinsic body.
@@ -138,6 +220,21 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     /// `on_finalize` can persist it into `QBlocks` without re-reading the
     /// extrinsic body.
     pub device_access_time_us: u64,
+    /// The live difficulty this proof was priced against, as `submit_proof`
+    /// read it.
+    ///
+    /// Do not recompute this at finalize with `current_difficulty_for`: that
+    /// re-reads two storages and rebuilds the energy curve (a full topology
+    /// decode) for a value the accepting extrinsic already had in the same
+    /// block, and it would pick up any later `Difficulties` write, recording a
+    /// threshold the miner was never held to.
+    pub difficulty: DifficultyConfig,
+    /// Gauge-invariant frustration of the instance this proof solved, in
+    /// milli. Carried so `on_finalize` can persist the bar's provenance
+    /// without regenerating the instance.
+    pub frustration_milli: u32,
+    /// The handicapped bar this proof actually cleared, in milli.
+    pub instance_bar_milli: i64,
 }
 
 #[derive(
@@ -154,9 +251,8 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     MaxEncodedLen,
 )]
 pub struct ProofValidation {
-    pub best_energy_milli: i64,
-    pub diversity_milli: u32,
-    pub valid_solution_count: u32,
+    /// Exact energy of the proof's single submitted configuration.
+    pub energy_milli: i64,
 }
 
 #[derive(
@@ -224,6 +320,13 @@ pub struct QBlock<AccountId, Balance, BlockNumber> {
     /// remains derivable from block spacing (`LastProofBlock` deltas), so
     /// no information is lost by carrying compute time here instead.
     pub device_access_time_us: u64,
+    /// Frustration of the instance that was solved, in milli. With
+    /// `difficulty` above and the topology's registered
+    /// `expected_frustration_milli`, this makes the bar the block actually
+    /// had to clear reproducible from state alone.
+    pub frustration_milli: u32,
+    /// The handicapped bar the winning proof cleared, in milli.
+    pub instance_bar_milli: i64,
 }
 
 /// Runtime-API view augmenting [`QBlock`] with the derived nonce.

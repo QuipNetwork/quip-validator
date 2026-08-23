@@ -86,19 +86,15 @@ check_quantum_pow_wrapper() {
   normalized="$(tr -d '[:space:]' < "$file")"
   for required in \
     'usecrate::benchmark_weights' \
-    'constSUBMIT_PROOF_K1_NODE:' \
-    'constSUBMIT_PROOF_K2_EDGE:' \
-    'constSUBMIT_PROOF_K3_SOLUTION_NODE:' \
-    'constSUBMIT_PROOF_K4_SOLUTION_EDGE:' \
-    'constSUBMIT_PROOF_K5_SOLUTION_SQ_NODE:' \
-    'constSUBMIT_PROOF_K6_NODE_EDGE:' \
+    'constSUBMIT_PROOF_BASE_REF_TIME:' \
+    'constSUBMIT_PROOF_K_NODE:' \
+    'constSUBMIT_PROOF_K_EDGE:' \
+    'constSUBMIT_PROOF_READS:' \
+    'constSUBMIT_PROOF_WRITES:' \
     'fnsubmit_proof_dimension_weight(' \
-    '.saturating_add(solution_node_cost)' \
-    '.saturating_add(solution_edge_cost)' \
-    '.saturating_add(solution_squared_cost)' \
-    '.saturating_add(node_edge_cost)' \
-    'asBenchmarkWeightInfo>::submit_proof(0,0,0)' \
-    '.saturating_add(submit_proof_dimension_weight(n,e,s))'; do
+    '.saturating_add(node_cost)' \
+    '.saturating_add(edge_cost)' \
+    'submit_proof_dimension_weight(nodes,edges)'; do
     if [[ "$normalized" != *"$required"* ]]; then
       echo "ERROR: Quantum PoW public weights wrapper lost invariant '$required'" >&2
       return 1
@@ -216,6 +212,17 @@ for pallet in "${pallets[@]}"; do
     fi
 
     if [ "$pallet" = "pallet_quantum_pow" ]; then
+      # Hand-modeled extrinsics deliberately diverge from the generated
+      # signatures: `submit_proof` charges a pure QIP-03 formula over
+      # `(nodes, edges)`, and the witness extrinsics are priced over
+      # `(nodes, edges)` from `TopologyDims` while their benchmarks sweep a
+      # single caterpillar/grid dimension. Only delegating wrappers must stay
+      # in positional lockstep with the generated file.
+      case "$extrinsic" in
+        submit_proof|prove_topology_exact|prove_topology_planar)
+          continue
+          ;;
+      esac
       public_signature="$(extract_signature "$extrinsic" "$public_weights")"
       if [ -z "$public_signature" ] || \
         [ "$(printf '%s' "$public_signature" | normalize_signature)" != \
