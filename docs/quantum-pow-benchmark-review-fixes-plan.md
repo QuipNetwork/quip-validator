@@ -1,5 +1,16 @@
 # Quantum PoW Benchmark Review Fixes
 
+> **Superseded (spec 117).** The single-dial PoUW difficulty made a proof
+> carry exactly one configuration, so the `s`-dimension, the six-point sweep,
+> and the `node02` fixture this plan derives from no longer exist. The current
+> model is `BASE + Kn*n + Ke*e`; the four-point sweep lives in
+> `scripts/run-quantum-pow-sweeps.sh`, the recorded fixture in
+> `pallets/quantum-pow/testdata/submit-proof-sweeps.tsv`, and the gates in
+> `weight_covers_recorded_sweeps_with_twenty_percent_target` (steady-state
+> minimum) and `weight_covers_executed_sweep_with_ten_percent_floor`
+> (reference-machine maximum). Kept as the record of how the previous
+> envelope was sized.
+
 ## Context
 
 This plan addresses the remaining review findings on
