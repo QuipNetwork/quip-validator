@@ -42,7 +42,6 @@ type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
-type WinnerStreakOf<T> = types::WinnerStreak<AccountIdOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
@@ -174,8 +173,6 @@ pub mod pallet {
         type MaxNodes: Get<u32>;
         #[pallet::constant]
         type MaxEdges: Get<u32>;
-        #[pallet::constant]
-        type MaxSolutions: Get<u32>;
         #[pallet::constant]
         type MinNodes: Get<u32>;
         /// Upper bound on |allowed_h_values|, |allowed_j_values|, and
@@ -372,8 +369,6 @@ pub mod pallet {
     #[pallet::storage]
     pub type BlockBestProof<T: Config> = StorageValue<_, ProofRecordOf<T>>;
 
-    #[pallet::storage]
-    pub type WinnerStreak<T: Config> = StorageValue<_, WinnerStreakOf<T>, OptionQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -772,14 +767,14 @@ pub mod pallet {
             // Counted for the worst-case block: a win that also closes a
             // retarget window, with the whitelist at its bound of two
             // topologies. Reads: `BlockProofCount`, `LastProofBlock`,
-            // `BlockBestProof`, `Miners`, `LastProofBlockHash`, `WinnerStreak`,
+            // `BlockBestProof`, `Miners`, `LastProofBlockHash`,
             // `QBlockCount`, the deposit's account and issuance,
             // `current_difficulty_for` on the winner's topology (4),
             // `EpochStart`, then per topology the whitelist key, curve pair,
             // `EpochQBlocks`, `DefaultTopology` and baseline, plus the cleared
             // epoch keys. Writes: the `BlockBestProof` kill, two balance
             // writes, `Miners`, `LastProofBlock`, `QBlockCount`, three qblock
-            // records, `EpochQBlocks`, `WinnerStreak`, one `Difficulties` per
+            // records, `EpochQBlocks`, one `Difficulties` per
             // topology, `EpochStart`, the cleared keys, `BlockProofCount`.
             //
             // The ref_time allowance covers `expected_gse` (recomputed on every
@@ -867,6 +862,7 @@ pub mod pallet {
             // Backfills `TopologyDims` for every already-registered topology.
             // Runs from every prior version and is idempotent.
             weight = weight.saturating_add(crate::migration::v6::backfill_topology_dims::<T>());
+            weight = weight.saturating_add(crate::migration::v6::kill_winner_streak::<T>());
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -972,15 +968,6 @@ pub mod pallet {
             // `current_difficulty_for` would rebuild the energy curve, decoding
             // the whole topology again. See `ProofRecord::difficulty`.
             let active = record.difficulty;
-            // Streak tracking is retained for observability; it no longer
-            // moves difficulty.
-            let _ = Self::update_winner_streak(&record.miner);
-
-            // No per-proof rate-band walk here: the epoch retarget is the sole
-            // dial. The two fought — on a slow chain the retarget eases while
-            // the band hardened ("this one took a while") — so they push
-            // opposite directions in the case that matters most, a chain
-            // falling behind.
             LastProofBlock::<T>::put(n);
             let qblock_id = Self::next_qblock_id();
 
@@ -1177,13 +1164,12 @@ pub mod pallet {
             // it means they cannot get it wrong. Derivation and its proof live
             // in `quantum-validation`.
             let mut hardness = hardness;
-            if let Some(derived) = quantum_validation::expected_frustration_for(
+            Self::apply_derived_expected_frustration(
+                &mut hardness,
                 &allowed_j_values.as_slice(),
                 &nodes,
                 &edges,
-            ) {
-                hardness.expected_frustration_milli = derived;
-            }
+            );
             // Specs that can draw an all-zero instance are refused outright:
             // such a draw pays full reward for no work.
             Self::ensure_specs_cannot_draw_zero(
@@ -1384,10 +1370,8 @@ pub mod pallet {
             hardness: types::TopologyHardness,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            ensure!(
-                RegisteredTopologies::<T>::contains_key(topology_hash),
-                Error::<T>::TopologyNotRegistered
-            );
+            let topology = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
             Self::check_hardness(&hardness)?;
             // Widening would re-inflate a topology to look harder than a
             // witness has already shown it to be, undoing the ratchet.
@@ -1400,6 +1384,13 @@ pub mod pallet {
                     Error::<T>::WidthWidened
                 );
             }
+            let mut hardness = hardness;
+            Self::apply_derived_expected_frustration(
+                &mut hardness,
+                &topology.allowed_j_values.as_slice(),
+                topology.nodes.as_slice(),
+                topology.edges.as_slice(),
+            );
             TopologyHardnessOf::<T>::insert(topology_hash, hardness);
             Self::deposit_event(Event::TopologyHardnessSet {
                 topology_hash,
@@ -1876,12 +1867,13 @@ pub mod pallet {
 
     impl<T: Config> Pallet<T> {
         /// Close the retarget epoch if `EpochLength` blocks have elapsed,
-        /// driving the energy bar toward the target block cadence.
+        /// driving the stored energy baseline toward the target cadence.
         ///
-        /// The *only* control loop on average block time. The per-proof walk it
-        /// replaced double-counted: a proof arriving early tightened the bar
-        /// immediately, then the epoch containing it tightened again on the
-        /// same evidence.
+        /// This is the loop that *writes* difficulty. Decay still eases the
+        /// bar miners see on read, one step per `EpochLength` since the last
+        /// qblock, without committing that ease into storage. The two do not
+        /// fight: decay is a view-only stall ease; this loop is the
+        /// cadence controller.
         ///
         /// Runs on every block, win or not: an epoch with zero qblocks is
         /// precisely the case that needs easing and has no winning proof to
@@ -2032,6 +2024,23 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Overwrite `expected_frustration_milli` when the coupling spec
+        /// determines it. Same path as `register_topology`: a wrong
+        /// declaration at production cycle counts bricks every honest
+        /// `submit_proof` with `InstanceOutsideFrustrationBand`.
+        fn apply_derived_expected_frustration(
+            hardness: &mut types::TopologyHardness,
+            allowed_j: &quantum_validation::AllowedValueSpec<&[quantum_validation::MilliValue]>,
+            nodes: &[u32],
+            edges: &[(u32, u32)],
+        ) {
+            if let Some(derived) =
+                quantum_validation::expected_frustration_for(allowed_j, nodes, edges)
+            {
+                hardness.expected_frustration_milli = derived;
+            }
+        }
+
         /// Refuse specs that admit an all-zero draw.
         ///
         /// Such an instance has `Σ|h| + Σ|J| = 0`, so every configuration has
@@ -2176,28 +2185,25 @@ pub mod pallet {
             }
         }
 
-        /// Every registered topology must carry its dims.
+        /// Every registered topology must carry a dims row, and no orphan
+        /// dims keys may exist. Count equality is not enough: one missing
+        /// registered hash plus one orphan has equal counts and undercharges
+        /// `submit_proof` at base.
         ///
-        /// The three weight closures fall back to `TopologyDim::UNREGISTERED`,
-        /// pricing `submit_proof` at base. Correct for an UNREGISTERED hash —
-        /// the call fails immediately on the meta lookup — but for a REGISTERED
-        /// one missing its dims the call SUCCEEDS at full cost for a base fee:
-        /// an unmetered DoS surface on the consensus path.
-        ///
-        /// The invariant holds by construction (one writer each, no removers,
-        /// re-registration refused, v6's canonicalization count-preserving),
-        /// but that is an argument, and this is the failure it has to catch.
-        ///
-        /// IN `try_state`, NOT `post_upgrade`: the invariant depends on
-        /// `register_topology`, which runs on any block, so a once-per-upgrade
-        /// check cannot see a break introduced between upgrades. `post_upgrade`
-        /// calls this — the standard FRAME shape.
+        /// IN `try_state`, NOT `post_upgrade` alone: the invariant depends on
+        /// `register_topology`, which runs on any block.
+        pub fn topology_dims_consistent() -> bool {
+            use alloc::collections::BTreeSet;
+            let registered: BTreeSet<_> = RegisteredTopologies::<T>::iter_keys().collect();
+            let dims: BTreeSet<_> = TopologyDims::<T>::iter_keys().collect();
+            registered == dims
+        }
+
         #[cfg(feature = "try-runtime")]
         pub fn do_try_state() -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
-                RegisteredTopologies::<T>::iter_keys().count()
-                    == TopologyDims::<T>::iter_keys().count(),
-                "every registered topology must have a TopologyDims entry"
+                Self::topology_dims_consistent(),
+                "RegisteredTopologies and TopologyDims must cover the same hashes"
             );
             Ok(())
         }
@@ -2460,20 +2466,6 @@ pub mod pallet {
             .ok()
         }
 
-        fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {
-            let next = match WinnerStreak::<T>::get() {
-                Some(mut streak) if streak.miner == *miner => {
-                    streak.count = streak.count.saturating_add(1);
-                    streak
-                }
-                _ => WinnerStreakOf::<T> {
-                    miner: miner.clone(),
-                    count: 1,
-                },
-            };
-            WinnerStreak::<T>::put(&next);
-            next
-        }
 
         /// Decode the proof's single configuration and return its exact energy.
         /// ONE `energy_of_solution` call — the dominant per-proof cost — where
@@ -2738,6 +2730,17 @@ pub(crate) mod migration {
             // idempotent re-run after doing all that work — the wrong direction
             // on a consensus-visible weight.
             T::DbWeight::get().reads_writes(visited.saturating_mul(2), touched)
+        }
+
+        /// Drop the `WinnerStreak` StorageValue. Consecutive-winner easing is
+        /// gone; the key would otherwise linger unread after the item is
+        /// deleted. Idempotent: a missing key is a no-op write.
+        pub(crate) fn kill_winner_streak<T: Config>() -> Weight {
+            let mut key = [0u8; 32];
+            key[..16].copy_from_slice(&sp_io::hashing::twox_128(b"QuantumPow"));
+            key[16..].copy_from_slice(&sp_io::hashing::twox_128(b"WinnerStreak"));
+            frame_support::storage::unhashed::kill(&key);
+            T::DbWeight::get().writes(1)
         }
 
         /// Canonicalize the stored graph of every registered topology.

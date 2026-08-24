@@ -5,7 +5,7 @@ use crate::{
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulties,
     EpochQBlocks, EpochStart, LastProofBlock, LastProofBlockHash, MineableTopologies, Miners,
     PackedSpinBytesOf, QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks,
-    RegisteredTopologies, TopologyDims, TopologyHardnessOf, WinnerStreak,
+    RegisteredTopologies, TopologyDims, TopologyHardnessOf,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -85,8 +85,8 @@ fn test_curve_c() -> crate::difficulty::CurveC {
 }
 
 /// Energy curve for the same `(2, 1)` topology and specs `registered_topology()`
-/// uses. Tests calling `apply_decay`/`adjust_on_proof` directly need it to match
-/// what the pallet computes via `current_energy_curve()`.
+/// uses. Tests calling `apply_decay` directly need it to match what the pallet
+/// computes via `current_energy_curve()`.
 fn test_curve() -> crate::difficulty::EnergyCurve {
     crate::difficulty::EnergyCurve::new(
         2,
@@ -1834,12 +1834,9 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
     });
 }
 
-// NOTE: the end-to-end per-proof difficulty tests were removed with the
-// per-proof rate-band walk itself — it fought the epoch retarget on a slow chain
-// (hardened on a slow win while the retarget eased for being behind cadence), so
-// difficulty has one dial. The band's policy is still pinned against
-// `adjust_on_proof_with_dominance` in `repeated_same_winner_forces_easing`; the
-// retarget is covered by `retarget_*` and `a_stalled_chain_*`.
+// Per-proof rate-band tests were removed with the walk itself. Cadence is
+// covered by `retarget_*` and `a_stalled_chain_*`; decay-on-read by
+// `submit_proof_uses_decayed_difficulty_after_block_gap`.
 
 #[test]
 fn curve_constants_are_recalibrated() {
@@ -1908,24 +1905,6 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
     });
 }
 
-#[test]
-fn winner_streak_is_tracked_across_consecutive_wins() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        set_difficulty_default(DifficultyConfig {
-            max_energy_milli: test_curve().knee_milli,
-        });
-        LastProofBlock::<Test>::put(1);
-
-        finalize_winner(1, 100);
-        finalize_winner(1, 200);
-        finalize_winner(1, 300);
-
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-        assert_eq!(streak.miner, 1);
-        assert_eq!(streak.count, 3);
-    });
-}
 
 #[test]
 fn migration_below_v2_wipes_then_bumps_to_current() {
@@ -2135,36 +2114,6 @@ fn single_adjustment_never_slams_past_a_cap() {
     }
 }
 
-#[test]
-fn winner_streak_resets_for_different_miner() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            max_energy_milli: curve.knee_milli,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        finalize_winner(1, 10);
-        finalize_winner(1, 20);
-        let before_reset = difficulty_default();
-
-        finalize_winner(2, 30);
-        let after_reset = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-
-        assert_eq!(streak.miner, 2);
-        assert_eq!(streak.count, 1);
-        // Guards the streak *not* resetting: count 3 would force easing, raising
-        // the threshold. Hardening may walk below `min_milli` by design, so
-        // assert only that the reset win still hardens.
-        assert!(
-            after_reset.max_energy_milli <= before_reset.max_energy_milli,
-            "new winner below cutoff must use normal hardening, never easing"
-        );
-    });
-}
 
 #[test]
 fn on_finalize_persists_qblock_with_recoverable_nonce() {
@@ -3937,18 +3886,8 @@ fn instance_bar_clamps_an_unreachable_curve_to_the_optimum() {
 fn grinding_a_less_frustrated_instance_tightens_its_bar() {
     new_test_ext().execute_with(|| {
         let (nodes, edges, hash) = registered_topology();
-        assert_ok!(QuantumPow::set_topology_hardness(
-            RuntimeOrigin::root(),
-            hash,
-            TopologyHardness {
-                residual_difficulty: 31,
-                core_width: 31,
-                expected_frustration_milli: 500,
-            }
-        ));
-        let hardness = TopologyHardnessOf::<Test>::get(hash).expect("record stored");
-        assert_eq!(hardness.expected_frustration_milli, 500);
-
+        // The bar arithmetic is independent of stored hardness; this fixture
+        // is a path, so a declared 500 would be overwritten to 0.
         // Reproduce the bar the pallet computes for this miner's instance.
         let proof = proof_for(3, &nodes, &edges, hash, 0);
         let (h, j) = generate_ising_model(
@@ -4007,10 +3946,17 @@ fn set_topology_hardness_is_root_only_and_replaceable() {
             hash,
             record
         ));
-        assert_eq!(TopologyHardnessOf::<Test>::get(hash), Some(record));
+        assert_eq!(
+            TopologyHardnessOf::<Test>::get(hash),
+            Some(TopologyHardness {
+                residual_difficulty: 3,
+                core_width: 3,
+                expected_frustration_milli: 0,
+            })
+        );
 
-        // Governance can re-classify downward — the toolkit's verdict can
-        // tighten without the chain having to refuse the topology.
+        // Governance can re-classify downward. The declared 480 is
+        // overwritten: this fixture is a path, so the derived expectation is 0.
         let narrower = TopologyHardness {
             residual_difficulty: 2,
             core_width: 2,
@@ -4021,7 +3967,14 @@ fn set_topology_hardness_is_root_only_and_replaceable() {
             hash,
             narrower
         ));
-        assert_eq!(TopologyHardnessOf::<Test>::get(hash), Some(narrower));
+        assert_eq!(
+            TopologyHardnessOf::<Test>::get(hash),
+            Some(TopologyHardness {
+                residual_difficulty: 2,
+                core_width: 2,
+                expected_frustration_milli: 0,
+            })
+        );
 
         // But not upward: re-inflating a topology's apparent hardness would
         // undo a ratchet a witness established, so root cannot do it either.
@@ -4053,6 +4006,101 @@ fn set_topology_hardness_is_root_only_and_replaceable() {
         );
     });
 }
+
+#[test]
+fn set_topology_hardness_derives_expected_frustration_for_a_determined_spec() {
+    new_test_ext().execute_with(|| {
+        let nodes = bounded::<_, MaxNodes>(vec![0, 1, 2]);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1), (1, 2), (2, 0)]);
+        let hash = topology::hash_topology(
+            &nodes,
+            &edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes,
+            edges,
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
+            TopologyHardness {
+                residual_difficulty: 64,
+                core_width: 64,
+                expected_frustration_milli: 500,
+            },
+        ));
+
+        assert_ok!(QuantumPow::set_topology_hardness(
+            RuntimeOrigin::root(),
+            hash,
+            TopologyHardness {
+                residual_difficulty: 63,
+                core_width: 63,
+                expected_frustration_milli: 100,
+            },
+        ));
+        assert_eq!(
+            TopologyHardnessOf::<Test>::get(hash)
+                .expect("classified")
+                .expected_frustration_milli,
+            500,
+            "a sign-symmetric cyclic spec pins expected frustration; a declared \
+             100 would put every honest draw outside the ±3σ band"
+        );
+    });
+}
+
+#[test]
+fn set_topology_hardness_keeps_a_declaration_the_spec_does_not_determine() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_multicycle_topology(200);
+        assert_ok!(QuantumPow::set_topology_hardness(
+            RuntimeOrigin::root(),
+            hash,
+            TopologyHardness {
+                residual_difficulty: 63,
+                core_width: 63,
+                expected_frustration_milli: 300,
+            },
+        ));
+        assert_eq!(
+            TopologyHardnessOf::<Test>::get(hash)
+                .expect("classified")
+                .expected_frustration_milli,
+            300,
+            "an asymmetric spec has no derived expectation; the declaration stands"
+        );
+    });
+}
+
+#[test]
+fn topology_dims_rejects_swapped_key_sets_with_equal_counts() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        assert!(
+            QuantumPow::topology_dims_consistent(),
+            "register_topology must write matching dims"
+        );
+
+        TopologyDims::<Test>::remove(hash);
+        TopologyDims::<Test>::insert(
+            sp_core::H256::repeat_byte(7),
+            crate::TopologyDim {
+                nodes: 1,
+                edges: 0,
+            },
+        );
+        assert!(
+            !QuantumPow::topology_dims_consistent(),
+            "one missing registered hash plus one orphan dims key has equal \
+             counts and is the exact undercharge the invariant exists to catch"
+        );
+    });
+}
+
 
 /// The refusal half is gone: a two-configuration proof is no longer a constructible value,
 /// so the guarantee moved from a runtime `ensure!` to the type. The dead `TooManySolutions`

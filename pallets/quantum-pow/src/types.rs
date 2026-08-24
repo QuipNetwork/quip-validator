@@ -186,14 +186,6 @@ pub struct MinerInfo<Balance, BlockNumber> {
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct WinnerStreak<AccountId> {
-    pub miner: AccountId,
-    pub count: u32,
-}
-
-#[derive(
-    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
-)]
 pub struct ProofRecord<AccountId, BlockNumber> {
     pub miner: AccountId,
     pub submitted_at: BlockNumber,
@@ -292,9 +284,9 @@ pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
 /// even after the original block is pruned beyond `BlockHashCount`.
 ///
 /// `difficulty` captures the *active* threshold the proof actually had to
-/// clear (i.e. decay applied, but before the post-win adjustment). The next
-/// block's threshold is whatever `Difficulty<T>` storage now holds, which is
-/// `adjust_on_proof(difficulty, ...)` — that value is *not* duplicated here.
+/// clear (decay applied on read). The next block's threshold is the stored
+/// baseline — possibly retargeted at the epoch boundary — plus decay on
+/// the next read. That value is *not* duplicated here.
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]

@@ -65,7 +65,6 @@ impl pallet_balances::Config for Test {
 parameter_types! {
     pub const MaxNodes: u32 = 16;
     pub const MaxEdges: u32 = 32;
-    pub const MaxSolutions: u32 = 8;
     pub const MinNodes: u32 = 2;
     pub const EpochLength: u64 = 20;
     // Twenty target intervals per window, matching the runtime, so the mock
@@ -92,7 +91,6 @@ impl pallet_quantum_pow::Config for Test {
     type Currency = Balances;
     type MaxNodes = MaxNodes;
     type MaxEdges = MaxEdges;
-    type MaxSolutions = MaxSolutions;
     type MinNodes = MinNodes;
     type EpochLength = EpochLength;
     type RetargetWindowEpochs = RetargetWindowEpochs;

@@ -43,3 +43,9 @@ __pycache__
 # provenance), so `benchmark pallet --output .../weights.rs` would destroy it. Benchmark
 # here and hand-transfer the numbers instead.
 scratch_weights.rs
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

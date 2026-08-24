@@ -141,16 +141,21 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // neither has shipped. Those entries survive below as `ALSO IN 117`.
     // ─────────────────────────────────────────────────────────────────────
     // `DifficultyConfig` sheds `min_solutions` and `min_diversity_milli`. A
-    // proof carries exactly one configuration (now by type)
-    // and the energy bar alone decides — one exact energy evaluation per proof,
-    // not one per solution. The bar is priced PER INSTANCE: the salt picks the
-    // instance, so the bar interpolates between the topology curve and that
-    // instance's exact optimum `-(Sum|h| + Sum|J|)` by realized gauge-invariant
-    // frustration. Grinding for a less frustrated draw buys a tighter bar, not
-    // free difficulty; the clamp at the optimum also keeps bars attainable on
-    // low-degree graphs where `expected_gse` overshoots. Block selection ranks
-    // by margin over each proof's OWN instance bar, not absolute energy, so a
-    // larger draw no longer beats a better solve.
+    // proof carries exactly one configuration (now by type) and the energy
+    // bar alone decides — one exact energy evaluation per proof.
+    //
+    // INSTANCE PRICING. The salt picks the instance. The load-bearing grind
+    // defense is a validity gate, not interpolation: a draw more than three
+    // sigma from the topology's expected frustration is refused
+    // (`InstanceOutsideFrustrationBand`), as is a gauge-trivial (zero
+    // frustrated cycles) draw (`InstanceIsGaugeTrivial`). Both are cheap to
+    // predict off-chain — re-salt. Inside the band a token handicap of
+    // `HandicapPerSigmaPermille` (default 6‰ of the curve bar per σ, withheld
+    // when there is no room to move both ways) nudges the bar. An earlier
+    // interpolation from the curve to `-(Σ|h|+Σ|J|)` made ordinary −1σ draws
+    // unmineable; that form is not what ships. Block selection ranks by
+    // `proof_quality` = (bar − energy) / (bar − anchor), not by raw margin
+    // or absolute energy.
     //
     // New calls: root `set_topology_hardness` (9); permissionless
     // `prove_topology_exact` (10) — an elimination order of induced width at or
@@ -161,25 +166,28 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // detect. OPERATIONAL: `prove_topology_planar` can retire the LIVE DEFAULT
     // topology and halt qblock production until governance repoints.
     // Deliberate — paying for polynomial-time work is worse than pausing — but
-    // one transaction can now stop block rewards. `register_topology` gains a
-    // trailing `TopologyHardness` so classification is structural; an
-    // unclassified topology would price off the bare curve and be immune to the
-    // fraud proof. That encoding change is what moves `transaction_version` to
-    // 7. Regime is derived from width and ceiling rather than stored, so
-    // raising the ceiling re-classifies every topology in one upgrade;
-    // `TopologyHardness` keeps `residual_difficulty` and `core_width`
-    // separately and the regime takes the minimum.
+    // one transaction can now stop block rewards. `register_topology` and
+    // `set_topology_hardness` both derive `expected_frustration_milli` when
+    // the coupling spec determines it, so a wrong declaration cannot brick
+    // every honest `submit_proof`. `register_topology` gains a trailing
+    // `TopologyHardness`; that encoding change is what moves
+    // `transaction_version` to 7. Regime is derived from width and ceiling
+    // rather than stored, so raising the ceiling re-classifies every topology
+    // in one upgrade; `TopologyHardness` keeps `residual_difficulty` and
+    // `core_width` separately and the regime takes the minimum.
     //
-    // Difficulty retargets per epoch (`DifficultyRetargeted`) and that loop is
-    // now the ONLY control: the per-proof adjustment, dominant-winner easing
-    // and `ConsecutiveWinnerEasingThreshold` are removed, having fought it.
-    // Consequences: `DifficultyUpdated` no longer fires on a qblock win (watch
-    // `DifficultyRetargeted`), nothing counters monopoly beyond the bar itself,
-    // and `blocks_per_qblock` reports 0 for an epoch that produced none. Only
-    // the default topology eases on an empty epoch; a whitelisted incoming
-    // topology is idle, not stalled. The window is twenty target intervals, not
-    // ten: arrivals are Poisson, and at ten the clamp fired on ~43% of
-    // on-target windows.
+    // Difficulty: the epoch retarget (`DifficultyRetargeted`) WRITES the
+    // stored baseline. Decay still EASES the bar miners see on read, one
+    // step per `EpochLength` since the last qblock, without committing that
+    // ease into storage — a view-only stall ease, not a second writer.
+    // Per-proof adjustment, dominant-winner easing and
+    // `ConsecutiveWinnerEasingThreshold` (and the `WinnerStreak` storage
+    // they used) are removed. `DifficultyUpdated` no longer fires on a
+    // qblock win (watch `DifficultyRetargeted`). `blocks_per_qblock` reports
+    // 0 for an epoch that produced none. Only the default topology eases on
+    // an empty epoch; a whitelisted incoming topology is idle, not stalled.
+    // The window is twenty target intervals, not ten: arrivals are Poisson,
+    // and at ten the clamp fired on ~43% of on-target windows.
     //
     // MINER-VISIBLE REFUSALS. An instance is REFUSED, not re-priced, when it
     // has no frustrated cycles (`InstanceIsGaugeTrivial`) or when its
@@ -194,15 +202,19 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // QuantumPow storage 5 -> 6, three steps in one migration.
     //
     // (a) Re-encodes `Difficulties` and `QBlocks`, backfilling each historical
-    // block's `instance_bar_milli` from the bar it cleared.
+    // block's `instance_bar_milli` from the bar it cleared. Kills leftover
+    // `WinnerStreak`.
     //
     // (b) Canonicalizes each stored graph (nodes sorted, edges oriented then
     // sorted): `hash_topology` always hashed the canonical form while
     // `generate_ising_model` maps values POSITIONALLY, so the hash did not name
     // the instance the chain generates. Hashes are unchanged and keyed maps stay
-    // valid, but `prove_topology_planar` indexes its rotation into the stored
-    // edge list, so an off-chain witness generator built against submission
-    // order MUST be regenerated.
+    // valid. The same nonce against a previously non-canonical stored order
+    // produces a DIFFERENT (h, j) after upgrade: miners must refresh topology
+    // adjacency from chain state and discard in-flight pool proofs.
+    // `prove_topology_planar` indexes its rotation into the stored edge list,
+    // so an off-chain witness generator built against submission order MUST
+    // be regenerated.
     //
     // (c) Adds `TopologyDims`, an eight-byte `(nodes, edges)` copy per topology
     // backfilled from `RegisteredTopologies`: pure redundancy, because the

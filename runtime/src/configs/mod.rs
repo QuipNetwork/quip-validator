@@ -329,7 +329,6 @@ parameter_types! {
     pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
     pub const QuantumPowMaxNodes: u32 = 5_000;
     pub const QuantumPowMaxEdges: u32 = 50_000;
-    pub const QuantumPowMaxSolutions: u32 = 32;
     pub const QuantumPowMinNodes: u32 = 16;
     /// Decay interval: difficulty eases 2.5% per full epoch elapsed since
     /// the last qblock (PoW-won block). 100 chain blocks is deliberately
@@ -448,7 +447,6 @@ impl pallet_quantum_pow::Config for Runtime {
     type Currency = Balances;
     type MaxNodes = QuantumPowMaxNodes;
     type MaxEdges = QuantumPowMaxEdges;
-    type MaxSolutions = QuantumPowMaxSolutions;
     type MinNodes = QuantumPowMinNodes;
     type EpochLength = QuantumPowEpochLength;
     type RetargetWindowEpochs = QuantumPowRetargetWindowEpochs;
