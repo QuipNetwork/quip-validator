@@ -50,6 +50,13 @@ pub const ACCOUNT_ID_LEN: usize = 32;
 /// Domain separator for account-id derivation from the hybrid public key.
 pub const ACCOUNT_ID_DOMAIN: &[u8] = b"quip-account-v1";
 
+/// Domain separator used by Substrate's ordinary hybrid `Pair::sign` path.
+///
+/// This must stay byte-for-byte aligned with the Polkadot SDK wrapper so
+/// browser and Python transaction signatures verify in the runtime. It is
+/// deliberately distinct from the hybrid VRF binding label.
+pub const SUBSTRATE_PAIR_SIGNATURE_CONTEXT: &[u8] = b"quip/substrate-pair-signature/v1";
+
 /// Error returned by byte-level hybrid transaction crypto helpers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HybridTxCryptoError {
@@ -121,7 +128,12 @@ impl HybridTxSignatureBytes {
         let Ok(wire_len) = validate_signature_padding(&self.signature) else {
             return false;
         };
-        composite_delta::verify::<H4>(&self.public, message, b"", &self.signature[..wire_len])
+        composite_delta::verify::<H4>(
+            &self.public,
+            message,
+            SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
+            &self.signature[..wire_len],
+        )
     }
 
     /// SCALE-encodes the bytes-level envelope.
@@ -259,13 +271,14 @@ fn hex_digit(ch: u8) -> HybridResult<u8> {
 /// `payload` is signed **exactly as given** — this function performs no hashing
 /// and no length check. Two caller obligations follow:
 ///
-/// - **H4 domain prefix is intrinsic; do NOT pre-apply it.** The H4 scheme
+/// - **H4 domain separation is intrinsic; do NOT pre-apply it.** The H4 scheme
 ///   frames every message internally as
 ///   `0x01 ‖ "hybrid-sr25519-falcon512-v1\0" ‖ len(ctx) ‖ ctx ‖ msg` before
-///   hashing/signing. Browser, runtime, and Python all go through the same
-///   core, so they agree byte-for-byte. Callers pass the unframed payload;
-///   pre-applying the prefix yourself would double-frame and the runtime would
-///   reject the signature.
+///   hashing/signing, using [`SUBSTRATE_PAIR_SIGNATURE_CONTEXT`] as `ctx`.
+///   Browser, runtime, and Python all go through the same core, so they agree
+///   byte-for-byte. Callers pass the unframed payload; pre-applying the prefix
+///   or context yourself would double-frame and the runtime would reject the
+///   signature.
 /// - **The Substrate >256-byte rule is the caller's job.** Substrate signs
 ///   `SignedPayload::using_encoded`, which substitutes `blake2_256(payload)`
 ///   for the raw bytes whenever the SCALE-encoded payload exceeds 256 bytes.
@@ -289,8 +302,8 @@ pub fn sign_payload_from_seed(seed: &[u8], payload: &[u8]) -> HybridResult<Hybri
 /// Signs raw payload bytes with expanded H4 secret bytes and matching public bytes.
 ///
 /// The payload contract is identical to [`sign_payload_from_seed`]: the bytes
-/// are signed verbatim (no hashing, no length check), the H4 domain prefix is
-/// applied intrinsically by the scheme, and applying Substrate's >256-byte
+/// are signed verbatim (no hashing, no length check), the H4 domain separation
+/// is applied intrinsically by the scheme, and applying Substrate's >256-byte
 /// `blake2_256` rule is the caller's responsibility.
 pub fn sign_payload_from_secret(
     secret: &[u8],
@@ -310,9 +323,14 @@ fn sign_payload_with_arrays(
     payload: &[u8],
 ) -> HybridResult<HybridTxSignatureBytes> {
     let mut signature = [0u8; HYBRID_SIGNATURE_LEN];
-    let wire_len =
-        composite_delta::sign_deterministic::<H4>(secret, payload, b"", b"", &mut signature)
-            .map_err(|_| HybridTxCryptoError::SigningFailed)?;
+    let wire_len = composite_delta::sign_deterministic::<H4>(
+        secret,
+        payload,
+        SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
+        b"",
+        &mut signature,
+    )
+    .map_err(|_| HybridTxCryptoError::SigningFailed)?;
     if wire_len != signature_wire_len(&signature) {
         return Err(HybridTxCryptoError::SigningFailed);
     }
@@ -326,6 +344,14 @@ mod tests {
     #[test]
     fn account_id_domain_is_pinned() {
         assert_eq!(ACCOUNT_ID_DOMAIN, b"quip-account-v1");
+    }
+
+    #[test]
+    fn substrate_pair_signature_context_is_pinned() {
+        assert_eq!(
+            SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
+            b"quip/substrate-pair-signature/v1"
+        );
     }
 
     #[test]

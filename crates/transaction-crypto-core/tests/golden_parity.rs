@@ -12,6 +12,7 @@ use pqhybridsign::H4;
 use pqhybridsign::{composite_delta, suite::DeltaSuite};
 use quip_transaction_crypto_core::{
     master_seed_from_mnemonic, public_key_from_seed, sign_payload_from_seed, HYBRID_SIGNATURE_LEN,
+    SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
 };
 
 const FIXTURE: &str = include_str!("golden_vectors.txt");
@@ -112,7 +113,7 @@ fn transaction_core_matches_pqhybridsign_h4() {
     let wire_len = composite_delta::sign_deterministic::<H4>(
         &direct_secret,
         message,
-        b"",
+        SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
         b"",
         &mut direct_signature,
     )
@@ -120,7 +121,7 @@ fn transaction_core_matches_pqhybridsign_h4() {
     assert!(composite_delta::verify::<H4>(
         &direct_public,
         message,
-        b"",
+        SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
         &direct_signature[..wire_len],
     ));
 

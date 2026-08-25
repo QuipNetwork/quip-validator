@@ -576,9 +576,9 @@ dependencies = [
 
 [[package]]
 name = "pqhybridsign"
-version = "0.0.0-rc5"
+version = "0.0.0-rc7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d3fc7602091cc722dcce69198ebe0bcfb5334b5530f61ce414e823467d0f041"
+checksum = "ebe267d6d59861d1c6c8820c30a2c00f118a81dc784fa4a32666feb0f13130f3"
 dependencies = [
  "ed25519-zebra",
  "fips204",
