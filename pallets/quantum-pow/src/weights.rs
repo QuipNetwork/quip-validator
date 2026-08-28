@@ -41,10 +41,29 @@ pub trait WeightInfo {
 // cost observed by that sweep. It does not imply literal O(n*e) verifier
 // complexity: TopologyIndex construction and lookups use BTreeMap and are
 // structurally closer to n*log(n) + e*log(n).
+//
+// K4 was raised from 18_500 to 19_100 on 2026-08-28. The envelope above is
+// measured against `measured_base`, which comes from the generated module and
+// therefore moves with every reference-machine regeneration. That run came in
+// about 2% cheaper across this pallet, and the binding point -- solution_edges
+// against the slowest recorded sweep, job 15552403591 -- had been clearing 20%
+// by 0.03 points. A 2% move in the base was enough to breach it.
+//
+// The old value was not wrong; it was calibrated with no room for the ordinary
+// variation of the thing it is measured against. The three recorded maxima for
+// that one point span 20.0% to 26.5% of margin at identical dimensions, so the
+// host noise alone is wider than the cushion the coefficient carried. K4 is the
+// solution*edge lever and solution_edges is the point that isolates that
+// dimension, which is why the correction lands there.
+//
+// The binding point is now worst_case at 21.09%, so a regeneration would have
+// to come in more than a percent cheaper again to breach 20%. Restoring a
+// larger cushion means revisiting K6, which dominates worst_case; that is a
+// wider pricing decision than closing this breach and has not been made here.
 const SUBMIT_PROOF_K1_NODE: u64 = 1_200;
 const SUBMIT_PROOF_K2_EDGE: u64 = 2_400;
 const SUBMIT_PROOF_K3_SOLUTION_NODE: u64 = 6_000;
-const SUBMIT_PROOF_K4_SOLUTION_EDGE: u64 = 18_500;
+const SUBMIT_PROOF_K4_SOLUTION_EDGE: u64 = 19_100;
 const SUBMIT_PROOF_K5_SOLUTION_SQ_NODE: u64 = 1_200;
 const SUBMIT_PROOF_K6_NODE_EDGE: u64 = 535;
 const REGISTER_TOPOLOGY_ALLOWED_VALUE: u64 = 1_000_000;
