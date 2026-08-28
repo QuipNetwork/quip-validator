@@ -148,23 +148,62 @@ pub mod pallet {
         VmStepLimitExceeded,
         /// XQVM: the program asked to allocate more than `MaxVmMemory`.
         ///
-        /// Distinct from `VmRuntimeError` on purpose: "asked for too much
-        /// memory" is a budgeting answer the caller can act on by splitting
-        /// the work up, not a broken program.
+        /// "Asked for too much memory" is a budgeting answer the caller can
+        /// act on by splitting the work up, not a broken program.
         VmMemoryLimitExceeded,
         /// XQVM: bad opcode or truncated instruction.
         VmBadBytecode,
         /// XQVM: register type mismatch.
         VmRegisterType,
-        /// XQVM: other runtime fault.
-        VmRuntimeError,
+        /// XQVM: a register was read before anything was written to it.
+        ///
+        /// The verifier rejects this statically at `store_program`, so
+        /// reaching it at run time means a path it could not prove.
+        VmUnsetRegister,
+        /// XQVM: an arithmetic operation left the `i64` range.
+        ///
+        /// Since xqvm 0.4.0 overflow raises instead of wrapping, so this is
+        /// a fault a program can hit rather than a silently wrong result.
+        VmArithmeticOverflow,
+        /// XQVM: a vector or sample index was outside its length.
+        VmIndexOutOfBounds,
+        /// XQVM: a loop opcode ran with no active loop, or a loop was left
+        /// unclosed at the end of the stream.
+        VmLoopStructure,
+        /// XQVM: loop nesting exceeded the interpreter's depth limit.
+        VmLoopStackOverflow,
+        /// XQVM: a jump named a target or label that does not resolve.
+        VmBadJump,
+        /// XQVM: `INPUT` addressed a calldata slot the call did not supply.
+        VmCallDataIndex,
+        /// XQVM: `OUTPUT` addressed a slot beyond the requested count.
+        VmOutputIndex,
+        /// XQVM: two operands disagreed on size, or a vector's length did
+        /// not match what the opcode required.
+        VmSizeMismatch,
+        /// XQVM: a shift amount was negative or at least 64.
+        VmInvalidShift,
+        /// XQVM: grid dimensions were negative, or exceeded the register's
+        /// declared size.
+        VmInvalidGridDimensions,
+        /// XQVM: a discrete sample was allocated with `k < 2`.
+        VmInvalidDiscreteK,
+        /// XQVM: an allocation size was negative or otherwise not an
+        /// allocation.
+        VmInvalidAllocation,
+        /// XQVM: the tracing interpreter failed.
+        ///
+        /// Unreachable from this pallet: `TraceFailed` is only raised by
+        /// `Vm::run_trace`, and `execute` calls `Vm::run`. Mapped explicitly
+        /// rather than absorbed, so that the match below stays exhaustive.
+        VmTraceFailed,
     }
 
     /// Map a static-verification failure onto a dispatch error.
     ///
     /// Exhaustive on purpose: a new `VerifierError` variant upstream should
-    /// stop this compiling rather than be absorbed by a catch-all, which is
-    /// the same discipline QUI-1014 applies to runtime faults.
+    /// stop this compiling rather than be absorbed by a catch-all, the same
+    /// discipline `map_vm_error` applies to runtime faults.
     fn map_verifier_error<T: Config>(e: &xqvm::VerifierError) -> Error<T> {
         use xqvm::VerifierError as V;
         match e {
@@ -182,6 +221,19 @@ pub mod pallet {
         }
     }
 
+    /// Map a run-time fault onto a dispatch error.
+    ///
+    /// Exhaustive, and deliberately without a catch-all. The wildcard this
+    /// replaced absorbed every variant the pallet had not thought about,
+    /// which is how nine opcodes' worth of new faults arrived across the
+    /// QUI-997 bump without a compile error: on chain they all read as
+    /// "something went wrong in the VM", which is not enough to debug a
+    /// submitted program from the outside. Now a new upstream variant stops
+    /// the build until someone decides what it means here.
+    ///
+    /// Faults are grouped only where the grouping is the answer a caller
+    /// would act on -- an unclosed loop and a loop-context read with no
+    /// active loop are both "the loop structure is wrong".
     fn map_vm_error<T: Config>(e: &xqvm::Error) -> Error<T> {
         use xqvm::Error as E;
         match e {
@@ -190,9 +242,25 @@ pub mod pallet {
             E::DivisionByZero { .. } => Error::<T>::VmDivisionByZero,
             E::StepLimitExceeded { .. } => Error::<T>::VmStepLimitExceeded,
             E::BadOpcode { .. } | E::TruncatedInstruction { .. } => Error::<T>::VmBadBytecode,
-            E::RegisterType { .. } => Error::<T>::VmRegisterType,
+            // `IncompatibleType` is the same fault as `RegisterType` raised
+            // from a site that does not track which register caused it, so
+            // the caller-visible answer is identical.
+            E::RegisterType { .. } | E::IncompatibleType(_) => Error::<T>::VmRegisterType,
             E::MemoryLimitExceeded { .. } => Error::<T>::VmMemoryLimitExceeded,
-            _ => Error::<T>::VmRuntimeError,
+            E::UnsetRegister { .. } => Error::<T>::VmUnsetRegister,
+            E::ArithmeticOverflow { .. } => Error::<T>::VmArithmeticOverflow,
+            E::IndexOutOfBounds { .. } => Error::<T>::VmIndexOutOfBounds,
+            E::NoActiveLoop { .. } | E::UnmatchedLoop { .. } => Error::<T>::VmLoopStructure,
+            E::LoopStackOverflow { .. } => Error::<T>::VmLoopStackOverflow,
+            E::BadJumpTarget { .. } | E::InvalidLabel { .. } => Error::<T>::VmBadJump,
+            E::CallDataIndex { .. } => Error::<T>::VmCallDataIndex,
+            E::OutputIndex { .. } => Error::<T>::VmOutputIndex,
+            E::SizeMismatch { .. } | E::VecLengthMismatch { .. } => Error::<T>::VmSizeMismatch,
+            E::InvalidShift { .. } => Error::<T>::VmInvalidShift,
+            E::InvalidGridDimensions { .. } => Error::<T>::VmInvalidGridDimensions,
+            E::InvalidDiscreteK { .. } => Error::<T>::VmInvalidDiscreteK,
+            E::InvalidAllocation { .. } => Error::<T>::VmInvalidAllocation,
+            E::TraceFailed { .. } => Error::<T>::VmTraceFailed,
         }
     }
 
