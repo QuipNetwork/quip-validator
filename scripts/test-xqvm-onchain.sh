@@ -17,7 +17,7 @@ set -euo pipefail
 # Prerequisites (the CI job installs these; see .gitlab-ci.yml):
 #   make wasm-signer
 #   npm ci --prefix js/quip-signer && npm run build --prefix js/quip-signer
-#   cargo build -p quip-network-node --features dev-chain-id
+#   cargo build -p quip-network-node
 
 node_binary="${QUIP_NODE_BINARY:-target/debug/quip-network-node}"
 node_log="$(mktemp)"
