@@ -22,18 +22,47 @@ pub mod pallet {
     use alloc::vec::Vec;
     use frame_support::dispatch::PostDispatchInfo;
     use frame_support::pallet_prelude::*;
+    use frame_support::traits::fungible::{Mutate, MutateHold};
+    use frame_support::traits::tokens::Precision;
     use frame_system::pallet_prelude::*;
-    use sp_runtime::traits::Hash as _;
+    use sp_runtime::traits::{Hash as _, Saturating};
 
     use xqvm::{Program, RegVal, Vm};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
 
+    /// The balance type of the configured currency.
+    pub type BalanceOf<T> = <<T as Config>::Currency as frame_support::traits::fungible::Inspect<
+        <T as frame_system::Config>::AccountId,
+    >>::Balance;
+
     #[pallet::config]
     pub trait Config: frame_system::Config {
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+
+        /// The currency the storage deposit is taken in.
+        type Currency: Mutate<Self::AccountId>
+            + MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
+
+        /// The overarching hold reason.
+        type RuntimeHoldReason: From<HoldReason>;
+
+        /// Flat part of a program's storage deposit.
+        ///
+        /// Covers the two map entries a stored program occupies, in the same
+        /// spirit as `pallet_revive`'s per-item deposit.
+        #[pallet::constant]
+        type DepositBase: Get<BalanceOf<Self>>;
+
+        /// Per-byte part of a program's storage deposit.
+        ///
+        /// This is what makes storage cost something: the extrinsic's weight
+        /// prices decode and verification as execution time, and says nothing
+        /// about every full node keeping the bytes forever.
+        #[pallet::constant]
+        type DepositPerByte: Get<BalanceOf<Self>>;
 
         /// Maximum size of a stored XQVM program in bytes.
         #[pallet::constant]
@@ -73,9 +102,26 @@ pub mod pallet {
     pub type Programs<T: Config> =
         StorageMap<_, Identity, T::Hash, BoundedVec<u8, T::MaxProgramSize>>;
 
-    /// Who stored each program (for future deposit/removal support).
+    /// Who stored each program. Confers the right to remove it and receive
+    /// the deposit back.
     #[pallet::storage]
     pub type ProgramOwner<T: Config> = StorageMap<_, Identity, T::Hash, T::AccountId>;
+
+    /// The deposit held against each stored program.
+    ///
+    /// Recorded rather than recomputed from the byte length, so that a later
+    /// change to `DepositBase` or `DepositPerByte` cannot release more or
+    /// less than was actually taken.
+    #[pallet::storage]
+    pub type ProgramDeposit<T: Config> = StorageMap<_, Identity, T::Hash, BalanceOf<T>>;
+
+    /// Reasons this pallet holds funds.
+    #[pallet::composite_enum]
+    pub enum HoldReason {
+        /// Deposit backing a program stored on chain.
+        #[codec(index = 0)]
+        StoredProgram,
+    }
 
     // ── Events ───────────────────────────────────────────────────────────
 
@@ -87,6 +133,23 @@ pub mod pallet {
             program_hash: T::Hash,
             owner: T::AccountId,
             size: u32,
+            deposit: BalanceOf<T>,
+        },
+
+        /// A program was removed by its owner and the deposit released.
+        ProgramRemoved {
+            program_hash: T::Hash,
+            owner: T::AccountId,
+            deposit: BalanceOf<T>,
+        },
+
+        /// A program was evicted by root. The deposit is returned: eviction
+        /// clears state, it does not punish, and content addressing means
+        /// anyone can store the same bytes again.
+        ProgramEvicted {
+            program_hash: T::Hash,
+            owner: T::AccountId,
+            deposit: BalanceOf<T>,
         },
 
         /// A program executed successfully.
@@ -127,6 +190,8 @@ pub mod pallet {
         ProgramAlreadyExists,
         /// No program found for the given hash.
         ProgramNotFound,
+        /// The caller is not the account that stored this program.
+        NotProgramOwner,
         /// Requested step limit exceeds MaxStepLimit.
         StepLimitTooHigh,
         /// A step limit of zero was requested.
@@ -301,15 +366,81 @@ pub mod pallet {
             );
 
             let size = bytecode.len() as u32;
+
+            // Taken before the write, so a caller who cannot afford the
+            // deposit does not get the storage.
+            let deposit = Self::deposit_for(size);
+            T::Currency::hold(&HoldReason::StoredProgram.into(), &who, deposit)?;
+
             Programs::<T>::insert(&hash, bytecode);
             ProgramOwner::<T>::insert(&hash, &who);
+            ProgramDeposit::<T>::insert(&hash, deposit);
 
             Self::deposit_event(Event::ProgramStored {
                 program_hash: hash,
                 owner: who,
                 size,
+                deposit,
             });
             Ok(())
+        }
+
+        /// Remove a program stored by the caller and release its deposit.
+        ///
+        /// Removal is not destructive in any lasting sense: programs are
+        /// addressed by the hash of their bytecode, so anyone can store the
+        /// same bytes again by paying a fresh deposit. That is what makes it
+        /// safe to let the owner delete unilaterally without worrying about
+        /// callers mid-way through using it.
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::WeightInfo::remove_program(T::MaxProgramSize::get()))]
+        pub fn remove_program(
+            origin: OriginFor<T>,
+            program_hash: T::Hash,
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+
+            let owner = ProgramOwner::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+            ensure!(owner == who, Error::<T>::NotProgramOwner);
+
+            let (size, deposit) = Self::do_remove(&program_hash, &owner)?;
+
+            Self::deposit_event(Event::ProgramRemoved {
+                program_hash,
+                owner,
+                deposit,
+            });
+
+            // Pre-charged at MaxProgramSize because the length is not known
+            // until storage is read, and refunded to what was actually there,
+            // the same shape `execute` uses for its size component.
+            Ok(Some(T::WeightInfo::remove_program(size)).into())
+        }
+
+        /// Evict a stored program by root, returning the deposit to whoever
+        /// stored it.
+        ///
+        /// A state-management tool rather than a punitive one: the deposit is
+        /// returned, and the same bytes can be stored again by anyone.
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::WeightInfo::evict_program(T::MaxProgramSize::get()))]
+        pub fn evict_program(
+            origin: OriginFor<T>,
+            program_hash: T::Hash,
+        ) -> DispatchResultWithPostInfo {
+            ensure_root(origin)?;
+
+            let owner = ProgramOwner::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+
+            let (size, deposit) = Self::do_remove(&program_hash, &owner)?;
+
+            Self::deposit_event(Event::ProgramEvicted {
+                program_hash,
+                owner,
+                deposit,
+            });
+
+            Ok(Some(T::WeightInfo::evict_program(size)).into())
         }
 
         /// Execute a stored XQVM program.
@@ -408,6 +539,42 @@ pub mod pallet {
                 }
                 Err(e) => Err(map_vm_error::<T>(&e).into()),
             }
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
+        /// The deposit a program of `size` bytes costs to keep on chain.
+        pub fn deposit_for(size: u32) -> BalanceOf<T> {
+            T::DepositBase::get()
+                .saturating_add(T::DepositPerByte::get().saturating_mul(size.into()))
+        }
+
+        /// Clear a program's three storage entries and release its deposit.
+        ///
+        /// Returns the program's byte length and the deposit released, both
+        /// of which the callers use for the weight refund and the event.
+        fn do_remove(
+            program_hash: &T::Hash,
+            owner: &T::AccountId,
+        ) -> Result<(u32, BalanceOf<T>), DispatchError> {
+            let bytecode = Programs::<T>::take(program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+            let size = bytecode.len() as u32;
+            let deposit = ProgramDeposit::<T>::take(program_hash).unwrap_or_default();
+
+            // BestEffort rather than Exact: the entry is being removed either
+            // way, and a hold that has already been reduced elsewhere must not
+            // strand the storage. There is no path that reduces it today, so
+            // this is defence against a future one, not a known case.
+            T::Currency::release(
+                &HoldReason::StoredProgram.into(),
+                owner,
+                deposit,
+                Precision::BestEffort,
+            )?;
+
+            ProgramOwner::<T>::remove(program_hash);
+
+            Ok((size, deposit))
         }
     }
 }

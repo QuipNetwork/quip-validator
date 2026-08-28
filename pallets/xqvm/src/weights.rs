@@ -53,6 +53,8 @@ use core::marker::PhantomData;
 /// Weight functions needed for `pallet_xqvm`.
 pub trait WeightInfo {
 	fn store_program(s: u32, ) -> Weight;
+	fn remove_program(s: u32, ) -> Weight;
+	fn evict_program(s: u32, ) -> Weight;
 	fn execute(s: u32, ) -> Weight;
 	fn execute_step(t: u32, ) -> Weight;
 }
@@ -75,6 +77,30 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(672_964, 0).saturating_mul(s.into()))
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
+	}
+	/// PLACEHOLDER pending a `benchmark-weights` run (QUI-1058).
+	///
+	/// Copied from `store_program`, which is a strict over-estimate: removal
+	/// reads and decodes the same bytes but runs no verifier. Over-charging
+	/// is the safe direction to sit in until the reference machine measures
+	/// it, and the regeneration overwrites this wholesale.
+	fn remove_program(s: u32, ) -> Weight {
+		Weight::from_parts(24_546_000, 69037)
+			.saturating_add(Weight::from_parts(672_964, 0).saturating_mul(s.into()))
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// PLACEHOLDER pending a `benchmark-weights` run (QUI-1058).
+	///
+	/// Copied from `store_program`, which is a strict over-estimate: removal
+	/// reads and decodes the same bytes but runs no verifier. Over-charging
+	/// is the safe direction to sit in until the reference machine measures
+	/// it, and the regeneration overwrites this wholesale.
+	fn evict_program(s: u32, ) -> Weight {
+		Weight::from_parts(24_546_000, 69037)
+			.saturating_add(Weight::from_parts(672_964, 0).saturating_mul(s.into()))
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
 	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
@@ -121,6 +147,30 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(672_964, 0).saturating_mul(s.into()))
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
+	}
+	/// PLACEHOLDER pending a `benchmark-weights` run (QUI-1058).
+	///
+	/// Copied from `store_program`, which is a strict over-estimate: removal
+	/// reads and decodes the same bytes but runs no verifier. Over-charging
+	/// is the safe direction to sit in until the reference machine measures
+	/// it, and the regeneration overwrites this wholesale.
+	fn remove_program(s: u32, ) -> Weight {
+		Weight::from_parts(24_546_000, 69037)
+			.saturating_add(Weight::from_parts(672_964, 0).saturating_mul(s.into()))
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// PLACEHOLDER pending a `benchmark-weights` run (QUI-1058).
+	///
+	/// Copied from `store_program`, which is a strict over-estimate: removal
+	/// reads and decodes the same bytes but runs no verifier. Over-charging
+	/// is the safe direction to sit in until the reference machine measures
+	/// it, and the regeneration overwrites this wholesale.
+	fn evict_program(s: u32, ) -> Weight {
+		Weight::from_parts(24_546_000, 69037)
+			.saturating_add(Weight::from_parts(672_964, 0).saturating_mul(s.into()))
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
 	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)

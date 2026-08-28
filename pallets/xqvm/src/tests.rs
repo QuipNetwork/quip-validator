@@ -42,6 +42,7 @@ fn store_program_works() {
                 program_hash: hash,
                 owner: 1,
                 size: len,
+                deposit: Xqvm::deposit_for(len),
             }
             .into(),
         );
@@ -687,5 +688,217 @@ fn negative_allocation_maps_to_its_own_error() {
             execute_expecting_failure(bytecode, vec![], 0),
             Error::<Test>::VmInvalidAllocation.into()
         );
+    });
+}
+
+// ── storage deposit and removal (QUI-1058) ───────────────────────────────
+
+use crate::ProgramDeposit;
+use frame_support::traits::fungible::InspectHold;
+
+/// The amount currently held against `who` for stored programs.
+fn held(who: u64) -> u64 {
+    <Balances as InspectHold<u64>>::balance_on_hold(&crate::HoldReason::StoredProgram.into(), &who)
+}
+
+#[test]
+fn store_holds_a_deposit_and_remove_releases_it() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+        let len = bytecode.len() as u32;
+        let expected = Xqvm::deposit_for(len);
+
+        assert_eq!(held(1), 0);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        assert_eq!(held(1), expected);
+        assert_eq!(ProgramDeposit::<Test>::get(&hash), Some(expected));
+
+        assert_ok!(Xqvm::remove_program(RuntimeOrigin::signed(1), hash));
+
+        assert_eq!(held(1), 0, "the deposit must come back on removal");
+        assert!(!Programs::<Test>::contains_key(&hash));
+        assert!(!ProgramOwner::<Test>::contains_key(&hash));
+        assert!(!ProgramDeposit::<Test>::contains_key(&hash));
+
+        System::assert_last_event(
+            Event::ProgramRemoved {
+                program_hash: hash,
+                owner: 1,
+                deposit: expected,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn deposit_scales_with_program_length() {
+    // The point of the per-byte term: a bigger program locks up more.
+    new_test_ext().execute_with(|| {
+        let small = build_program(|b| {
+            b.emit_halt();
+        });
+        let large = build_program(|b| {
+            for _ in 0..500 {
+                b.emit_nop();
+            }
+            b.emit_halt();
+        });
+
+        assert!(
+            Xqvm::deposit_for(large.len() as u32) > Xqvm::deposit_for(small.len() as u32),
+            "a longer program must cost a larger deposit"
+        );
+    });
+}
+
+#[test]
+fn store_fails_when_the_deposit_is_unaffordable() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // Account 3 was never funded in genesis.
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+
+        assert!(Xqvm::store_program(RuntimeOrigin::signed(3), bounded(bytecode)).is_err());
+
+        // And nothing was written on the way out.
+        assert!(!Programs::<Test>::contains_key(&hash));
+        assert!(!ProgramOwner::<Test>::contains_key(&hash));
+        assert!(!ProgramDeposit::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn only_the_owner_can_remove() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        assert_noop!(
+            Xqvm::remove_program(RuntimeOrigin::signed(2), hash),
+            Error::<Test>::NotProgramOwner
+        );
+
+        // The deposit stays with the owner, untouched.
+        assert_eq!(held(1), Xqvm::deposit_for(16));
+        assert_eq!(held(2), 0);
+        assert!(Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn removing_an_unknown_program_fails() {
+    new_test_ext().execute_with(|| {
+        let hash = program_hash(b"nothing stored under this");
+
+        assert_noop!(
+            Xqvm::remove_program(RuntimeOrigin::signed(1), hash),
+            Error::<Test>::ProgramNotFound
+        );
+    });
+}
+
+#[test]
+fn root_can_evict_and_the_depositor_is_made_whole() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+        let expected = Xqvm::deposit_for(bytecode.len() as u32);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+        assert_eq!(held(1), expected);
+
+        assert_ok!(Xqvm::evict_program(RuntimeOrigin::root(), hash));
+
+        assert_eq!(
+            held(1),
+            0,
+            "eviction returns the deposit, it does not slash"
+        );
+        assert!(!Programs::<Test>::contains_key(&hash));
+
+        System::assert_last_event(
+            Event::ProgramEvicted {
+                program_hash: hash,
+                owner: 1,
+                deposit: expected,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn eviction_requires_root() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        // Not even the owner may take the root path.
+        assert!(Xqvm::evict_program(RuntimeOrigin::signed(1), hash).is_err());
+        assert!(Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn a_removed_program_can_be_stored_again() {
+    // Content addressing is what makes unilateral removal safe: deleting is
+    // never permanent, it just returns the bytes to nobody-has-paid-for-this.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode.clone()),
+        ));
+        assert_ok!(Xqvm::remove_program(RuntimeOrigin::signed(1), hash));
+
+        // A different account may now claim it, paying its own deposit.
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(2),
+            bounded(bytecode),
+        ));
+
+        assert_eq!(ProgramOwner::<Test>::get(&hash), Some(2));
+        assert_eq!(held(2), Xqvm::deposit_for(16));
+        assert_eq!(held(1), 0);
     });
 }

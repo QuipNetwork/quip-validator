@@ -283,6 +283,18 @@ impl pallet_faucet_ops::Config for Runtime {
 }
 
 parameter_types! {
+    /// Flat part of a stored program's deposit, covering the map entries it
+    /// occupies. Matches `pallet_revive`'s per-item deposit: the same
+    /// resource, priced the same way.
+    pub const XqvmDepositBase: Balance = 200 * MILLI_UNIT;
+    /// Per-byte part of a stored program's deposit, matching
+    /// `pallet_revive`'s per-byte figure.
+    ///
+    /// At `MaxProgramSize` this is 0.655 UNIT, so a full 64 KiB program
+    /// locks up roughly 0.855 UNIT in total. That is the price of occupying
+    /// state indefinitely, and it comes back when the program is removed.
+    pub const XqvmDepositPerByte: Balance = 10 * MICRO_UNIT;
+
     pub const MaxProgramSize: u32 = 65_536;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;
@@ -365,6 +377,10 @@ parameter_types! {
 /// Configure the XQVM pallet for on-chain bytecode execution.
 impl pallet_xqvm::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type DepositBase = XqvmDepositBase;
+    type DepositPerByte = XqvmDepositPerByte;
     type MaxProgramSize = MaxProgramSize;
     type MaxCallDataLen = MaxCallDataLen;
     type MaxOutputSlots = MaxOutputSlots;
