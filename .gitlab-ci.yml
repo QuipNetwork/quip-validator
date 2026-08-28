@@ -263,7 +263,7 @@ xqvm-onchain-test:
     - make wasm-signer
     - npm ci --prefix js/quip-signer
     - npm run build --prefix js/quip-signer
-    - cargo build -p quip-network-node --features dev-chain-id
+    - cargo build -p quip-network-node
     - bash scripts/test-xqvm-onchain.sh
 
 # pallet-revive's runtime benchmarks compile both Solidity/EVM and

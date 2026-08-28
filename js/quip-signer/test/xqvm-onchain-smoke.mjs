@@ -8,7 +8,7 @@
 // between the pallet's embedded VM and the reference implementation.
 //
 // Prerequisites:
-//   cargo build --release --features dev-chain-id -p quip-network-node
+//   cargo build --release -p quip-network-node
 //   target/release/quip-network-node --dev
 //   vectors assembled with `xquad asm` into VECTORS_DIR
 //
