@@ -10,7 +10,7 @@
 //! The H4 suite itself (the `sr25519 + FN-DSA-512` keygen / sign / verify logic,
 //! message framing, and seed derivation) is **not** reimplemented here. It uses
 //! the shared, `sp`-free [`pqhybridsign::composite_delta`] implementation
-//! with [`pqhybridsign::H4`], which the runtime wrapper also uses — so browser
+//! with [`pqhybridsign::SrFn512`], which the runtime wrapper also uses — so browser
 //! and runtime signing remain byte-identical by construction.
 //!
 //! What stays quip-specific and lives here: account-id derivation
@@ -30,7 +30,7 @@ use blake2::Blake2bVar;
 use codec::{Decode, DecodeWithMemTracking, Encode};
 use pqhybridsign::composite_delta;
 use pqhybridsign::suite::DeltaSuite;
-use pqhybridsign::{H4, MIN_FALCON512_SIG_LEN};
+use pqhybridsign::{SrFn512, MIN_FALCON512_SIG_LEN};
 use zeroize::Zeroize;
 
 const MASTER_SEED_LEN: usize = 32;
@@ -39,11 +39,11 @@ const DELTA_LEN: usize = 1;
 const MIN_HYBRID_SIGNATURE_LEN: usize = CLASSICAL_SIGNATURE_LEN + DELTA_LEN + MIN_FALCON512_SIG_LEN;
 
 /// Serialized H4 public-key length in bytes.
-pub const HYBRID_PUBLIC_LEN: usize = H4::PUBLIC_KEY_LEN;
+pub const HYBRID_PUBLIC_LEN: usize = SrFn512::PUBLIC_KEY_LEN;
 /// Maximum serialized H4 signature length in bytes.
-pub const HYBRID_SIGNATURE_LEN: usize = H4::MAX_SIGNATURE_LEN;
+pub const HYBRID_SIGNATURE_LEN: usize = SrFn512::MAX_SIGNATURE_LEN;
 /// Serialized H4 secret-key length in bytes.
-pub const HYBRID_SECRET_LEN: usize = H4::SECRET_KEY_LEN;
+pub const HYBRID_SECRET_LEN: usize = SrFn512::SECRET_KEY_LEN;
 /// Fixed length of derived Quip account ids.
 pub const ACCOUNT_ID_LEN: usize = 32;
 
@@ -128,7 +128,7 @@ impl HybridTxSignatureBytes {
         let Ok(wire_len) = validate_signature_padding(&self.signature) else {
             return false;
         };
-        composite_delta::verify::<H4>(
+        composite_delta::verify::<SrFn512>(
             &self.public,
             message,
             SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
@@ -170,7 +170,7 @@ pub fn public_key_from_seed(seed: &[u8]) -> HybridResult<[u8; HYBRID_PUBLIC_LEN]
     let seed = exact_array::<MASTER_SEED_LEN>(seed)?;
     let mut secret = [0u8; HYBRID_SECRET_LEN];
     let mut public = [0u8; HYBRID_PUBLIC_LEN];
-    let result = composite_delta::keypair_from_seed::<H4>(&seed, &mut secret, &mut public)
+    let result = composite_delta::keypair_from_seed::<SrFn512>(&seed, &mut secret, &mut public)
         .map_err(|_| HybridTxCryptoError::InvalidSeed);
     secret.zeroize();
     result.map(|()| public)
@@ -290,7 +290,7 @@ pub fn sign_payload_from_seed(seed: &[u8], payload: &[u8]) -> HybridResult<Hybri
     let seed = exact_array::<MASTER_SEED_LEN>(seed)?;
     let mut secret = [0u8; HYBRID_SECRET_LEN];
     let mut public = [0u8; HYBRID_PUBLIC_LEN];
-    if composite_delta::keypair_from_seed::<H4>(&seed, &mut secret, &mut public).is_err() {
+    if composite_delta::keypair_from_seed::<SrFn512>(&seed, &mut secret, &mut public).is_err() {
         secret.zeroize();
         return Err(HybridTxCryptoError::InvalidSeed);
     }
@@ -323,7 +323,7 @@ fn sign_payload_with_arrays(
     payload: &[u8],
 ) -> HybridResult<HybridTxSignatureBytes> {
     let mut signature = [0u8; HYBRID_SIGNATURE_LEN];
-    let wire_len = composite_delta::sign_deterministic::<H4>(
+    let wire_len = composite_delta::sign_deterministic::<SrFn512>(
         secret,
         payload,
         SUBSTRATE_PAIR_SIGNATURE_CONTEXT,

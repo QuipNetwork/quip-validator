@@ -8,7 +8,7 @@
 //! Vectors cover `seed -> public_key` and `(seed, msg) -> signature envelope`
 //! for several fixed seeds plus a BIP39-derived seed.
 
-use pqhybridsign::H4;
+use pqhybridsign::SrFn512;
 use pqhybridsign::{composite_delta, suite::DeltaSuite};
 use quip_transaction_crypto_core::{
     master_seed_from_mnemonic, public_key_from_seed, sign_payload_from_seed, HYBRID_SIGNATURE_LEN,
@@ -99,9 +99,9 @@ fn signature_envelopes_match_h4_golden_vectors() {
 fn transaction_core_matches_pqhybridsign_h4() {
     let seed = [42u8; 32];
     let message = b"golden vector";
-    let mut direct_secret = vec![0u8; H4::SECRET_KEY_LEN];
-    let mut direct_public = vec![0u8; H4::PUBLIC_KEY_LEN];
-    composite_delta::keypair_from_seed::<H4>(&seed, &mut direct_secret, &mut direct_public)
+    let mut direct_secret = vec![0u8; SrFn512::SECRET_KEY_LEN];
+    let mut direct_public = vec![0u8; SrFn512::PUBLIC_KEY_LEN];
+    composite_delta::keypair_from_seed::<SrFn512>(&seed, &mut direct_secret, &mut direct_public)
         .expect("direct H4 key generation");
 
     assert_eq!(
@@ -110,7 +110,7 @@ fn transaction_core_matches_pqhybridsign_h4() {
     );
 
     let mut direct_signature = [0u8; HYBRID_SIGNATURE_LEN];
-    let wire_len = composite_delta::sign_deterministic::<H4>(
+    let wire_len = composite_delta::sign_deterministic::<SrFn512>(
         &direct_secret,
         message,
         SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
@@ -118,7 +118,7 @@ fn transaction_core_matches_pqhybridsign_h4() {
         &mut direct_signature,
     )
     .expect("direct H4 signing");
-    assert!(composite_delta::verify::<H4>(
+    assert!(composite_delta::verify::<SrFn512>(
         &direct_public,
         message,
         SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
