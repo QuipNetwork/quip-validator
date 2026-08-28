@@ -6,10 +6,12 @@ use super::*;
 use crate::Pallet as Xqvm;
 use alloc::vec::Vec;
 use frame_benchmarking::v2::*;
+use frame_support::traits::fungible::{Inspect, Mutate};
 use frame_support::traits::Get as _;
 use frame_support::BoundedVec;
 use frame_system::RawOrigin;
 use sp_runtime::traits::Hash as _;
+use sp_runtime::traits::Saturating as _;
 use xqvm::{InstructionBuilder, Program};
 
 /// Byte length of the XQBC wire-format header emitted by `Program::encode`.
@@ -163,6 +165,17 @@ fn build_counted_loop_program(iterations: u32) -> Vec<u8> {
 mod benchmarks {
     use super::*;
 
+    /// Fund `who` well past any deposit a benchmarked program can cost, so
+    /// the hold in `store_program` is never what fails.
+    fn fund<T: Config>(who: &T::AccountId) {
+        let existential = <T::Currency as Inspect<T::AccountId>>::minimum_balance();
+        let deposit = Pallet::<T>::deposit_for(T::MaxProgramSize::get());
+        let target = existential
+            .saturating_add(deposit)
+            .saturating_mul(1_000u32.into());
+        let _ = T::Currency::set_balance(who, target);
+    }
+
     /// Cost of `store_program` in its two dimensions: `s` bytes to decode
     /// and `b` basic blocks to verify.
     ///
@@ -179,6 +192,7 @@ mod benchmarks {
             "benchmark block range must stay within MaxProgramBlocks"
         );
         let caller: T::AccountId = whitelisted_caller();
+        fund::<T>(&caller);
         let blocks = b.min(s - XQBC_HEADER_LEN as u32 - 1);
         let bytecode = build_blocks_program(s, blocks);
         let bounded: BoundedVec<u8, T::MaxProgramSize> =
@@ -249,6 +263,52 @@ mod benchmarks {
 
         #[extrinsic_call]
         execute(RawOrigin::Signed(caller), hash, calldata, 0u32, step_limit);
+    }
+
+    /// Cost of `remove_program` as a function of stored program length.
+    ///
+    /// The program is stored through the extrinsic rather than inserted
+    /// directly, so the deposit exists and the release path is measured
+    /// rather than skipped. A `NOP` sled is the right shape here: removal
+    /// reads and decodes the bytes but runs no verifier, so cost is driven
+    /// by length, not by block structure.
+    #[benchmark]
+    fn remove_program(s: Linear<16, { 65_536 }>) {
+        let caller: T::AccountId = whitelisted_caller();
+        fund::<T>(&caller);
+
+        let bytecode = build_padded_program(s);
+        let hash = T::Hashing::hash(&bytecode);
+        let bounded: BoundedVec<u8, T::MaxProgramSize> =
+            bytecode.try_into().expect("s <= MaxProgramSize");
+
+        Xqvm::<T>::store_program(RawOrigin::Signed(caller.clone()).into(), bounded)
+            .expect("program stores");
+
+        #[extrinsic_call]
+        remove_program(RawOrigin::Signed(caller), hash);
+    }
+
+    /// Cost of `evict_program`, the root-origin twin of `remove_program`.
+    ///
+    /// Benchmarked separately rather than assumed equal: it skips the owner
+    /// check and takes a different origin, and a weight that is asserted
+    /// rather than measured is the mistake QUI-1054 was about.
+    #[benchmark]
+    fn evict_program(s: Linear<16, { 65_536 }>) {
+        let caller: T::AccountId = whitelisted_caller();
+        fund::<T>(&caller);
+
+        let bytecode = build_padded_program(s);
+        let hash = T::Hashing::hash(&bytecode);
+        let bounded: BoundedVec<u8, T::MaxProgramSize> =
+            bytecode.try_into().expect("s <= MaxProgramSize");
+
+        Xqvm::<T>::store_program(RawOrigin::Signed(caller).into(), bounded)
+            .expect("program stores");
+
+        #[extrinsic_call]
+        evict_program(RawOrigin::Root, hash);
     }
 
     impl_benchmark_test_suite!(Xqvm, crate::mock::new_test_ext(), crate::mock::Test);
