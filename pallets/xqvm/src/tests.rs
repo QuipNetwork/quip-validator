@@ -465,3 +465,103 @@ fn execute_weight_grows_with_program_length() {
         65_536,
     );
 }
+
+// ── allocation budget (QUI-1012) ─────────────────────────────────────────
+
+/// Build `PUSH size; BSMX r0; HALT` -- a program whose only work is to
+/// allocate a binary sample of `size` variables.
+///
+/// `BSMX` charges the allocation budget `size * 8` bytes (one `i64` per
+/// variable) before it allocates, so this is the smallest program that can
+/// be pushed against the budget from either side.
+fn build_allocating_program(size: i64) -> Vec<u8> {
+    build_program(|b| {
+        b.emit_push(size).emit_bsmx(Register(0)).emit_halt();
+    })
+}
+
+#[test]
+fn execute_rejects_an_allocation_above_the_budget() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // 256 variables is 2048 bytes against the mock's 1024-byte budget.
+        let bytecode = build_allocating_program(256);
+        let hash = program_hash(&bytecode);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        // The step limit is deliberately generous: the budget must be what
+        // stops this, not the step bound.
+        assert_noop!(
+            Xqvm::execute(
+                RuntimeOrigin::signed(1),
+                hash,
+                BoundedVec::default(),
+                0,
+                10_000,
+            ),
+            Error::<Test>::VmMemoryLimitExceeded
+        );
+    });
+}
+
+#[test]
+fn execute_allows_an_allocation_within_the_budget() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // 64 variables is 512 bytes, inside the mock's 1024-byte budget.
+        let bytecode = build_allocating_program(64);
+        let hash = program_hash(&bytecode);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        assert_ok!(Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            10_000,
+        ));
+    });
+}
+
+#[test]
+fn the_budget_binds_independently_of_the_step_limit() {
+    // Regression guard for the shape of the hole QUI-1012 closed: before the
+    // budget was set, allocation was bounded only incidentally, by how many
+    // steps the allocation happened to cost. A program that allocates far
+    // more than the budget while costing far fewer steps than the limit must
+    // still be refused -- that gap is exactly what a 1 GiB default left open.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let bytecode = build_allocating_program(1_000);
+        let hash = program_hash(&bytecode);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        // 1_000 variables costs ~1_000 steps, comfortably inside MaxStepLimit,
+        // but 8_000 bytes is eight times the budget.
+        assert!(1_000 < MaxStepLimit::get());
+        assert!(1_000 * 8 > MaxVmMemory::get());
+
+        assert_noop!(
+            Xqvm::execute(
+                RuntimeOrigin::signed(1),
+                hash,
+                BoundedVec::default(),
+                0,
+                MaxStepLimit::get(),
+            ),
+            Error::<Test>::VmMemoryLimitExceeded
+        );
+    });
+}

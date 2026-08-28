@@ -39,6 +39,7 @@ parameter_types! {
     pub const MaxCallDataLen: u32 = 32;
     pub const MaxOutputSlots: u32 = 32;
     pub const MaxStepLimit: u64 = 100_000;
+    pub const MaxVmMemory: u64 = 1_024;
     pub const TestWeightPerStep: Weight = Weight::from_parts(1_000, 0);
 }
 
@@ -48,6 +49,7 @@ impl pallet_xqvm::Config for Test {
     type MaxCallDataLen = MaxCallDataLen;
     type MaxOutputSlots = MaxOutputSlots;
     type MaxStepLimit = MaxStepLimit;
+    type MaxVmMemory = MaxVmMemory;
     type WeightPerStep = TestWeightPerStep;
     type WeightInfo = ();
 }

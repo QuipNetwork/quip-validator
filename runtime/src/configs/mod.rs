@@ -317,6 +317,27 @@ parameter_types! {
         slope.saturating_mul(STEP_WEIGHT_SAFETY_FACTOR)
     };
 
+    /// Maximum bytes a single `execute` may allocate inside the VM.
+    ///
+    /// Sized against the Wasm runtime's heap rather than the block's weight
+    /// budget, because that is the resource it protects. The executor's
+    /// default is `DEFAULT_HEAP_ALLOC_PAGES` (2048) 64 KiB pages -- 128 MiB
+    /// -- shared by everything the block does: the storage overlay, decoded
+    /// extrinsics, and every other pallet in the same block. 16 MiB gives the
+    /// VM an eighth of that at the absolute bound and leaves the rest alone.
+    ///
+    /// It is not derived from `MaxStepLimit`, and must not be. The step
+    /// budget bounds allocation only incidentally, through whatever the
+    /// allocating opcodes happen to charge: a sample costs one step per
+    /// element and eight bytes per element, so the step limit alone would
+    /// permit an allocation well past the heap. That incidental coupling is
+    /// what this constant replaces with a stated bound.
+    ///
+    /// 16 MiB is 2,097,152 XQMX variables, orders of magnitude above any
+    /// problem the toolchain's own examples encode, so the ceiling binds
+    /// abuse rather than use.
+    pub const MaxVmMemory: u64 = 16 * 1024 * 1024;
+
     /// Derived from block weight budget so a single execute call always
     /// fits in one block.  Uses 50 % of the normal dispatch budget to
     /// leave room for other extrinsics in the same block.
@@ -348,6 +369,7 @@ impl pallet_xqvm::Config for Runtime {
     type MaxCallDataLen = MaxCallDataLen;
     type MaxOutputSlots = MaxOutputSlots;
     type MaxStepLimit = MaxStepLimit;
+    type MaxVmMemory = MaxVmMemory;
     type WeightPerStep = XqvmWeightPerStep;
     type WeightInfo = pallet_xqvm::SubstrateWeight<Runtime>;
 }
@@ -584,6 +606,32 @@ mod xqvm_weights {
     /// A single `execute` at the maximum step limit must fit inside the budget
     /// the limit was derived from.
     ///
+    /// The VM's allocation budget must stay well under the Wasm runtime's
+    /// heap.
+    ///
+    /// `MaxVmMemory` is hand-set rather than derived, so nothing else would
+    /// notice it being raised past the heap it is sized against. The failure
+    /// it guards is not a rejected extrinsic: an allocation the heap cannot
+    /// satisfy traps the whole runtime execution, which no dispatch error can
+    /// report.
+    #[test]
+    fn vm_memory_budget_stays_under_the_runtime_heap() {
+        /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB
+        /// pages. Restated rather than imported -- it is a client-side
+        /// constant and the runtime does not depend on the executor.
+        const RUNTIME_HEAP_BYTES: u64 = 2048 * 64 * 1024;
+        /// The VM may claim at most this share of the heap at its bound, so
+        /// the storage overlay and every other pallet in the block keep room.
+        const MAX_HEAP_SHARE: u64 = 4;
+
+        assert!(
+            MaxVmMemory::get() <= RUNTIME_HEAP_BYTES / MAX_HEAP_SHARE,
+            "MaxVmMemory is {} bytes against a {} byte heap",
+            MaxVmMemory::get(),
+            RUNTIME_HEAP_BYTES,
+        );
+    }
+
     /// This is the invariant the old hand-set `WeightPerStep` violated: it
     /// admitted ~750M steps priced at 0.75 s that took over ten seconds to run,
     /// against a two-second block. Both constants are now derived from the

@@ -47,6 +47,14 @@ pub mod pallet {
         #[pallet::constant]
         type MaxOutputSlots: Get<u32>;
 
+        /// Maximum bytes an execution may allocate.
+        ///
+        /// Bounds the VM's allocation budget, which is a distinct resource
+        /// from the step budget: steps price the *work* an opcode does, this
+        /// bounds what it may ask the runtime to hold while doing it.
+        #[pallet::constant]
+        type MaxVmMemory: Get<u64>;
+
         /// Maximum step limit per execution.
         #[pallet::constant]
         type MaxStepLimit: Get<u64>;
@@ -138,6 +146,12 @@ pub mod pallet {
         VmDivisionByZero,
         /// XQVM: step limit exceeded.
         VmStepLimitExceeded,
+        /// XQVM: the program asked to allocate more than `MaxVmMemory`.
+        ///
+        /// Distinct from `VmRuntimeError` on purpose: "asked for too much
+        /// memory" is a budgeting answer the caller can act on by splitting
+        /// the work up, not a broken program.
+        VmMemoryLimitExceeded,
         /// XQVM: bad opcode or truncated instruction.
         VmBadBytecode,
         /// XQVM: register type mismatch.
@@ -177,6 +191,7 @@ pub mod pallet {
             E::StepLimitExceeded { .. } => Error::<T>::VmStepLimitExceeded,
             E::BadOpcode { .. } | E::TruncatedInstruction { .. } => Error::<T>::VmBadBytecode,
             E::RegisterType { .. } => Error::<T>::VmRegisterType,
+            E::MemoryLimitExceeded { .. } => Error::<T>::VmMemoryLimitExceeded,
             _ => Error::<T>::VmRuntimeError,
         }
     }
@@ -280,8 +295,18 @@ pub mod pallet {
             let program_len = bytecode.len() as u32;
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::VmBadBytecode)?;
 
+            // `Vm::new` installs a 1 GiB budget sized for an off-chain
+            // host, so this is not an optimisation -- it is the bound. The
+            // budget has to be set explicitly because the step limit does not
+            // imply it: steps price the work an allocation performs, not the
+            // residency it leaves behind, and the two diverge by orders of
+            // magnitude. Left at the default, a program could ask the runtime
+            // for more than its heap holds, and a failed allocation inside
+            // Wasm traps the whole execution rather than returning a fault
+            // this pallet could report.
             let mut vm = Vm::new();
-            vm.set_step_limit(step_limit)
+            vm.set_memory_limit(T::MaxVmMemory::get())
+                .set_step_limit(step_limit)
                 .set_output_slots(output_slots as usize)
                 .set_calldata(calldata.iter().map(|&v| RegVal::Int(v)).collect());
 
