@@ -5,7 +5,7 @@ This file provides guidance to coding assistants (Claude Code, Codex, Cursor, et
 ## Overview
 
 Quip Network solochain node built on Substrate (Polkadot SDK
-`polkadot-stable2512-2`). This is a standalone blockchain with hybrid H4 BABE
+`polkadot-stable2603`). This is a standalone blockchain with hybrid H4 BABE
 block authoring and H2 GRANDPA finality.
 
 ## Chain specs
