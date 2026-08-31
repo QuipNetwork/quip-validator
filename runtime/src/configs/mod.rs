@@ -191,7 +191,10 @@ impl pallet_timestamp::Config for Runtime {
 
 impl pallet_balances::Config for Runtime {
     type MaxLocks = ConstU32<50>;
-    type MaxReserves = ();
+    // Custody pallets reserve deposits per account. Sixty-four leaves room for
+    // concurrent multisigs and proxy records without making account state
+    // unbounded; revisit this limit after pre-mainnet benchmark data exists.
+    type MaxReserves = ConstU32<64>;
     type ReserveIdentifier = [u8; 8];
     /// The type for recording an account's balance.
     type Balance = Balance;

@@ -455,6 +455,26 @@ mod tests {
     }
 
     #[test]
+    fn balances_support_named_reserves_for_custody_deposits() {
+        use frame_support::traits::{Currency, ReservableCurrency};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            let account =
+                account_id_from_public(&HybridPair::from_string("//Alice", None).unwrap().public());
+            let reserve = 5 * UNIT;
+            <Balances as Currency<AccountId>>::make_free_balance_be(&account, 10 * UNIT);
+
+            assert!(Balances::reserve(&account, reserve).is_ok());
+            assert_eq!(Balances::reserved_balance(&account), reserve);
+            assert_eq!(Balances::unreserve(&account, reserve), 0);
+            assert_eq!(Balances::reserved_balance(&account), 0);
+        });
+    }
+
+    #[test]
     fn revive_configuration_matches_network_build() {
         assert_eq!(
             <Revive as frame_support::traits::PalletInfoAccess>::index(),
