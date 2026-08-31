@@ -114,6 +114,7 @@ pallet-sudo = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "
 pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
+serde = { version = "1.0.228", default-features = false, features = ["alloc", "derive"] }
 sc-executor-common = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 serde_json = { version = "1.0.132", default-features = false }
 rand_core = { version = "0.6", default-features = false }

@@ -61,6 +61,46 @@ impl_opaque_keys! {
     }
 }
 
+/// Heap-boxed session keys keep `pallet_session::Call::set_keys` from making
+/// the entire `RuntimeCall` enum larger than Utility's 1 KiB batching limit.
+/// `Box<T>` and this single-field wrapper are SCALE-transparent, so the
+/// existing `Session.set_keys` wire encoding is unchanged.
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    codec::Encode,
+    codec::Decode,
+    codec::DecodeWithMemTracking,
+    scale_info::TypeInfo,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+)]
+pub struct BoxedSessionKeys(alloc::boxed::Box<SessionKeys>);
+
+impl From<SessionKeys> for BoxedSessionKeys {
+    fn from(keys: SessionKeys) -> Self {
+        Self(alloc::boxed::Box::new(keys))
+    }
+}
+
+impl sp_runtime::traits::OpaqueKeys for BoxedSessionKeys {
+    type KeyTypeIdProviders = <SessionKeys as sp_runtime::traits::OpaqueKeys>::KeyTypeIdProviders;
+
+    fn key_ids() -> &'static [sp_core::crypto::KeyTypeId] {
+        SessionKeys::key_ids()
+    }
+
+    fn get_raw(&self, key_type: sp_core::crypto::KeyTypeId) -> &[u8] {
+        self.0.get_raw(key_type)
+    }
+
+    fn ownership_proof_is_valid(&self, owner: &[u8], proof: &[u8]) -> bool {
+        self.0.ownership_proof_is_valid(owner, proof)
+    }
+}
+
 // To learn more about runtime versioning, see:
 // https://docs.substrate.io/main-docs/build/upgrade#runtime-versioning
 #[sp_version::runtime_version]
@@ -630,6 +670,11 @@ mod tests {
             );
             assert_eq!(Balances::free_balance(derivative_target), 2 * UNIT);
         });
+    }
+
+    #[test]
+    fn runtime_call_fits_utility_batching_limit() {
+        assert!(core::mem::size_of::<RuntimeCall>() <= 1024);
     }
 
     #[test]

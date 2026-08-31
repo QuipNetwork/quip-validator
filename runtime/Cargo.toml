@@ -48,6 +48,7 @@ pallet-utility.workspace = true
 quip-crypto-primitives = { workspace = true, default-features = false }
 quip-transaction-crypto = { workspace = true, default-features = false }
 scale-info = { features = ["derive", "serde"], workspace = true }
+serde.workspace = true
 serde_json = { workspace = true, default-features = false, features = [
   "alloc",
 ] }
@@ -114,6 +115,7 @@ std = [
   "quip-crypto-primitives/std",
   "quip-transaction-crypto/std",
   "scale-info/std",
+  "serde/std",
   "serde_json/std",
   "sp-api/std",
   "sp-block-builder/std",

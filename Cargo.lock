@@ -9295,6 +9295,7 @@ dependencies = [
  "sc-executor",
  "sc-executor-common",
  "scale-info",
+ "serde",
  "serde_json",
  "sp-api",
  "sp-block-builder",

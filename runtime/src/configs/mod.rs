@@ -50,10 +50,10 @@ use pallet_xqvm::WeightInfo as _;
 
 // Local module imports
 use super::{
-    AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, EthExtraImpl, Hash, Nonce,
-    OriginCaller, PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason,
-    RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys, Signature, System, Timestamp,
-    EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
+    AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, BoxedSessionKeys,
+    EthExtraImpl, Hash, Nonce, OriginCaller, PalletInfo, Runtime, RuntimeCall, RuntimeEvent,
+    RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys, Signature,
+    System, Timestamp, EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
 use crate::weights::{BlockExecutionWeight, ExtrinsicBaseWeight};
 
@@ -177,7 +177,7 @@ impl pallet_session::Config for Runtime {
     type NextSessionRotation = Babe;
     type SessionManager = ();
     type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
-    type Keys = SessionKeys;
+    type Keys = BoxedSessionKeys;
     type DisablingStrategy = ();
     type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
     type Currency = Balances;
