@@ -153,11 +153,16 @@ mod benchmarks {
     /// per-byte decode cost measured by `execute(s)` does not leak into this
     /// slope.
     ///
-    /// `NEXT` is the most expensive of the cheaply-constructible opcodes
-    /// (measured 6.87 ns/step native, against 3.89 for `NOP`), so it is the
-    /// right floor to calibrate against. It is only a floor: opcodes whose
-    /// cost scales with their operands -- `ENERGY` over a model above all --
-    /// are one step each and unbounded. See QUI-1056.
+    /// `NEXT` is the most expensive of the cheaply-constructible opcodes, so
+    /// it is the right floor to calibrate against: it charges one step like
+    /// `NOP`, the unit a step is defined as, but costs more to dispatch.
+    ///
+    /// Since xqvm 0.4.0 the floor is also a ceiling for the opcodes it does
+    /// not reach. Operand-scaling opcodes no longer run unbounded work for
+    /// one step (QUI-1056); they charge additional steps in proportion to
+    /// the work, each unit calibrated upstream so that it is not cheaper
+    /// than the operation it stands for. Pricing every step at this slope is
+    /// therefore conservative for them too.
     #[benchmark]
     fn execute_step(t: Linear<0, { 50_000 }>) {
         let caller: T::AccountId = whitelisted_caller();
