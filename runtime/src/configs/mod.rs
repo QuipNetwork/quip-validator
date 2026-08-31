@@ -194,9 +194,9 @@ impl pallet_timestamp::Config for Runtime {
 
 impl pallet_balances::Config for Runtime {
     type MaxLocks = ConstU32<50>;
-    // Custody pallets reserve deposits per account. Sixty-four leaves room for
-    // concurrent multisigs and proxy records without making account state
-    // unbounded; revisit this limit after pre-mainnet benchmark data exists.
+    // This limits only legacy named-reserve entries. Multisig and proxy use
+    // the aggregate plain reserve and do not consult this bound; 64 is a
+    // forward-looking cap for any future named-reserve users.
     type MaxReserves = ConstU32<64>;
     type ReserveIdentifier = [u8; 8];
     /// The type for recording an account's balance.
@@ -215,10 +215,11 @@ impl pallet_balances::Config for Runtime {
 }
 
 parameter_types! {
-    // Multisigs stores one item with a 32-byte hash-key suffix plus an 88-byte
-    // encoded key/value footprint: 1 * item + 88 * byte at Revive economics.
+    // One minimum multisig state uses a 32-byte call-hash key plus 57 value
+    // bytes: Timepoint (8), Balance (16), depositor AccountId (32), and the
+    // approvals Vec compact-length prefix (1). Thus: 1 item + 89 bytes.
     pub const MultisigDepositBase: Balance =
-        ReviveDepositPerItem::get() + 88 * ReviveDepositPerByte::get();
+        ReviveDepositPerItem::get() + 89 * ReviveDepositPerByte::get();
     // Each threshold approval adds one encoded 32-byte AccountId.
     pub const MultisigDepositFactor: Balance = 32 * ReviveDepositPerByte::get();
     /// Weight grows with the sorted signatory set. One hundred supports

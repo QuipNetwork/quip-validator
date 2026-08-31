@@ -101,6 +101,34 @@ impl sp_runtime::traits::OpaqueKeys for BoxedSessionKeys {
     }
 }
 
+#[cfg(test)]
+mod boxed_session_keys_tests {
+    use super::{BoxedSessionKeys, SessionKeys};
+    use codec::Encode;
+    use quip_crypto_primitives::substrate::{
+        ed25519_fndsa512::Pair as HybridGrandpaPair, sr25519_fndsa512::Pair as HybridBabePair,
+    };
+    use sp_core::Pair as _;
+
+    #[test]
+    fn boxed_session_keys_preserve_scale_wire_encoding() {
+        let keys = SessionKeys {
+            babe: HybridBabePair::from_string("//Alice", None)
+                .expect("Alice BABE seed is valid")
+                .public()
+                .into(),
+            grandpa: HybridGrandpaPair::from_string("//Alice", None)
+                .expect("Alice GRANDPA seed is valid")
+                .public()
+                .into(),
+        };
+        let original_encoding = keys.encode();
+        let boxed_encoding = BoxedSessionKeys::from(keys).encode();
+
+        assert_eq!(boxed_encoding, original_encoding);
+    }
+}
+
 // To learn more about runtime versioning, see:
 // https://docs.substrate.io/main-docs/build/upgrade#runtime-versioning
 #[sp_version::runtime_version]
@@ -498,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn balances_support_named_reserves_for_custody_deposits() {
+    fn balances_support_plain_reserve_round_trip() {
         use frame_support::traits::{Currency, ReservableCurrency};
 
         let mut ext =
