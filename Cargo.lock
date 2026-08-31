@@ -2011,7 +2011,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -7737,6 +7737,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-utility"
+version = "46.0.0"
+source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=30810786a6610de8798594bbc5d4f00670744c6d#30810786a6610de8798594bbc5d4f00670744c6d"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-xqvm"
 version = "0.2.2"
 dependencies = [
@@ -9259,6 +9274,7 @@ dependencies = [
  "pallet-timestamp",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc-runtime-api",
+ "pallet-utility",
  "pallet-xqvm",
  "parity-scale-codec",
  "quantum-validation",

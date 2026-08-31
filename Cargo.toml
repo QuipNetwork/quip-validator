@@ -52,6 +52,7 @@ getrandom = { version = "0.2.17", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 jsonrpsee = { version = "0.24.3" }
 pallet-transaction-payment = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
+pallet-utility = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-transaction-payment-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 sc-basic-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 sc-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }

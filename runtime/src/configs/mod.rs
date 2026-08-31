@@ -48,9 +48,9 @@ use pallet_xqvm::WeightInfo as _;
 // Local module imports
 use super::{
     AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, EthExtraImpl, Hash, Nonce,
-    PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-    RuntimeOrigin, RuntimeTask, SessionKeys, Signature, System, Timestamp, EXISTENTIAL_DEPOSIT,
-    MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
+    OriginCaller, PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason,
+    RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys, Signature, System, Timestamp,
+    EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
 use crate::weights::{BlockExecutionWeight, ExtrinsicBaseWeight};
 
@@ -233,6 +233,13 @@ impl pallet_multisig::Config for Runtime {
     type MaxSignatories = MaxSignatories;
     type WeightInfo = pallet_multisig::weights::SubstrateWeight<Runtime>;
     type BlockNumberProvider = System;
+}
+
+impl pallet_utility::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type PalletsOrigin = OriginCaller;
+    type WeightInfo = pallet_utility::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
