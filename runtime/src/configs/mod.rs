@@ -294,16 +294,22 @@ parameter_types! {
     /// it honest; the previous hand-set 1 ns was roughly 13x below the
     /// measured cost of the *cheapest* opcode in the ISA.
     ///
-    /// The safety factor covers the spread between opcodes. Measured native,
-    /// the cheaply-constructible core spans 3.89 ns/step (`NOP`) to 6.87
-    /// ns/step (`NEXT`, which is what the benchmark exercises), a ratio of
-    /// 1.77; the factor of 2 rounds that up and leaves a little headroom for
-    /// register and vector opcodes that the benchmark does not reach.
+    /// The safety factor covers the spread between one-step opcodes. A step
+    /// is calibrated upstream as one `NOP` dispatch, while the benchmark
+    /// exercises `NEXT`, which is dearer and still charges a single step; the
+    /// slope therefore already sits above the unit cost, and the factor of 2
+    /// leaves headroom for register and vector opcodes the benchmark does not
+    /// reach.
     ///
-    /// It does **not** cover opcodes whose cost scales with their operands.
-    /// `ENERGY` evaluates a whole model in one step and is unbounded until the
-    /// model is (QUI-1009, QUI-1012, QUI-1056). A flat per-step price cannot
-    /// be made sound for those, and this constant does not pretend to.
+    /// Since xqvm 0.4.0 it also covers opcodes whose cost scales with their
+    /// operands, which a flat per-step price could not be made sound for
+    /// before (QUI-1056). Those opcodes now charge additional steps for the
+    /// work they are about to do -- `ENERGY` one per model term, the
+    /// constraint expansions one per coefficient written, the grid scans one
+    /// per cell -- so `WeightPerStep * steps` tracks work rather than
+    /// instruction count. The unit counts are normative and specified in the
+    /// toolchain's `spec/xqvm/METERING.md`; the pallet prices them, it does
+    /// not restate them.
     pub XqvmWeightPerStep: Weight = {
         const STEP_WEIGHT_SAFETY_FACTOR: u64 = 2;
         let slope = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)

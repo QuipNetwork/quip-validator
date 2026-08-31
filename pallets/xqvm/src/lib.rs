@@ -104,9 +104,10 @@ pub mod pallet {
         StepLimitTooHigh,
         /// A step limit of zero was requested.
         ///
-        /// Rejected rather than forwarded: `xqvm::Vm::set_step_limit` treats
-        /// `0` as "unlimited", so passing it through would run the program
-        /// with no bound while charging only the base weight.
+        /// Rejected rather than forwarded: a zero-step execution can never
+        /// succeed, and under xqvm 0.3.x the `0` sentinel even meant
+        /// "unlimited". The guard keeps the bound independent of the
+        /// library's convention.
         ZeroStepLimit,
         /// Output slot count exceeds MaxOutputSlots.
         TooManyOutputSlots,
@@ -207,12 +208,12 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
-            // Defence in depth. `xqvm 0.3.1` maps a step limit of `0` to
-            // `u64::MAX`, so an unguarded pass-through runs unbounded while
-            // pre-charging only the base weight. The sentinel is being removed
-            // upstream in xqvm 0.4.0 (QUI-1053); this check stays regardless,
-            // because a consensus-critical bound must not depend on a
-            // library's sentinel convention.
+            // Defence in depth. `xqvm 0.3.1` mapped a step limit of `0` to
+            // `u64::MAX`, so an unguarded pass-through ran unbounded while
+            // pre-charging only the base weight. xqvm 0.4.0 removed the
+            // sentinel (QUI-1053); this check stays regardless, because a
+            // consensus-critical bound must not depend on a library's
+            // sentinel convention.
             ensure!(step_limit > 0, Error::<T>::ZeroStepLimit);
             ensure!(
                 step_limit <= T::MaxStepLimit::get(),

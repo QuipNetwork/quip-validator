@@ -307,10 +307,12 @@ fn execute_rejects_zero_step_limit() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
-        // A program that never halts on its own. `xqvm::Vm::set_step_limit`
-        // maps 0 to u64::MAX, so without the guard in `execute` this call runs
-        // forever and the test hangs rather than fails -- which is precisely
-        // the on-chain failure mode being guarded against.
+        // A program that never halts on its own. Under xqvm 0.3.x,
+        // `set_step_limit(0)` meant u64::MAX, so without the guard in
+        // `execute` this call ran forever -- precisely the on-chain failure
+        // mode being guarded against. xqvm 0.4.0 dropped that sentinel, but
+        // the guard (and this test) stay: zero-step executions are rejected
+        // up front rather than charged and run.
         let bytecode = build_program(|b| {
             let top = b.label();
             b.place(top).unwrap().emit_nop().emit_jump(top);
