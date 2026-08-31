@@ -30,6 +30,7 @@ frame_benchmarking::define_benchmarks!(
     [pallet_balances, Balances]
     [pallet_miner_registry, MinerRegistry]
     [pallet_multisig, Multisig]
+    [pallet_proxy, Proxy]
     [pallet_quantum_compute_mempool, QuantumComputeMempool]
     [pallet_quantum_pow, QuantumPow]
     [pallet_revive, Revive]
