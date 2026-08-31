@@ -160,6 +160,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 117 to hard-invalidate 116 nodes: the crates.io pqhybridsign
     // rc5 switch and repins carry no interface change, but a spec bump makes
     // any node still on 116 refuse the new runtime outright.
+    // Extended 117 with custody pallets starting at index 16. This unreleased
+    // runtime keeps the existing extrinsic format, so transaction version 7
+    // remains unchanged.
     spec_version: 117,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
@@ -475,6 +478,97 @@ mod tests {
     }
 
     #[test]
+    fn h4_multisig_uses_hash_approval_then_executes_full_call() {
+        use frame_support::{dispatch::GetDispatchInfo, traits::Currency, weights::Weight};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let alice = HybridPair::from_string("//Alice", None).unwrap();
+            let bob = HybridPair::from_string("//Bob", None).unwrap();
+            let charlie = HybridPair::from_string("//Charlie", None).unwrap();
+            let target = account_id_from_public(
+                &HybridPair::from_string("//Dave", None).unwrap().public(),
+            );
+            let mut signatories = vec![
+                account_id_from_public(&alice.public()),
+                account_id_from_public(&bob.public()),
+                account_id_from_public(&charlie.public()),
+            ];
+            signatories.sort();
+
+            for account in &signatories {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, 100 * UNIT);
+            }
+            let multisig = Multisig::multi_account_id(&signatories, 2);
+            <Balances as Currency<AccountId>>::make_free_balance_be(&multisig, 10 * UNIT);
+
+            let inner: RuntimeCall = BalancesCall::transfer_allow_death {
+                dest: Address::Id(target.clone()),
+                value: 3 * UNIT,
+            }
+            .into();
+            let call_hash = sp_io::hashing::blake2_256(&inner.encode());
+
+            let first_account = account_id_from_public(&alice.public());
+            let mut first_others = signatories
+                .iter()
+                .filter(|account| **account != first_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            first_others.sort();
+            let approval: RuntimeCall = pallet_multisig::Call::approve_as_multi {
+                threshold: 2,
+                other_signatories: first_others,
+                maybe_timepoint: None,
+                call_hash,
+                max_weight: Weight::zero(),
+            }
+            .into();
+            let approval_xt = signed_test_extrinsic(
+                &alice,
+                Address::Id(first_account),
+                approval,
+                0,
+            );
+            let approval_size = approval_xt.encode().len();
+            assert!(Executive::apply_extrinsic(approval_xt).unwrap().is_ok());
+
+            let timepoint = pallet_multisig::Multisigs::<Runtime>::get(&multisig, call_hash)
+                .expect("first approval creates multisig state")
+                .when;
+            let final_account = account_id_from_public(&bob.public());
+            let mut final_others = signatories
+                .iter()
+                .filter(|account| **account != final_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            final_others.sort();
+            let final_call: RuntimeCall = pallet_multisig::Call::as_multi {
+                threshold: 2,
+                other_signatories: final_others,
+                maybe_timepoint: Some(timepoint),
+                max_weight: inner.get_dispatch_info().call_weight,
+                call: alloc::boxed::Box::new(inner),
+            }
+            .into();
+            let final_xt =
+                signed_test_extrinsic(&bob, Address::Id(final_account), final_call, 0);
+            let final_size = final_xt.encode().len();
+            assert!(Executive::apply_extrinsic(final_xt).unwrap().is_ok());
+
+            eprintln!(
+                "H4 multisig extrinsic sizes: approve_as_multi={approval_size}, as_multi={final_size}"
+            );
+            assert_eq!(Balances::free_balance(target), 3 * UNIT);
+            assert!(pallet_multisig::Multisigs::<Runtime>::get(&multisig, call_hash).is_none());
+        });
+    }
+
+    #[test]
     fn revive_configuration_matches_network_build() {
         assert_eq!(
             <Revive as frame_support::traits::PalletInfoAccess>::index(),
@@ -610,4 +704,7 @@ mod runtime {
 
     #[runtime::pallet_index(15)]
     pub type EvmChainId = pallet_evm_chain_id;
+
+    #[runtime::pallet_index(16)]
+    pub type Multisig = pallet_multisig;
 }

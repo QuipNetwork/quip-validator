@@ -31,6 +31,7 @@ pallet-evm-chain-id.workspace = true
 pallet-faucet-ops.workspace = true
 pallet-grandpa.workspace = true
 pallet-miner-registry.workspace = true
+pallet-multisig.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
 pallet-revive.workspace = true
@@ -94,6 +95,7 @@ std = [
   "pallet-faucet-ops/std",
   "pallet-grandpa/std",
   "pallet-miner-registry/std",
+  "pallet-multisig/std",
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
   "pallet-revive/std",
@@ -135,6 +137,7 @@ runtime-benchmarks = [
   "pallet-balances/runtime-benchmarks",
   "pallet-grandpa/runtime-benchmarks",
   "pallet-miner-registry/runtime-benchmarks",
+  "pallet-multisig/runtime-benchmarks",
   "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-quantum-pow/runtime-benchmarks",
   "pallet-revive/runtime-benchmarks",
@@ -156,6 +159,7 @@ try-runtime = [
   "pallet-faucet-ops/try-runtime",
   "pallet-grandpa/try-runtime",
   "pallet-miner-registry/try-runtime",
+  "pallet-multisig/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",
   "pallet-revive/try-runtime",

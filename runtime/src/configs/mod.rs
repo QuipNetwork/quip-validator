@@ -212,6 +212,30 @@ impl pallet_balances::Config for Runtime {
 }
 
 parameter_types! {
+    // Multisigs stores one item with a 32-byte hash-key suffix plus an 88-byte
+    // encoded key/value footprint: 1 * item + 88 * byte at Revive economics.
+    pub const MultisigDepositBase: Balance =
+        ReviveDepositPerItem::get() + 88 * ReviveDepositPerByte::get();
+    // Each threshold approval adds one encoded 32-byte AccountId.
+    pub const MultisigDepositFactor: Balance = 32 * ReviveDepositPerByte::get();
+    /// Weight grows with the sorted signatory set. One hundred supports
+    /// institutional custody while remaining bounded; benchmark results may
+    /// justify tightening this before mainnet.
+    pub const MaxSignatories: u32 = 100;
+}
+
+impl pallet_multisig::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type Currency = Balances;
+    type DepositBase = MultisigDepositBase;
+    type DepositFactor = MultisigDepositFactor;
+    type MaxSignatories = MaxSignatories;
+    type WeightInfo = pallet_multisig::weights::SubstrateWeight<Runtime>;
+    type BlockNumberProvider = System;
+}
+
+parameter_types! {
     pub FeeMultiplier: Multiplier = Multiplier::one();
 }
 

@@ -2011,7 +2011,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -7445,6 +7445,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-multisig"
+version = "46.0.0"
+source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=30810786a6610de8798594bbc5d4f00670744c6d#30810786a6610de8798594bbc5d4f00670744c6d"
+dependencies = [
+ "log",
+ "parity-scale-codec",
+ "polkadot-sdk-frame",
+ "scale-info",
+]
+
+[[package]]
 name = "pallet-quantum-compute-mempool"
 version = "0.2.2"
 dependencies = [
@@ -9238,6 +9249,7 @@ dependencies = [
  "pallet-faucet-ops",
  "pallet-grandpa",
  "pallet-miner-registry",
+ "pallet-multisig",
  "pallet-quantum-compute-mempool",
  "pallet-quantum-pow",
  "pallet-revive",
