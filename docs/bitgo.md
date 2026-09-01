@@ -54,6 +54,20 @@ contracts, sudo, and all other calls. Delayed proxies use `announce` and
 `proxy_announced`, and the real account may reject an announcement before its
 delay expires.
 
+Do not treat the outer extrinsic status as the result of a proxied call. Once
+`Proxy.proxy` or `Proxy.proxy_announced` reaches inner dispatch, the pallet
+records the inner result and returns success for the outer extrinsic. A
+filtered or otherwise failing inner call therefore lands with
+`ExtrinsicSuccess`; its actual outcome is the `Proxy.ProxyExecuted` event's
+`result`, which is either `Ok(())` or the inner `DispatchError` (for example,
+`CallFiltered` when a `TransferOnly` proxy attempts a utility batch). Custody
+integrations must require and inspect this event rather than checking only the
+extrinsic status.
+
+Pre-dispatch proxy checks are different. In particular, calling
+`proxy_announced` before its delay has elapsed fails the outer extrinsic with
+`Unannounced`, before any inner call is dispatched.
+
 `Proxy.create_pure` is enabled for the standard custody pattern where a key
 holder creates an otherwise inaccessible vault account controlled solely by
 its proxy relationship. Record the `PureCreated` event fields needed by
