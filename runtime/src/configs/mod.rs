@@ -215,13 +215,26 @@ impl pallet_balances::Config for Runtime {
 }
 
 parameter_types! {
+    /// Chain-wide price for one storage item.
+    pub const StorageDepositPerItem: Balance = 200 * MILLI_UNIT;
+    /// Chain-wide price for one byte of storage.
+    pub const StorageDepositPerByte: Balance = 10 * MICRO_UNIT;
+}
+
+// Keep the former Revive names as compatibility aliases for downstream runtime
+// assertions. Revive consumes the shared chain storage price directly below.
+pub type ReviveDepositPerItem = StorageDepositPerItem;
+pub type ReviveDepositPerByte = StorageDepositPerByte;
+
+parameter_types! {
     // One minimum multisig state uses a 32-byte call-hash key plus 57 value
     // bytes: Timepoint (8), Balance (16), depositor AccountId (32), and the
-    // approvals Vec compact-length prefix (1). Thus: 1 item + 89 bytes.
+    // approvals Vec compact-length prefix (1). At the chain storage price,
+    // this is 1 item + 89 bytes.
     pub const MultisigDepositBase: Balance =
-        ReviveDepositPerItem::get() + 89 * ReviveDepositPerByte::get();
+        StorageDepositPerItem::get() + 89 * StorageDepositPerByte::get();
     // Each threshold approval adds one encoded 32-byte AccountId.
-    pub const MultisigDepositFactor: Balance = 32 * ReviveDepositPerByte::get();
+    pub const MultisigDepositFactor: Balance = 32 * StorageDepositPerByte::get();
     /// Weight grows with the sorted signatory set. One hundred supports
     /// institutional custody while remaining bounded; benchmark results may
     /// justify tightening this before mainnet.
@@ -294,16 +307,16 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 
 parameter_types! {
     // Proxies is keyed by AccountId (32 bytes) and stores a Balance (16 bytes)
-    // before its vector entries: 1 * item + 48 * byte at Revive economics.
+    // before its vector entries: 1 item + 48 bytes at the chain storage price.
     pub const ProxyDepositBase: Balance =
-        ReviveDepositPerItem::get() + 48 * ReviveDepositPerByte::get();
+        StorageDepositPerItem::get() + 48 * StorageDepositPerByte::get();
     // Each ProxyDefinition encodes AccountId (32), ProxyType (1), and delay (4).
-    pub const ProxyDepositFactor: Balance = 37 * ReviveDepositPerByte::get();
+    pub const ProxyDepositFactor: Balance = 37 * StorageDepositPerByte::get();
     // Announcements has the same AccountId key and Balance base footprint.
     pub const AnnouncementDepositBase: Balance =
-        ReviveDepositPerItem::get() + 48 * ReviveDepositPerByte::get();
+        StorageDepositPerItem::get() + 48 * StorageDepositPerByte::get();
     // Each announcement encodes real AccountId (32), call hash (32), and block (4).
-    pub const AnnouncementDepositFactor: Balance = 68 * ReviveDepositPerByte::get();
+    pub const AnnouncementDepositFactor: Balance = 68 * StorageDepositPerByte::get();
 }
 
 impl pallet_proxy::Config for Runtime {
@@ -341,8 +354,6 @@ impl pallet_transaction_payment::Config for Runtime {
 }
 
 parameter_types! {
-    pub const ReviveDepositPerByte: Balance = 10 * MICRO_UNIT;
-    pub const ReviveDepositPerItem: Balance = 200 * MILLI_UNIT;
     pub const ReviveDepositPerChildTrieItem: Balance = 2 * MILLI_UNIT;
     pub ReviveCodeHashLockupDepositPercent: Perbill = Perbill::from_percent(30);
     pub const ReviveMaxEthExtrinsicWeight: FixedU128 = FixedU128::from_rational(9, 10);
@@ -364,8 +375,8 @@ impl pallet_revive::Config for Runtime {
     type WeightInfo = pallet_revive::weights::SubstrateWeight<Runtime>;
     type Precompiles = ();
     type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Runtime, Babe>;
-    type DepositPerByte = ReviveDepositPerByte;
-    type DepositPerItem = ReviveDepositPerItem;
+    type DepositPerByte = StorageDepositPerByte;
+    type DepositPerItem = StorageDepositPerItem;
     type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
     type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;

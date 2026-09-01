@@ -41,9 +41,9 @@ This derived `AccountId32` is not Ethereum-derived. With the runtime's Revive
 `AccountId32Mapper`, its H160 address is a lossy Keccak hash unless a reverse
 mapping is stored. Before the derivative account originates Revive contract
 interactions, fund it and have it submit the permissionless, self-signed
-`Revive.map_account` call (call index 7). The mapping holds
-`DepositPerItem + 52 * DepositPerByte`, currently 200,520,000,000 plancks
-(0.20052 QUIP), until the account calls `Revive.unmap_account`.
+`Revive.map_account` call (call index 7). At the shared chain storage price, the
+mapping holds `DepositPerItem + 52 * DepositPerByte`, currently 200,520,000,000
+plancks (0.20052 QUIP), until the account calls `Revive.unmap_account`.
 
 ## Proxy policy
 
