@@ -136,10 +136,20 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
-# Browser-facing half of the hybrid extrinsic-signing contract. This is kept
-# separate from cargo-test because it additionally installs Node and the pinned
-# wasm-pack release, builds browser bindings, and exercises the actual
+# Node-level suites that need a running chain and the PQ signer. Kept separate
+# from cargo-test because they additionally install Node and the pinned
+# wasm-pack release, build browser bindings, and exercise the actual
 # Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
+#
+# Both suites run here rather than in a job each. They need byte-identical
+# setup -- the same image, the same apt packages, the same wasm-signer, the
+# same debug node -- and splitting them meant building that twice per
+# pipeline, concurrently, on one runner. Measured on !75: 20 minutes of apt
+# and 49 minutes of `cargo build -p quip-network-node`, duplicated, while the
+# xqvm suite's own work was 70 seconds. The duplicate job also pushed the
+# pipeline to four heavy jobs, and the node then could not open its RPC
+# inside the readiness window because it was competing with the very builds
+# that existed to produce it.
 browser-signer-test:
   stage: test
   image: $TOOLCHAIN_IMAGE
@@ -171,7 +181,7 @@ browser-signer-test:
     npm_config_cache: $CI_PROJECT_DIR/.npm
   before_script:
     - apt-get update
-    - apt-get install -y --no-install-recommends curl nodejs npm
+    - apt-get install -y --no-install-recommends curl git nodejs npm
     - rm -rf /var/lib/apt/lists/*
     - rustup target add wasm32-unknown-unknown
     - mkdir -p "$CARGO_HOME/bin"
@@ -198,72 +208,6 @@ browser-signer-test:
     - npm run build --prefix js/quip-signer
     - cargo build -p quip-network-node
     - bash scripts/test-browser-signer-integration.sh
-
-# On-chain half of the pallet-xqvm contract. The pallet's unit tests build
-# their bytecode with the same InstructionBuilder they assert against, so they
-# would pass against either encoding; only a node-level run pins what the chain
-# actually executes.
-#
-# It also replays the XQuad conformance vectors that assert a step count. Since
-# xqvm 0.4.0 a step measures work rather than dispatches, so the step count is
-# consensus-visible -- WeightPerStep * steps is what the chain charges, and a
-# chain that counts steps differently from the toolchain prices execution
-# differently from the specification. The vectors are read from xquad at the tag
-# matching the pinned xqvm version rather than vendored, so they track the
-# toolchain; scripts/test-xqvm-onchain.sh derives that tag from Cargo.toml.
-xqvm-onchain-test:
-  stage: test
-  image: $TOOLCHAIN_IMAGE
-  tags: [docker, amd64]
-  interruptible: true
-  timeout: 90m
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  cache:
-    # Pull-only for the same reason browser-signer-test is: cargo-test owns
-    # publication of the shared target archive.
-    - key:
-        files:
-          - Cargo.lock
-      policy: pull
-      paths:
-        - .cargo/registry/cache
-        - .cargo/registry/index
-        - target/
-    - key:
-        prefix: xqvm-onchain-tools
-        files:
-          - js/quip-signer/package-lock.json
-      policy: pull-push
-      paths:
-        - .cargo/bin/
-        - .npm/
-  variables:
-    npm_config_cache: $CI_PROJECT_DIR/.npm
-  before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends curl git nodejs npm
-    - rm -rf /var/lib/apt/lists/*
-    - rustup target add wasm32-unknown-unknown
-    - mkdir -p "$CARGO_HOME/bin"
-    - export PATH="$CARGO_HOME/bin:$PATH"
-    - |
-      if ! command -v cargo-binstall >/dev/null 2>&1; then
-        curl -L --proto '=https' --tlsv1.2 -sSf \
-          "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-x86_64-unknown-linux-musl.tgz" |
-          tar -xz -C "$CARGO_HOME/bin"
-      fi
-    - |
-      if ! command -v wasm-pack >/dev/null 2>&1 ||
-        [ "$(wasm-pack --version)" != "wasm-pack ${WASM_PACK_VERSION}" ]; then
-        cargo binstall --no-confirm --locked "wasm-pack@${WASM_PACK_VERSION}"
-      fi
-  script:
-    - make wasm-signer
-    - npm ci --prefix js/quip-signer
-    - npm run build --prefix js/quip-signer
-    - cargo build -p quip-network-node
     - bash scripts/test-xqvm-onchain.sh
 
 # pallet-revive's runtime benchmarks compile both Solidity/EVM and

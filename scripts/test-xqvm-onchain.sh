@@ -18,6 +18,9 @@ set -euo pipefail
 #   make wasm-signer
 #   npm ci --prefix js/quip-signer && npm run build --prefix js/quip-signer
 #   cargo build -p quip-network-node
+#
+# In CI this runs inside browser-signer-test, which already performs all of
+# the above for its own suite; see .gitlab-ci.yml for why they share a job.
 
 node_binary="${QUIP_NODE_BINARY:-target/debug/quip-network-node}"
 node_log="$(mktemp)"
@@ -112,8 +115,11 @@ echo "== Starting the node =="
 "$node_binary" --dev --tmp --no-prometheus >"$node_log" 2>&1 &
 node_pid="$!"
 
+# 300s, not the 120s a laptop needs. A CI runner starts this node while
+# still compiling the rest of the pipeline, and the node lost that race on
+# !75: it had printed only its startup banner when the window closed.
 ready=false
-for _ in $(seq 1 120); do
+for _ in $(seq 1 300); do
   if ! kill -0 "$node_pid" 2>/dev/null; then
     cat "$node_log"
     echo "ERROR: node exited during startup" >&2
