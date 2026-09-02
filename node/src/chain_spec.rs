@@ -59,13 +59,13 @@ pub fn quip_testnet_chain_spec() -> Result<ChainSpec, String> {
     };
 
     let boot_nodes = vec![
-        "/dns4/bootnode-1.testnet.quip.network/tcp/30333/p2p/12D3KooWBdhB4xGX6hfFsNufqQsG99kekiH9kJhLSiui3RgatnpE"
+        "/dns4/bootnode-1.aglais.quip.network/tcp/30333/p2p/12D3KooWBdhB4xGX6hfFsNufqQsG99kekiH9kJhLSiui3RgatnpE"
             .parse()
             .expect("operator-1 testnet bootnode multiaddr is well-formed"),
-        "/dns4/bootnode-2.testnet.quip.network/tcp/30333/p2p/12D3KooWPJAHo45AA94u3fYS3tXvyKouZnWihQnXWPHAzikXLfPW"
+        "/dns4/bootnode-2.aglais.quip.network/tcp/30333/p2p/12D3KooWPJAHo45AA94u3fYS3tXvyKouZnWihQnXWPHAzikXLfPW"
             .parse()
             .expect("operator-2 testnet bootnode multiaddr is well-formed"),
-        "/dns4/bootnode-3.testnet.quip.network/tcp/30333/p2p/12D3KooWM6n7wYvett975UnLYXrvnBGqLk2DLJoCRoFxgXTkptWe"
+        "/dns4/bootnode-3.aglais.quip.network/tcp/30333/p2p/12D3KooWM6n7wYvett975UnLYXrvnBGqLk2DLJoCRoFxgXTkptWe"
             .parse()
             .expect("operator-3 testnet bootnode multiaddr is well-formed"),
     ];
@@ -74,10 +74,10 @@ pub fn quip_testnet_chain_spec() -> Result<ChainSpec, String> {
         WASM_BINARY.ok_or_else(|| "Testnet wasm not available".to_string())?,
         None,
     )
-    .with_name("Quip Testnet")
+    .with_name("AGLS (Quip Testnet)")
     .with_id("quip_testnet")
     .with_chain_type(ChainType::Live)
-    .with_protocol_id("quip-testnet")
+    .with_protocol_id("agls-network")
     .with_genesis_config_preset_name(
         quip_protocol_runtime::genesis_config_presets::QUIP_TESTNET_RUNTIME_PRESET,
     )
