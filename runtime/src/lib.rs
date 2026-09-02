@@ -61,6 +61,74 @@ impl_opaque_keys! {
     }
 }
 
+/// Heap-boxed session keys keep `pallet_session::Call::set_keys` from making
+/// the entire `RuntimeCall` enum larger than Utility's 1 KiB batching limit.
+/// `Box<T>` and this single-field wrapper are SCALE-transparent, so the
+/// existing `Session.set_keys` wire encoding is unchanged.
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    codec::Encode,
+    codec::Decode,
+    codec::DecodeWithMemTracking,
+    scale_info::TypeInfo,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+)]
+pub struct BoxedSessionKeys(alloc::boxed::Box<SessionKeys>);
+
+impl From<SessionKeys> for BoxedSessionKeys {
+    fn from(keys: SessionKeys) -> Self {
+        Self(alloc::boxed::Box::new(keys))
+    }
+}
+
+impl sp_runtime::traits::OpaqueKeys for BoxedSessionKeys {
+    type KeyTypeIdProviders = <SessionKeys as sp_runtime::traits::OpaqueKeys>::KeyTypeIdProviders;
+
+    fn key_ids() -> &'static [sp_core::crypto::KeyTypeId] {
+        SessionKeys::key_ids()
+    }
+
+    fn get_raw(&self, key_type: sp_core::crypto::KeyTypeId) -> &[u8] {
+        self.0.get_raw(key_type)
+    }
+
+    fn ownership_proof_is_valid(&self, owner: &[u8], proof: &[u8]) -> bool {
+        self.0.ownership_proof_is_valid(owner, proof)
+    }
+}
+
+#[cfg(test)]
+mod boxed_session_keys_tests {
+    use super::{BoxedSessionKeys, SessionKeys};
+    use codec::Encode;
+    use quip_crypto_primitives::substrate::{
+        ed25519_fndsa512::Pair as HybridGrandpaPair, sr25519_fndsa512::Pair as HybridBabePair,
+    };
+    use sp_core::Pair as _;
+
+    #[test]
+    fn boxed_session_keys_preserve_scale_wire_encoding() {
+        let keys = SessionKeys {
+            babe: HybridBabePair::from_string("//Alice", None)
+                .expect("Alice BABE seed is valid")
+                .public()
+                .into(),
+            grandpa: HybridGrandpaPair::from_string("//Alice", None)
+                .expect("Alice GRANDPA seed is valid")
+                .public()
+                .into(),
+        };
+        let original_encoding = keys.encode();
+        let boxed_encoding = BoxedSessionKeys::from(keys).encode();
+
+        assert_eq!(boxed_encoding, original_encoding);
+    }
+}
+
 // To learn more about runtime versioning, see:
 // https://docs.substrate.io/main-docs/build/upgrade#runtime-versioning
 #[sp_version::runtime_version]
@@ -160,6 +228,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 117 to hard-invalidate 116 nodes: the crates.io pqhybridsign
     // rc5 switch and repins carry no interface change, but a spec bump makes
     // any node still on 116 refuse the new runtime outright.
+    // Extended 117 with custody pallets starting at index 16. This unreleased
+    // runtime keeps the existing extrinsic format, so transaction version 7
+    // remains unchanged.
     spec_version: 117,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
@@ -455,6 +526,508 @@ mod tests {
     }
 
     #[test]
+    fn balances_support_plain_reserve_round_trip() {
+        use frame_support::traits::{Currency, ReservableCurrency};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            let account =
+                account_id_from_public(&HybridPair::from_string("//Alice", None).unwrap().public());
+            let reserve = 5 * UNIT;
+            <Balances as Currency<AccountId>>::make_free_balance_be(&account, 10 * UNIT);
+
+            assert!(Balances::reserve(&account, reserve).is_ok());
+            assert_eq!(Balances::reserved_balance(&account), reserve);
+            assert_eq!(Balances::unreserve(&account, reserve), 0);
+            assert_eq!(Balances::reserved_balance(&account), 0);
+        });
+    }
+
+    #[test]
+    fn h4_multisig_uses_hash_approval_then_executes_full_call() {
+        use frame_support::{dispatch::GetDispatchInfo, traits::Currency, weights::Weight};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let alice = HybridPair::from_string("//Alice", None).unwrap();
+            let bob = HybridPair::from_string("//Bob", None).unwrap();
+            let charlie = HybridPair::from_string("//Charlie", None).unwrap();
+            let target = account_id_from_public(
+                &HybridPair::from_string("//Dave", None).unwrap().public(),
+            );
+            let mut signatories = vec![
+                account_id_from_public(&alice.public()),
+                account_id_from_public(&bob.public()),
+                account_id_from_public(&charlie.public()),
+            ];
+            signatories.sort();
+
+            for account in &signatories {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, 100 * UNIT);
+            }
+            let multisig = Multisig::multi_account_id(&signatories, 2);
+            <Balances as Currency<AccountId>>::make_free_balance_be(&multisig, 10 * UNIT);
+
+            let inner: RuntimeCall = BalancesCall::transfer_allow_death {
+                dest: Address::Id(target.clone()),
+                value: 3 * UNIT,
+            }
+            .into();
+            let call_hash = sp_io::hashing::blake2_256(&inner.encode());
+
+            let first_account = account_id_from_public(&alice.public());
+            let mut first_others = signatories
+                .iter()
+                .filter(|account| **account != first_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            first_others.sort();
+            let approval: RuntimeCall = pallet_multisig::Call::approve_as_multi {
+                threshold: 2,
+                other_signatories: first_others,
+                maybe_timepoint: None,
+                call_hash,
+                max_weight: Weight::zero(),
+            }
+            .into();
+            let approval_xt = signed_test_extrinsic(
+                &alice,
+                Address::Id(first_account),
+                approval,
+                0,
+            );
+            let approval_size = approval_xt.encode().len();
+            assert!(Executive::apply_extrinsic(approval_xt).unwrap().is_ok());
+
+            let timepoint = pallet_multisig::Multisigs::<Runtime>::get(&multisig, call_hash)
+                .expect("first approval creates multisig state")
+                .when;
+            let final_account = account_id_from_public(&bob.public());
+            let mut final_others = signatories
+                .iter()
+                .filter(|account| **account != final_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            final_others.sort();
+            let final_call: RuntimeCall = pallet_multisig::Call::as_multi {
+                threshold: 2,
+                other_signatories: final_others,
+                maybe_timepoint: Some(timepoint),
+                max_weight: inner.get_dispatch_info().call_weight,
+                call: alloc::boxed::Box::new(inner),
+            }
+            .into();
+            let final_xt =
+                signed_test_extrinsic(&bob, Address::Id(final_account), final_call, 0);
+            let final_size = final_xt.encode().len();
+            assert!(Executive::apply_extrinsic(final_xt).unwrap().is_ok());
+
+            eprintln!(
+                "H4 multisig extrinsic sizes: approve_as_multi={approval_size}, as_multi={final_size}"
+            );
+            assert_eq!(Balances::free_balance(target), 3 * UNIT);
+            assert!(pallet_multisig::Multisigs::<Runtime>::get(&multisig, call_hash).is_none());
+        });
+    }
+
+    #[test]
+    fn h4_utility_batch_all_and_derivative_transfer_work() {
+        use frame_support::traits::Currency;
+        use sp_core::crypto::Ss58Codec;
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let alice = HybridPair::from_string("//Alice", None).unwrap();
+            let alice_account = account_id_from_public(&alice.public());
+            <Balances as Currency<AccountId>>::make_free_balance_be(&alice_account, 100 * UNIT);
+
+            let recipients = ["//Bob", "//Charlie", "//Dave"].map(|uri| {
+                account_id_from_public(&HybridPair::from_string(uri, None).unwrap().public())
+            });
+            let calls = recipients
+                .iter()
+                .enumerate()
+                .map(|(index, recipient)| {
+                    BalancesCall::transfer_allow_death {
+                        dest: Address::Id(recipient.clone()),
+                        value: (index as Balance + 1) * UNIT,
+                    }
+                    .into()
+                })
+                .collect();
+            let batch: RuntimeCall = pallet_utility::Call::batch_all { calls }.into();
+            let batch_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account.clone()), batch, 0);
+            assert!(Executive::apply_extrinsic(batch_xt).unwrap().is_ok());
+            assert_eq!(Balances::free_balance(&recipients[0]), UNIT);
+            assert_eq!(Balances::free_balance(&recipients[1]), 2 * UNIT);
+            assert_eq!(Balances::free_balance(&recipients[2]), 3 * UNIT);
+
+            let derivative = pallet_utility::derivative_account_id(alice_account.clone(), 7);
+            <Balances as Currency<AccountId>>::make_free_balance_be(&derivative, 5 * UNIT);
+            let derivative_target =
+                account_id_from_public(&HybridPair::from_string("//Eve", None).unwrap().public());
+            let derivative_call: RuntimeCall = pallet_utility::Call::as_derivative {
+                index: 7,
+                call: alloc::boxed::Box::new(
+                    BalancesCall::transfer_allow_death {
+                        dest: Address::Id(derivative_target.clone()),
+                        value: 2 * UNIT,
+                    }
+                    .into(),
+                ),
+            }
+            .into();
+            let derivative_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account), derivative_call, 1);
+            assert!(Executive::apply_extrinsic(derivative_xt).unwrap().is_ok());
+
+            eprintln!(
+                "utility derivative index 7 address: {}",
+                derivative.to_ss58check()
+            );
+            assert_eq!(Balances::free_balance(derivative_target), 2 * UNIT);
+        });
+    }
+
+    #[test]
+    fn runtime_call_fits_utility_batching_limit() {
+        assert!(core::mem::size_of::<RuntimeCall>() <= 1024);
+    }
+
+    #[test]
+    fn h4_multisig_can_execute_utility_batch() {
+        use frame_support::{dispatch::GetDispatchInfo, traits::Currency, weights::Weight};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let alice = HybridPair::from_string("//Alice", None).unwrap();
+            let bob = HybridPair::from_string("//Bob", None).unwrap();
+            let charlie = HybridPair::from_string("//Charlie", None).unwrap();
+            let mut signatories = vec![
+                account_id_from_public(&alice.public()),
+                account_id_from_public(&bob.public()),
+                account_id_from_public(&charlie.public()),
+            ];
+            signatories.sort();
+            for account in &signatories {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, 100 * UNIT);
+            }
+            let multisig = Multisig::multi_account_id(&signatories, 2);
+            <Balances as Currency<AccountId>>::make_free_balance_be(&multisig, 10 * UNIT);
+
+            let recipients = ["//Dave", "//Eve"].map(|uri| {
+                account_id_from_public(&HybridPair::from_string(uri, None).unwrap().public())
+            });
+            let inner: RuntimeCall = pallet_utility::Call::batch_all {
+                calls: recipients
+                    .iter()
+                    .map(|recipient| {
+                        BalancesCall::transfer_allow_death {
+                            dest: Address::Id(recipient.clone()),
+                            value: 2 * UNIT,
+                        }
+                        .into()
+                    })
+                    .collect(),
+            }
+            .into();
+            let call_hash = sp_io::hashing::blake2_256(&inner.encode());
+
+            let alice_account = account_id_from_public(&alice.public());
+            let mut alice_others = signatories
+                .iter()
+                .filter(|account| **account != alice_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            alice_others.sort();
+            let approval: RuntimeCall = pallet_multisig::Call::approve_as_multi {
+                threshold: 2,
+                other_signatories: alice_others,
+                maybe_timepoint: None,
+                call_hash,
+                max_weight: Weight::zero(),
+            }
+            .into();
+            let approval_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account), approval, 0);
+            assert!(Executive::apply_extrinsic(approval_xt).unwrap().is_ok());
+
+            let timepoint = pallet_multisig::Multisigs::<Runtime>::get(&multisig, call_hash)
+                .expect("first approval creates multisig state")
+                .when;
+            let bob_account = account_id_from_public(&bob.public());
+            let mut bob_others = signatories
+                .iter()
+                .filter(|account| **account != bob_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            bob_others.sort();
+            let execution: RuntimeCall = pallet_multisig::Call::as_multi {
+                threshold: 2,
+                other_signatories: bob_others,
+                maybe_timepoint: Some(timepoint),
+                max_weight: inner.get_dispatch_info().call_weight,
+                call: alloc::boxed::Box::new(inner),
+            }
+            .into();
+            let execution_xt = signed_test_extrinsic(&bob, Address::Id(bob_account), execution, 0);
+            assert!(Executive::apply_extrinsic(execution_xt).unwrap().is_ok());
+
+            assert_eq!(Balances::free_balance(&recipients[0]), 2 * UNIT);
+            assert_eq!(Balances::free_balance(&recipients[1]), 2 * UNIT);
+        });
+    }
+
+    #[test]
+    fn h4_proxy_filters_calls_rejects_announcements_and_creates_pure_accounts() {
+        use frame_support::traits::Currency;
+        use sp_runtime::traits::{BlakeTwo256, Hash as _};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let alice = HybridPair::from_string("//Alice", None).unwrap();
+            let bob = HybridPair::from_string("//Bob", None).unwrap();
+            let charlie = HybridPair::from_string("//Charlie", None).unwrap();
+            let alice_account = account_id_from_public(&alice.public());
+            let bob_account = account_id_from_public(&bob.public());
+            let charlie_account = account_id_from_public(&charlie.public());
+            for account in [&alice_account, &bob_account, &charlie_account] {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, 100 * UNIT);
+            }
+
+            let add_immediate: RuntimeCall = pallet_proxy::Call::add_proxy {
+                delegate: Address::Id(bob_account.clone()),
+                proxy_type: configs::ProxyType::TransferOnly,
+                delay: 0,
+            }
+            .into();
+            let add_immediate_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account.clone()), add_immediate, 0);
+            assert!(Executive::apply_extrinsic(add_immediate_xt)
+                .unwrap()
+                .is_ok());
+
+            let recipient =
+                account_id_from_public(&HybridPair::from_string("//Dave", None).unwrap().public());
+            let transfer: RuntimeCall = BalancesCall::transfer_allow_death {
+                dest: Address::Id(recipient.clone()),
+                value: 4 * UNIT,
+            }
+            .into();
+            let proxied_transfer: RuntimeCall = pallet_proxy::Call::proxy {
+                real: Address::Id(alice_account.clone()),
+                force_proxy_type: Some(configs::ProxyType::TransferOnly),
+                call: alloc::boxed::Box::new(transfer),
+            }
+            .into();
+            let transfer_xt =
+                signed_test_extrinsic(&bob, Address::Id(bob_account.clone()), proxied_transfer, 0);
+            assert!(Executive::apply_extrinsic(transfer_xt).unwrap().is_ok());
+            assert_eq!(Balances::free_balance(&recipient), 4 * UNIT);
+
+            let rejected: RuntimeCall = pallet_proxy::Call::proxy {
+                real: Address::Id(alice_account.clone()),
+                force_proxy_type: Some(configs::ProxyType::TransferOnly),
+                call: alloc::boxed::Box::new(SystemCall::remark { remark: vec![1] }.into()),
+            }
+            .into();
+            let rejected_xt =
+                signed_test_extrinsic(&bob, Address::Id(bob_account.clone()), rejected, 1);
+            assert!(Executive::apply_extrinsic(rejected_xt).unwrap().is_ok());
+            assert!(System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::Proxy(pallet_proxy::Event::ProxyExecuted { result: Err(_) })
+            )));
+
+            let add_delayed: RuntimeCall = pallet_proxy::Call::add_proxy {
+                delegate: Address::Id(charlie_account.clone()),
+                proxy_type: configs::ProxyType::TransferOnly,
+                delay: 3,
+            }
+            .into();
+            let add_delayed_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account.clone()), add_delayed, 1);
+            assert!(Executive::apply_extrinsic(add_delayed_xt).unwrap().is_ok());
+
+            let delayed_call: RuntimeCall = BalancesCall::transfer_keep_alive {
+                dest: Address::Id(recipient),
+                value: UNIT,
+            }
+            .into();
+            let delayed_hash = BlakeTwo256::hash_of(&alloc::boxed::Box::new(delayed_call.clone()));
+            let announce: RuntimeCall = pallet_proxy::Call::announce {
+                real: Address::Id(alice_account.clone()),
+                call_hash: delayed_hash,
+            }
+            .into();
+            let announce_xt =
+                signed_test_extrinsic(&charlie, Address::Id(charlie_account.clone()), announce, 0);
+            assert!(Executive::apply_extrinsic(announce_xt).unwrap().is_ok());
+            assert_eq!(
+                pallet_proxy::Announcements::<Runtime>::get(&charlie_account)
+                    .0
+                    .len(),
+                1
+            );
+
+            // The real account can reject the announced call immediately,
+            // before the three-block execution delay has elapsed.
+            let reject: RuntimeCall = pallet_proxy::Call::reject_announcement {
+                delegate: Address::Id(charlie_account.clone()),
+                call_hash: delayed_hash,
+            }
+            .into();
+            let reject_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account.clone()), reject, 2);
+            assert!(Executive::apply_extrinsic(reject_xt).unwrap().is_ok());
+            assert!(
+                pallet_proxy::Announcements::<Runtime>::get(&charlie_account)
+                    .0
+                    .is_empty()
+            );
+
+            let create_pure: RuntimeCall = pallet_proxy::Call::create_pure {
+                proxy_type: configs::ProxyType::TransferOnly,
+                delay: 0,
+                index: 9,
+            }
+            .into();
+            let create_pure_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account.clone()), create_pure, 3);
+            assert!(Executive::apply_extrinsic(create_pure_xt).unwrap().is_ok());
+            let pure = System::events()
+                .iter()
+                .find_map(|record| match &record.event {
+                    RuntimeEvent::Proxy(pallet_proxy::Event::PureCreated { pure, .. }) => {
+                        Some(pure.clone())
+                    }
+                    _ => None,
+                })
+                .expect("create_pure emits the custody account");
+            assert!(pallet_proxy::Proxies::<Runtime>::contains_key(pure));
+        });
+    }
+
+    #[test]
+    fn h4_multisig_account_can_delegate_to_transfer_proxy() {
+        use frame_support::{dispatch::GetDispatchInfo, traits::Currency, weights::Weight};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let alice = HybridPair::from_string("//Alice", None).unwrap();
+            let bob = HybridPair::from_string("//Bob", None).unwrap();
+            let charlie = HybridPair::from_string("//Charlie", None).unwrap();
+            let delegate = HybridPair::from_string("//Dave", None).unwrap();
+            let mut signatories = vec![
+                account_id_from_public(&alice.public()),
+                account_id_from_public(&bob.public()),
+                account_id_from_public(&charlie.public()),
+            ];
+            signatories.sort();
+            for account in &signatories {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, 100 * UNIT);
+            }
+            let delegate_account = account_id_from_public(&delegate.public());
+            <Balances as Currency<AccountId>>::make_free_balance_be(&delegate_account, 100 * UNIT);
+            let multisig = Multisig::multi_account_id(&signatories, 2);
+            <Balances as Currency<AccountId>>::make_free_balance_be(&multisig, 20 * UNIT);
+
+            let add_proxy: RuntimeCall = pallet_proxy::Call::add_proxy {
+                delegate: Address::Id(delegate_account.clone()),
+                proxy_type: configs::ProxyType::TransferOnly,
+                delay: 0,
+            }
+            .into();
+            let call_hash = sp_io::hashing::blake2_256(&add_proxy.encode());
+            let alice_account = account_id_from_public(&alice.public());
+            let mut alice_others = signatories
+                .iter()
+                .filter(|account| **account != alice_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            alice_others.sort();
+            let approval: RuntimeCall = pallet_multisig::Call::approve_as_multi {
+                threshold: 2,
+                other_signatories: alice_others,
+                maybe_timepoint: None,
+                call_hash,
+                max_weight: Weight::zero(),
+            }
+            .into();
+            let approval_xt =
+                signed_test_extrinsic(&alice, Address::Id(alice_account), approval, 0);
+            assert!(Executive::apply_extrinsic(approval_xt).unwrap().is_ok());
+
+            let timepoint = pallet_multisig::Multisigs::<Runtime>::get(&multisig, call_hash)
+                .expect("first approval creates multisig state")
+                .when;
+            let bob_account = account_id_from_public(&bob.public());
+            let mut bob_others = signatories
+                .iter()
+                .filter(|account| **account != bob_account)
+                .cloned()
+                .collect::<Vec<_>>();
+            bob_others.sort();
+            let execute_add: RuntimeCall = pallet_multisig::Call::as_multi {
+                threshold: 2,
+                other_signatories: bob_others,
+                maybe_timepoint: Some(timepoint),
+                max_weight: add_proxy.get_dispatch_info().call_weight,
+                call: alloc::boxed::Box::new(add_proxy),
+            }
+            .into();
+            let execute_add_xt =
+                signed_test_extrinsic(&bob, Address::Id(bob_account), execute_add, 0);
+            assert!(Executive::apply_extrinsic(execute_add_xt).unwrap().is_ok());
+            assert_eq!(pallet_proxy::Proxies::<Runtime>::get(&multisig).0.len(), 1);
+
+            let recipient =
+                account_id_from_public(&HybridPair::from_string("//Eve", None).unwrap().public());
+            let proxy_transfer: RuntimeCall = pallet_proxy::Call::proxy {
+                real: Address::Id(multisig.clone()),
+                force_proxy_type: Some(configs::ProxyType::TransferOnly),
+                call: alloc::boxed::Box::new(
+                    BalancesCall::transfer_allow_death {
+                        dest: Address::Id(recipient.clone()),
+                        value: 3 * UNIT,
+                    }
+                    .into(),
+                ),
+            }
+            .into();
+            let proxy_transfer_xt =
+                signed_test_extrinsic(&delegate, Address::Id(delegate_account), proxy_transfer, 0);
+            assert!(Executive::apply_extrinsic(proxy_transfer_xt)
+                .unwrap()
+                .is_ok());
+            assert_eq!(Balances::free_balance(recipient), 3 * UNIT);
+        });
+    }
+
+    #[test]
     fn revive_configuration_matches_network_build() {
         assert_eq!(
             <Revive as frame_support::traits::PalletInfoAccess>::index(),
@@ -590,4 +1163,13 @@ mod runtime {
 
     #[runtime::pallet_index(15)]
     pub type EvmChainId = pallet_evm_chain_id;
+
+    #[runtime::pallet_index(16)]
+    pub type Multisig = pallet_multisig;
+
+    #[runtime::pallet_index(17)]
+    pub type Utility = pallet_utility;
+
+    #[runtime::pallet_index(18)]
+    pub type Proxy = pallet_proxy;
 }

@@ -31,6 +31,8 @@ pallet-evm-chain-id.workspace = true
 pallet-faucet-ops.workspace = true
 pallet-grandpa.workspace = true
 pallet-miner-registry.workspace = true
+pallet-multisig.workspace = true
+pallet-proxy.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
 pallet-revive.workspace = true
@@ -42,9 +44,11 @@ pallet-xqvm.workspace = true
 pallet-timestamp.workspace = true
 pallet-transaction-payment.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
+pallet-utility.workspace = true
 quip-crypto-primitives = { workspace = true, default-features = false }
 quip-transaction-crypto = { workspace = true, default-features = false }
 scale-info = { features = ["derive", "serde"], workspace = true }
+serde.workspace = true
 serde_json = { workspace = true, default-features = false, features = [
   "alloc",
 ] }
@@ -94,6 +98,8 @@ std = [
   "pallet-faucet-ops/std",
   "pallet-grandpa/std",
   "pallet-miner-registry/std",
+  "pallet-multisig/std",
+  "pallet-proxy/std",
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
   "pallet-revive/std",
@@ -104,10 +110,12 @@ std = [
   "pallet-timestamp/std",
   "pallet-transaction-payment-rpc-runtime-api/std",
   "pallet-transaction-payment/std",
+  "pallet-utility/std",
   "pallet-xqvm/std",
   "quip-crypto-primitives/std",
   "quip-transaction-crypto/std",
   "scale-info/std",
+  "serde/std",
   "serde_json/std",
   "sp-api/std",
   "sp-block-builder/std",
@@ -135,6 +143,8 @@ runtime-benchmarks = [
   "pallet-balances/runtime-benchmarks",
   "pallet-grandpa/runtime-benchmarks",
   "pallet-miner-registry/runtime-benchmarks",
+  "pallet-multisig/runtime-benchmarks",
+  "pallet-proxy/runtime-benchmarks",
   "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-quantum-pow/runtime-benchmarks",
   "pallet-revive/runtime-benchmarks",
@@ -142,6 +152,7 @@ runtime-benchmarks = [
   "pallet-template/runtime-benchmarks",
   "pallet-timestamp/runtime-benchmarks",
   "pallet-transaction-payment/runtime-benchmarks",
+  "pallet-utility/runtime-benchmarks",
   "pallet-xqvm/runtime-benchmarks",
   "sp-runtime/runtime-benchmarks",
 ]
@@ -156,6 +167,8 @@ try-runtime = [
   "pallet-faucet-ops/try-runtime",
   "pallet-grandpa/try-runtime",
   "pallet-miner-registry/try-runtime",
+  "pallet-multisig/try-runtime",
+  "pallet-proxy/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",
   "pallet-revive/try-runtime",
@@ -164,6 +177,7 @@ try-runtime = [
   "pallet-template/try-runtime",
   "pallet-timestamp/try-runtime",
   "pallet-transaction-payment/try-runtime",
+  "pallet-utility/try-runtime",
   "pallet-xqvm/try-runtime",
   "sp-runtime/try-runtime",
 ]

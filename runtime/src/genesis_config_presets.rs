@@ -152,7 +152,8 @@ fn testnet_genesis(
                         SessionKeys {
                             babe: babe.clone(),
                             grandpa: grandpa.clone(),
-                        },
+                        }
+                        .into(),
                     )
                 })
                 .collect::<Vec<_>>(),
