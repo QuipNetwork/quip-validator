@@ -1,4 +1,4 @@
-"""Quip hybrid (sr25519 + ML-DSA-44) transaction signer.
+"""Quip hybrid (sr25519 + FN-DSA-512) transaction signer.
 
 Thin Python surface over the Rust `_quip_signer` extension, which wraps the
 same `sp`-free core the browser WASM signer is built from. All bytes in / bytes

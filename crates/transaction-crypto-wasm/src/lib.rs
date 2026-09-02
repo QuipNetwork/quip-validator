@@ -83,19 +83,19 @@ fn verify_envelope_impl(
     )
 }
 
-/// Derive serialized H3 public key bytes from a 32-byte H3 seed.
+/// Derive serialized H4 public key bytes from a 32-byte H4 seed.
 #[wasm_bindgen(js_name = publicFromSeed)]
 pub fn public_from_seed(seed_hex: &str) -> Result<String, JsValue> {
     public_from_seed_impl(seed_hex).map_err(|error| JsValue::from_str(&error))
 }
 
-/// Derive the compact 32-byte Quip account id from serialized H3 public bytes.
+/// Derive the compact 32-byte Quip account id from serialized H4 public bytes.
 #[wasm_bindgen(js_name = accountIdFromPublic)]
 pub fn account_id_from_public(public_hex: &str) -> Result<String, JsValue> {
     account_id_from_public_impl(public_hex).map_err(|error| JsValue::from_str(&error))
 }
 
-/// Derive the 32-byte H3 master seed from a limited secret URI.
+/// Derive the 32-byte H4 master seed from a limited secret URI.
 ///
 /// Accepts a `0x`-prefixed 64-digit hex seed, or an English BIP39 phrase
 /// optionally followed by `///<password>`. Derivation junctions (`//`, `/`) are
@@ -110,7 +110,7 @@ pub fn seed_from_mnemonic(secret_uri: &str) -> Result<String, JsValue> {
 /// `HybridTxSignature` envelope.
 ///
 /// The payload hex is signed **exactly as given**: no hashing, no length check.
-/// The H3 domain prefix (`0x01 || "hybrid-sr25519-mldsa44-v1\0" || ...`) is
+/// The H4 domain prefix (`0x01 || "hybrid-sr25519-falcon512-v1\0" || ...`) is
 /// applied intrinsically by the scheme, so callers must not pre-apply it.
 /// Substrate's `SignedPayload` rule — `blake2_256(payload)` when the encoded
 /// payload exceeds 256 bytes — is an extrinsic convention and the caller's

@@ -1,5 +1,18 @@
 # Hybrid Crypto Deduplication Plan (Option A)
 
+> **Current state (H2/H4 chain-wipe relaunch):** Transaction signing and
+> consensus now use `pqhybridsign` H4 (`sr25519 + FN-DSA-512`) and H2
+> (`ed25519 + FN-DSA-512`). `quip-transaction-crypto-core` calls the library's
+> `composite_delta` implementation directly, while the SDK supplies the
+> Substrate wrappers. The H3-focused material below records the earlier
+> deduplication design and remains relevant only to the legacy H1/H3 follow-up.
+>
+> `pqhybridsign` is AGPL-3.0-or-later. Its pinned FN-DSA-512 implementation is
+> pre-final-FIPS-206; a dependency or wire-format change is consensus-breaking.
+> For the H2/H4 launch this means a fresh genesis after a chain wipe, runtime
+> and transaction version changes, and regenerated vectors—not an in-place
+> migration of existing chain state.
+
 ## Goal
 
 Eliminate the duplicated constants and signing/verification logic between:

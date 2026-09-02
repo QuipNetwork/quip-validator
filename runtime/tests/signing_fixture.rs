@@ -62,12 +62,12 @@ fn fixture_signed_extrinsic_decodes_and_validates() {
 #[test]
 fn fixture_rejects_tampered_envelope_as_bad_proof() {
     let mut bytes = fixture_extrinsic_bytes();
-    // Envelope layout is `{ public: [u8; 1344], signature: [u8; 2484] }`.
+    // Envelope layout is `{ public: [u8; 929], signature: [u8; 731] }`.
     // Corrupt the *signature* half so the derived account still matches and
     // the failure must come from cryptographic verification, not the
     // account-mismatch guard covered by the test below.
     let envelope_offset = compact_prefix_len(&bytes) + 1 + 1 + 32;
-    bytes[envelope_offset + 1344 + 100] ^= 0xff;
+    bytes[envelope_offset + 929 + 100] ^= 0xff;
 
     let mut ext =
         sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());

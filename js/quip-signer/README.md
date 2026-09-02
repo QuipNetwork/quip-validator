@@ -58,7 +58,7 @@ hex, which can also be passed to `publicFromSeed` / `signPayloadFromSeed`.
 `signRaw` the fully SCALE-encoded `ExtrinsicPayload` bytes via `toRaw()`, so the
 signer needs no metadata-aware registry. The signer reproduces substrate's
 `SignedPayload::using_encoded` rule (blake2-256 the payload when it exceeds 256
-bytes, otherwise sign verbatim), signs with H3, and returns:
+bytes, otherwise sign verbatim), signs with H4, and returns:
 
 ```ts
 {
