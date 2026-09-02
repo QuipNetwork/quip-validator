@@ -8,7 +8,7 @@ repository.workspace = true
 edition.workspace = true
 
 [dependencies]
-quip-crypto-primitives-core = { workspace = true, default-features = false }
+pqhybridsign.workspace = true
 bip39 = { workspace = true }
 blake2.workspace = true
 codec = { features = ["derive"], workspace = true }
@@ -18,7 +18,7 @@ zeroize.workspace = true
 [features]
 default = ["std"]
 std = [
-    "quip-crypto-primitives-core/std",
+    "pqhybridsign/std",
     "blake2/std",
     "codec/std",
     "substrate-bip39/std",

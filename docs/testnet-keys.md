@@ -56,8 +56,8 @@ operator: <N>
 hostname: <dns>
 multiaddr: /dns4/<dns>/tcp/30333/p2p/<peer-id>
 peer_id: 12D3KooW…
-babe_pub: 0x…             # 1344 bytes hex (sr25519 + ML-DSA-44)
-grandpa_pub: 0x…          # 1344 bytes hex (ed25519 + ML-DSA-44)
+babe_pub: 0x…             # 929 bytes hex (sr25519 + FN-DSA-512, H4)
+grandpa_pub: 0x…          # 929 bytes hex (ed25519 + FN-DSA-512, H2)
 tx_account_ss58: 5…
 tx_account_hex: 0x…       # 32 bytes
 ```
@@ -65,7 +65,30 @@ tx_account_hex: 0x…       # 32 bytes
 The coordinator commits the public bytes into
 `runtime/src/genesis_quip_testnet/` (BABE/GRANDPA, one hex file per pubkey)
 and into the inline `tx_account_from_hex(...)` calls in
-`runtime/src/genesis_config_presets.rs::quip_testnet_config_genesis`.
+the regenerated `quip_testnet` preset in
+`runtime/src/genesis_config_presets.rs`.
+
+## Runtime 117 H2/H4 chain-wipe relaunch
+
+Runtime 117 launches from fresh genesis after wiping the previous chain state;
+it is not an in-place runtime upgrade. The three original operators retained
+their mnemonics for the relaunch, so no new mnemonic or libp2p node key is
+required. Before starting a validator against the new genesis, each operator
+must re-insert both consensus keys from the existing mnemonic into a fresh
+validator keystore:
+
+```bash
+./target/release/quip-network-node insert-hybrid-key \
+    --chain quip-testnet --base-path <validator-base-path> \
+    --scheme hybrid-babe-h444 --suri <mnemonic-file>
+./target/release/quip-network-node insert-hybrid-key \
+    --chain quip-testnet --base-path <validator-base-path> \
+    --scheme hybrid-grandpa-h244 --suri <mnemonic-file>
+```
+
+These commands derive the replacement H4 BABE and H2 GRANDPA keys from the
+same secret phrase. The bootnode peer ID and multiaddr remain unchanged because
+the libp2p node key is independent of the consensus-key rotation.
 
 ## Manual derivation
 

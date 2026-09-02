@@ -24,8 +24,8 @@ interface SignFakeProto {
 }
 
 export const QUIP_ACCOUNT_ID_LEN = 32;
-export const QUIP_PUBLIC_KEY_LEN = 1344;
-export const QUIP_SIGNATURE_LEN = 2484;
+export const QUIP_PUBLIC_KEY_LEN = 929;
+export const QUIP_SIGNATURE_LEN = 731;
 export const QUIP_ENVELOPE_LEN = QUIP_PUBLIC_KEY_LEN + QUIP_SIGNATURE_LEN;
 
 function nextResultId (): number {
@@ -78,11 +78,11 @@ function accountIdFromAddress (address: string): string {
  * `tx.paymentInfo(address)` builds a dummy-signed extrinsic via
  * `GenericExtrinsicSignatureV4.signFake`, which upstream fills from a hardcoded
  * 256-byte `FAKE_SIGNATURE`. Quip's runtime signature is
- * `HybridTxSignature { public: [u8;1344], signature: [u8;2484] }` (3828 bytes),
+ * `HybridTxSignature { public: [u8;929], signature: [u8;731] }` (1660 bytes),
  * so SCALE-decoding the 256-byte fake into that struct throws:
  *
- *   decodeU8aStruct: failed ... on public (index 1/2): [u8;1344]::
- *   Expected input with 1344 bytes, found 256 bytes
+ *   decodeU8aStruct: failed ... on public (index 1/2): [u8;929]::
+ *   Expected input with 929 bytes, found 256 bytes
  *
  * This overrides `signFake` to size the fake signature from the registry's real
  * `ExtrinsicSignature` type, so fee estimation produces a correctly sized
@@ -204,7 +204,7 @@ interface InjectedWeb3Global {
 // Substrate signs `SignedPayload::using_encoded`, which blake2-256-hashes the
 // SCALE-encoded payload when it is longer than 256 bytes and otherwise signs it
 // verbatim (see substrate `generic::SignedPayload`). The signer must reproduce
-// this rule so the H3 signature is computed over the exact bytes the runtime
+// this rule so the H4 signature is computed over the exact bytes the runtime
 // verifies.
 const MAX_UNHASHED_PAYLOAD_LEN = 256;
 
@@ -307,7 +307,7 @@ export class DevSeedProvider implements QuipSecretProvider {
     decodeHex('seed', seedHex, 32);
 
     const publicHex = await this.#wasm.publicFromSeed(seedHex);
-    decodeHex('H3 public key', publicHex, QUIP_PUBLIC_KEY_LEN);
+    decodeHex('H4 public key', publicHex, QUIP_PUBLIC_KEY_LEN);
 
     const accountIdHex = await this.#wasm.accountIdFromPublic(publicHex);
     const accountId = decodeHex('Quip account id', accountIdHex, QUIP_ACCOUNT_ID_LEN);

@@ -149,16 +149,21 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // tags (113 was only an intermediate branch value and never released).
     // Bumped to 115 for the post-tag main build after the benchmark weight
     // regeneration. No call encodings changed, so `transaction_version` stays
-    // at 6.
-    // Bumped to 116 to publish Metadata V16 from the legacy metadata runtime
-    // API (`state_getMetadata`); previously it returned the V14 inherent
-    // default. The versioned metadata API keeps serving 14/15/16, and
-    // consensus and the extrinsic wire format are unchanged, so
-    // `transaction_version` stays at 6.
-    spec_version: 116,
+    // at 6. 115 has not shipped. Later storage-only changes (pallet-evm-chain-id)
+    // stay on 115 until a 115 runtime is live.
+    // Bumped to 116 for the H2/H4 chain-wipe relaunch and to publish Metadata
+    // V16 from the legacy metadata runtime API (`state_getMetadata`), which
+    // previously returned the V14 inherent default. The versioned metadata API
+    // keeps serving 14/15/16. The H1/H3 (ML-DSA-44) to H2/H4 (FN-DSA-512)
+    // scheme change uses new public-key and signature encodings, so old signed
+    // extrinsics are incompatible and `transaction_version` moves to 7.
+    // Bumped to 117 to hard-invalidate 116 nodes: the crates.io pqhybridsign
+    // rc5 switch and repins carry no interface change, but a spec bump makes
+    // any node still on 116 refuse the new runtime outright.
+    spec_version: 117,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 6,
+    transaction_version: 7,
     system_version: 1,
 };
 

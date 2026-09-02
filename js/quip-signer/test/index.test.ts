@@ -11,7 +11,8 @@ import {
   messageToSign,
   patchExtrinsicSignFake,
   QuipSigner,
-  QUIP_ENVELOPE_LEN
+  QUIP_ENVELOPE_LEN,
+  QUIP_PUBLIC_KEY_LEN
 } from '../src/index.js';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -104,7 +105,7 @@ assert(
   'signed extrinsic does not contain the raw hybrid envelope'
 );
 assert(
-  u8aToHex(fixtureEnvelope.subarray(0, 1344)) === fixture.publicKeyHex,
+  u8aToHex(fixtureEnvelope.subarray(0, QUIP_PUBLIC_KEY_LEN)) === fixture.publicKeyHex,
   'envelope public key differs from the fixture identity'
 );
 
@@ -143,7 +144,7 @@ assert(messages[1] === secondPayload, 'short payload was not signed verbatim');
 assert(hexToU8a(firstResult.signature).length === QUIP_ENVELOPE_LEN, 'envelope length drifted');
 assert(firstResult.signature === envelope, 'signer must return the raw envelope without a variant byte');
 
-const publicHex = bytesHex(1344, 0x11);
+const publicHex = bytesHex(QUIP_PUBLIC_KEY_LEN, 0x11);
 const accountIdHex = u8aToHex(accountId);
 const seedHex = bytesHex(32, 0x07);
 let verifyResult = true;

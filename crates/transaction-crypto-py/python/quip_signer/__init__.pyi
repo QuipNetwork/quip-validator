@@ -2,10 +2,10 @@ class QuipSignerError(Exception):
     """Raised when the Quip hybrid signer rejects its input."""
 
 def public_from_seed(seed: bytes) -> bytes:
-    """Derive serialized H3 public bytes (1344B) from a 32-byte master seed."""
+    """Derive serialized H4 public bytes (929B) from a 32-byte master seed."""
 
 def account_id_from_public(public: bytes) -> bytes:
-    """Derive the compact 32-byte Quip account id from H3 public bytes."""
+    """Derive the compact 32-byte Quip account id from H4 public bytes."""
 
 def seed_from_mnemonic(secret_uri: str) -> bytes:
     """Derive the 32-byte master seed from a BIP39 phrase or `0x`-hex seed URI."""

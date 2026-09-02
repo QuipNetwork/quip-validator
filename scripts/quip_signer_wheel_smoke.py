@@ -29,7 +29,7 @@ payload = b"quip-signer wheel smoke test"
 signer = HybridSigner.from_mnemonic(
     "bottom drive obey lake curtain smoke basket hold race lonely fit walk"
 )
-assert len(signer.public_key) == 1344, "unexpected public key length"
+assert len(signer.public_key) == 929, "unexpected public key length"
 assert len(signer.account_id) == 32, "unexpected account id length"
 assert verify_envelope(payload, signer.sign(payload), signer.account_id), \
     "object-path sign/verify failed"

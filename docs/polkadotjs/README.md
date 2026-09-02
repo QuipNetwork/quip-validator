@@ -2,13 +2,18 @@
 
 Quip uses hybrid consensus keys:
 
-- BABE authority key: `sr25519 + ML-DSA-44` (`H3`)
-- GRANDPA authority key: `ed25519 + ML-DSA-44` (`H1`)
+- BABE authority key: `sr25519 + FN-DSA-512` (`H4`)
+- GRANDPA authority key: `ed25519 + FN-DSA-512` (`H2`)
 
 These consensus keys are not browser-managed account keys. Polkadot.js Apps can
 connect to Quip without custom type overrides, but validator/session key
 management still goes through the node keystore rather than browser-generated
 consensus keys.
+
+The H2/H4 implementation comes from the pinned `pqhybridsign` library
+(AGPL-3.0-or-later). Its current FN-DSA-512 implementation predates the final
+FIPS 206 standard; changing the pinned revision or its wire format is therefore
+consensus-sensitive and requires runtime and transaction-version review.
 
 ## Current Support Model
 

@@ -14,6 +14,7 @@ def test_sign_verify_roundtrip() -> None:
     account = quip_signer.account_id_from_public(public)
     envelope = quip_signer.sign_payload_from_seed(seed, b"quip-message")
 
+    assert len(envelope) == 1660
     assert quip_signer.verify_envelope(b"quip-message", envelope, account)
     assert not quip_signer.verify_envelope(b"wrong-message", envelope, account)
 
@@ -28,7 +29,7 @@ def test_account_id_is_32_bytes() -> None:
 def test_hybrid_signer_class() -> None:
     signer = quip_signer.HybridSigner.from_mnemonic(TEST_PHRASE)
 
-    assert len(signer.public_key) == 1344
+    assert len(signer.public_key) == 929
     assert len(signer.account_id) == 32
 
     envelope = signer.sign(b"quip-message")
