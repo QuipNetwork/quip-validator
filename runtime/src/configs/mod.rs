@@ -24,11 +24,14 @@
 // For more information, please refer to <http://unlicense.org>
 
 // Substrate and Polkadot dependencies
+use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::{
     derive_impl,
     dispatch::DispatchClass,
     parameter_types,
-    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Get, VariantCountOf},
+    traits::{
+        ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Get, InstanceFilter, VariantCountOf,
+    },
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -38,7 +41,7 @@ use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{
-    traits::{ConvertInto, One, OpaqueKeys},
+    traits::{BlakeTwo256, ConvertInto, One, OpaqueKeys},
     FixedU128, Perbill,
 };
 use sp_version::RuntimeVersion;
@@ -47,10 +50,10 @@ use pallet_xqvm::WeightInfo as _;
 
 // Local module imports
 use super::{
-    AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, EthExtraImpl, Hash, Nonce,
-    PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-    RuntimeOrigin, RuntimeTask, SessionKeys, Signature, System, Timestamp, EXISTENTIAL_DEPOSIT,
-    MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
+    AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, BoxedSessionKeys,
+    EthExtraImpl, Hash, Nonce, OriginCaller, PalletInfo, Runtime, RuntimeCall, RuntimeEvent,
+    RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys, Signature,
+    System, Timestamp, EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
 use crate::weights::{BlockExecutionWeight, ExtrinsicBaseWeight};
 
@@ -174,7 +177,7 @@ impl pallet_session::Config for Runtime {
     type NextSessionRotation = Babe;
     type SessionManager = ();
     type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
-    type Keys = SessionKeys;
+    type Keys = BoxedSessionKeys;
     type DisablingStrategy = ();
     type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
     type Currency = Balances;
@@ -191,7 +194,10 @@ impl pallet_timestamp::Config for Runtime {
 
 impl pallet_balances::Config for Runtime {
     type MaxLocks = ConstU32<50>;
-    type MaxReserves = ();
+    // This limits only legacy named-reserve entries. Multisig and proxy use
+    // the aggregate plain reserve and do not consult this bound; 64 is a
+    // forward-looking cap for any future named-reserve users.
+    type MaxReserves = ConstU32<64>;
     type ReserveIdentifier = [u8; 8];
     /// The type for recording an account's balance.
     type Balance = Balance;
@@ -209,6 +215,131 @@ impl pallet_balances::Config for Runtime {
 }
 
 parameter_types! {
+    /// Chain-wide price for one storage item.
+    pub const StorageDepositPerItem: Balance = 200 * MILLI_UNIT;
+    /// Chain-wide price for one byte of storage.
+    pub const StorageDepositPerByte: Balance = 10 * MICRO_UNIT;
+}
+
+// Keep the former Revive names as compatibility aliases for downstream runtime
+// assertions. Revive consumes the shared chain storage price directly below.
+pub type ReviveDepositPerItem = StorageDepositPerItem;
+pub type ReviveDepositPerByte = StorageDepositPerByte;
+
+parameter_types! {
+    // One minimum multisig state uses a 32-byte call-hash key plus 57 value
+    // bytes: Timepoint (8), Balance (16), depositor AccountId (32), and the
+    // approvals Vec compact-length prefix (1). At the chain storage price,
+    // this is 1 item + 89 bytes.
+    pub const MultisigDepositBase: Balance =
+        StorageDepositPerItem::get() + 89 * StorageDepositPerByte::get();
+    // Each threshold approval adds one encoded 32-byte AccountId.
+    pub const MultisigDepositFactor: Balance = 32 * StorageDepositPerByte::get();
+    /// Weight grows with the sorted signatory set. One hundred supports
+    /// institutional custody while remaining bounded; benchmark results may
+    /// justify tightening this before mainnet.
+    pub const MaxSignatories: u32 = 100;
+}
+
+impl pallet_multisig::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type Currency = Balances;
+    type DepositBase = MultisigDepositBase;
+    type DepositFactor = MultisigDepositFactor;
+    type MaxSignatories = MaxSignatories;
+    type WeightInfo = pallet_multisig::weights::SubstrateWeight<Runtime>;
+    type BlockNumberProvider = System;
+}
+
+impl pallet_utility::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type PalletsOrigin = OriginCaller;
+    type WeightInfo = pallet_utility::weights::SubstrateWeight<Runtime>;
+}
+
+/// Custody proxy permissions deliberately have only a full-access option and
+/// an asset-movement option. The latter admits the three signed balance
+/// transfer calls and rejects every administrative, contract, and nested call.
+#[derive(
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    Debug,
+    MaxEncodedLen,
+    scale_info::TypeInfo,
+)]
+pub enum ProxyType {
+    Any,
+    TransferOnly,
+}
+
+impl Default for ProxyType {
+    fn default() -> Self {
+        Self::Any
+    }
+}
+
+impl InstanceFilter<RuntimeCall> for ProxyType {
+    fn filter(&self, call: &RuntimeCall) -> bool {
+        match self {
+            Self::Any => true,
+            Self::TransferOnly => matches!(
+                call,
+                RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death { .. })
+                    | RuntimeCall::Balances(pallet_balances::Call::transfer_keep_alive { .. })
+                    | RuntimeCall::Balances(pallet_balances::Call::transfer_all { .. })
+            ),
+        }
+    }
+
+    fn is_superset(&self, other: &Self) -> bool {
+        self == &Self::Any || self == other
+    }
+}
+
+parameter_types! {
+    // Proxies is keyed by AccountId (32 bytes) and stores a Balance (16 bytes)
+    // before its vector entries: 1 item + 48 bytes at the chain storage price.
+    pub const ProxyDepositBase: Balance =
+        StorageDepositPerItem::get() + 48 * StorageDepositPerByte::get();
+    // Each ProxyDefinition encodes AccountId (32), ProxyType (1), and delay (4).
+    pub const ProxyDepositFactor: Balance = 37 * StorageDepositPerByte::get();
+    // Announcements has the same AccountId key and Balance base footprint.
+    pub const AnnouncementDepositBase: Balance =
+        StorageDepositPerItem::get() + 48 * StorageDepositPerByte::get();
+    // Each announcement encodes real AccountId (32), call hash (32), and block (4).
+    pub const AnnouncementDepositFactor: Balance = 68 * StorageDepositPerByte::get();
+}
+
+impl pallet_proxy::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type Currency = Balances;
+    type ProxyType = ProxyType;
+    type ProxyDepositBase = ProxyDepositBase;
+    type ProxyDepositFactor = ProxyDepositFactor;
+    type MaxProxies = ConstU32<32>;
+    type WeightInfo = pallet_proxy::weights::SubstrateWeight<Runtime>;
+    type MaxPending = ConstU32<32>;
+    type CallHasher = BlakeTwo256;
+    type AnnouncementDepositBase = AnnouncementDepositBase;
+    type AnnouncementDepositFactor = AnnouncementDepositFactor;
+    type BlockNumberProvider = System;
+}
+
+// `create_pure` intentionally stays available: a key-holding custodian can
+// spawn an otherwise inaccessible vault account controlled only through the
+// recorded proxy relationship, which is the standard pure-proxy custody flow.
+
+parameter_types! {
     pub FeeMultiplier: Multiplier = Multiplier::one();
 }
 
@@ -223,8 +354,6 @@ impl pallet_transaction_payment::Config for Runtime {
 }
 
 parameter_types! {
-    pub const ReviveDepositPerByte: Balance = 10 * MICRO_UNIT;
-    pub const ReviveDepositPerItem: Balance = 200 * MILLI_UNIT;
     pub const ReviveDepositPerChildTrieItem: Balance = 2 * MILLI_UNIT;
     pub ReviveCodeHashLockupDepositPercent: Perbill = Perbill::from_percent(30);
     pub const ReviveMaxEthExtrinsicWeight: FixedU128 = FixedU128::from_rational(9, 10);
@@ -246,8 +375,8 @@ impl pallet_revive::Config for Runtime {
     type WeightInfo = pallet_revive::weights::SubstrateWeight<Runtime>;
     type Precompiles = ();
     type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Runtime, Babe>;
-    type DepositPerByte = ReviveDepositPerByte;
-    type DepositPerItem = ReviveDepositPerItem;
+    type DepositPerByte = StorageDepositPerByte;
+    type DepositPerItem = StorageDepositPerItem;
     type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
     type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;

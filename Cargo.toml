@@ -52,6 +52,7 @@ getrandom = { version = "0.2.17", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 jsonrpsee = { version = "0.24.3" }
 pallet-transaction-payment = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
+pallet-utility = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-transaction-payment-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 sc-basic-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 sc-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
@@ -105,12 +106,15 @@ frame-try-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", r
 pallet-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
+pallet-multisig = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
+pallet-proxy = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-revive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-sudo = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
+serde = { version = "1.0.228", default-features = false, features = ["alloc", "derive"] }
 sc-executor-common = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "30810786a6610de8798594bbc5d4f00670744c6d", default-features = false }
 serde_json = { version = "1.0.132", default-features = false }
 rand_core = { version = "0.6", default-features = false }
