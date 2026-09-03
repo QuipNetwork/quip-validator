@@ -1,7 +1,7 @@
 [package]
 name = "pallet-quantum-compute-mempool"
 description = "FRAME pallet for QUIP's user-submitted Ising job marketplace."
-version = "0.2.2"
+version = "0.3.0-rc1"
 license = "Unlicense"
 authors.workspace = true
 homepage.workspace = true
