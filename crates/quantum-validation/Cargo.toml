@@ -1,6 +1,6 @@
 [package]
 name = "quantum-validation"
-version = "0.2.2"
+version = "0.3.0-rc1"
 license.workspace = true
 authors.workspace = true
 homepage.workspace = true
