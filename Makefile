@@ -92,6 +92,21 @@ builder-image:
 		--push \
 		.gitlab/
 
+# Build and push the PyPI publish image. Same manual workstation flow as
+# builder-image and for the same reason (no Docker Hub credentials in CI), but
+# amd64 only: .pypi-publish pins tags: [docker, amd64], and the smoke jobs that
+# do run on arm64 use the stock python image because they install a wheel
+# rather than publish one. After pushing, update PYPI_PUBLISH_IMAGE in
+# .gitlab-ci.yml to the digest this prints.
+PYPI_PUBLISH_IMAGE ?= carback1/quip-pypi-publish:latest
+pypi-publish-image:
+	docker buildx build \
+		--platform linux/amd64 \
+		--file .gitlab/ci-pypi-publish.Dockerfile \
+		--tag $(PYPI_PUBLISH_IMAGE) \
+		--push \
+		.gitlab/
+
 .PHONY: local-3-node quantum-validation-venv \
 	quantum-validation-fixtures wasm-signer py-signer py-signer-develop \
-	py-signer-test builder-image
+	py-signer-test builder-image pypi-publish-image

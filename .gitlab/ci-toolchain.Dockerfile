@@ -45,12 +45,25 @@ FROM rust:${RUST_VERSION}-${DEBIAN_VERSION}
 # upgrade spent 16 minutes unpacking one package and hit the 30m job timeout,
 # failing py-signer-test and release:build-pypi on a commit that passed on an
 # idle runner in 45 seconds.
+#
+# nodejs and npm serve browser-signer-test, which builds and runs the
+# TypeScript signer against a wasm bundle. These are Debian's 18.20.4 / 9.2.0,
+# the exact versions that job's before_script installed, so baking them changes
+# no behaviour. package.json declares no engines floor.
+#
+# ca-certificates and curl are named explicitly even though the base image
+# already carries them. Several jobs curl checksum-pinned release binaries
+# (solc, resolc, cargo-binstall) and a TLS failure there is a confusing way to
+# discover an implicit dependency. Naming them keeps the image honest about
+# what it guarantees, and costs nothing when they are already satisfied.
 # Pinning system lib versions across Debian point releases is brittle and this
 # image is build tooling only.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang libclang-dev protobuf-compiler pkg-config libssl-dev cmake jq \
         python3-venv python3-dev \
+        nodejs npm \
+        ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add wasm32v1-none \
