@@ -8,13 +8,17 @@
 # already produced and upload those exact bytes — so they want a small image
 # with no Rust toolchain and no crate source anywhere on the path.
 #
-# `.gitlab-ci.yml` pulls this from docker.io/carback1/quip-pypi-publish by
-# digest. Rebuild and push manually from a workstation when this Dockerfile
-# changes, the same flow as the toolchain image: there are no Docker Hub
-# credentials in the project or group CI variables. `make pypi-publish-image`
-# wraps it. Only linux/amd64 is built — .pypi-publish pins tags: [docker,
+# CI builds and publishes this to the project registry as
+# $CI_REGISTRY_IMAGE/ci-pypi-publish, from the ci-image-pypi-publish-amd64 job
+# in `.gitlab-ci.yml`, rebuilt only when a CI Dockerfile changes. Nothing is
+# pushed by hand. Only linux/amd64 is built — .pypi-publish pins tags: [docker,
 # amd64], and the smoke jobs that do run on arm64 use the stock python image
-# because they install a wheel rather than publish one.
+# because they install a wheel rather than publish one. Because there is only
+# one platform there is no manifest job, and the image is consumed at its
+# arch-suffixed tag.
+#
+# `make pypi-publish-image` still builds it locally for testing a change before
+# pushing the branch. That target does not publish; CI owns publishing.
 
 ARG PYTHON_VERSION=3.12
 ARG DEBIAN_VERSION=bookworm

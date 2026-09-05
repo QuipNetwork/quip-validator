@@ -5,21 +5,20 @@
 # plus the wasm32v1-none target and rust-src component required by
 # substrate-wasm-builder.
 #
-# The check-stage jobs in `.gitlab-ci.yml` pull this image from
-# docker.io/carback1/rust-substrate-builder:latest, and the faucet repo's
-# per-arch build-binary jobs pull it on both the amd64 and arm64 runners — so
-# it must be published multi-arch. Rebuild and push manually from a
-# workstation when this Dockerfile changes — there is no CI job that builds
-# the image (no Docker Hub credentials exist in the project or group CI
-# variables, and the non-native half builds under QEMU/Rosetta emulation;
-# slow, but only paid on manual re-pushes). `make builder-image` wraps this:
+# CI builds and publishes this image to the project registry as
+# $CI_REGISTRY_IMAGE/ci-toolchain, from the ci-image-toolchain-* jobs in
+# `.gitlab-ci.yml`. It rebuilds only when a CI Dockerfile changes, in a stage
+# ahead of everything that pulls it. Nothing is pushed by hand.
 #
-#   docker buildx build \
-#     --platform linux/amd64,linux/arm64 \
-#     --file .gitlab/ci-toolchain.Dockerfile \
-#     --tag carback1/rust-substrate-builder:latest \
-#     --push \
-#     .gitlab/
+# It must stay multi-arch: the faucet repo's per-arch build-binary jobs pull it
+# on both amd64 and arm64 runners. Each arch is built on a native runner and
+# combined by the ci-image-toolchain manifest job, so no QEMU emulation is
+# involved. The faucet repo needs pull access to this project's registry — a
+# CI_JOB_TOKEN allowlist entry or a group deploy token — because these images
+# are no longer on a public Docker Hub namespace.
+#
+# `make builder-image` still builds it locally for testing a change before
+# pushing the branch. That target does not publish; CI owns publishing.
 
 # Pin Rust in lockstep with the production Dockerfile. Rust 1.96.0 regressed
 # the wasm32v1-none runtime link ("undefined symbol: ext_*"); 1.95.0 is the

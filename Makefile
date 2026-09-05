@@ -76,35 +76,25 @@ py-signer-develop: $(PY_SIGNER_PY)
 py-signer-test: py-signer-develop
 	$(PY_SIGNER_PY) -m pytest $(PY_SIGNER_CRATE)/tests -q
 
-# Build and push the multi-arch CI toolchain image to Docker Hub. No CI job
-# does this — there are no Docker Hub credentials in the project or group CI
-# variables, so it is a workstation action run under the carback1 namespace
-# after `docker login`. Both arches are mandatory: the faucet repo's per-arch
-# build-binary jobs pull this image on arm64 runners. The context is .gitlab/
-# rather than the repo root because nothing in the Dockerfile COPYs, and the
-# root would upload target/ and venv/ for no reason.
-BUILDER_IMAGE ?= carback1/rust-substrate-builder:latest
+# Build the CI images locally, for checking a Dockerfile change before pushing
+# the branch. Neither target publishes: CI owns that, via the ci-images stage
+# in .gitlab-ci.yml, which pushes to the project registry on any pipeline where
+# a CI Dockerfile changed. Both build for the host architecture only, since the
+# point is a fast local check; CI builds each arch on a native runner. The
+# context is .gitlab/ rather than the repo root because nothing in either
+# Dockerfile COPYs, and the root would upload target/ and venv/ for no reason.
+BUILDER_IMAGE ?= quip-ci-toolchain:local
 builder-image:
-	docker buildx build \
-		--platform linux/amd64,linux/arm64 \
+	docker build \
 		--file .gitlab/ci-toolchain.Dockerfile \
 		--tag $(BUILDER_IMAGE) \
-		--push \
 		.gitlab/
 
-# Build and push the PyPI publish image. Same manual workstation flow as
-# builder-image and for the same reason (no Docker Hub credentials in CI), but
-# amd64 only: .pypi-publish pins tags: [docker, amd64], and the smoke jobs that
-# do run on arm64 use the stock python image because they install a wheel
-# rather than publish one. After pushing, update PYPI_PUBLISH_IMAGE in
-# .gitlab-ci.yml to the digest this prints.
-PYPI_PUBLISH_IMAGE ?= carback1/quip-pypi-publish:latest
+PYPI_PUBLISH_IMAGE ?= quip-ci-pypi-publish:local
 pypi-publish-image:
-	docker buildx build \
-		--platform linux/amd64 \
+	docker build \
 		--file .gitlab/ci-pypi-publish.Dockerfile \
 		--tag $(PYPI_PUBLISH_IMAGE) \
-		--push \
 		.gitlab/
 
 .PHONY: local-3-node quantum-validation-venv \
