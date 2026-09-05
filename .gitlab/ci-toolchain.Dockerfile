@@ -34,11 +34,23 @@ FROM rust:${RUST_VERSION}-${DEBIAN_VERSION}
 # before_script put a Debian-mirror fetch and an unpinned package version
 # inside a timing measurement on the serialized reference machine; having it
 # in the image removes both. (QUI-948)
+#
+# python3-venv and python3-dev are baked for the same reason. The base image
+# already ships python3 and the venv module, but Debian splits ensurepip out
+# into python3-venv, so without it `python3 -m venv` produces an environment
+# with no pip; python3-dev supplies the Python.h the PyO3 extension compiles
+# against. Both were apt-installed in before_script until now, and naming the
+# already-present python3 on those lines made apt upgrade the whole
+# interpreter stack to the current point release. Under runner contention that
+# upgrade spent 16 minutes unpacking one package and hit the 30m job timeout,
+# failing py-signer-test and release:build-pypi on a commit that passed on an
+# idle runner in 45 seconds.
 # Pinning system lib versions across Debian point releases is brittle and this
 # image is build tooling only.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang libclang-dev protobuf-compiler pkg-config libssl-dev cmake jq \
+        python3-venv python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add wasm32v1-none \

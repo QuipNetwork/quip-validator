@@ -76,14 +76,6 @@ variables:
   # the GitLab CI cache can pick them up between runs.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
-  # The quip-signer PyPI jobs run on a lean official `rust:*` image, NOT the
-  # heavy Substrate TOOLCHAIN_IMAGE: the binding is its own pure-Rust workspace
-  # (no clang/protoc/substrate deps), and the aarch64 wheel needs `rustup target
-  # add`, which the official images guarantee. Pinned to the same Rust the rest
-  # of the project builds with (RUST_VERSION in Dockerfile / ci-toolchain) — a
-  # floor of 1.85 is required anyway, as edition-2024 transitive deps
-  # (zeroize_derive) don't parse on older Cargo.
-  PY_RELEASE_IMAGE: docker.io/library/rust:1.95.0-bookworm
   # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
   # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
   # source. Bump deliberately; it changes the linker the release wheels are built
@@ -326,12 +318,11 @@ py-signer-test:
           - crates/transaction-crypto-py/Cargo.lock
       paths:
         - crates/transaction-crypto-py/target/
-  before_script:
-    # The toolchain image is a bare rust:bookworm; `make py-signer-test` shells
-    # out to `python3 -m venv` and builds a PyO3 extension via maturin, so it
-    # needs the interpreter, venv module, and dev headers.
-    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-dev
-    - rm -rf /var/lib/apt/lists/*
+  # `make py-signer-test` shells out to `python3 -m venv` and builds a PyO3
+  # extension via maturin, so it needs the venv module and the dev headers.
+  # Both are baked into the toolchain image (.gitlab/ci-toolchain.Dockerfile);
+  # installing them here instead upgraded the whole interpreter stack and timed
+  # the job out under runner contention.
   script:
     - cargo fmt --manifest-path crates/transaction-crypto-py/Cargo.toml -- --check
     - cargo clippy -p quip-transaction-crypto-py --manifest-path crates/transaction-crypto-py/Cargo.toml --all-targets -- -D warnings
@@ -726,15 +717,20 @@ manifest-evm-sidecar:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-# Build base: the one job that compiles. Runs on the lean Rust image (see
-# PY_RELEASE_IMAGE) and installs the maturin/twine/zig toolchain. The binding is
+# Build base: the one job that compiles. Runs on TOOLCHAIN_IMAGE and installs
+# the maturin/twine/zig toolchain. That image is a derivative of the same
+# rust:1.95.0-bookworm this job used directly before, so the compiler building
+# the wheel is unchanged; it is used here because it carries python3-venv, which
+# the stock image omits. Fetching that one package at job time was what timed
+# this job out on a loaded runner. The image is also already resident on the
+# runners, so the extra Substrate deps it carries cost no pull. The binding is
 # its own workspace resolving against its own Cargo.lock, so — like
 # py-signer-test — it caches the crate's target/ keyed on that lock, not the
 # workspace one. Emits dist/ as an artefact so the smoke and publish jobs consume
 # the exact bytes it built (never a rebuild — the smoked wheel is the shipped
 # wheel). expire_in outlasts a manual PyPI promote clicked days after the tag.
 .pypi-build:
-  image: $PY_RELEASE_IMAGE
+  image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
   timeout: 30m
@@ -755,8 +751,6 @@ manifest-evm-sidecar:
     # `python3` that cargo-zigbuild shells out to (`python3 -m ziglang`, how it
     # locates zig) is the venv's — the one with ziglang. A system `pip install`
     # would land in a different interpreter and zig would not be found.
-    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates
-    - rm -rf /var/lib/apt/lists/*
     - python3 -m venv /opt/pyrelease
     - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
     - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
