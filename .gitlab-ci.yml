@@ -43,18 +43,24 @@
 # Docker boxes (lovelace/finney/watch) and an arm64 Docker-executor runner
 # (e.g. a docker-executor gitlab-runner hosted on an Apple-Silicon Mac).
 #
-# Toolchain image: docker.io/carback1/rust-substrate-builder
-# (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
-# Hub — see the Dockerfile header for the buildx command, or run
-# `make builder-image`). Rebuild it locally and re-push when the toolchain
-# Dockerfile changes, then bump the pinned digest in TOOLCHAIN_IMAGE below —
-# CI resolves the digest, not the tag, so a re-push alone changes nothing.
+# CI images (the images this repo's own jobs run on):
+#   $CI_REGISTRY_IMAGE/ci-toolchain      multi-arch, nearly every job
+#   $CI_REGISTRY_IMAGE/ci-pypi-publish   amd64, the PyPI upload jobs
+# Both are built by the ci-images stage from .gitlab/*.Dockerfile whenever a CI
+# Dockerfile changes, and nothing is pushed by hand. `make builder-image` and
+# `make pypi-publish-image` build them locally for checking a change; they do
+# not publish.
 #
 # Runtime images:
 #   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 #   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:<tag>
 
 stages:
+  # The images this repo runs its own jobs on are built here, ahead of every
+  # stage that consumes them. Both stages are empty and skipped unless a CI
+  # Dockerfile changed, so they cost nothing on an ordinary pipeline.
+  - ci-images
+  - ci-images-manifest
   - test
   - bench
   - build
@@ -62,7 +68,26 @@ stages:
   - release
 
 variables:
-  TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder@sha256:e5ae45a0e6bac33c5b0a66d6fa291d23178d0ae1426b96073eb29de7612ee6ac
+  # Tag the CI images are built with and pulled by. Defaults to `latest`, which
+  # every ordinary pipeline consumes. A merge request that edits either CI
+  # Dockerfile overrides this to an MR-scoped tag (see `workflow:` below) so it
+  # builds and tests its own image without republishing `latest` for everyone
+  # else; `latest` is only rewritten once that change is on a long-lived branch.
+  CI_IMAGE_TAG: latest
+  # The Substrate build toolchain nearly every job runs on, built by the
+  # ci-images stage from .gitlab/ci-toolchain.Dockerfile. Multi-arch: the
+  # per-arch jobs push `<tag>-amd64` / `<tag>-arm64` and the manifest job
+  # combines them under `<tag>`.
+  TOOLCHAIN_IMAGE: $CI_REGISTRY_IMAGE/ci-toolchain:$CI_IMAGE_TAG
+  # Publish-only image for the quip-signer PyPI upload jobs: python-slim with
+  # twine, ca-certificates and curl baked in (.gitlab/ci-pypi-publish.Dockerfile).
+  # Kept separate from TOOLCHAIN_IMAGE because these jobs compile nothing — they
+  # upload the dist/ artefact release:build-pypi already produced — so they want
+  # no Rust toolchain and no crate source on the path. Referenced with the arch
+  # suffix the build job pushes, and never combined into a manifest, because
+  # .pypi-publish pins tags: [docker, amd64] and a one-platform manifest list
+  # would add a job to describe a single image.
+  PYPI_PUBLISH_IMAGE: $CI_REGISTRY_IMAGE/ci-pypi-publish:$CI_IMAGE_TAG-amd64
   IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
   # Tagless repository: kaniko's --cache-repo must be a bare repo, not a tag
   # ref. A ':buildcache' tag here makes kaniko reject the cache destination
@@ -76,14 +101,6 @@ variables:
   # the GitLab CI cache can pick them up between runs.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
-  # The quip-signer PyPI jobs run on a lean official `rust:*` image, NOT the
-  # heavy Substrate TOOLCHAIN_IMAGE: the binding is its own pure-Rust workspace
-  # (no clang/protoc/substrate deps), and the aarch64 wheel needs `rustup target
-  # add`, which the official images guarantee. Pinned to the same Rust the rest
-  # of the project builds with (RUST_VERSION in Dockerfile / ci-toolchain) — a
-  # floor of 1.85 is required anyway, as edition-2024 transitive deps
-  # (zeroize_derive) don't parse on older Cargo.
-  PY_RELEASE_IMAGE: docker.io/library/rust:1.95.0-bookworm
   # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
   # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
   # source. Bump deliberately; it changes the linker the release wheels are built
@@ -106,6 +123,20 @@ variables:
 
 workflow:
   rules:
+    # A merge request that edits a CI Dockerfile builds and consumes its own
+    # MR-scoped image tag. Without this the MR would push `latest`, so a broken
+    # or half-finished image would immediately become the image every other
+    # pipeline pulls. The set of pipelines created is unchanged — this rule
+    # matches the same merge requests as the one below it and only adds the
+    # variable. Both Dockerfiles are listed here and on the build jobs, so the
+    # two images always move together and a tag can never point at an image
+    # that was never built.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - .gitlab/ci-toolchain.Dockerfile
+        - .gitlab/ci-pypi-publish.Dockerfile
+      variables:
+        CI_IMAGE_TAG: mr-$CI_MERGE_REQUEST_IID
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "v0.2"
@@ -170,9 +201,8 @@ browser-signer-test:
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
   before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends curl nodejs npm
-    - rm -rf /var/lib/apt/lists/*
+    # nodejs, npm and curl are baked into the toolchain image
+    # (.gitlab/ci-toolchain.Dockerfile) rather than fetched here.
     - rustup target add wasm32-unknown-unknown
     - mkdir -p "$CARGO_HOME/bin"
     - export PATH="$CARGO_HOME/bin:$PATH"
@@ -214,9 +244,10 @@ browser-signer-test:
     RESOLC_VERSION: "1.0.0"
     RESOLC_SHA256: "e626ba7a1a0d26828c14713781b0082ececc9a0fbfe984f11f0d93d66bbd7806"
   before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends ca-certificates curl
-    - rm -rf /var/lib/apt/lists/*
+    # ca-certificates and curl are baked into the toolchain image
+    # (.gitlab/ci-toolchain.Dockerfile). The bench-stage jobs that extend this
+    # run on the serialized reference machine, where an apt fetch sat inside a
+    # timing measurement — the same reason jq was baked in for QUI-948.
     - curl -Lsf --show-error -o /usr/local/bin/solc "https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solc-static-linux"
     - curl -Lsf --show-error -o /usr/local/bin/resolc "https://github.com/paritytech/revive/releases/download/v${RESOLC_VERSION}/resolc-x86_64-unknown-linux-musl"
     - echo "${SOLC_SHA256}  /usr/local/bin/solc" | sha256sum -c -
@@ -326,12 +357,11 @@ py-signer-test:
           - crates/transaction-crypto-py/Cargo.lock
       paths:
         - crates/transaction-crypto-py/target/
-  before_script:
-    # The toolchain image is a bare rust:bookworm; `make py-signer-test` shells
-    # out to `python3 -m venv` and builds a PyO3 extension via maturin, so it
-    # needs the interpreter, venv module, and dev headers.
-    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-dev
-    - rm -rf /var/lib/apt/lists/*
+  # `make py-signer-test` shells out to `python3 -m venv` and builds a PyO3
+  # extension via maturin, so it needs the venv module and the dev headers.
+  # Both are baked into the toolchain image (.gitlab/ci-toolchain.Dockerfile);
+  # installing them here instead upgraded the whole interpreter stack and timed
+  # the job out under runner contention.
   script:
     - cargo fmt --manifest-path crates/transaction-crypto-py/Cargo.toml -- --check
     - cargo clippy -p quip-transaction-crypto-py --manifest-path crates/transaction-crypto-py/Cargo.toml --all-targets -- -D warnings
@@ -513,6 +543,13 @@ benchmark-machine:
         "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
         > /kaniko/.docker/config.json
   script:
+    # Layer caching is opt-in: a job gets it by setting KANIKO_CACHE_IMAGE.
+    # It earns its keep only where a cached layer can actually be reused, and
+    # it is not free — kaniko pushes the snapshot of every RUN layer, so on the
+    # node build it uploads gigabytes of Cargo scratch. The CI image builds
+    # leave it unset for that reason: they are small, they run only when their
+    # Dockerfile changed, and a changed Dockerfile invalidates the cache anyway.
+    #
     # --cache-repo is suffixed per arch: Kaniko's cache keys hash the build
     # instructions, not the target architecture, so amd64 and arm64 would
     # collide on identical keys but hold arch-incompatible layers if they
@@ -521,9 +558,10 @@ benchmark-machine:
       set -- /kaniko/executor \
         --context "$KANIKO_CONTEXT" \
         --dockerfile "$KANIKO_DOCKERFILE" \
-        --destination "$KANIKO_IMAGE:$PRIMARY_TAG-$ARCH" \
-        --cache=true \
-        --cache-repo "$KANIKO_CACHE_IMAGE-$ARCH"
+        --destination "$KANIKO_IMAGE:$PRIMARY_TAG-$ARCH"
+      if [ -n "$KANIKO_CACHE_IMAGE" ]; then
+        set -- "$@" --cache=true --cache-repo "$KANIKO_CACHE_IMAGE-$ARCH"
+      fi
       for build_arg in $KANIKO_BUILD_ARGS; do
         set -- "$@" --build-arg "$build_arg"
       done
@@ -531,6 +569,97 @@ benchmark-machine:
         set -- "$@" "$extra_arg"
       done
       "$@"
+
+# The images this repo's own jobs run on. They live in this project's registry
+# rather than Docker Hub: GitLab injects a pull credential for it into every
+# job automatically, so nothing depends on a Docker Hub account or its
+# anonymous pull limits, and the build needs no credential that CI does not
+# already hold. That is what makes these buildable in CI at all — the manual
+# workstation push they replace existed only because no Docker Hub credentials
+# were available to a job.
+#
+# Both images rebuild whenever either CI Dockerfile changes, deliberately: the
+# workflow rule that picks an MR-scoped tag matches on the same pair, so
+# rebuilding together is what guarantees both tags exist. The stage ordering
+# does the rest — ci-images and ci-images-manifest precede test, so any job
+# that pulls one of these images waits for the current one to be pushed. The
+# two bench jobs declare `needs: []` and so start without waiting, but both are
+# manual, so a human triggers them once the image is in place.
+.ci-image-rules:
+  rules:
+    - changes:
+        - .gitlab/ci-toolchain.Dockerfile
+        - .gitlab/ci-pypi-publish.Dockerfile
+
+.ci-image-build:
+  extends: .kaniko-build
+  stage: ci-images
+  rules: !reference [.ci-image-rules, rules]
+  # Minutes, not the 3h the node build needs. A CI image that runs long is
+  # stuck, not working.
+  timeout: 60m
+  variables:
+    # Context is .gitlab/ because neither Dockerfile COPYs anything; the repo
+    # root would upload target/ and venv/ for nothing.
+    KANIKO_CONTEXT: $CI_PROJECT_DIR/.gitlab
+    PRIMARY_TAG: $CI_IMAGE_TAG
+    KANIKO_BUILD_ARGS: ""
+
+.ci-toolchain-image-build:
+  extends: .ci-image-build
+  variables:
+    KANIKO_DOCKERFILE: $CI_PROJECT_DIR/.gitlab/ci-toolchain.Dockerfile
+    KANIKO_IMAGE: $CI_REGISTRY_IMAGE/ci-toolchain
+
+ci-image-toolchain-amd64:
+  extends: .ci-toolchain-image-build
+  tags: [docker, amd64]
+  variables:
+    ARCH: amd64
+    TRIPLET: x86_64-linux-gnu
+    KANIKO_LIB_IGNORE: "--ignore-path=/lib"
+
+ci-image-toolchain-arm64:
+  extends: .ci-toolchain-image-build
+  tags: [docker, arm64]
+  variables:
+    ARCH: arm64
+    # Same memory constraint as the node build on this runner: kaniko holds
+    # compressed layers in RAM while snapshotting, and this image carries a
+    # multi-GB Rust toolchain. Stream to disk instead.
+    KANIKO_EXTRA: "--compressed-caching=false"
+
+# Combine the two per-arch toolchain images under the plain tag every job pulls.
+# The faucet repo consumes this image on arm64, so both platforms are required.
+ci-image-toolchain:
+  stage: ci-images-manifest
+  image:
+    name: mplatform/manifest-tool:alpine
+    entrypoint: [""]
+  tags: [docker, amd64]
+  interruptible: true
+  rules: !reference [.ci-image-rules, rules]
+  needs: [ci-image-toolchain-amd64, ci-image-toolchain-arm64]
+  script:
+    - |
+      manifest-tool \
+        --username "$CI_REGISTRY_USER" \
+        --password "$CI_REGISTRY_PASSWORD" \
+        push from-args \
+        --platforms linux/amd64,linux/arm64 \
+        --template "$CI_REGISTRY_IMAGE/ci-toolchain:$CI_IMAGE_TAG-ARCH" \
+        --target "$CI_REGISTRY_IMAGE/ci-toolchain:$CI_IMAGE_TAG"
+
+# amd64 only, and consumed at its arch-suffixed tag — see PYPI_PUBLISH_IMAGE.
+ci-image-pypi-publish-amd64:
+  extends: .ci-image-build
+  tags: [docker, amd64]
+  variables:
+    ARCH: amd64
+    TRIPLET: x86_64-linux-gnu
+    KANIKO_LIB_IGNORE: "--ignore-path=/lib"
+    KANIKO_DOCKERFILE: $CI_PROJECT_DIR/.gitlab/ci-pypi-publish.Dockerfile
+    KANIKO_IMAGE: $CI_REGISTRY_IMAGE/ci-pypi-publish
 
 .node-kaniko-build:
   extends: .kaniko-build
@@ -726,15 +855,20 @@ manifest-evm-sidecar:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-# Build base: the one job that compiles. Runs on the lean Rust image (see
-# PY_RELEASE_IMAGE) and installs the maturin/twine/zig toolchain. The binding is
+# Build base: the one job that compiles. Runs on TOOLCHAIN_IMAGE and installs
+# the maturin/twine/zig toolchain. That image is a derivative of the same
+# rust:1.95.0-bookworm this job used directly before, so the compiler building
+# the wheel is unchanged; it is used here because it carries python3-venv, which
+# the stock image omits. Fetching that one package at job time was what timed
+# this job out on a loaded runner. The image is also already resident on the
+# runners, so the extra Substrate deps it carries cost no pull. The binding is
 # its own workspace resolving against its own Cargo.lock, so — like
 # py-signer-test — it caches the crate's target/ keyed on that lock, not the
 # workspace one. Emits dist/ as an artefact so the smoke and publish jobs consume
 # the exact bytes it built (never a rebuild — the smoked wheel is the shipped
 # wheel). expire_in outlasts a manual PyPI promote clicked days after the tag.
 .pypi-build:
-  image: $PY_RELEASE_IMAGE
+  image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
   timeout: 30m
@@ -755,8 +889,6 @@ manifest-evm-sidecar:
     # `python3` that cargo-zigbuild shells out to (`python3 -m ziglang`, how it
     # locates zig) is the venv's — the one with ziglang. A system `pip install`
     # would land in a different interpreter and zig would not be found.
-    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates
-    - rm -rf /var/lib/apt/lists/*
     - python3 -m venv /opt/pyrelease
     - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
     - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
@@ -787,12 +919,13 @@ manifest-evm-sidecar:
     - release:build-pypi
 
 # Publish base: mint the OIDC token and upload the prebuilt dist/. Like smoke it
-# needs no Rust toolchain — just twine + curl on the small python image — and it
+# needs no Rust toolchain — just twine + curl, both baked into
+# PYPI_PUBLISH_IMAGE so the upload never waits on a Debian mirror — and it
 # consumes the artefact from build (and both smokes) rather than rebuilding, so
 # the uploaded bytes are the ones that passed the smoke. Needs only the pypi
 # jobs, so it never waits on the container build/manifest stages.
 .pypi-publish:
-  image: docker.io/library/python:3.12-slim-bookworm
+  image: $PYPI_PUBLISH_IMAGE
   tags: [docker, amd64]
   interruptible: false
   timeout: 15m
@@ -800,10 +933,6 @@ manifest-evm-sidecar:
     - release:build-pypi
     - release:smoke-pypi-amd64
     - release:smoke-pypi-arm64
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
-    - rm -rf /var/lib/apt/lists/*
-    - pip install --quiet --upgrade 'twine>=6.1'
 
 # Build all three artefacts, guard their tags/content, twine-check metadata, and
 # publish dist/ as an artefact. Runs as an MR dry-run and again on a release tag
