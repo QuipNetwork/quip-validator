@@ -587,6 +587,17 @@ benchmark-machine:
 # manual, so a human triggers them once the image is in place.
 .ci-image-rules:
   rules:
+    # A tag pipeline has no base commit to diff against, so GitLab evaluates
+    # `changes:` as true unconditionally. Without this guard every v* release
+    # tag rebuilds all three CI images and re-pushes byte-identical :latest
+    # tags, putting ~7 minutes in front of the pipeline that can least afford
+    # it. Tags are cut from main, and main already published :latest for any
+    # Dockerfile change that reached it, so the tag pipeline consumes the
+    # image that is already there. A tag cut from a commit that never went
+    # through main would pull a stale :latest, which is the same exposure the
+    # branch pipelines already have.
+    - if: $CI_COMMIT_TAG
+      when: never
     - changes:
         - .gitlab/ci-toolchain.Dockerfile
         - .gitlab/ci-pypi-publish.Dockerfile
