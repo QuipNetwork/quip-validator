@@ -5,7 +5,7 @@
 # node builds. It still depends on the sp-free `transaction-crypto-core` by path.
 [package]
 name = "quip-transaction-crypto-py"
-version = "0.3.0-rc1"
+version = "0.3.0"
 license = "MIT-0"
 authors = ["Quip Network <roman@postquant.xyz>"]
 homepage = "https://www.quip.network/"

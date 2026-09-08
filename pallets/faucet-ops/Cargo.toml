@@ -1,7 +1,7 @@
 [package]
 name = "pallet-faucet-ops"
 description = "FRAME pallet for root-controlled faucet mint operations."
-version = "0.3.0-rc1"
+version = "0.3.0"
 license.workspace = true
 authors.workspace = true
 homepage.workspace = true
