@@ -1,7 +1,7 @@
 [package]
 name = "pallet-evm-chain-id"
 description = "FRAME pallet that stores the EIP-155 chain ID set at genesis."
-version = "0.3.0-rc1"
+version = "0.3.0"
 license.workspace = true
 authors.workspace = true
 homepage.workspace = true
