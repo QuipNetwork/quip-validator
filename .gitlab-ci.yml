@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# CI pipeline for quip-protocol-rs.
+# CI pipeline for quip-validator.
 #
 # Stages:
 #   - test:      fmt / clippy / test / runtime release build on every MR;
@@ -52,8 +52,8 @@
 # not publish.
 #
 # Runtime images:
-#   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
-#   registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:<tag>
+#   registry.gitlab.com/quip.network/quip-validator/quip-network-node:<tag>
+#   registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:<tag>
 
 stages:
   # The images this repo runs its own jobs on are built here, ahead of every
