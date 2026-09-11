@@ -118,27 +118,76 @@ Plan for one target directory per slot per job. With a runner concurrency of
 
 ## Pruning
 
-Each host must prune its own cache directory. A scheduled CI job cannot do
-this, because a scheduled job runs on one runner only.
+CI prunes the volume. No host cron is needed.
 
-Add a cron entry or a systemd timer on each host. Use `cargo sweep`:
+`scripts/prune-ci-cache.sh` runs in an `after_script` on the three jobs that
+extend `.cargo-host-cache`. Those jobs reach every host in the pool on their
+own, so the prune reaches every host that holds anything worth pruning. A
+scheduled job would reach one runner only, so the prune rides along with the
+jobs instead.
 
-```sh
-cargo sweep --time 14 --recursive /zfspool/srv/ci-cache
-```
+The script holds a per-host lock and prunes at most once a day. It exits 0 on
+every path. A prune must never turn a green build red.
 
-`cargo sweep` reads Cargo metadata, removes only build artifacts, and judges
-age by modification time. Install it with `cargo install cargo-sweep`.
+The toolchain image carries `cargo-sweep` at a pinned version. Do not install
+it in a job.
 
-A `find -atime` prune is the obvious alternative, but it reads access times.
-ZFS datasets with `atime=off` never update them, and the command then deletes
-either everything or nothing. Use `cargo sweep` instead.
+### What the script removes
 
-Check the size when a build slows down without an obvious cause:
+Two kinds of garbage need two different rules.
+
+The first rule covers a slot that is still in use. `cargo sweep --maxsize`
+evicts the oldest artifacts there, and only while that slot sits over its
+ceiling. An age rule fails on this case, because cargo never updates an
+artifact's modification time when it reuses one. The oldest files in a warm
+slot are the stable dependencies worth keeping. A 14-day age rule
+would delete most of the dependency graph on a slot that runs every day.
+
+The second rule covers a slot that nothing writes to any more. `--maxsize`
+never reclaims one, because an abandoned slot stays under the ceiling forever.
+Each run stamps the slot it used in `target/.last-used`. The script then
+removes any slot whose stamp has gone stale. A slot with no stamp gets a stamp
+rather than a deletion, so the first run after this change keeps every warm
+cache.
+
+A `find -atime` prune is the obvious alternative to both rules. It reads access
+times, and ZFS datasets with `atime=off` never update them. The command then
+deletes everything or nothing.
+
+### Tuning
+
+The defaults are a starting point, not a measurement. Set the ceiling against
+what the volume actually holds:
 
 ```sh
 du -sh /zfspool/srv/ci-cache/*
 ```
+
+| variable | default | meaning |
+|---|---|---|
+| `CI_CACHE_ROOT` | `/ci-cache` | volume root |
+| `CI_CACHE_MAX_SIZE` | `50GiB` | per-slot ceiling |
+| `CI_CACHE_ORPHAN_DAYS` | `14` | age at which an unused slot is removed |
+| `CI_CACHE_INTERVAL` | `86400` | seconds between prunes on one host |
+| `CI_CACHE_PROJECT_DIR` | the script's own checkout | manifest `cargo-sweep` reads |
+
+Set any of these as a CI/CD variable to change the policy for every host.
+
+`cargo-sweep` runs `cargo metadata`, so it needs a `Cargo.toml`. A slot holds a
+bare `target/` with no manifest beside it, so the script points `cargo-sweep`
+at the checkout and names the slot through `CARGO_TARGET_DIR`. Run the script
+from a checkout for this reason. Without one it removes unused slots and skips
+the sweep.
+
+Run the script by hand on a host to see what it would remove:
+
+```sh
+cd /path/to/quip-validator
+CI_CACHE_ROOT=/zfspool/srv/ci-cache scripts/prune-ci-cache.sh --dry-run
+```
+
+`--dry-run` reports the slots it would remove and passes through to
+`cargo sweep`. Extra arguments reach `cargo sweep` unchanged.
 
 ## If the volume is missing
 
