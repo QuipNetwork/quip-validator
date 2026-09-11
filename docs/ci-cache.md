@@ -97,7 +97,13 @@ The template sets these variables:
 ```yaml
 CARGO_HOME: /ci-cache/cargo-home
 CARGO_TARGET_DIR: /ci-cache/$CI_CONCURRENT_ID/$CI_JOB_NAME/target
+WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
 ```
+
+`substrate-wasm-builder` finds the workspace by a search upward from
+`OUT_DIR` for `Cargo.lock`. `OUT_DIR` is now outside the checkout, so that
+search never reaches it. `WASM_BUILD_WORKSPACE_HINT` names the checkout
+instead. Without it the runtime build prints a warning on every run.
 
 All jobs share `CARGO_HOME`. Jobs rarely write to the registry, and Cargo
 locks it correctly.
