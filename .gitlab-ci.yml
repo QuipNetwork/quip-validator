@@ -144,8 +144,8 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "v0.2"
     - if: $CI_COMMIT_TAG
 
-# Cargo state for the heavy Rust jobs lives on a host volume (/srv/ci-cache,
-# mounted at /ci-cache by the runner) instead of GitLab's tar-based cache —
+# Cargo state for the heavy Rust jobs lives on a host volume, mounted at
+# /ci-cache by the runner, instead of GitLab's tar-based cache —
 # the same arrangement the bench-stage jobs already use on the reference
 # machine, now extended to the amd64 test pool.
 #
@@ -169,7 +169,7 @@ workflow:
 # read-mostly and cargo locks it correctly.
 #
 # Pruning is a host concern — a scheduled CI job only ever lands on one runner.
-# Each host needs its own sweep of /srv/ci-cache; see docs/ci-cache.md.
+# Each host needs its own sweep of that volume; see docs/ci-cache.md.
 .cargo-host-cache:
   variables:
     CARGO_HOME: /ci-cache/cargo-home

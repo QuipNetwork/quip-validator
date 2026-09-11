@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-node_binary="${QUIP_NODE_BINARY:-target/debug/quip-network-node}"
+# CI sets CARGO_TARGET_DIR to a host volume outside the project dir, so the
+# binary is not under ./target. Honour it for the default; an explicit
+# QUIP_NODE_BINARY still wins.
+node_binary="${QUIP_NODE_BINARY:-${CARGO_TARGET_DIR:-target}/debug/quip-network-node}"
 node_log="$(mktemp)"
 node_pid=""
 

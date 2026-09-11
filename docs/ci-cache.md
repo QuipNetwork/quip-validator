@@ -37,10 +37,14 @@ Two more faults kept the cache cold:
 
 Do these steps on each runner host in the amd64 pool.
 
+The path inside the container is always `/ci-cache`. The path on the host is a
+per-host choice. Put it on a disk with room. `finney` uses
+`/zfspool/srv/ci-cache`.
+
 1. Create the directory:
 
    ```sh
-   mkdir -p /srv/ci-cache
+   mkdir -p /zfspool/srv/ci-cache
    ```
 
 2. Mount it into the job containers. Edit `/etc/gitlab-runner/config.toml`:
@@ -49,7 +53,7 @@ Do these steps on each runner host in the amd64 pool.
    [[runners]]
      name = "finney"
      [runners.docker]
-       volumes = ["/cache", "/srv/ci-cache:/ci-cache"]
+       volumes = ["/cache", "/zfspool/srv/ci-cache:/ci-cache"]
    ```
 
    Keep the `/cache` entry. The `volumes` key replaces the whole list, and the
@@ -58,8 +62,33 @@ Do these steps on each runner host in the amd64 pool.
 `gitlab-runner` watches `config.toml` and reloads it. Do not restart the
 service. A restart cancels the jobs that are running.
 
-The toolchain image sets no `USER`, so jobs run as root. The mounted
-directory needs no ownership change.
+The toolchain image sets no `USER`, so jobs run as root. Root writes to the
+directory whatever its ownership, so no ownership change is needed.
+
+### On ZFS
+
+Make the cache its own dataset. A plain directory inherits the parent dataset
+properties, and the next two settings then apply to the whole parent:
+
+```sh
+zfs create zfspool/srv/ci-cache
+```
+
+Turn off automatic snapshots for that dataset. Build artifacts churn heavily.
+A snapshot keeps every deleted artifact on disk, so an hourly snapshot policy
+fills the pool:
+
+```sh
+zfs set com.sun:auto-snapshot=false zfspool/srv/ci-cache
+```
+
+Check `atime` before you choose a pruning command:
+
+```sh
+zfs get atime,relatime zfspool/srv/ci-cache
+```
+
+`atime=off` breaks any prune that reads access times. See Pruning below.
 
 ## Directory layout
 
@@ -83,26 +112,26 @@ Plan for one target directory per slot per job. With a runner concurrency of
 
 ## Pruning
 
-Each host must prune its own `/srv/ci-cache`. A scheduled CI job cannot do
+Each host must prune its own cache directory. A scheduled CI job cannot do
 this, because a scheduled job runs on one runner only.
 
-Add a cron entry or a systemd timer on each host. Either of these works:
+Add a cron entry or a systemd timer on each host. Use `cargo sweep`:
 
 ```sh
-cargo sweep --time 14 --recursive /srv/ci-cache
+cargo sweep --time 14 --recursive /zfspool/srv/ci-cache
 ```
 
-```sh
-find /srv/ci-cache -type f -atime +14 -delete
-```
+`cargo sweep` reads Cargo metadata, removes only build artifacts, and judges
+age by modification time. Install it with `cargo install cargo-sweep`.
 
-`cargo sweep` is the safer of the two. It reads Cargo metadata and removes
-only build artifacts. Install it with `cargo install cargo-sweep`.
+A `find -atime` prune is the obvious alternative, but it reads access times.
+ZFS datasets with `atime=off` never update them, and the command then deletes
+either everything or nothing. Use `cargo sweep` instead.
 
 Check the size when a build slows down without an obvious cause:
 
 ```sh
-du -sh /srv/ci-cache/*
+du -sh /zfspool/srv/ci-cache/*
 ```
 
 ## If the volume is missing
