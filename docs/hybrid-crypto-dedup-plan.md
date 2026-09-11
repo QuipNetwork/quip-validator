@@ -94,14 +94,14 @@ polkadot-sdk/quip/primitives/
     └── src/substrate/*.rs       # sp-bound wrappers; re-exports crypto-core
         deps: quip-crypto-primitives-core + sp-core/sp-io/sp-application-crypto
 
-quip-protocol-rs/crates/transaction-crypto-core/   # SHRINKS
+quip-validator/crates/transaction-crypto-core/   # SHRINKS
     depends on quip-crypto-primitives-core (sp-free) for the H3 suite;
     keeps ONLY: account-id (quip-account-v1), HybridTxSignatureBytes envelope,
     BIP39/secret-URI seed helpers, and thin sign/verify wrappers.
 ```
 
-Dependency direction stays correct (SDK is upstream of `quip-protocol-rs`), and
-`quip-protocol-rs` consumes the new crate over the **existing**
+Dependency direction stays correct (SDK is upstream of `quip-validator`), and
+`quip-validator` consumes the new crate over the **existing**
 `QuipNetwork/polkadot-sdk` `v0.2` git dependency.
 
 ## Steps
@@ -125,7 +125,7 @@ Dependency direction stays correct (SDK is upstream of `quip-protocol-rs`), and
    module) — they must pass against the relocated code unchanged.
 6. Land on `v0.2`.
 
-### Phase 2 — `quip-protocol-rs`
+### Phase 2 — `quip-validator`
 
 7. Add `quip-crypto-primitives-core` to the workspace `Cargo.toml`
    (`git = QuipNetwork/polkadot-sdk, branch = v0.2, default-features = false`),

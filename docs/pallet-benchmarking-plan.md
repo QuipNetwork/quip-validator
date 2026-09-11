@@ -2,7 +2,7 @@
 
 ## Context
 
-[MR !57](https://gitlab.com/quip.network/quip-protocol-rs/-/merge_requests/57)
+[MR !57](https://gitlab.com/quip.network/quip-validator/-/merge_requests/57)
 adds reference-machine CI jobs that discover benchmarkable pallets, regenerate
 their weight files on `node02`, and push the results back to the merge request
 branch.

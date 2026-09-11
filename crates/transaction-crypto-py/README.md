@@ -19,21 +19,21 @@ covered in [`docs/releasing-quip-signer.md`](../../docs/releasing-quip-signer.md
 ### Building from source (submodule)
 
 If you can't use the published wheel — pinning to an unreleased commit, or
-building on an unsupported platform — vendor `quip-protocol-rs` as a git
+building on an unsupported platform — vendor `quip-validator` as a git
 submodule (the same model the browser signer uses) and build the extension
 locally with [maturin](https://www.maturin.rs/). The build drops the
 git-ignored extension into `crates/transaction-crypto-py/python/quip_signer/`.
 
 ```bash
-# from your downstream repo, with quip-protocol-rs pinned as a submodule:
-make -C quip-protocol-rs py-signer        # builds the wheel + extension
+# from your downstream repo, with quip-validator pinned as a submodule:
+make -C quip-validator py-signer        # builds the wheel + extension
 
 # then either install the wheel...
-pip install quip-protocol-rs/target/wheels/quip_signer-*.whl
+pip install quip-validator/target/wheels/quip_signer-*.whl
 # ...or, for an editable/dev install:
-pip install -e quip-protocol-rs/crates/transaction-crypto-py
+pip install -e quip-validator/crates/transaction-crypto-py
 # ...or add the staging dir to PYTHONPATH after `make py-signer-develop`:
-export PYTHONPATH="quip-protocol-rs/crates/transaction-crypto-py/python:$PYTHONPATH"
+export PYTHONPATH="quip-validator/crates/transaction-crypto-py/python:$PYTHONPATH"
 ```
 
 The submodule pin must be pushed to origin to be shareable (same as the WASM

@@ -42,7 +42,7 @@ pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
 /// Identifier for the public quip-testnet genesis preset.
 ///
 /// The raw chain spec exported from this preset is the canonical
-/// `quip-testnet.json` published by `nodes.quip.network`. The preset itself
+/// `aglais-network.json` published by `nodes.quip.network`. The preset itself
 /// is kept in the binary so the genesis can be re-derived and audited.
 pub const QUIP_TESTNET_RUNTIME_PRESET: &str = "quip_testnet";
 

@@ -46,7 +46,7 @@ pub fn local_three_validator_chain_spec() -> Result<ChainSpec, String> {
 ///
 /// The raw export of this builder (`quip-network-node export-chain-spec
 /// --chain quip-testnet --raw`) is what `nodes.quip.network` publishes as
-/// `chain-specs/quip-testnet.json`. The hosted JSON is the long-term source
+/// `chain-specs/aglais-network.json`. The hosted JSON is the long-term source
 /// of truth; this in-binary preset exists so the genesis is auditable and
 /// can be re-derived from source.
 pub fn quip_testnet_chain_spec() -> Result<ChainSpec, String> {

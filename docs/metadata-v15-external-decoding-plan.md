@@ -171,7 +171,7 @@ runtime change.
 
 After the runtime change lands:
 
-1. Update the Apps `quip-protocol-rs` submodule.
+1. Update the Apps `quip-validator` submodule.
 2. Confirm the Apps deployment runs a V16-capable polkadot-js (16.x line);
    V16 is its native "latest" format, while the V15 up-conversion is lossy
    (see Decisions).

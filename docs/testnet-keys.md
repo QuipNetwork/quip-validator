@@ -11,7 +11,7 @@ shipped in v0.2.0.
 
 ## Prerequisites
 
-1. Clone `quip-protocol-rs` at the release-candidate tag.
+1. Clone `quip-validator` at the release-candidate tag.
 2. Build the node binary:
 
    ```bash
