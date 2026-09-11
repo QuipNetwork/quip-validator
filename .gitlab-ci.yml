@@ -97,8 +97,10 @@ variables:
   CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node-buildcache
   EVM_SIDECAR_IMAGE: $CI_REGISTRY_IMAGE/quip-network-evm-sidecar
   EVM_SIDECAR_CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-evm-sidecar-buildcache
-  # Keep Cargo's registry and the workspace target/ inside the project dir so
-  # the GitLab CI cache can pick them up between runs.
+  # Default for the light Rust jobs (py-signer-test, the release builds): keep
+  # Cargo's registry inside the project dir so the GitLab CI cache can pick it
+  # up between runs. The heavy workspace jobs override this to the host volume
+  # via .cargo-host-cache — their target/ is far too large to tar.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
   # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
@@ -142,25 +144,53 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "v0.2"
     - if: $CI_COMMIT_TAG
 
-# Single test job: pulls the toolchain image once, restores the Cargo cache
-# once, and runs fmt → clippy → test → runtime release build sequentially so
-# they share compile artifacts and registry state. The toolchain image already
-# has clang/protoc/cmake + the wasm32v1-none target.
+# Cargo state for the heavy Rust jobs lives on a host volume, mounted at
+# /ci-cache by the runner, instead of GitLab's tar-based cache —
+# the same arrangement the bench-stage jobs already use on the reference
+# machine, now extended to the amd64 test pool.
+#
+# The tar cache could not hold a Rust target/ on this workspace. Measured on
+# cargo-test: 43,430 files, ~8m to zip warm, 13m under load, and >30m on
+# 2026-09-08, which overran the 90m job timeout. A killed cache-archiver
+# writes nothing, so the next run was cold too, which made it slower, which
+# killed the archive again. Two pipelines died that way (jobs 16376256281,
+# 16376325905) with every test already green.
+#
+# Two further reasons the cache could not warm, both removed by moving off it:
+# the archive is written to runner-local disk, so a job landing on a different
+# host in the pool (watch/lovelace/finney) always missed; and py-signer-test
+# computes the same `files: [Cargo.lock]` key for its registry-only cache, so
+# its 357-file archive overwrote cargo-test's 43,430-file one every pipeline.
+#
+# CI_CONCURRENT_ID scopes the target dir to the runner's execution slot, so
+# two pipelines on one host build in separate directories rather than
+# serializing on cargo's target lock. Slots are reused across pipelines, which
+# is what keeps the directory warm. CARGO_HOME is shared: the registry is
+# read-mostly and cargo locks it correctly.
+#
+# Pruning is a host concern — a scheduled CI job only ever lands on one runner.
+# Each host needs its own sweep of that volume; see docs/ci-cache.md.
+.cargo-host-cache:
+  variables:
+    CARGO_HOME: /ci-cache/cargo-home
+    CARGO_TARGET_DIR: /ci-cache/$CI_CONCURRENT_ID/$CI_JOB_NAME/target
+    # substrate-wasm-builder locates the workspace by walking up from OUT_DIR
+    # looking for Cargo.lock. OUT_DIR now sits outside the checkout, so that
+    # walk never crosses it. Point the builder at the checkout directly.
+    WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
+  cache: []
+
+# Single test job: pulls the toolchain image once, and runs fmt → clippy →
+# test → runtime release build sequentially so they share compile artifacts
+# and registry state. The toolchain image already has clang/protoc/cmake +
+# the wasm32v1-none target.
 cargo-test:
+  extends: .cargo-host-cache
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
   timeout: 90m
-  cache:
-    key:
-      files:
-        - Cargo.lock
-    policy: pull-push
-    paths:
-      - .cargo/registry/cache
-      - .cargo/registry/index
-      - target/
   script:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
@@ -172,31 +202,22 @@ cargo-test:
 # wasm-pack release, builds browser bindings, and exercises the actual
 # Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
 browser-signer-test:
+  extends: .cargo-host-cache
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
   timeout: 90m
+  # npm state is small and still tars cheaply, so it stays on the GitLab cache.
+  # cargo-binstall and wasm-pack no longer need a cache entry: they install
+  # into $CARGO_HOME/bin, which is now the host volume and persists on its own.
   cache:
-    # cargo-test owns publication of the large shared target archive. Keeping
-    # this consumer pull-only prevents two jobs on one runner from concurrently
-    # compressing and uploading separate multi-gigabyte target caches.
-    - key:
-        files:
-          - Cargo.lock
-      policy: pull
-      paths:
-        - .cargo/registry/cache
-        - .cargo/registry/index
-        - target/
-    # Browser-only tools are small and remain writable independently.
     - key:
         prefix: browser-signer-tools
         files:
           - js/quip-signer/package-lock.json
       policy: pull-push
       paths:
-        - .cargo/bin/
         - .npm/
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
@@ -261,7 +282,7 @@ browser-signer-test:
 # temporary directory and the reference-machine benchmark-weights job remains
 # responsible for regenerating tracked weights.
 benchmark-preflight:
-  extends: .revive-benchmark-tooling
+  extends: [.revive-benchmark-tooling, .cargo-host-cache]
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
@@ -270,15 +291,6 @@ benchmark-preflight:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - when: never
-  cache:
-    key:
-      prefix: bench-preflight
-      files:
-        - Cargo.lock
-    paths:
-      - .cargo/registry/cache
-      - .cargo/registry/index
-      - target/
   script:
     - ./scripts/run-benchmarks.sh --check-output-resolver
     - ./scripts/check-benchmark-preflight.sh --check-wrapper-guard
@@ -587,6 +599,17 @@ benchmark-machine:
 # manual, so a human triggers them once the image is in place.
 .ci-image-rules:
   rules:
+    # A tag pipeline has no base commit to diff against, so GitLab evaluates
+    # `changes:` as true unconditionally. Without this guard every v* release
+    # tag rebuilds all three CI images and re-pushes byte-identical :latest
+    # tags, putting ~7 minutes in front of the pipeline that can least afford
+    # it. Tags are cut from main, and main already published :latest for any
+    # Dockerfile change that reached it, so the tag pipeline consumes the
+    # image that is already there. A tag cut from a commit that never went
+    # through main would pull a stale :latest, which is the same exposure the
+    # branch pipelines already have.
+    - if: $CI_COMMIT_TAG
+      when: never
     - changes:
         - .gitlab/ci-toolchain.Dockerfile
         - .gitlab/ci-pypi-publish.Dockerfile
