@@ -342,23 +342,23 @@ Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 
 `quip-testnet` is the live public testnet ("AGLS" tokens, 12 decimals,
 EIP-155 `20033`). Omitting `--chain` selects this preset. The canonical
-genesis is baked into the `v0.2.0+` binary and also published as a raw JSON
-file at `nodes.quip.network/chain-specs/quip-testnet.json`.
+genesis is baked into the `v0.3.0+` binary and also published as a raw JSON
+file at `nodes.quip.network/chain-specs/aglais-network.json`.
 
 ### Quickstart (Docker)
 
 ```sh
 # Pull the matching release image
-docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.2.0
+docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0
 
 # Live public testnet (EIP-155 20033). Omit --chain for the same preset.
 docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
-  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.2.0 \
+  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0 \
   --chain=quip-testnet --base-path=/data \
   --name="my-quip-node"
 ```
 
-The three canonical bootnodes (`bootnode-{1,2,3}.testnet.quip.network`) are
+The three canonical bootnodes (`bootnode-{1,2,3}.aglais.quip.network`) are
 embedded in the chain spec, so peer discovery happens automatically.
 
 ### Using the hosted raw chain spec
@@ -368,13 +368,13 @@ pass its path to `--chain`. That file is the live public testnet
 (EIP-155 `20033`).
 
 ```sh
-curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/quip-testnet.json \
-    -o quip-testnet.json
+curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/aglais-network.json \
+    -o aglais-network.json
 
 # Live public testnet JSON (EIP-155 20033)
 docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
-  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.2.0 \
-  --chain=/spec/quip-testnet.json --base-path=/data
+  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0 \
+  --chain=/spec/aglais-network.json --base-path=/data
 ```
 
 ### Running a validator
