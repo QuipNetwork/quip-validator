@@ -8,7 +8,7 @@
   "license": "MIT-0",
   "repository": {
     "type": "git",
-    "url": "https://gitlab.com/piqued/quip-protocol-rs.git"
+    "url": "https://gitlab.com/quip.network/quip-validator.git"
   },
   "files": [
     "quip_transaction_crypto_wasm_bg.wasm",

@@ -71,5 +71,5 @@ regressions in either hex parsing or account-id derivation.
 To add or rotate an operator, follow [`docs/testnet-keys.md`](testnet-keys.md):
 the helper script produces the `public-bundle.txt` and the coordinator
 commits the matching `*.hex` files plus a manifest entry here. Bumping the
-`quip_testnet` genesis requires re-exporting `quip-testnet.json` and
+`quip_testnet` genesis requires re-exporting `aglais-network.json` and
 republishing it in `nodes.quip.network`.

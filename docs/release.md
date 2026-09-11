@@ -12,7 +12,7 @@
 - [ ] `./target/release/quip-network-node --version` reports the target version
 - [ ] `./target/release/quip-network-node export-chain-spec --chain quip-testnet --raw > /tmp/quip-testnet.raw.json` succeeds
 - [ ] Companion `nodes.quip.network` MR with the matching
-      `chain-specs/quip-testnet.json` (sha256 from the above raw export) is
+      `chain-specs/aglais-network.json` (sha256 from the above raw export) is
       merged
 
 ## Tag
@@ -26,9 +26,9 @@ git push origin v<MAJOR>.<MINOR>.<PATCH>
 
 The GitLab CI pipeline at `.gitlab-ci.yml` picks up the tag via the
 `$CI_COMMIT_TAG` rule and publishes
-`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`
+`registry.gitlab.com/quip.network/quip-validator/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`
 and
-`registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH>`.
+`registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH>`.
 
 ### Version-tag format (shared standard)
 
@@ -52,26 +52,26 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 - [ ] Both images are present:
 
   ```bash
-  docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>
-  docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH>
+  docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>
+  docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH>
   ```
 
 - [ ] Sidecar image starts and reports its CLI help:
 
   ```bash
   docker run --rm \
-    registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH> \
+    registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:v<MAJOR>.<MINOR>.<PATCH> \
     --help
   ```
 
 - [ ] Smoke test against the published spec:
 
   ```bash
-  curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/quip-testnet.json \
-      -o /tmp/quip-testnet.json
+  curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/aglais-network.json \
+      -o /tmp/aglais-network.json
   docker run --rm -v /tmp:/spec \
-      registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH> \
-      --chain=/spec/quip-testnet.json --tmp --name v-smoke --no-mdns
+      registry.gitlab.com/quip.network/quip-validator/quip-network-node:v<MAJOR>.<MINOR>.<PATCH> \
+      --chain=/spec/aglais-network.json --tmp --name v-smoke --no-mdns
   ```
 
   Expect peer discovery against at least one of the three canonical bootnodes

@@ -88,12 +88,12 @@ The CI project coordinates the Trusted Publisher needs below:
 | Field | Value |
 |---|---|
 | Namespace | `quip.network` |
-| Project | `quip-protocol-rs` |
+| Project | `quip-validator` |
 | Top-level pipeline file path | `.gitlab-ci.yml` |
 | Environment | `release` |
 
 (Confirm the namespace against the CI project URL —
-`gitlab.com/quip.network/quip-protocol-rs`.)
+`gitlab.com/quip.network/quip-validator`.)
 
 ### 2. TestPyPI (Phase 1)
 

@@ -4,7 +4,7 @@
 //! pin the hybrid keystore against chain-genesis-funded accounts.
 //!
 //! Run via:
-//!     cd quip-protocol-rs/crates/transaction-crypto
+//!     cd quip-validator/crates/transaction-crypto
 //!     cargo run --example dump_dev_seeds --features std
 
 use codec::Encode;
