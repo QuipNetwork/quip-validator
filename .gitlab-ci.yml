@@ -168,8 +168,11 @@ workflow:
 # is what keeps the directory warm. CARGO_HOME is shared: the registry is
 # read-mostly and cargo locks it correctly.
 #
-# Pruning is a host concern — a scheduled CI job only ever lands on one runner.
-# Each host needs its own sweep of that volume; see docs/ci-cache.md.
+# Pruning rides along with these jobs rather than running on a schedule. A
+# scheduled job only ever lands on one runner, but the jobs that fill the
+# volume already reach every host in the pool — a host that never runs them has
+# nothing to prune. The script holds a per-host lock and prunes at most once a
+# day, so the cost does not land on every pipeline. See docs/ci-cache.md.
 .cargo-host-cache:
   variables:
     CARGO_HOME: /ci-cache/cargo-home
@@ -179,6 +182,11 @@ workflow:
     # walk never crosses it. Point the builder at the checkout directly.
     WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
   cache: []
+  # after_script also runs when the job fails or is cancelled on timeout, which
+  # is exactly when a slot is left half-written. The script exits 0 on every
+  # path: a prune must never turn a green build red.
+  after_script:
+    - ./scripts/prune-ci-cache.sh
 
 # Single test job: pulls the toolchain image once, and runs fmt → clippy →
 # test → runtime release build sequentially so they share compile artifacts
