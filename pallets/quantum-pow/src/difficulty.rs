@@ -311,6 +311,25 @@ fn ease_continuous(
     current_milli.saturating_add(geometric.max(floor).min(room))
 }
 
+/// The most a single win may harden the threshold: one decay step measured
+/// at the hard estimate, `DECAY_RATE_MILLI` of the full curve span, floored
+/// at `MIN_ENERGY_DELTA_MILLI`. Constant for a curve.
+///
+/// Uncapped, a fast round hardened 35% of the room to the hard estimate. At
+/// the aglais operating point that room is 80,000 milli against 895,000 to
+/// the easy cap, so a fast round (26,000 milli median, up to 41,000) undid
+/// more than one 22,000 milli decay epoch, and every fast round pushed the
+/// next one out to the second epoch. The cap is 24,368 milli on that curve.
+///
+/// The span, not the current threshold, defines the cap: decay from
+/// `max_milli` is zero, and a cap read from there would collapse to the
+/// floor exactly where a fast win most needs to bite.
+pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
+    let span = curve.max_milli.saturating_sub(curve.min_milli).max(0);
+    (libm::round(span as f64 * f64::from(DECAY_RATE_MILLI) / 1000.0) as i64)
+        .max(MIN_ENERGY_DELTA_MILLI)
+}
+
 /// Adjust difficulty after a winning proof by a non-dominant winner.
 /// Mutates only `max_energy_milli`; `min_solutions` and
 /// `min_diversity_milli` are chain-static (only the `set_difficulty`
@@ -333,6 +352,9 @@ pub fn adjust_on_proof(
 ///   i.e. the same account won at least `ConsecutiveWinnerEasingThreshold`
 ///   consecutive qblocks); otherwise it hardens gently via the graduated
 ///   rate band.
+/// - Hardening is capped at [`max_hardening_delta`], one decay step measured
+///   at the hard estimate, so no single win pushes the next round more than
+///   about an epoch out of reach.
 ///
 /// v0.1 keyed dominance on the miner *type* repeating once (streak 2); we
 /// key it on the account meeting the configured threshold instead — see
@@ -351,13 +373,21 @@ pub fn adjust_on_proof_with_dominance(
     } else {
         Direction::Easier
     };
-    let new_max_energy_milli = adjust_energy_along_curve(
+    let stepped = adjust_energy_along_curve(
         current.max_energy_milli,
         rate_milli,
         direction,
         curve,
         MIN_ENERGY_DELTA_MILLI,
     );
+    let new_max_energy_milli = match direction {
+        Direction::Harder => stepped.max(
+            current
+                .max_energy_milli
+                .saturating_sub(max_hardening_delta(curve)),
+        ),
+        Direction::Easier => stepped,
+    };
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
         // Chain-static — never touched here.

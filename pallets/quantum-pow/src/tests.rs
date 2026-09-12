@@ -1891,31 +1891,82 @@ fn apply_decay_never_eases_past_the_easy_cap() {
 }
 
 #[test]
-fn decay_moves_less_than_hardening_per_step() {
-    // Start from the curve midpoint so the distance to each cap is equal: that
-    // isolates the rate difference (fast harden ≥ 5% of the remaining gap vs
-    // decay's fixed 2.5%) from the geometric room asymmetry. On the tiny
-    // test_curve every step floors to a bound, so use the production-scale
-    // curve where the geometric rates are visible.
+fn fast_round_hardening_is_capped_at_the_largest_decay_step() {
+    // At the curve midpoint the room to the hard estimate is half the span,
+    // so an uncapped fast round (35% ± 30% of that room, at least 50,000
+    // milli here) always exceeds the cap (2.5% of the full span = 50,000).
+    // The cap must bind for every sampled rate.
     let curve = walkup_curve();
-    let midpoint = (curve.min_milli + curve.max_milli) / 2;
     let start = DifficultyConfig {
         min_solutions: 1,
-        max_energy_milli: midpoint,
+        max_energy_milli: (curve.min_milli + curve.max_milli) / 2,
         min_diversity_milli: 0,
     };
-    let after_decay = difficulty::apply_decay(start, 500, 100, curve);
-    let after_harden = (0..5).fold(start, |d, _| {
-        // mining_time = 30 blocks → fast/hardening branch.
-        difficulty::adjust_on_proof(d, 30, curve, b"seed")
-    });
-    let decay_move = after_decay.max_energy_milli - start.max_energy_milli;
-    let harden_move = start.max_energy_milli - after_harden.max_energy_milli;
-    assert!(
-        harden_move > decay_move,
-        "hardening must move energy farther than decay at equal step count \
-         (harden={harden_move}, decay={decay_move})",
+    let cap = crate::difficulty::max_hardening_delta(curve);
+    assert_eq!(cap, 50_000);
+    for seed in [b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9"] {
+        let after = difficulty::adjust_on_proof(start, 30, curve, seed);
+        assert_eq!(
+            start.max_energy_milli - after.max_energy_milli,
+            cap,
+            "seed {:?}: a fast round may harden by at most the cap",
+            seed
+        );
+    }
+}
+
+#[test]
+fn slow_round_hardening_stays_below_the_cap_near_the_hard_end() {
+    // Production-like operating point: 80,000 milli above the hard estimate,
+    // where a slow round's 5% ± 4% of that room (at most 7,200 milli) is far
+    // under the 50,000 milli cap. The cap must not touch it.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli + 80_000,
+        min_diversity_milli: 0,
+    };
+    let cap = crate::difficulty::max_hardening_delta(curve);
+    for seed in [b"0", b"1", b"2", b"3", b"4"] {
+        let after = difficulty::adjust_on_proof(start, 150, curve, seed);
+        let hardened = start.max_energy_milli - after.max_energy_milli;
+        assert!(
+            (1_000..=7_200).contains(&hardened) && hardened < cap,
+            "seed {:?}: hardened {hardened}, cap {cap}",
+            seed
+        );
+    }
+}
+
+#[test]
+fn fast_round_at_the_easy_cap_hardens_by_the_cap() {
+    // From max_milli the room to the hard estimate is the whole span, so an
+    // uncapped fast round would take at least 5% of it (100,000 milli). The
+    // cap holds it to one decay step measured at the hard end. Decay from
+    // max_milli is zero, which is why the cap is not defined from the current
+    // threshold: that would collapse it to the floor here.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.max_milli,
+        min_diversity_milli: 0,
+    };
+    let after = difficulty::adjust_on_proof(start, 30, curve, b"seed");
+    assert_eq!(
+        start.max_energy_milli - after.max_energy_milli,
+        crate::difficulty::max_hardening_delta(curve)
     );
+}
+
+#[test]
+fn max_hardening_delta_never_drops_below_the_floor() {
+    // A degenerate or tiny curve still lets a fast win harden by the floor.
+    let curve = crate::difficulty::EnergyCurve {
+        min_milli: -3_000,
+        knee_milli: -2_000,
+        max_milli: -1_000,
+    };
+    assert_eq!(crate::difficulty::max_hardening_delta(curve), 1_000);
 }
 
 #[test]
