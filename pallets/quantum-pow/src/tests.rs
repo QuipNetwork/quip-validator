@@ -470,14 +470,14 @@ fn set_default_topology_repoints_default_and_curve() {
         };
         set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+        System::set_block_number(101); // 100 blocks elapsed, epoch_length = 20
 
-        let expected = difficulty::apply_decay(initial, 5, curve_b);
+        let expected = difficulty::apply_decay(initial, 100, 20, curve_b);
         let decayed = QuantumPow::mining_snapshot(None).expect("snapshot exists");
         assert_eq!(decayed.difficulty, expected);
         assert_ne!(
             expected,
-            difficulty::apply_decay(initial, 5, test_curve()),
+            difficulty::apply_decay(initial, 100, 20, test_curve()),
             "sanity: A's and B's curves must differ for this test to mean anything"
         );
     });
@@ -920,7 +920,8 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
 
         let decayed = difficulty::apply_decay(
             initial,
-            (250_u32 - 1) / EpochLength::get() as u32,
+            250_u32 - 1,
+            EpochLength::get() as u32,
             test_curve(),
         );
         QuantumPow::on_finalize(System::block_number());
@@ -1559,12 +1560,12 @@ fn qblock_records_active_difficulty_threshold() {
         set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(45); // (45 - 1) / 20 = 2 decay steps
+        System::set_block_number(45); // 44 blocks elapsed, epoch_length = 20
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
 
-        let expected_active = difficulty::apply_decay(initial, 2, test_curve());
+        let expected_active = difficulty::apply_decay(initial, 44, 20, test_curve());
         let stored = QBlocks::<Test>::get(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
@@ -1604,10 +1605,10 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
+        System::set_block_number(121); // 120 blocks elapsed, epoch_length = 20
         let snapshot =
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
-        let expected = difficulty::apply_decay(initial, 6, test_curve());
+        let expected = difficulty::apply_decay(initial, 120, 20, test_curve());
         assert_eq!(snapshot.difficulty, expected);
         assert_ne!(
             snapshot.difficulty, initial,
@@ -1687,7 +1688,7 @@ fn submit_proof_rejected_after_intervening_win() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn current_difficulty_passes_through_when_no_decay_steps() {
+fn current_difficulty_passes_through_at_zero_elapsed() {
     let curve = test_curve();
     let base = DifficultyConfig {
         min_solutions: 5,
@@ -1699,25 +1700,35 @@ fn current_difficulty_passes_through_when_no_decay_steps() {
         difficulty::current_difficulty(100, base, 100, 10, Some(curve)),
         base,
     );
-    // Less than one full epoch elapsed: still no decay.
-    assert_eq!(
-        difficulty::current_difficulty(109, base, 100, 10, Some(curve)),
-        base,
-    );
 }
 
 #[test]
-fn current_difficulty_applies_decay_per_full_epoch() {
+fn current_difficulty_eases_within_the_first_epoch() {
     let curve = test_curve();
     let base = DifficultyConfig {
         min_solutions: 5,
         max_energy_milli: -2_500,
         min_diversity_milli: 200,
     };
-    // 25 blocks elapsed, epoch_length=10 → 2 decay steps.
+    // 9 blocks elapsed with epoch_length = 10: decay is continuous, so the
+    // threshold has already eased. The retired stepwise rule left it untouched
+    // until block 110.
+    let result = difficulty::current_difficulty(109, base, 100, 10, Some(curve));
+    assert!(result.max_energy_milli > base.max_energy_milli);
+    assert_eq!(result, difficulty::apply_decay(base, 9, 10, curve));
+}
+
+#[test]
+fn current_difficulty_applies_decay_per_elapsed_block() {
+    let curve = test_curve();
+    let base = DifficultyConfig {
+        min_solutions: 5,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 200,
+    };
+    // 25 blocks elapsed, epoch_length = 10: 2.5 epochs of decay, not 2.
     let result = difficulty::current_difficulty(125, base, 100, 10, Some(curve));
-    let expected = difficulty::apply_decay(base, 2, curve);
-    assert_eq!(result, expected);
+    assert_eq!(result, difficulty::apply_decay(base, 25, 10, curve));
 }
 
 #[test]
@@ -1773,13 +1784,110 @@ fn apply_decay_only_mutates_max_energy() {
         max_energy_milli: -2_500,
         min_diversity_milli: 400,
     };
-    let after = difficulty::apply_decay(before, 3, curve);
+    let after = difficulty::apply_decay(before, 30, 10, curve);
     assert_eq!(after.min_solutions, before.min_solutions);
     assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
     assert!(
         after.max_energy_milli > before.max_energy_milli,
         "decay must ease the threshold (move toward zero)"
     );
+}
+
+#[test]
+fn apply_decay_eases_within_the_first_epoch() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: (curve.min_milli + curve.max_milli) / 2,
+        min_diversity_milli: 0,
+    };
+    let half = difficulty::apply_decay(start, 50, 100, curve).max_energy_milli;
+    let full = difficulty::apply_decay(start, 100, 100, curve).max_energy_milli;
+    assert!(
+        start.max_energy_milli < half && half < full,
+        "half an epoch must ease strictly between zero and one epoch \
+         (start={}, half={half}, full={full})",
+        start.max_energy_milli
+    );
+}
+
+#[test]
+fn apply_decay_is_monotone_in_elapsed_blocks() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli,
+        min_diversity_milli: 0,
+    };
+    let mut previous = start.max_energy_milli;
+    for elapsed in 1..=300_u32 {
+        let now = difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+        assert!(now >= previous, "decay went backwards at elapsed={elapsed}");
+        previous = now;
+    }
+}
+
+#[test]
+fn apply_decay_over_one_epoch_equals_the_legacy_epoch_step() {
+    // Pins the average rate: one epoch of continuous decay is exactly the
+    // retired single 2.5% step, so `DECAY_RATE_MILLI` keeps its meaning.
+    let curve = walkup_curve();
+    for start_milli in [curve.min_milli, curve.knee_milli, curve.max_milli - 50_000] {
+        let start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start_milli,
+            min_diversity_milli: 0,
+        };
+        let eased = difficulty::apply_decay(start, 100, 100, curve).max_energy_milli;
+        let legacy_step = crate::difficulty::adjust_energy_along_curve(
+            start_milli,
+            /* DECAY_RATE_MILLI */ 25,
+            crate::difficulty::Direction::Easier,
+            curve,
+            /* MIN_ENERGY_DELTA_MILLI */ 1000,
+        );
+        assert_eq!(eased, legacy_step, "start={start_milli}");
+    }
+}
+
+#[test]
+fn apply_decay_composes_across_epochs() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli,
+        min_diversity_milli: 0,
+    };
+    let two_at_once = difficulty::apply_decay(start, 200, 100, curve).max_energy_milli;
+    let one_then_one = difficulty::apply_decay(
+        difficulty::apply_decay(start, 100, 100, curve),
+        100,
+        100,
+        curve,
+    )
+    .max_energy_milli;
+    // Closed form versus two roundings: at most 2 milli apart.
+    assert!(
+        (two_at_once - one_then_one).abs() <= 2,
+        "{two_at_once} vs {one_then_one}"
+    );
+}
+
+#[test]
+fn apply_decay_never_eases_past_the_easy_cap() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli,
+        min_diversity_milli: 0,
+    };
+    let eased = difficulty::apply_decay(start, 100_000, 100, curve).max_energy_milli;
+    assert_eq!(eased, curve.max_milli);
+    let at_cap = DifficultyConfig {
+        max_energy_milli: curve.max_milli,
+        ..start
+    };
+    assert_eq!(difficulty::apply_decay(at_cap, 100, 100, curve), at_cap);
 }
 
 #[test]
@@ -1796,7 +1904,7 @@ fn decay_moves_less_than_hardening_per_step() {
         max_energy_milli: midpoint,
         min_diversity_milli: 0,
     };
-    let after_decay = difficulty::apply_decay(start, 5, curve);
+    let after_decay = difficulty::apply_decay(start, 500, 100, curve);
     let after_harden = (0..5).fold(start, |d, _| {
         // mining_time = 30 blocks → fast/hardening branch.
         difficulty::adjust_on_proof(d, 30, curve, b"seed")
@@ -1887,7 +1995,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
         };
         set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+        System::set_block_number(101); // 100 blocks elapsed, epoch_length = 20
 
         // `mining_snapshot` populates `difficulty` via current_difficulty,
         // which builds its curve from DefaultTopology.
@@ -1895,12 +2003,13 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
 
         // Expected decay using A's curve (the default).
-        let expected_default = difficulty::apply_decay(initial, 5, test_curve());
+        let expected_default = difficulty::apply_decay(initial, 100, 20, test_curve());
         // Decay using B's curve (the *non-default* topology — this is what
         // a miner-controlled curve would produce if the invariant were broken).
         let expected_other = difficulty::apply_decay(
             initial,
-            5,
+            100,
+            20,
             crate::difficulty::EnergyCurve::new(
                 4,
                 4,
@@ -2189,9 +2298,8 @@ fn observed_win_series_never_pins_the_hard_cap() {
         .into_iter()
         .enumerate()
     {
-        // Decay eases the live threshold by one step per elapsed epoch …
-        let steps = (gap / epoch_len) as u32;
-        let active = difficulty::apply_decay(base, steps, curve);
+        // Decay eases the live threshold continuously over the elapsed gap …
+        let active = difficulty::apply_decay(base, gap as u32, epoch_len as u32, curve);
         // … then the winning proof adjusts from that decayed base. Use a
         // distinct seed per round so the sampled rate varies like real wins.
         let seed = [i as u8];
