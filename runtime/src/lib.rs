@@ -231,7 +231,12 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Extended 117 with custody pallets starting at index 16. This unreleased
     // runtime keeps the existing extrinsic format, so transaction version 7
     // remains unchanged.
-    spec_version: 117,
+    // Bumped to 118: quantum-pow difficulty decay is continuous per block
+    // instead of stepped per 100-block epoch, and per-win hardening is capped
+    // at one epoch of decay. Same storage, same calls; a 117 node computes a
+    // different threshold from identical state, so the version must move.
+    // `transaction_version` stays at 7.
+    spec_version: 118,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,

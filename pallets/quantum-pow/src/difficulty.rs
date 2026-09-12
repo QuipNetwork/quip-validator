@@ -21,13 +21,12 @@ use crate::types::DifficultyConfig;
 // 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
 //
 // `TARGET_PROOF_BLOCKS` is deliberately co-located with the runtime's
-// `QuantumPowEpochLength` (= 100, the decay interval): the first decay
-// step, the hardening band's gentle plateau, and the easing rate ramp all
-// begin at the same 100-block boundary. A win round is therefore either
-// "sub-epoch" (adjusts from the stored difficulty) or "decayed" (adjusts
-// gently from the decay-eased base) — never a mix. The two remain separate
-// constants on purpose: this one anchors the rate bands, the runtime one
-// sets decay cadence. Retune them together.
+// `QuantumPowEpochLength` (= 100): decay is continuous per block, but its
+// rate is expressed per epoch, and the hardening cap in
+// `adjust_on_proof_with_dominance` is one epoch of that decay. The rate
+// bands below and the decay rate therefore share the 100-block unit. The
+// two remain separate constants on purpose: this one anchors the rate
+// bands, the runtime one sets the decay unit. Retune them together.
 const FAST_PROOF_BLOCKS: u64 = 60;
 const TARGET_PROOF_BLOCKS: u64 = 100;
 const SLOW_PROOF_BLOCKS: u64 = 200;
