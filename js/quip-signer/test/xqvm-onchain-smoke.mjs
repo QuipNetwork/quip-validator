@@ -8,21 +8,25 @@
 // between the pallet's embedded VM and the reference implementation.
 //
 // Prerequisites:
-//   cargo build --release -p quip-network-node
-//   target/release/quip-network-node --dev
+//   make wasm-signer && npm run build --prefix js/quip-signer
+//   cargo build -p quip-network-node
+//   target/debug/quip-network-node --dev
 //   vectors assembled with `xquad asm` into VECTORS_DIR
 //
-// Run from the repository root:
+// `scripts/test-xqvm-onchain.sh` does all of this, including the node.
+// To run this file on its own against a node that is already up:
 //   QUIP_WS_URL=ws://127.0.0.1:9944 VECTORS_DIR=... node <this file>
 
 import { ApiPromise, WsProvider } from '@polkadot/api';
 import { GenericExtrinsicSignatureV4 } from '@polkadot/types';
 import { u8aToHex } from '@polkadot/util';
-import { blake2AsHex } from '@polkadot/util-crypto';
+import { addressEq, blake2AsHex } from '@polkadot/util-crypto';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = process.env.QUIP_REPO || '/Users/konrad/Quip/quip-validator';
+// This file lives at js/quip-signer/test/, three levels below the root.
+const REPO_ROOT = process.env.QUIP_REPO || resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const { DevSeedProvider, patchExtrinsicSignFake, QuipSigner } = await import(
   `${REPO_ROOT}/js/quip-signer/dist/index.js`
 );
@@ -211,14 +215,24 @@ try {
           `stored hash matches blake2-256 of the bytecode (${hash.slice(0, 18)}...)`
         );
         check(
+          addressEq(event.data[1].toString(), alice.address),
+          'ProgramStored names the submitting account as owner'
+        );
+        check(
           event.data[2].toNumber() === bytecode.length,
           `stored size is ${bytecode.length} bytes`
         );
       }
     }
 
+    // A byte-for-byte comparison, not a presence check: the wire format
+    // drifting between the assembler and the pallet is exactly what this
+    // suite exists to catch.
     const onChain = await api.query.xqvm.programs(hash);
-    check(onChain.isSome, 'program is readable from chain storage');
+    check(
+      onChain.isSome && u8aToHex(onChain.unwrap()) === u8aToHex(bytecode),
+      'stored bytes read back from chain storage byte for byte'
+    );
 
     // ---- execute
     const stepLimit = BigInt(expected.steps) + 100n;
