@@ -183,7 +183,8 @@ pub mod pallet {
         /// Since xqvm 0.4.0 overflow raises instead of wrapping, so this is
         /// a fault a program can hit rather than a silently wrong result.
         VmArithmeticOverflow,
-        /// XQVM: a vector or sample index was outside its length.
+        /// XQVM: an index was outside what it addressed -- a vector or
+        /// sample element, a model's coefficient, or a grid cell.
         VmIndexOutOfBounds,
         /// XQVM: a loop opcode ran with no active loop, or a loop was left
         /// unclosed at the end of the stream.
@@ -201,8 +202,8 @@ pub mod pallet {
         VmSizeMismatch,
         /// XQVM: a shift amount was negative or at least 64.
         VmInvalidShift,
-        /// XQVM: grid dimensions were negative, or exceeded the register's
-        /// declared size.
+        /// XQVM: grid dimensions were zero or negative, or described more
+        /// cells than the register declares.
         VmInvalidGridDimensions,
         /// XQVM: a discrete sample was allocated with `k < 2`.
         VmInvalidDiscreteK,
