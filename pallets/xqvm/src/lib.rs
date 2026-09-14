@@ -22,14 +22,24 @@ pub mod pallet {
     use alloc::vec::Vec;
     use frame_support::dispatch::PostDispatchInfo;
     use frame_support::pallet_prelude::*;
-    use frame_support::traits::fungible::{Mutate, MutateHold};
+    use frame_support::traits::fungible::MutateHold;
     use frame_support::traits::tokens::Precision;
+    use frame_support::traits::StorageVersion;
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::{Hash as _, Saturating};
 
     use xqvm::{Program, RegVal, Vm};
 
+    /// The storage layout this code expects: `Programs`, `ProgramOwner` and
+    /// `ProgramDeposit`, all keyed by program hash.
+    ///
+    /// Declared now, while the layout is fresh and no live chain holds any
+    /// program, so the first in-place upgrade has a recorded version to
+    /// migrate from rather than an implicit zero.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     /// The balance type of the configured currency.
@@ -43,7 +53,15 @@ pub mod pallet {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         /// The currency the storage deposit is taken in.
-        type Currency: Mutate<Self::AccountId>
+        ///
+        /// The pallet itself only ever holds and releases. Benchmarks also
+        /// need to conjure a balance to hold against, so they ask for
+        /// `Mutate` on top; production currencies are not made to promise
+        /// arbitrary mutation for the benchmarks' sake.
+        #[cfg(not(feature = "runtime-benchmarks"))]
+        type Currency: MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
+        #[cfg(feature = "runtime-benchmarks")]
+        type Currency: frame_support::traits::fungible::Mutate<Self::AccountId>
             + MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
 
         /// The overarching hold reason.
@@ -51,8 +69,10 @@ pub mod pallet {
 
         /// Flat part of a program's storage deposit.
         ///
-        /// Covers the two map entries a stored program occupies, in the same
-        /// spirit as `pallet_revive`'s per-item deposit.
+        /// Covers the fixed footprint of a stored program -- its entries in
+        /// `Programs`, `ProgramOwner` and `ProgramDeposit`, plus the hold
+        /// recorded against the storer -- in the same spirit as
+        /// `pallet_revive`'s per-item deposit.
         #[pallet::constant]
         type DepositBase: Get<BalanceOf<Self>>;
 
@@ -692,30 +712,33 @@ pub mod pallet {
 
         /// Clear a program's three storage entries and release its deposit.
         ///
-        /// Returns the program's byte length and the deposit released, both
-        /// of which the callers use for the weight refund and the event.
+        /// Returns the program's byte length and the amount actually
+        /// released, which the callers use for the weight refund and the
+        /// event.
         fn do_remove(
             program_hash: &T::Hash,
             owner: &T::AccountId,
         ) -> Result<(u32, BalanceOf<T>), DispatchError> {
             let bytecode = Programs::<T>::take(program_hash).ok_or(Error::<T>::ProgramNotFound)?;
             let size = bytecode.len() as u32;
-            let deposit = ProgramDeposit::<T>::take(program_hash).unwrap_or_default();
+            let recorded = ProgramDeposit::<T>::take(program_hash).unwrap_or_default();
 
             // BestEffort rather than Exact: the entry is being removed either
             // way, and a hold that has already been reduced elsewhere must not
             // strand the storage. There is no path that reduces it today, so
-            // this is defence against a future one, not a known case.
-            T::Currency::release(
+            // this is defence against a future one, not a known case -- and
+            // the event reports what came back, not what was recorded, so it
+            // stays truthful if that future arrives.
+            let released = T::Currency::release(
                 &HoldReason::StoredProgram.into(),
                 owner,
-                deposit,
+                recorded,
                 Precision::BestEffort,
             )?;
 
             ProgramOwner::<T>::remove(program_hash);
 
-            Ok((size, deposit))
+            Ok((size, released))
         }
     }
 }
