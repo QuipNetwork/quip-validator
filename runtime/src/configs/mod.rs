@@ -412,18 +412,6 @@ impl pallet_faucet_ops::Config for Runtime {
 }
 
 parameter_types! {
-    /// Flat part of a stored program's deposit, covering the map entries it
-    /// occupies. Matches `pallet_revive`'s per-item deposit: the same
-    /// resource, priced the same way.
-    pub const XqvmDepositBase: Balance = 200 * MILLI_UNIT;
-    /// Per-byte part of a stored program's deposit, matching
-    /// `pallet_revive`'s per-byte figure.
-    ///
-    /// At `MaxProgramSize` this is 0.655 UNIT, so a full 64 KiB program
-    /// locks up roughly 0.855 UNIT in total. That is the price of occupying
-    /// state indefinitely, and it comes back when the program is removed.
-    pub const XqvmDepositPerByte: Balance = 10 * MICRO_UNIT;
-
     pub const MaxProgramSize: u32 = 65_536;
     /// Maximum basic blocks in a stored program, counted as the verifier's
     /// CFG builder counts them: the entry, every `TARGET`, and the position
@@ -542,8 +530,12 @@ impl pallet_xqvm::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type RuntimeHoldReason = RuntimeHoldReason;
-    type DepositBase = XqvmDepositBase;
-    type DepositPerByte = XqvmDepositPerByte;
+    // A stored program is priced at the chain storage price like Revive's
+    // code blobs: one item for the program plus its bytes. At `MaxProgramSize`
+    // the per-byte part is 0.655 UNIT, so a full 64 KiB program locks up
+    // roughly 0.855 UNIT in total, returned when the program is removed.
+    type DepositBase = StorageDepositPerItem;
+    type DepositPerByte = StorageDepositPerByte;
     type MaxProgramSize = MaxProgramSize;
     type MaxProgramBlocks = MaxProgramBlocks;
     type MaxLoopDepth = MaxLoopDepth;
