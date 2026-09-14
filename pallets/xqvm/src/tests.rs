@@ -972,6 +972,73 @@ fn discrete_sample_with_small_k_maps_to_its_own_error() {
 }
 
 #[test]
+fn coefficient_index_past_the_model_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A four-variable model has indices 0..4; SETLINE pops value then
+        // index, and index 9 addresses a variable that was never declared.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bqmx(Register(0))
+                .emit_push(9)
+                .emit_push(1)
+                .emit_set_line(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmIndexOutOfBounds.into()
+        );
+    });
+}
+
+#[test]
+fn sample_of_the_wrong_size_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // ENERGY of a two-element sample against a four-variable model. Both
+        // registers hold the type the verifier expects, so this is a fault
+        // only the VM can see.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bqmx(Register(0))
+                .emit_push(2)
+                .emit_bsmx(Register(1))
+                .emit_energy(Register(0), Register(1))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmSizeMismatch.into()
+        );
+    });
+}
+
+#[test]
+fn grid_larger_than_the_model_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // RESIZE pops cols then rows. A 3 x 3 grid describes nine cells over
+        // a model that declared four variables.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bqmx(Register(0))
+                .emit_push(3)
+                .emit_push(3)
+                .emit_resize(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmInvalidGridDimensions.into()
+        );
+    });
+}
+
+#[test]
 fn negative_allocation_maps_to_its_own_error() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
