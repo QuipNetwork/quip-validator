@@ -768,9 +768,6 @@ mod tests {
 mod xqvm_weights {
     use super::*;
 
-    /// A single `execute` at the maximum step limit must fit inside the budget
-    /// the limit was derived from.
-    ///
     /// The VM's allocation budget must stay well under the Wasm runtime's
     /// heap.
     ///
@@ -787,7 +784,8 @@ mod xqvm_weights {
         const RUNTIME_HEAP_BYTES: u64 = 2048 * 64 * 1024;
         /// The VM may claim at most this share of the heap at its bound, so
         /// the storage overlay and every other pallet in the block keep room.
-        const MAX_HEAP_SHARE: u64 = 4;
+        /// An eighth, as the `MaxVmMemory` doc promises: 16 MiB of 128 MiB.
+        const MAX_HEAP_SHARE: u64 = 8;
 
         assert!(
             MaxVmMemory::get() <= RUNTIME_HEAP_BYTES / MAX_HEAP_SHARE,
@@ -797,6 +795,9 @@ mod xqvm_weights {
         );
     }
 
+    /// A single `execute` at the maximum step limit must fit inside the budget
+    /// the limit was derived from.
+    ///
     /// This is the invariant the old hand-set `WeightPerStep` violated: it
     /// admitted ~750M steps priced at 0.75 s that took over ten seconds to run,
     /// against a two-second block. Both constants are now derived from the
