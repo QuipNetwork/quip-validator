@@ -1,7 +1,7 @@
 use crate::{mock::*, Error, Event, ProgramOwner, Programs};
 use frame_support::{assert_noop, assert_ok, BoundedVec};
 use sp_runtime::traits::Hash;
-use xqvm::{InstructionBuilder, Register};
+use xqvm::{InstructionBuilder, Program, Register};
 
 /// Encode a program built with `InstructionBuilder` into raw bytes.
 fn build_program(f: impl FnOnce(&mut InstructionBuilder)) -> Vec<u8> {
@@ -9,6 +9,17 @@ fn build_program(f: impl FnOnce(&mut InstructionBuilder)) -> Vec<u8> {
     f(&mut b);
     b.build().unwrap().encode()
 }
+
+/// Wrap a hand-assembled instruction stream in a well-formed XQBC
+/// container. For faults the builder refuses to emit but the verifier
+/// must still catch.
+fn raw_program(code: Vec<u8>) -> Vec<u8> {
+    Program::new(code).encode()
+}
+
+/// Opcode bytes for the hand-assembled streams above.
+const JUMP1: u8 = 0x01;
+const HALT: u8 = 0xFF;
 
 fn bounded(bytes: Vec<u8>) -> BoundedVec<u8, MaxProgramSize> {
     bytes.try_into().expect("test program fits MaxProgramSize")
@@ -334,6 +345,81 @@ fn store_rejects_read_of_unset_register() {
         assert_noop!(
             Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
             Error::<Test>::VerifierReadUnsetRegister
+        );
+    });
+}
+
+#[test]
+fn store_rejects_an_unknown_opcode() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // 0x0D is the reserved gap in the opcode table. `Program::decode`
+        // tolerates it -- the container is well formed and the scan that
+        // rebuilds the jump table only records the fault -- so this reaches
+        // the verifier rather than `InvalidBytecode`.
+        let bytecode = raw_program(vec![0x0D, HALT]);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierBadInstruction
+        );
+    });
+}
+
+#[test]
+fn store_rejects_a_jump_to_a_missing_target() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // JUMP1 to label 3 in a stream with no TARGET at all. The builder
+        // refuses to assemble this, which is the point: the wire format can
+        // still carry it, so the verifier has to be the one to say no.
+        let bytecode = raw_program(vec![JUMP1, 0x03, HALT]);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierUndefinedJumpTarget
+        );
+    });
+}
+
+#[test]
+fn store_rejects_an_unclosed_loop() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // RANGE opens a loop that no NEXT ever closes.
+        let bytecode = build_program(|b| {
+            b.emit_push(0).emit_push(4).emit_range().emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierLoopImbalance
+        );
+    });
+}
+
+#[test]
+fn store_rejects_a_register_read_at_the_wrong_type() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // STOW writes r0 as an int; LOAD of a model register would be fine,
+        // but ENERGY wants a model in r0 and reads it as one.
+        let bytecode = build_program(|b| {
+            b.emit_push(1)
+                .emit_stow(Register(0))
+                .emit_push(2)
+                .emit_bsmx(Register(1))
+                .emit_energy(Register(0), Register(1))
+                .emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierRegisterTypeMismatch
         );
     });
 }
