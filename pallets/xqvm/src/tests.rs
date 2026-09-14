@@ -921,7 +921,8 @@ fn negative_allocation_maps_to_its_own_error() {
 // ── storage deposit and removal (QUI-1058) ───────────────────────────────
 
 use crate::ProgramDeposit;
-use frame_support::traits::fungible::InspectHold;
+use frame_support::traits::fungible::{InspectHold, MutateHold};
+use frame_support::traits::tokens::Precision;
 
 /// The amount currently held against `who` for stored programs.
 fn held(who: u64) -> u64 {
@@ -961,6 +962,51 @@ fn store_holds_a_deposit_and_remove_releases_it() {
                 program_hash: hash,
                 owner: 1,
                 deposit: expected,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn removal_reports_what_was_actually_released() {
+    // The release is BestEffort so a hold that something else has already
+    // reduced cannot strand the storage. The event must then report what
+    // came back, not the amount that was recorded at store time.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+        let recorded = Xqvm::deposit_for(bytecode.len() as u32);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        // Something outside the pallet lets part of the hold go. Nothing in
+        // the pallet does this today; the test stands in for the path that
+        // might.
+        let reduced_by = recorded / 4;
+        assert_ok!(<Balances as MutateHold<u64>>::release(
+            &crate::HoldReason::StoredProgram.into(),
+            &1,
+            reduced_by,
+            Precision::Exact,
+        ));
+        assert_eq!(held(1), recorded - reduced_by);
+
+        assert_ok!(Xqvm::remove_program(RuntimeOrigin::signed(1), hash));
+
+        assert_eq!(held(1), 0, "whatever was still held must come back");
+        assert!(!Programs::<Test>::contains_key(&hash));
+        System::assert_last_event(
+            Event::ProgramRemoved {
+                program_hash: hash,
+                owner: 1,
+                deposit: recorded - reduced_by,
             }
             .into(),
         );

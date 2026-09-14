@@ -89,6 +89,34 @@ fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
     bytes
 }
 
+/// Build a valid XQVM program whose encoded byte length equals
+/// `target_len`.
+///
+/// Layout: XQBC header + (target_len - XQBC_HEADER_LEN - 1) NOPs + HALT.
+/// NOP and HALT are one byte each, so the encoded length is exact.
+/// Minimum `target_len` is `XQBC_HEADER_LEN + 1` (header + HALT).
+fn build_padded_program(target_len: u32) -> Vec<u8> {
+    let len = target_len as usize;
+    assert!(
+        len > XQBC_HEADER_LEN,
+        "minimum encoded program is header + HALT"
+    );
+
+    let mut b = InstructionBuilder::new();
+    for _ in 0..(len - XQBC_HEADER_LEN - 1) {
+        b.emit_nop();
+    }
+    b.emit_halt();
+    let bytes = b.build().expect("NOP* HALT is a valid program").encode();
+
+    assert_eq!(bytes.len(), len);
+    assert!(
+        Program::decode(&bytes).is_ok(),
+        "program must round-trip through decode"
+    );
+    bytes
+}
+
 /// Build a valid XQVM program of exactly `target_len` bytes that halts on its
 /// first step.
 ///
@@ -270,8 +298,8 @@ mod benchmarks {
     /// The program is stored through the extrinsic rather than inserted
     /// directly, so the deposit exists and the release path is measured
     /// rather than skipped. A `NOP` sled is the right shape here: removal
-    /// reads and decodes the bytes but runs no verifier, so cost is driven
-    /// by length, not by block structure.
+    /// reads the bytes to learn their length and neither decodes nor
+    /// verifies them, so cost is driven by length alone.
     #[benchmark]
     fn remove_program(s: Linear<16, { 65_536 }>) {
         let caller: T::AccountId = whitelisted_caller();
