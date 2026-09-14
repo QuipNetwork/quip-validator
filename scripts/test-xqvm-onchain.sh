@@ -22,7 +22,10 @@ set -euo pipefail
 # In CI this runs inside browser-signer-test, which already performs all of
 # the above for its own suite; see .gitlab-ci.yml for why they share a job.
 
-node_binary="${QUIP_NODE_BINARY:-target/debug/quip-network-node}"
+# CI sets CARGO_TARGET_DIR to a host volume outside the project dir, so the
+# node is resolved through it, the same way test-browser-signer-integration.sh
+# does; a plain `cargo build` on a laptop lands in target/ as before.
+node_binary="${QUIP_NODE_BINARY:-${CARGO_TARGET_DIR:-target}/debug/quip-network-node}"
 node_log="$(mktemp)"
 work_dir="$(mktemp -d)"
 node_pid=""
