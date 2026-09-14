@@ -751,11 +751,15 @@ kaniko-build-evm-sidecar-arm64:
 # Maps a release tag to zero or more floating consumer tags. Tag pipelines
 # carry no branch variable (CI_COMMIT_BRANCH is empty), so commit ancestry
 # decides. Policy:
-#   - rc / pre-release (tag does not match ^v[0-9]+\.[0-9]+\.[0-9]+$):
-#     float nothing — only :<tag> + :sha-*.
-#   - stable vX.Y.Z reachable from origin/main: float both :latest and
-#     :vX.Y (minor series, e.g. v0.2 for v0.2.1).
-#   - stable tag not reachable from origin/main: float nothing.
+#   - stable vX.Y.Z reachable from origin/main: float :latest, :vX.Y (minor
+#     series, e.g. v0.2 for v0.2.1), :stable, and :beta.
+#   - rc vX.Y.Z-rcN reachable from origin/main: float :beta.
+#   - any other tag, or a tag not reachable from origin/main: float nothing,
+#     only :<tag> + :sha-*.
+# :stable and :beta are the channels nodes.quip.network pulls through CHANNEL.
+# A release moves :beta too, because a release is newer than every rc before
+# it. The main-ancestry check keeps a tag cut on an old maintenance branch
+# from moving a channel backwards.
 # GIT_DEPTH 0 forces a full clone — merge-base needs real ancestry, not a
 # shallow tip. FLOATING_TAGS is space-separated (empty when none apply).
 resolve-floating-tag:
@@ -773,10 +777,12 @@ resolve-floating-tag:
     - git fetch origin main
     - |
       FLOATING_TAGS=""
-      if printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+      if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+        if printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
           minor=$(printf '%s' "$CI_COMMIT_TAG" | sed -E 's/^(v[0-9]+\.[0-9]+).*/\1/')
-          FLOATING_TAGS="latest ${minor}"
+          FLOATING_TAGS="latest ${minor} stable beta"
+        elif printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$'; then
+          FLOATING_TAGS="beta"
         fi
       fi
       echo "FLOATING_TAGS=$FLOATING_TAGS" > floating-tag.env
