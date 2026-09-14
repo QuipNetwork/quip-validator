@@ -36,16 +36,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The pinned xqvm version is the single source of truth for which toolchain
-# the vectors come from: same crate, same tag, no second place to update.
+# The pinned xqvm version names the toolchain the vectors come from: same
+# crate, same tag. The requirement is an exact pin (`=0.4.0-rc1`), so the
+# leading `=` is stripped to get the version the tag is named after.
 xqvm_version="$(
-  sed -n 's/^xqvm = { version = "\([^"]*\)".*/\1/p' Cargo.toml
+  sed -n 's/^xqvm = { version = "=\{0,1\}\([^"]*\)".*/\1/p' Cargo.toml
 )"
 if [[ -z "$xqvm_version" ]]; then
   echo "ERROR: could not read the pinned xqvm version from Cargo.toml" >&2
   exit 1
 fi
 echo "== Pinned xqvm: ${xqvm_version} =="
+
+# A tag can be moved; a commit cannot. This is the commit crates.io records
+# for the published xqvm ${xqvm_version} crate (its `.cargo_vcs_info.json`),
+# so the vectors are asserted to come from exactly the source the pallet
+# links against. Update it together with the version pin in Cargo.toml.
+xquad_commit="a4b5ae0c3e9b28a353b81445d22d8816ea9c3177"
 
 if [[ -n "${XQUAD_DIR:-}" ]]; then
   xquad_dir="$XQUAD_DIR"
@@ -55,6 +62,13 @@ else
   echo "== Cloning xquad at v${xqvm_version} =="
   git clone --quiet --depth 1 --branch "v${xqvm_version}" \
     https://gitlab.com/quip.network/xquad.git "$xquad_dir"
+
+  cloned_commit="$(git -C "$xquad_dir" rev-parse HEAD)"
+  if [[ "$cloned_commit" != "$xquad_commit" ]]; then
+    echo "ERROR: tag v${xqvm_version} resolves to ${cloned_commit}," \
+      "expected ${xquad_commit}; the tag has moved" >&2
+    exit 1
+  fi
 fi
 
 vectors_src="$xquad_dir/conformance/vectors"
