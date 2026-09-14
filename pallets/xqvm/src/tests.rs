@@ -18,6 +18,7 @@ fn raw_program(code: Vec<u8>) -> Vec<u8> {
 }
 
 /// Opcode bytes for the hand-assembled streams above.
+const TARGET: u8 = 0x00;
 const JUMP1: u8 = 0x01;
 const HALT: u8 = 0xFF;
 
@@ -420,6 +421,79 @@ fn store_rejects_a_register_read_at_the_wrong_type() {
         assert_noop!(
             Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
             Error::<Test>::VerifierRegisterTypeMismatch
+        );
+    });
+}
+
+// ── basic-block bound ────────────────────────────────────────────────────
+
+/// A program of exactly `blocks` basic blocks: that many `TARGET`s, then
+/// `HALT`. The builder refuses unreferenced labels, so this is assembled
+/// by hand; the verifier accepts it.
+fn target_sled(blocks: u32) -> Vec<u8> {
+    let mut code = vec![TARGET; blocks as usize];
+    code.push(HALT);
+    raw_program(code)
+}
+
+#[test]
+fn store_accepts_a_program_at_the_block_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = target_sled(MaxProgramBlocks::get());
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+        assert!(Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn store_rejects_a_program_over_the_block_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // One TARGET past the bound. Every one of them is a valid, empty
+        // basic block, so nothing else about the program is wrong: only the
+        // count is, and it is what bounds the verifier's memory.
+        let bytecode = target_sled(MaxProgramBlocks::get() + 1);
+        let hash = program_hash(&bytecode);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::TooManyBlocks
+        );
+        assert!(!Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn store_refunds_unused_blocks() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // Straight-line program: no TARGET, so zero basic blocks to verify
+        // against a pre-charge at MaxProgramBlocks.
+        let bytecode = build_program(|b| {
+            b.emit_push(1).emit_push(2).emit_add().emit_halt();
+        });
+        let len = bytecode.len() as u32;
+
+        let post = Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode))
+            .expect("program stores");
+        let actual = post.actual_weight.expect("store reports actual weight");
+
+        assert_eq!(actual, <() as crate::WeightInfo>::store_program(len, 0));
+
+        let pre_charged = <() as crate::WeightInfo>::store_program(len, MaxProgramBlocks::get());
+        assert!(
+            actual.ref_time() < pre_charged.ref_time(),
+            "actual {} should be below pre-charged {}",
+            actual.ref_time(),
+            pre_charged.ref_time(),
         );
     });
 }

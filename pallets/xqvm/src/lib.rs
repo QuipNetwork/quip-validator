@@ -39,6 +39,19 @@ pub mod pallet {
         #[pallet::constant]
         type MaxProgramSize: Get<u32>;
 
+        /// Maximum number of basic blocks -- `TARGET` opcodes -- a stored
+        /// program may contain.
+        ///
+        /// Bounds the verifier's memory, which `MaxProgramSize` does not:
+        /// the verifier allocates per basic block, about 3 KiB natively, and
+        /// `TARGET` is a one-byte opcode, so a 64 KiB program of nothing but
+        /// `TARGET`s asks for ~200 MiB on a runtime heap of 128 MiB. A
+        /// failed allocation inside Wasm traps the whole execution rather
+        /// than returning a fault this pallet could report, which is the
+        /// same reason `MaxVmMemory` exists for the VM's own allocations.
+        #[pallet::constant]
+        type MaxProgramBlocks: Get<u32>;
+
         /// Maximum number of calldata entries (i64 values).
         #[pallet::constant]
         type MaxCallDataLen: Get<u32>;
@@ -115,6 +128,11 @@ pub mod pallet {
         /// Verifier: the program can underflow or overflow the value stack, or
         /// reaches a join point at inconsistent stack depths.
         VerifierStackFault,
+        /// The program has more basic blocks than `MaxProgramBlocks`.
+        ///
+        /// Checked before verification, because the verifier's memory is
+        /// what the bound protects and it is spent during verification.
+        TooManyBlocks,
         /// A program with this hash already exists.
         ProgramAlreadyExists,
         /// No program found for the given hash.
@@ -197,18 +215,35 @@ pub mod pallet {
         /// every account that runs it. It is also what lets `execute` skip
         /// re-verification later (QUI-1057).
         ///
+        /// The cost has two dimensions. Decoding is linear in the byte
+        /// length, which the call arguments give. Verification is linear in
+        /// the basic-block count, which they do not: it is only known after
+        /// decoding, so it is pre-charged at `MaxProgramBlocks` and refunded
+        /// to the actual count -- the shape `execute` uses for its size.
+        ///
         /// The program is stored keyed by its Blake2-256 hash for
         /// deduplication.
         #[pallet::call_index(0)]
-        #[pallet::weight(T::WeightInfo::store_program(bytecode.len() as u32))]
+        #[pallet::weight(
+            T::WeightInfo::store_program(bytecode.len() as u32, T::MaxProgramBlocks::get())
+        )]
         pub fn store_program(
             origin: OriginFor<T>,
             bytecode: BoundedVec<u8, T::MaxProgramSize>,
-        ) -> DispatchResult {
+        ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
-            // Container first, then the instruction stream.
+            // Container first, then the block bound, then the instruction
+            // stream. Decoding already walked the stream to rebuild the jump
+            // table, so the block count is free here, and it has to come
+            // before `verify` because verification is what spends the memory
+            // the bound protects.
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
+            let blocks = program.jump_table().len() as u32;
+            ensure!(
+                blocks <= T::MaxProgramBlocks::get(),
+                Error::<T>::TooManyBlocks
+            );
             xqvm::verifier::verify(&program).map_err(|e| map_verifier_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);
@@ -226,7 +261,7 @@ pub mod pallet {
                 owner: who,
                 size,
             });
-            Ok(())
+            Ok(Some(T::WeightInfo::store_program(size, blocks)).into())
         }
 
         /// Execute a stored XQVM program.

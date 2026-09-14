@@ -6,6 +6,7 @@ use super::*;
 use crate::Pallet as Xqvm;
 use alloc::vec::Vec;
 use frame_benchmarking::v2::*;
+use frame_support::traits::Get as _;
 use frame_support::BoundedVec;
 use frame_system::RawOrigin;
 use sp_runtime::traits::Hash as _;
@@ -22,48 +23,66 @@ const HALT_OPCODE: u8 = 0xFF;
 /// and that refusal is exactly what makes this shape unreachable through
 /// the builder while remaining perfectly acceptable to the verifier.
 const TARGET_OPCODE: u8 = 0x00;
+/// The `NOP` opcode byte.
+const NOP_OPCODE: u8 = 0xF0;
 
-/// Build a valid XQVM program of exactly `target_len` bytes that is the worst
-/// case for `store_program`.
+/// Upper bound of the block component. A constant because `Linear` needs
+/// one; the benchmark asserts it does not exceed the configured
+/// `MaxProgramBlocks`, which is where the bound actually lives.
+const MAX_BENCH_BLOCKS: u32 = 2_048;
+
+/// Build a valid XQVM program of exactly `target_len` bytes with exactly
+/// `blocks` basic blocks: that many `TARGET`s, `NOP` padding, then `HALT`.
 ///
-/// `store_program` decodes and then statically verifies. Those two have
-/// *different* worst-case shapes, and the expensive one wins:
+/// `store_program` decodes and then statically verifies, and the two cost
+/// different things:
 ///
 /// * `Program::decode` walks the instruction stream once, so its cost is
-///   driven by instruction count: a few nanoseconds per byte for any
-///   one-byte opcode.
-/// * `verifier::verify` additionally builds a control-flow graph and runs
-///   its worklist analyses over it, so its cost is driven by basic-block
-///   count, at roughly a microsecond per block natively. Every `TARGET`
-///   opens a new block, and `TARGET` is one byte, so a sled of nothing but
-///   `TARGET`s is one block per byte -- the densest CFG the wire format can
-///   express.
+///   driven by byte count: a few nanoseconds per one-byte opcode, whatever
+///   the opcode is.
+/// * `verifier::verify` builds a control-flow graph and runs its worklist
+///   analyses over it, so its cost -- and, more to the point, its memory --
+///   is driven by basic-block count: roughly a microsecond and 3 KiB per
+///   block natively. Every `TARGET` opens a block and `TARGET` is one byte,
+///   so a sled of `TARGET`s is the densest CFG the wire format can express.
 ///
 /// Measured natively at `MaxProgramSize`, decode plus verify costs about
-/// 1,270 ns/byte for the sled against 160 ns/byte for the densest shape the
-/// builder can produce (`TARGET; PUSH 1; JUMPI` blocks, five bytes each),
-/// and 25 ns/byte for a `NOP` sled. Getting this wrong is how
-/// `store_program` came to be underpriced tenfold before QUI-1054, and then
-/// eightfold again after it: each fix benchmarked the worst shape its
-/// author could *build*, not the worst shape the verifier *accepts*.
+/// 1,270 ns/byte for a pure `TARGET` sled against 160 ns/byte for the
+/// densest shape the builder can produce (`TARGET; PUSH 1; JUMPI` blocks)
+/// and 25 ns/byte for a `NOP` sled. That sled is also what exhausted the
+/// runtime allocator on the reference machine at ~28,000 blocks, which is
+/// why the block count is now a bounded, separately-priced component
+/// rather than something the byte length was assumed to cover.
 ///
 /// The verifier accepts the sled because an unreferenced `TARGET` is not a
 /// fault -- it is a no-op at run time and a block boundary at verify time.
 /// The builder rejects it as an unused label, which is why the bytes are
 /// assembled directly and wrapped with `Program::new`.
-fn build_verifier_worst_case_program(target_len: u32) -> Vec<u8> {
+fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
     let len = target_len as usize;
     assert!(
         len > XQBC_HEADER_LEN,
         "minimum encoded program is header + HALT"
     );
+    let body = len - XQBC_HEADER_LEN - 1;
+    let blocks = blocks as usize;
+    assert!(
+        blocks <= body,
+        "{blocks} blocks do not fit in {body} body bytes"
+    );
 
-    let mut code = alloc::vec![TARGET_OPCODE; len - XQBC_HEADER_LEN - 1];
+    let mut code = alloc::vec![TARGET_OPCODE; blocks];
+    code.resize(body, NOP_OPCODE);
     code.push(HALT_OPCODE);
     let bytes = Program::new(code).encode();
 
-    assert_eq!(bytes.len(), len, "sled must land on the requested length");
-    let decoded = Program::decode(&bytes).expect("sled is a well-formed container");
+    assert_eq!(
+        bytes.len(),
+        len,
+        "program must land on the requested length"
+    );
+    let decoded = Program::decode(&bytes).expect("well-formed container");
+    assert_eq!(decoded.jump_table().len(), blocks, "one block per TARGET");
     xqvm::verifier::verify(&decoded).expect("an unreferenced TARGET is not a verifier fault");
     bytes
 }
@@ -144,10 +163,24 @@ fn build_counted_loop_program(iterations: u32) -> Vec<u8> {
 mod benchmarks {
     use super::*;
 
+    /// Cost of `store_program` in its two dimensions: `s` bytes to decode
+    /// and `b` basic blocks to verify.
+    ///
+    /// FRAME varies one component with the others at their maximum, so the
+    /// `s` series is 2,048 blocks plus `NOP` padding (the per-byte decode
+    /// slope) and the `b` series is 64 KiB with a growing `TARGET` prefix
+    /// (the per-block verify slope). Below 2,064 bytes the maximum block
+    /// count does not fit and is clamped to the body length; that bends the
+    /// first two of fifty `s` points and nothing else.
     #[benchmark]
-    fn store_program(s: Linear<16, { 65_536 }>) {
+    fn store_program(s: Linear<16, { 65_536 }>, b: Linear<0, MAX_BENCH_BLOCKS>) {
+        assert!(
+            MAX_BENCH_BLOCKS <= T::MaxProgramBlocks::get(),
+            "benchmark block range must stay within MaxProgramBlocks"
+        );
         let caller: T::AccountId = whitelisted_caller();
-        let bytecode = build_verifier_worst_case_program(s);
+        let blocks = b.min(s - XQBC_HEADER_LEN as u32 - 1);
+        let bytecode = build_blocks_program(s, blocks);
         let bounded: BoundedVec<u8, T::MaxProgramSize> =
             bytecode.try_into().expect("s <= MaxProgramSize");
 
