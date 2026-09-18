@@ -39,18 +39,33 @@ pub mod pallet {
         #[pallet::constant]
         type MaxProgramSize: Get<u32>;
 
-        /// Maximum number of basic blocks -- `TARGET` opcodes -- a stored
-        /// program may contain.
+        /// Maximum number of basic blocks a stored program may have, counted
+        /// the way the verifier's CFG builder counts them: see
+        /// [`ControlFlowShape`].
         ///
-        /// Bounds the verifier's memory, which `MaxProgramSize` does not:
-        /// the verifier allocates per basic block, about 3 KiB natively, and
-        /// `TARGET` is a one-byte opcode, so a 64 KiB program of nothing but
-        /// `TARGET`s asks for ~200 MiB on a runtime heap of 128 MiB. A
-        /// failed allocation inside Wasm traps the whole execution rather
-        /// than returning a fault this pallet could report, which is the
-        /// same reason `MaxVmMemory` exists for the VM's own allocations.
+        /// Bounds the verifier's memory and time, which `MaxProgramSize`
+        /// does not: the verifier allocates per basic block, about 3 KiB
+        /// natively, and a block can be a single byte, so a 64 KiB program
+        /// can describe ~65,000 of them and ask for ~200 MiB on a runtime
+        /// heap of 128 MiB. A failed allocation inside Wasm traps the whole
+        /// execution rather than returning a fault this pallet could report,
+        /// which is the same reason `MaxVmMemory` exists for the VM's own
+        /// allocations.
         #[pallet::constant]
         type MaxProgramBlocks: Get<u32>;
+
+        /// Maximum static loop nesting depth of a stored program.
+        ///
+        /// The verifier walks every loop region's blocks once per enclosing
+        /// loop, so its work is the block count times the nesting depth, and
+        /// nested loops are cheap to write: one `RANGE` and one `NEXT` per
+        /// level. Without this cap a program under `MaxProgramBlocks` could
+        /// still make verification quadratic in its length. Measured
+        /// natively, 2,048 nested `RANGE`/`NEXT` pairs take 255 ms to
+        /// verify and 16,384 take 20 s -- and that cost is paid before the
+        /// verifier gets round to rejecting them.
+        #[pallet::constant]
+        type MaxLoopDepth: Get<u32>;
 
         /// Maximum number of calldata entries (i64 values).
         #[pallet::constant]
@@ -133,6 +148,12 @@ pub mod pallet {
         /// Checked before verification, because the verifier's memory is
         /// what the bound protects and it is spent during verification.
         TooManyBlocks,
+        /// The program nests loops deeper than `MaxLoopDepth`.
+        ///
+        /// Checked before verification for the same reason as
+        /// `TooManyBlocks`: the cost it bounds is spent inside the verifier,
+        /// ahead of any fault the verifier would report.
+        LoopNestingTooDeep,
         /// A program with this hash already exists.
         ProgramAlreadyExists,
         /// No program found for the given hash.
@@ -199,6 +220,82 @@ pub mod pallet {
         }
     }
 
+    /// The static control-flow shape of an instruction stream, as the
+    /// verifier will see it.
+    ///
+    /// `blocks` counts basic-block leaders exactly as the verifier's CFG
+    /// builder does: the entry, every `TARGET`, and the position after every
+    /// jump, `RANGE`, `ITER` and `NEXT` -- a set, so a `TARGET` right after
+    /// a jump is one block, not two. Counting only `TARGET`s, as this pallet
+    /// first did, left a single `TARGET` followed by two thousand `JUMP`s at
+    /// "one block" while the verifier saw two thousand.
+    ///
+    /// `loop_depth` is the deepest static nesting of `RANGE`/`ITER` openers
+    /// before their `NEXT`. An unmatched `NEXT` does not go negative; the
+    /// verifier rejects it, and this is a cost model, not a validator.
+    ///
+    /// One linear pass with the same decoder the verifier uses, so it costs
+    /// what decoding costs and is covered by the per-byte weight term.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ControlFlowShape {
+        /// Basic blocks in the verifier's CFG.
+        pub blocks: u32,
+        /// Deepest static loop nesting.
+        pub loop_depth: u32,
+    }
+
+    impl ControlFlowShape {
+        /// Measure `code`, the raw instruction stream of a decoded program.
+        pub fn of(code: &[u8]) -> Self {
+            use xqvm::{Instruction, InstructionStream};
+
+            // The entry is always a leader. `leader_pending` records that the
+            // previous instruction already made the current position a
+            // leader, so a `TARGET` here must not be counted again.
+            let mut blocks: u32 = 1;
+            let mut leader_pending = true;
+            let mut depth: u32 = 0;
+            let mut loop_depth: u32 = 0;
+
+            let mut stream = InstructionStream::new(code);
+            while let Some(item) = stream.next_instruction() {
+                // A structural fault ends the walk; the verifier will report
+                // it. Everything counted so far still bounds the work the
+                // verifier does before it gets there.
+                let Ok((_, _, instr)) = item else { break };
+                match instr {
+                    Instruction::Target {} => {
+                        if !leader_pending {
+                            blocks = blocks.saturating_add(1);
+                        }
+                        leader_pending = false;
+                    }
+                    Instruction::Jump1 { .. }
+                    | Instruction::Jump2 { .. }
+                    | Instruction::JumpI1 { .. }
+                    | Instruction::JumpI2 { .. } => {
+                        blocks = blocks.saturating_add(1);
+                        leader_pending = true;
+                    }
+                    Instruction::Range {} | Instruction::Iter { .. } => {
+                        blocks = blocks.saturating_add(1);
+                        leader_pending = true;
+                        depth = depth.saturating_add(1);
+                        loop_depth = loop_depth.max(depth);
+                    }
+                    Instruction::Next {} => {
+                        blocks = blocks.saturating_add(1);
+                        leader_pending = true;
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => leader_pending = false,
+                }
+            }
+
+            Self { blocks, loop_depth }
+        }
+    }
+
     // ── Extrinsics ───────────────────────────────────────────────────────
 
     #[pallet::call]
@@ -217,9 +314,11 @@ pub mod pallet {
         ///
         /// The cost has two dimensions. Decoding is linear in the byte
         /// length, which the call arguments give. Verification is linear in
-        /// the basic-block count, which they do not: it is only known after
-        /// decoding, so it is pre-charged at `MaxProgramBlocks` and refunded
-        /// to the actual count -- the shape `execute` uses for its size.
+        /// the basic-block count (at a bounded nesting depth, which the
+        /// per-block price assumes at its maximum), and the count is only
+        /// known after decoding, so it is pre-charged at `MaxProgramBlocks`
+        /// and refunded to the actual count -- the shape `execute` uses for
+        /// its size.
         ///
         /// The program is stored keyed by its Blake2-256 hash for
         /// deduplication.
@@ -233,17 +332,23 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
-            // Container first, then the block bound, then the instruction
-            // stream. Decoding already walked the stream to rebuild the jump
-            // table, so the block count is free here, and it has to come
-            // before `verify` because verification is what spends the memory
-            // the bound protects.
+            // Container first, then the shape bounds, then the instruction
+            // stream. The shape is one linear walk over the bytes -- already
+            // priced by the per-byte term -- and it has to come before
+            // `verify`, because verification is what spends the memory and
+            // time the bounds protect, and it spends them before it reports
+            // any fault.
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
-            let blocks = program.jump_table().len() as u32;
+            let shape = ControlFlowShape::of(program.code());
             ensure!(
-                blocks <= T::MaxProgramBlocks::get(),
+                shape.blocks <= T::MaxProgramBlocks::get(),
                 Error::<T>::TooManyBlocks
             );
+            ensure!(
+                shape.loop_depth <= T::MaxLoopDepth::get(),
+                Error::<T>::LoopNestingTooDeep
+            );
+            let blocks = shape.blocks;
             xqvm::verifier::verify(&program).map_err(|e| map_verifier_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);

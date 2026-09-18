@@ -1,4 +1,4 @@
-use crate::{mock::*, Error, Event, ProgramOwner, Programs};
+use crate::{mock::*, ControlFlowShape, Error, Event, ProgramOwner, Programs};
 use frame_support::{assert_noop, assert_ok, BoundedVec};
 use sp_runtime::traits::Hash;
 use xqvm::{InstructionBuilder, Program, Register};
@@ -20,7 +20,14 @@ fn raw_program(code: Vec<u8>) -> Vec<u8> {
 /// Opcode bytes for the hand-assembled streams above.
 const TARGET: u8 = 0x00;
 const JUMP1: u8 = 0x01;
+const NEXT: u8 = 0x07;
+const RANGE: u8 = 0x08;
+const PUSH1: u8 = 0x11;
+const NOP: u8 = 0xF0;
 const HALT: u8 = 0xFF;
+
+/// Byte length of the XQBC header `Program::encode` emits.
+const XQBC_HEADER_LEN: usize = 15;
 
 fn bounded(bytes: Vec<u8>) -> BoundedVec<u8, MaxProgramSize> {
     bytes.try_into().expect("test program fits MaxProgramSize")
@@ -471,11 +478,141 @@ fn store_rejects_a_program_over_the_block_bound() {
 }
 
 #[test]
+fn store_rejects_blocks_made_by_jumps_not_targets() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // One TARGET and MaxProgramBlocks jumps to it. The jump table has
+        // a single entry; the verifier's CFG has a block after every jump.
+        // Counting TARGETs alone let this through at "one block".
+        let mut code = vec![TARGET];
+        for _ in 0..MaxProgramBlocks::get() {
+            code.extend([JUMP1, 0x00]);
+        }
+        code.push(HALT);
+        let bytecode = raw_program(code);
+        assert_eq!(
+            ControlFlowShape::of(&bytecode[XQBC_HEADER_LEN..]).blocks,
+            MaxProgramBlocks::get() + 1
+        );
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::TooManyBlocks
+        );
+    });
+}
+
+/// `depth` nested `RANGE` loops around a `TARGET`, each opened with the
+/// two pushes it needs and closed with `NEXT`.
+fn nested_loops(depth: u32) -> Vec<u8> {
+    let mut code = Vec::new();
+    for _ in 0..depth {
+        code.extend([PUSH1, 0, PUSH1, 1, RANGE]);
+    }
+    code.push(TARGET);
+    code.extend(vec![NEXT; depth as usize]);
+    code.push(HALT);
+    raw_program(code)
+}
+
+#[test]
+fn store_accepts_loops_nested_to_the_depth_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = nested_loops(MaxLoopDepth::get());
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+    });
+}
+
+#[test]
+fn store_rejects_loops_nested_past_the_depth_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // Well under the block bound: nesting is what is wrong. The
+        // verifier walks every region's blocks once per enclosing loop, so
+        // without this check the cost of a program grows with depth times
+        // length, and it is spent before any fault is reported.
+        let bytecode = nested_loops(MaxLoopDepth::get() + 1);
+        let hash = program_hash(&bytecode);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::LoopNestingTooDeep
+        );
+        assert!(!Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn bare_loop_sled_is_refused_before_verification() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // RANGE with nothing to pop, repeated, then the matching NEXTs: the
+        // verifier would reject it for stack underflow, but only after
+        // walking every region -- 255 ms natively at this size. The shape
+        // bounds refuse it first: 4,097 blocks, 2,048 deep.
+        let mut code = vec![RANGE; 2_048];
+        code.extend(vec![NEXT; 2_048]);
+        code.push(HALT);
+        let bytecode = raw_program(code);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::TooManyBlocks
+        );
+    });
+}
+
+#[test]
+fn control_flow_shape_counts_leaders_like_the_verifier() {
+    // Entry only.
+    assert_eq!(
+        ControlFlowShape::of(&[HALT]),
+        ControlFlowShape {
+            blocks: 1,
+            loop_depth: 0
+        }
+    );
+    // A TARGET at the entry shares the entry's leader.
+    assert_eq!(ControlFlowShape::of(&[TARGET, HALT]).blocks, 1);
+    // A TARGET right after a jump is the same leader the jump made.
+    assert_eq!(
+        ControlFlowShape::of(&[TARGET, JUMP1, 0, TARGET, HALT]).blocks,
+        2
+    );
+    // A jump into padding still opens a block after it.
+    assert_eq!(
+        ControlFlowShape::of(&[TARGET, JUMP1, 0, NOP, TARGET, HALT]).blocks,
+        3
+    );
+    // Loops: a leader after the opener and after NEXT; depth is the
+    // deepest static nesting, and an unmatched NEXT does not go negative.
+    assert_eq!(
+        ControlFlowShape::of(&[PUSH1, 0, PUSH1, 1, RANGE, NEXT, HALT]),
+        ControlFlowShape {
+            blocks: 3,
+            loop_depth: 1
+        }
+    );
+    assert_eq!(
+        ControlFlowShape::of(&[RANGE, RANGE, NEXT, NEXT, HALT]).loop_depth,
+        2
+    );
+    assert_eq!(ControlFlowShape::of(&[NEXT, NEXT, HALT]).loop_depth, 0);
+}
+
+#[test]
 fn store_refunds_unused_blocks() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
-        // Straight-line program: no TARGET, so zero basic blocks to verify
+        // Straight-line program: one basic block -- the entry -- to verify
         // against a pre-charge at MaxProgramBlocks.
         let bytecode = build_program(|b| {
             b.emit_push(1).emit_push(2).emit_add().emit_halt();
@@ -486,7 +623,7 @@ fn store_refunds_unused_blocks() {
             .expect("program stores");
         let actual = post.actual_weight.expect("store reports actual weight");
 
-        assert_eq!(actual, <() as crate::WeightInfo>::store_program(len, 0));
+        assert_eq!(actual, <() as crate::WeightInfo>::store_program(len, 1));
 
         let pre_charged = <() as crate::WeightInfo>::store_program(len, MaxProgramBlocks::get());
         assert!(

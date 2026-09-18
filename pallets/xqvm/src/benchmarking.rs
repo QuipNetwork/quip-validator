@@ -18,21 +18,30 @@ const XQBC_HEADER_LEN: usize = 15;
 /// The `HALT` opcode byte.
 const HALT_OPCODE: u8 = 0xFF;
 
-/// The `TARGET` opcode byte. Restated because the sled below is assembled
-/// by hand: `InstructionBuilder` refuses to emit a label nothing jumps to,
-/// and that refusal is exactly what makes this shape unreachable through
-/// the builder while remaining perfectly acceptable to the verifier.
+/// Opcode bytes for the hand-assembled shapes below. `InstructionBuilder`
+/// refuses a label nothing jumps to, and that refusal is exactly what makes
+/// the densest shapes unreachable through the builder while remaining
+/// perfectly acceptable to the verifier.
 const TARGET_OPCODE: u8 = 0x00;
-/// The `NOP` opcode byte.
+const NEXT_OPCODE: u8 = 0x07;
+const RANGE_OPCODE: u8 = 0x08;
+const PUSH1_OPCODE: u8 = 0x11;
 const NOP_OPCODE: u8 = 0xF0;
 
-/// Upper bound of the block component. A constant because `Linear` needs
-/// one; the benchmark asserts it does not exceed the configured
-/// `MaxProgramBlocks`, which is where the bound actually lives.
+/// Upper bounds of the block component and the nesting the shape uses.
+/// Constants because `Linear` needs one; the benchmark asserts they do not
+/// exceed the configured `MaxProgramBlocks`/`MaxLoopDepth`, which is where
+/// the bounds actually live.
 const MAX_BENCH_BLOCKS: u32 = 2_048;
+const MAX_BENCH_LOOP_DEPTH: u32 = 32;
 
-/// Build a valid XQVM program of exactly `target_len` bytes with exactly
-/// `blocks` basic blocks: that many `TARGET`s, `NOP` padding, then `HALT`.
+/// Bytes of one loop level in the shape: `PUSH1 0; PUSH1 1; RANGE` opening
+/// it and `NEXT` closing it.
+const LOOP_LEVEL_BYTES: usize = 6;
+
+/// Build a valid XQVM program of exactly `target_len` bytes whose verifier
+/// CFG has exactly `blocks` basic blocks, at the deepest loop nesting the
+/// block budget allows (up to `MAX_BENCH_LOOP_DEPTH`).
 ///
 /// `store_program` decodes and then statically verifies, and the two cost
 /// different things:
@@ -40,38 +49,68 @@ const MAX_BENCH_BLOCKS: u32 = 2_048;
 /// * `Program::decode` walks the instruction stream once, so its cost is
 ///   driven by byte count: a few nanoseconds per one-byte opcode, whatever
 ///   the opcode is.
-/// * `verifier::verify` builds a control-flow graph and runs its worklist
-///   analyses over it, so its cost -- and, more to the point, its memory --
-///   is driven by basic-block count: roughly a microsecond and 3 KiB per
-///   block natively. Every `TARGET` opens a block and `TARGET` is one byte,
-///   so a sled of `TARGET`s is the densest CFG the wire format can express.
+/// * `verifier::verify` builds a control-flow graph and runs its analyses
+///   over it, so its cost -- and, more to the point, its memory -- is
+///   driven by basic-block count: roughly a microsecond and 3 KiB per block
+///   natively. Its loop check then re-walks every loop region's blocks once
+///   per enclosing loop, so on top of that it is linear in block count
+///   times nesting depth, at ~40 ns per block visit.
 ///
-/// Measured natively at `MaxProgramSize`, decode plus verify costs about
-/// 1,270 ns/byte for a pure `TARGET` sled against 160 ns/byte for the
-/// densest shape the builder can produce (`TARGET; PUSH 1; JUMPI` blocks)
-/// and 25 ns/byte for a `NOP` sled. That sled is also what exhausted the
-/// runtime allocator on the reference machine at ~28,000 blocks, which is
-/// why the block count is now a bounded, separately-priced component
-/// rather than something the byte length was assumed to cover.
+/// The shape is therefore `n` nested loops around a run of `TARGET`s, with
+/// `n` as deep as `MAX_BENCH_LOOP_DEPTH` and the block budget allow, then
+/// `NOP` padding to the requested length. Every block sits inside every
+/// loop, which is the most work the verifier can be made to do for the
+/// block count -- and since the per-block price is measured at maximum
+/// nesting, it is conservative for every shallower program.
 ///
-/// The verifier accepts the sled because an unreferenced `TARGET` is not a
-/// fault -- it is a no-op at run time and a block boundary at verify time.
-/// The builder rejects it as an unused label, which is why the bytes are
-/// assembled directly and wrapped with `Program::new`.
+/// Measured natively at 2,048 blocks: a flat `TARGET` sled verifies in
+/// ~2 ms, the same blocks inside 32 nested loops in ~4.7 ms, inside 64 in
+/// ~7.8 ms. Unbounded, the same opcodes are a different story: 2,048 bare
+/// nested `RANGE`/`NEXT` pairs take 255 ms and 16,384 take 20 s, and a
+/// pure `TARGET` sled at `MaxProgramSize` exhausted the runtime allocator
+/// on the reference machine. Those are why blocks and nesting are bounded
+/// and the block count is a separately priced, refunded component.
+///
+/// The verifier accepts the shape because an unreferenced `TARGET` is not
+/// a fault -- it is a no-op at run time and a block boundary at verify
+/// time. The builder rejects it as an unused label, which is why the bytes
+/// are assembled directly and wrapped with `Program::new`.
 fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
     let len = target_len as usize;
     assert!(
         len > XQBC_HEADER_LEN,
         "minimum encoded program is header + HALT"
     );
+    assert!(blocks >= 1, "every program has at least its entry block");
     let body = len - XQBC_HEADER_LEN - 1;
     let blocks = blocks as usize;
-    assert!(
-        blocks <= body,
-        "{blocks} blocks do not fit in {body} body bytes"
-    );
 
-    let mut code = alloc::vec![TARGET_OPCODE; blocks];
+    // The entry block is free: a bare `HALT` is one block in zero body
+    // bytes. Past that, each loop level costs two leaders (after RANGE,
+    // after NEXT) and `LOOP_LEVEL_BYTES`; a TARGET costs one leader and one
+    // byte, except the first, which shares the leader the last RANGE (or
+    // the entry) already made. So `blocks = 2n + t`, `bytes = 6n + t`, and
+    // the nesting is the deepest that both the block count and the byte
+    // budget allow.
+    let (nesting, targets) = if blocks == 1 {
+        (0, 0)
+    } else {
+        assert!(
+            blocks <= body,
+            "{blocks} blocks do not fit in {body} body bytes"
+        );
+        let nesting = (MAX_BENCH_LOOP_DEPTH as usize)
+            .min((blocks - 1) / 2)
+            .min((body - blocks) / (LOOP_LEVEL_BYTES - 2));
+        (nesting, blocks - 2 * nesting)
+    };
+
+    let mut code = Vec::with_capacity(body + 1);
+    for _ in 0..nesting {
+        code.extend_from_slice(&[PUSH1_OPCODE, 0, PUSH1_OPCODE, 1, RANGE_OPCODE]);
+    }
+    code.extend(core::iter::repeat_n(TARGET_OPCODE, targets));
+    code.extend(core::iter::repeat_n(NEXT_OPCODE, nesting));
     code.resize(body, NOP_OPCODE);
     code.push(HALT_OPCODE);
     let bytes = Program::new(code).encode();
@@ -82,8 +121,16 @@ fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
         "program must land on the requested length"
     );
     let decoded = Program::decode(&bytes).expect("well-formed container");
-    assert_eq!(decoded.jump_table().len(), blocks, "one block per TARGET");
-    xqvm::verifier::verify(&decoded).expect("an unreferenced TARGET is not a verifier fault");
+    let shape = ControlFlowShape::of(decoded.code());
+    assert_eq!(
+        shape.blocks as usize, blocks,
+        "shape must have the requested blocks"
+    );
+    assert_eq!(
+        shape.loop_depth as usize, nesting,
+        "shape must nest as computed"
+    );
+    xqvm::verifier::verify(&decoded).expect("nested loops around unreferenced TARGETs verify");
     bytes
 }
 
@@ -164,22 +211,28 @@ mod benchmarks {
     use super::*;
 
     /// Cost of `store_program` in its two dimensions: `s` bytes to decode
-    /// and `b` basic blocks to verify.
+    /// and `b` basic blocks to verify, the blocks nested as deeply as the
+    /// bounds allow.
     ///
     /// FRAME varies one component with the others at their maximum, so the
-    /// `s` series is 2,048 blocks plus `NOP` padding (the per-byte decode
-    /// slope) and the `b` series is 64 KiB with a growing `TARGET` prefix
-    /// (the per-block verify slope). Below 2,064 bytes the maximum block
-    /// count does not fit and is clamped to the body length; that bends the
-    /// first two of fifty `s` points and nothing else.
+    /// `s` series is 2,048 blocks at full nesting plus `NOP` padding (the
+    /// per-byte decode slope) and the `b` series is 64 KiB with a growing
+    /// block count (the per-block verify slope, nesting included). Below
+    /// ~2,200 bytes the maximum block count does not fit and is clamped to
+    /// the body length; that bends the first two of fifty `s` points and
+    /// nothing else.
     #[benchmark]
-    fn store_program(s: Linear<16, { 65_536 }>, b: Linear<0, MAX_BENCH_BLOCKS>) {
+    fn store_program(s: Linear<16, { 65_536 }>, b: Linear<1, MAX_BENCH_BLOCKS>) {
         assert!(
             MAX_BENCH_BLOCKS <= T::MaxProgramBlocks::get(),
             "benchmark block range must stay within MaxProgramBlocks"
         );
+        assert!(
+            MAX_BENCH_LOOP_DEPTH <= T::MaxLoopDepth::get(),
+            "benchmark nesting must stay within MaxLoopDepth"
+        );
         let caller: T::AccountId = whitelisted_caller();
-        let blocks = b.min(s - XQBC_HEADER_LEN as u32 - 1);
+        let blocks = b.min(s - XQBC_HEADER_LEN as u32 - 1).max(1);
         let bytecode = build_blocks_program(s, blocks);
         let bounded: BoundedVec<u8, T::MaxProgramSize> =
             bytecode.try_into().expect("s <= MaxProgramSize");
