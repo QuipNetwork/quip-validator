@@ -30,7 +30,8 @@ pub trait WeightInfo {
 // storage accounting. The model shape was calibrated against the six-point
 // node02 sweep from GitLab job 15552403591 at commit 1dfd86e. Jobs 15618730781
 // and 15638128172 are independent holdouts used to size the safety buffer. The
-// coefficients retain at least a 20% envelope over every recorded maximum;
+// coefficients retain at least a 15% envelope over every recorded maximum,
+// and at most 1.5x at the coefficient-dominated points;
 // fresh node02 sweeps enforce a separate 10% operational floor so normal host
 // variation does not consume the entire calibration margin.
 //
