@@ -65,13 +65,16 @@ else
   echo "== Cloning xquad at v${xqvm_version} =="
   git clone --quiet --depth 1 --branch "v${xqvm_version}" \
     https://gitlab.com/quip.network/xquad.git "$xquad_dir"
+fi
 
-  cloned_commit="$(git -C "$xquad_dir" rev-parse HEAD)"
-  if [[ "$cloned_commit" != "$xquad_commit" ]]; then
-    echo "ERROR: tag v${xqvm_version} resolves to ${cloned_commit}," \
-      "expected ${xquad_commit}; the tag has moved" >&2
-    exit 1
-  fi
+# Checked for an existing checkout too: the vectors come from whatever HEAD
+# is, and a stale or experimental xquad tree would make the suite assert
+# against the wrong toolchain while reporting success.
+actual_commit="$(git -C "$xquad_dir" rev-parse HEAD)"
+if [[ "$actual_commit" != "$xquad_commit" ]]; then
+  echo "ERROR: xquad checkout at ${xquad_dir} is ${actual_commit}," \
+    "expected ${xquad_commit} (v${xqvm_version})" >&2
+  exit 1
 fi
 
 vectors_src="$xquad_dir/conformance/vectors"
