@@ -65,12 +65,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Storage: `Xqvm::ProgramOwner` (r:0 w:1)
 	/// Proof: `Xqvm::ProgramOwner` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
 	/// The range of component `s` is `[16, 65536]`.
-	/// The range of component `b` is `[0, 2048]`.
+	/// The range of component `b` is `[1, 2048]`.
 	///
 	/// PLACEHOLDER pending `benchmark-weights`: the per-byte term is the
 	/// pre-verification figure and the per-block term is a native
-	/// measurement (~1 us per basic block) scaled by the ~2.5x Wasm factor
-	/// seen on the other slopes. Both are replaced by the next regeneration.
+	/// measurement (~1 us per basic block, plus the loop-region walk at
+	/// maximum nesting) scaled by the ~2.5x Wasm factor seen on the other
+	/// slopes. Both are replaced by the next regeneration.
 	fn store_program(s: u32, b: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
@@ -118,12 +119,13 @@ impl WeightInfo for () {
 	/// Storage: `Xqvm::ProgramOwner` (r:0 w:1)
 	/// Proof: `Xqvm::ProgramOwner` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
 	/// The range of component `s` is `[16, 65536]`.
-	/// The range of component `b` is `[0, 2048]`.
+	/// The range of component `b` is `[1, 2048]`.
 	///
 	/// PLACEHOLDER pending `benchmark-weights`: the per-byte term is the
 	/// pre-verification figure and the per-block term is a native
-	/// measurement (~1 us per basic block) scaled by the ~2.5x Wasm factor
-	/// seen on the other slopes. Both are replaced by the next regeneration.
+	/// measurement (~1 us per basic block, plus the loop-region walk at
+	/// maximum nesting) scaled by the ~2.5x Wasm factor seen on the other
+	/// slopes. Both are replaced by the next regeneration.
 	fn store_program(s: u32, b: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`

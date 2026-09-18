@@ -37,6 +37,7 @@ impl frame_system::Config for Test {
 parameter_types! {
     pub const MaxProgramSize: u32 = 65_536;
     pub const MaxProgramBlocks: u32 = 2_048;
+    pub const MaxLoopDepth: u32 = 32;
     pub const MaxCallDataLen: u32 = 32;
     pub const MaxOutputSlots: u32 = 32;
     pub const MaxStepLimit: u64 = 100_000;
@@ -47,6 +48,7 @@ impl pallet_xqvm::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type MaxProgramSize = MaxProgramSize;
     type MaxProgramBlocks = MaxProgramBlocks;
+    type MaxLoopDepth = MaxLoopDepth;
     type MaxCallDataLen = MaxCallDataLen;
     type MaxOutputSlots = MaxOutputSlots;
     type MaxStepLimit = MaxStepLimit;
