@@ -234,6 +234,10 @@ repository](https://github.com/paritytech/polkadot-sdk/tree/master/substrate/fra
 template pallet that is [defined in the
 `pallets`](./pallets/template/src/lib.rs) directory.
 
+The quantum PoW puzzle definition -- the Ising topology object, its canonical
+hash, how it is registered, and which pallets enforce it -- is specified in
+[`docs/ising-topology.md`](docs/ising-topology.md).
+
 A FRAME pallet is comprised of a number of blockchain primitives, including:
 
 - Storage: FRAME defines a rich set of powerful [storage
