@@ -1,6 +1,6 @@
 use crate::{mock::*, ControlFlowShape, Error, Event, ProgramOwner, Programs};
 use frame_support::{assert_noop, assert_ok, BoundedVec};
-use sp_runtime::traits::Hash;
+use sp_runtime::{traits::Hash, DispatchError};
 use xqvm::{InstructionBuilder, Program, Register};
 
 /// Encode a program built with `InstructionBuilder` into raw bytes.
@@ -859,6 +859,197 @@ fn the_budget_binds_independently_of_the_step_limit() {
                 MaxStepLimit::get(),
             ),
             Error::<Test>::VmMemoryLimitExceeded
+        );
+    });
+}
+
+// ── VM fault mapping (QUI-1014) ──────────────────────────────────────────
+
+/// Store `bytecode`, execute it, and return the dispatch error it failed
+/// with. Panics if the program stores badly or unexpectedly succeeds.
+fn execute_expecting_failure(bytecode: Vec<u8>, calldata: Vec<i64>, slots: u32) -> DispatchError {
+    let hash = program_hash(&bytecode);
+    assert_ok!(Xqvm::store_program(
+        RuntimeOrigin::signed(1),
+        bounded(bytecode),
+    ));
+
+    let calldata: BoundedVec<i64, MaxCallDataLen> =
+        calldata.try_into().expect("calldata fits MaxCallDataLen");
+
+    Xqvm::execute(RuntimeOrigin::signed(1), hash, calldata, slots, 10_000)
+        .expect_err("program was expected to fault")
+        .error
+}
+
+#[test]
+fn arithmetic_overflow_maps_to_its_own_error() {
+    // The headline behaviour change in xqvm 0.4.0: i64::MAX + 1 raises where
+    // it used to wrap. Under the old wildcard this was indistinguishable
+    // from any other runtime fault.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_push(i64::MAX).emit_push(1).emit_add().emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmArithmeticOverflow.into()
+        );
+    });
+}
+
+#[test]
+fn calldata_index_out_of_range_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // INPUT pops a calldata slot index; nothing was supplied.
+        let bytecode = build_program(|b| {
+            b.emit_push(0).emit_input(Register(0)).emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmCallDataIndex.into()
+        );
+    });
+}
+
+#[test]
+fn output_index_out_of_range_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // OUTPUT addresses slot 0 while the call requested none.
+        let bytecode = build_program(|b| {
+            b.emit_push(7)
+                .emit_stow(Register(0))
+                .emit_push(0)
+                .emit_output(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmOutputIndex.into()
+        );
+    });
+}
+
+#[test]
+fn oversized_shift_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // SHL pops b then a; a shift of 64 discards every significant bit.
+        let bytecode = build_program(|b| {
+            b.emit_push(1).emit_push(64).emit_shl().emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmInvalidShift.into()
+        );
+    });
+}
+
+#[test]
+fn discrete_sample_with_small_k_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // XSMX pops k then size; the discrete domain requires k >= 2.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_push(1)
+                .emit_xsmx(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmInvalidDiscreteK.into()
+        );
+    });
+}
+
+#[test]
+fn coefficient_index_past_the_model_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A four-variable model has indices 0..4; SETLINE pops value then
+        // index, and index 9 addresses a variable that was never declared.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bqmx(Register(0))
+                .emit_push(9)
+                .emit_push(1)
+                .emit_set_line(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmIndexOutOfBounds.into()
+        );
+    });
+}
+
+#[test]
+fn sample_of_the_wrong_size_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // ENERGY of a two-element sample against a four-variable model. Both
+        // registers hold the type the verifier expects, so this is a fault
+        // only the VM can see.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bqmx(Register(0))
+                .emit_push(2)
+                .emit_bsmx(Register(1))
+                .emit_energy(Register(0), Register(1))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmSizeMismatch.into()
+        );
+    });
+}
+
+#[test]
+fn grid_larger_than_the_model_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // RESIZE pops cols then rows. A 3 x 3 grid describes nine cells over
+        // a model that declared four variables.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bqmx(Register(0))
+                .emit_push(3)
+                .emit_push(3)
+                .emit_resize(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmInvalidGridDimensions.into()
+        );
+    });
+}
+
+#[test]
+fn negative_allocation_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A negative size is not an allocation at all.
+        let bytecode = build_program(|b| {
+            b.emit_push(-1).emit_bsmx(Register(0)).emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmInvalidAllocation.into()
         );
     });
 }
