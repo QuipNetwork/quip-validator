@@ -205,10 +205,20 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
-# Browser-facing half of the hybrid extrinsic-signing contract. This is kept
-# separate from cargo-test because it additionally installs Node and the pinned
-# wasm-pack release, builds browser bindings, and exercises the actual
+# Node-level suites that need a running chain and the PQ signer. Kept separate
+# from cargo-test because they additionally install Node and the pinned
+# wasm-pack release, build browser bindings, and exercise the actual
 # Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
+#
+# Both suites run here rather than in a job each. They need byte-identical
+# setup -- the same image, the same apt packages, the same wasm-signer, the
+# same debug node -- and splitting them meant building that twice per
+# pipeline, concurrently, on one runner. Measured on !75: 20 minutes of apt
+# and 49 minutes of `cargo build -p quip-network-node`, duplicated, while the
+# xqvm suite's own work was 70 seconds. The duplicate job also pushed the
+# pipeline to four heavy jobs, and the node then could not open its RPC
+# inside the readiness window because it was competing with the very builds
+# that existed to produce it.
 browser-signer-test:
   extends: .cargo-host-cache
   stage: test
@@ -230,7 +240,7 @@ browser-signer-test:
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
   before_script:
-    # nodejs, npm and curl are baked into the toolchain image
+    # nodejs, npm, curl and git are baked into the toolchain image
     # (.gitlab/ci-toolchain.Dockerfile) rather than fetched here.
     - rustup target add wasm32-unknown-unknown
     - mkdir -p "$CARGO_HOME/bin"
@@ -257,6 +267,7 @@ browser-signer-test:
     - npm run build --prefix js/quip-signer
     - cargo build -p quip-network-node
     - bash scripts/test-browser-signer-integration.sh
+    - bash scripts/test-xqvm-onchain.sh
 
 # pallet-revive's runtime benchmarks compile both Solidity/EVM and
 # Solidity/PolkaVM fixtures. Keep these versions aligned with the pinned SDK's
