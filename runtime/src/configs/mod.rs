@@ -415,11 +415,46 @@ parameter_types! {
     pub const MaxProgramSize: u32 = 65_536;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;
-    pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
+    /// Weight charged per executed XQVM step, measured rather than assumed.
+    ///
+    /// Taken as the slope of the `execute_step` benchmark -- the marginal cost
+    /// of one more step on the reference machine -- multiplied by a safety
+    /// factor. Deriving it from the generated weights means regeneration keeps
+    /// it honest; the previous hand-set 1 ns was roughly 13x below the
+    /// measured cost of the *cheapest* opcode in the ISA.
+    ///
+    /// The safety factor covers the spread between one-step opcodes. A step
+    /// is calibrated upstream as one `NOP` dispatch, while the benchmark
+    /// exercises `NEXT`, which is dearer and still charges a single step; the
+    /// slope therefore already sits above the unit cost, and the factor of 2
+    /// leaves headroom for register and vector opcodes the benchmark does not
+    /// reach.
+    ///
+    /// Since xqvm 0.4.0 it also covers opcodes whose cost scales with their
+    /// operands, which a flat per-step price could not be made sound for
+    /// before (QUI-1056). Those opcodes now charge additional steps for the
+    /// work they are about to do -- `ENERGY` one per model term, the
+    /// constraint expansions one per coefficient written, the grid scans one
+    /// per cell -- so `WeightPerStep * steps` tracks work rather than
+    /// instruction count. The unit counts are normative and specified in the
+    /// toolchain's `spec/xqvm/METERING.md`; the pallet prices them, it does
+    /// not restate them.
+    pub XqvmWeightPerStep: Weight = {
+        const STEP_WEIGHT_SAFETY_FACTOR: u64 = 2;
+        let slope = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0));
+        slope.saturating_mul(STEP_WEIGHT_SAFETY_FACTOR)
+    };
 
     /// Derived from block weight budget so a single execute call always
     /// fits in one block.  Uses 50 % of the normal dispatch budget to
     /// leave room for other extrinsics in the same block.
+    ///
+    /// Falls automatically as the per-step price rises: with the price
+    /// measured rather than assumed, this is roughly an order of magnitude
+    /// below the ~750M steps the hand-set constant used to permit. That is the
+    /// point -- the old limit allowed a single extrinsic to run for over ten
+    /// seconds against a two-second block budget.
     pub MaxStepLimit: u64 = {
         let normal = RuntimeBlockWeights::get()
             .get(frame_support::dispatch::DispatchClass::Normal)
@@ -427,10 +462,10 @@ parameter_types! {
             .unwrap_or(RuntimeBlockWeights::get().max_block);
         // Reserve half for other extrinsics.
         let budget = normal.ref_time() / 2;
-        // Subtract execute_base overhead, then divide by per-step cost.
-        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute_base()
+        // Subtract the worst-case decode overhead, then divide by per-step cost.
+        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
             .ref_time();
-        let per_step = XqvmWeightPerStep::get().ref_time();
+        let per_step = XqvmWeightPerStep::get().ref_time().max(1);
         budget.saturating_sub(base) / per_step
     };
 }
@@ -668,5 +703,58 @@ mod tests {
         let parsed = AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
             .expect("hardcoded SS58 must decode");
         assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
+    }
+}
+
+#[cfg(test)]
+mod xqvm_weights {
+    use super::*;
+
+    /// A single `execute` at the maximum step limit must fit inside the budget
+    /// the limit was derived from.
+    ///
+    /// This is the invariant the old hand-set `WeightPerStep` violated: it
+    /// admitted ~750M steps priced at 0.75 s that took over ten seconds to run,
+    /// against a two-second block. Both constants are now derived from the
+    /// generated weights, so this holds by construction -- the test is here to
+    /// catch a regeneration or a refactor that quietly breaks the derivation.
+    #[test]
+    fn max_step_limit_fits_the_reserved_budget() {
+        let normal = RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_total
+            .unwrap_or(RuntimeBlockWeights::get().max_block)
+            .ref_time();
+        let reserved = normal / 2;
+
+        let worst_case = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+            .ref_time()
+            .saturating_add(
+                XqvmWeightPerStep::get()
+                    .ref_time()
+                    .saturating_mul(MaxStepLimit::get()),
+            );
+
+        assert!(
+            worst_case <= reserved,
+            "worst-case execute is {worst_case} ps against {reserved} ps reserved",
+        );
+    }
+
+    /// The per-step price must stay above the measured marginal cost of a step.
+    ///
+    /// Derived from the same benchmark rather than a copied number, so it
+    /// tracks regeneration instead of going stale.
+    #[test]
+    fn per_step_price_exceeds_measured_cost() {
+        let measured = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0))
+            .ref_time();
+
+        assert!(
+            XqvmWeightPerStep::get().ref_time() > measured,
+            "priced {} ps/step is not above the measured {measured} ps/step",
+            XqvmWeightPerStep::get().ref_time(),
+        );
     }
 }
