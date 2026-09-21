@@ -413,6 +413,40 @@ impl pallet_faucet_ops::Config for Runtime {
 
 parameter_types! {
     pub const MaxProgramSize: u32 = 65_536;
+    /// Maximum basic blocks in a stored program, counted as the verifier's
+    /// CFG builder counts them: the entry, every `TARGET`, and the position
+    /// after every jump, `RANGE`, `ITER` and `NEXT`.
+    ///
+    /// This bounds the verifier's memory, which the byte limit does not.
+    /// Measured natively, decode plus verify of a pure `TARGET` sled peaks
+    /// at ~3 KiB per block: 14 MiB at 4,096 blocks and 200 MiB at the
+    /// 65,520 blocks a `MaxProgramSize` program can hold. The reference
+    /// machine's benchmark run exhausted the 128 MiB runtime heap at about
+    /// 28,000 blocks, so the Wasm allocator costs roughly 2.4x the native
+    /// figure. A failed allocation traps the runtime; it is not a dispatch
+    /// error anyone can report or pay for.
+    ///
+    /// 2,048 blocks is ~7 MiB native, ~17 MiB in Wasm: the same one-eighth
+    /// share of the heap the VM itself gets through `MaxVmMemory`. It is
+    /// also far past any real program -- the toolchain's conformance
+    /// vectors are tens of instructions -- so the ceiling binds abuse, not
+    /// use. The bound is priced separately: `store_program` pre-charges
+    /// verification at this many blocks and refunds to the actual count.
+    pub const MaxProgramBlocks: u32 = 2_048;
+    /// Maximum static loop nesting in a stored program.
+    ///
+    /// The verifier's loop check walks each region's blocks once per
+    /// enclosing loop, so its time is blocks times depth; without a depth
+    /// bound the block bound alone leaves verification quadratic in program
+    /// length, and the cost is spent before the verifier reports anything.
+    /// Measured natively: 2,048 bare nested `RANGE`/`NEXT` pairs take
+    /// 255 ms, 16,384 take 20 s.
+    ///
+    /// At 2,048 blocks, 32 levels cost ~2.7 ms native over the flat case
+    /// (~40 ns per block visit), which the per-block weight is measured
+    /// with. Real programs nest two or three deep; the VM's own dynamic
+    /// loop-stack limit is 8,192, which is a different resource.
+    pub const MaxLoopDepth: u32 = 32;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;
     /// Weight charged per executed XQVM step, measured rather than assumed.
@@ -474,6 +508,8 @@ parameter_types! {
 impl pallet_xqvm::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type MaxProgramSize = MaxProgramSize;
+    type MaxProgramBlocks = MaxProgramBlocks;
+    type MaxLoopDepth = MaxLoopDepth;
     type MaxCallDataLen = MaxCallDataLen;
     type MaxOutputSlots = MaxOutputSlots;
     type MaxStepLimit = MaxStepLimit;

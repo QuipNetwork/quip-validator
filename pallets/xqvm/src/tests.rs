@@ -1,7 +1,7 @@
-use crate::{mock::*, Error, Event, ProgramOwner, Programs};
+use crate::{mock::*, ControlFlowShape, Error, Event, ProgramOwner, Programs};
 use frame_support::{assert_noop, assert_ok, BoundedVec};
 use sp_runtime::traits::Hash;
-use xqvm::{InstructionBuilder, Register};
+use xqvm::{InstructionBuilder, Program, Register};
 
 /// Encode a program built with `InstructionBuilder` into raw bytes.
 fn build_program(f: impl FnOnce(&mut InstructionBuilder)) -> Vec<u8> {
@@ -9,6 +9,25 @@ fn build_program(f: impl FnOnce(&mut InstructionBuilder)) -> Vec<u8> {
     f(&mut b);
     b.build().unwrap().encode()
 }
+
+/// Wrap a hand-assembled instruction stream in a well-formed XQBC
+/// container. For faults the builder refuses to emit but the verifier
+/// must still catch.
+fn raw_program(code: Vec<u8>) -> Vec<u8> {
+    Program::new(code).encode()
+}
+
+/// Opcode bytes for the hand-assembled streams above.
+const TARGET: u8 = 0x00;
+const JUMP1: u8 = 0x01;
+const NEXT: u8 = 0x07;
+const RANGE: u8 = 0x08;
+const PUSH1: u8 = 0x11;
+const NOP: u8 = 0xF0;
+const HALT: u8 = 0xFF;
+
+/// Byte length of the XQBC header `Program::encode` emits.
+const XQBC_HEADER_LEN: usize = 15;
 
 fn bounded(bytes: Vec<u8>) -> BoundedVec<u8, MaxProgramSize> {
     bytes.try_into().expect("test program fits MaxProgramSize")
@@ -296,6 +315,359 @@ fn execute_too_many_output_slots() {
                 1_000,
             ),
             Error::<Test>::TooManyOutputSlots
+        );
+    });
+}
+
+// ── static verification at store time ────────────────────────────────────
+
+#[test]
+fn store_rejects_stack_underflow() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // ADD with nothing on the stack. The XQBC container is perfectly well
+        // formed -- correct magic, version, length and CRC -- so this was
+        // stored happily before the verifier ran, and only faulted when
+        // somebody executed it.
+        let bytecode = build_program(|b| {
+            b.emit_add().emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierStackFault
+        );
+    });
+}
+
+#[test]
+fn store_rejects_read_of_unset_register() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let bytecode = build_program(|b| {
+            b.emit_load(Register(3)).emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierReadUnsetRegister
+        );
+    });
+}
+
+#[test]
+fn store_rejects_an_unknown_opcode() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // 0x0D is the reserved gap in the opcode table. `Program::decode`
+        // tolerates it -- the container is well formed and the scan that
+        // rebuilds the jump table only records the fault -- so this reaches
+        // the verifier rather than `InvalidBytecode`.
+        let bytecode = raw_program(vec![0x0D, HALT]);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierBadInstruction
+        );
+    });
+}
+
+#[test]
+fn store_rejects_a_jump_to_a_missing_target() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // JUMP1 to label 3 in a stream with no TARGET at all. The builder
+        // refuses to assemble this, which is the point: the wire format can
+        // still carry it, so the verifier has to be the one to say no.
+        let bytecode = raw_program(vec![JUMP1, 0x03, HALT]);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierUndefinedJumpTarget
+        );
+    });
+}
+
+#[test]
+fn store_rejects_an_unclosed_loop() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // RANGE opens a loop that no NEXT ever closes.
+        let bytecode = build_program(|b| {
+            b.emit_push(0).emit_push(4).emit_range().emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierLoopImbalance
+        );
+    });
+}
+
+#[test]
+fn store_rejects_a_register_read_at_the_wrong_type() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // STOW writes r0 as an int; LOAD of a model register would be fine,
+        // but ENERGY wants a model in r0 and reads it as one.
+        let bytecode = build_program(|b| {
+            b.emit_push(1)
+                .emit_stow(Register(0))
+                .emit_push(2)
+                .emit_bsmx(Register(1))
+                .emit_energy(Register(0), Register(1))
+                .emit_halt();
+        });
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierRegisterTypeMismatch
+        );
+    });
+}
+
+// ── basic-block bound ────────────────────────────────────────────────────
+
+/// A program of exactly `blocks` basic blocks: that many `TARGET`s, then
+/// `HALT`. The builder refuses unreferenced labels, so this is assembled
+/// by hand; the verifier accepts it.
+fn target_sled(blocks: u32) -> Vec<u8> {
+    let mut code = vec![TARGET; blocks as usize];
+    code.push(HALT);
+    raw_program(code)
+}
+
+#[test]
+fn store_accepts_a_program_at_the_block_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = target_sled(MaxProgramBlocks::get());
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+        assert!(Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn store_rejects_a_program_over_the_block_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // One TARGET past the bound. Every one of them is a valid, empty
+        // basic block, so nothing else about the program is wrong: only the
+        // count is, and it is what bounds the verifier's memory.
+        let bytecode = target_sled(MaxProgramBlocks::get() + 1);
+        let hash = program_hash(&bytecode);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::TooManyBlocks
+        );
+        assert!(!Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn store_rejects_blocks_made_by_jumps_not_targets() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // One TARGET and MaxProgramBlocks jumps to it. The jump table has
+        // a single entry; the verifier's CFG has a block after every jump.
+        // Counting TARGETs alone let this through at "one block".
+        let mut code = vec![TARGET];
+        for _ in 0..MaxProgramBlocks::get() {
+            code.extend([JUMP1, 0x00]);
+        }
+        code.push(HALT);
+        let bytecode = raw_program(code);
+        assert_eq!(
+            ControlFlowShape::of(&bytecode[XQBC_HEADER_LEN..]).blocks,
+            MaxProgramBlocks::get() + 1
+        );
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::TooManyBlocks
+        );
+    });
+}
+
+/// `depth` nested `RANGE` loops around a `TARGET`, each opened with the
+/// two pushes it needs and closed with `NEXT`.
+fn nested_loops(depth: u32) -> Vec<u8> {
+    let mut code = Vec::new();
+    for _ in 0..depth {
+        code.extend([PUSH1, 0, PUSH1, 1, RANGE]);
+    }
+    code.push(TARGET);
+    code.extend(vec![NEXT; depth as usize]);
+    code.push(HALT);
+    raw_program(code)
+}
+
+#[test]
+fn store_accepts_loops_nested_to_the_depth_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = nested_loops(MaxLoopDepth::get());
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+    });
+}
+
+#[test]
+fn store_rejects_loops_nested_past_the_depth_bound() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // Well under the block bound: nesting is what is wrong. The
+        // verifier walks every region's blocks once per enclosing loop, so
+        // without this check the cost of a program grows with depth times
+        // length, and it is spent before any fault is reported.
+        let bytecode = nested_loops(MaxLoopDepth::get() + 1);
+        let hash = program_hash(&bytecode);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::LoopNestingTooDeep
+        );
+        assert!(!Programs::<Test>::contains_key(&hash));
+    });
+}
+
+#[test]
+fn bare_loop_sled_is_refused_before_verification() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // RANGE with nothing to pop, repeated, then the matching NEXTs: the
+        // verifier would reject it for stack underflow, but only after
+        // walking every region -- 255 ms natively at this size. The shape
+        // bounds refuse it first: 4,097 blocks, 2,048 deep.
+        let mut code = vec![RANGE; 2_048];
+        code.extend(vec![NEXT; 2_048]);
+        code.push(HALT);
+        let bytecode = raw_program(code);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::TooManyBlocks
+        );
+    });
+}
+
+#[test]
+fn control_flow_shape_counts_leaders_like_the_verifier() {
+    // Entry only.
+    assert_eq!(
+        ControlFlowShape::of(&[HALT]),
+        ControlFlowShape {
+            blocks: 1,
+            loop_depth: 0
+        }
+    );
+    // A TARGET at the entry shares the entry's leader.
+    assert_eq!(ControlFlowShape::of(&[TARGET, HALT]).blocks, 1);
+    // A TARGET right after a jump is the same leader the jump made.
+    assert_eq!(
+        ControlFlowShape::of(&[TARGET, JUMP1, 0, TARGET, HALT]).blocks,
+        2
+    );
+    // A jump into padding still opens a block after it.
+    assert_eq!(
+        ControlFlowShape::of(&[TARGET, JUMP1, 0, NOP, TARGET, HALT]).blocks,
+        3
+    );
+    // Loops: a leader after the opener and after NEXT; depth is the
+    // deepest static nesting, and an unmatched NEXT does not go negative.
+    assert_eq!(
+        ControlFlowShape::of(&[PUSH1, 0, PUSH1, 1, RANGE, NEXT, HALT]),
+        ControlFlowShape {
+            blocks: 3,
+            loop_depth: 1
+        }
+    );
+    assert_eq!(
+        ControlFlowShape::of(&[RANGE, RANGE, NEXT, NEXT, HALT]).loop_depth,
+        2
+    );
+    assert_eq!(ControlFlowShape::of(&[NEXT, NEXT, HALT]).loop_depth, 0);
+}
+
+#[test]
+fn store_refunds_unused_blocks() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // Straight-line program: one basic block -- the entry -- to verify
+        // against a pre-charge at MaxProgramBlocks.
+        let bytecode = build_program(|b| {
+            b.emit_push(1).emit_push(2).emit_add().emit_halt();
+        });
+        let len = bytecode.len() as u32;
+
+        let post = Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode))
+            .expect("program stores");
+        let actual = post.actual_weight.expect("store reports actual weight");
+
+        assert_eq!(actual, <() as crate::WeightInfo>::store_program(len, 1));
+
+        let pre_charged = <() as crate::WeightInfo>::store_program(len, MaxProgramBlocks::get());
+        assert!(
+            actual.ref_time() < pre_charged.ref_time(),
+            "actual {} should be below pre-charged {}",
+            actual.ref_time(),
+            pre_charged.ref_time(),
+        );
+    });
+}
+
+#[test]
+fn store_accepts_a_verifiable_program() {
+    // The counterpart to the rejection tests: verification must not have
+    // become so strict that ordinary programs stop being storable.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let bytecode = build_program(|b| {
+            b.emit_push(3).emit_push(4).emit_add().emit_halt();
+        });
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+    });
+}
+
+#[test]
+fn store_still_rejects_a_corrupt_container() {
+    // Container faults keep their own error, distinct from stream faults.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        let mut bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        // Corrupt the CRC-32 in the header (bytes 11..15).
+        bytecode[11] ^= 0xFF;
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::InvalidBytecode
         );
     });
 }
