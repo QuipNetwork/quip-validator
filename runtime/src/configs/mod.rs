@@ -528,6 +528,14 @@ parameter_types! {
 /// Configure the XQVM pallet for on-chain bytecode execution.
 impl pallet_xqvm::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    // A stored program is priced at the chain storage price like Revive's
+    // code blobs: one item for the program plus its bytes. At `MaxProgramSize`
+    // the per-byte part is 0.655 UNIT, so a full 64 KiB program locks up
+    // roughly 0.855 UNIT in total, returned when the program is removed.
+    type DepositBase = StorageDepositPerItem;
+    type DepositPerByte = StorageDepositPerByte;
     type MaxProgramSize = MaxProgramSize;
     type MaxProgramBlocks = MaxProgramBlocks;
     type MaxLoopDepth = MaxLoopDepth;
