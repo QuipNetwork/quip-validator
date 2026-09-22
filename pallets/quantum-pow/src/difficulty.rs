@@ -257,22 +257,23 @@ pub(crate) fn adjust_energy_along_curve(
 /// energy threshold via the curve. Diversity and solutions are chain-static
 /// and never touched here.
 ///
-/// The threshold retains `(1 - rate)^(elapsed / epoch_length)` of its distance
-/// to `max_milli`, so at every whole epoch the result equals the retired
-/// stepwise rule and the average easing rate is unchanged. Between epochs the
-/// threshold eases every block instead of waiting for the boundary. Measured
-/// on aglais under the stepwise rule, 44% of rounds ended within ten blocks
-/// of a boundary: no miner could clear until the 22,000 milli step landed,
-/// then one did at once. A per-block ramp has no such cliff.
+/// At every whole epoch the result equals the retired per-epoch rule,
+/// `max(round(room * rate), MIN_ENERGY_DELTA_MILLI)` per step, in both of
+/// its regimes: geometric while the step beats the floor, linear at the
+/// floor once the room is under `floor / rate` (40,000 milli at the
+/// baseline rate). Between epochs the threshold eases every block instead
+/// of waiting for the boundary. Measured on aglais under the stepwise rule,
+/// 44% of rounds ended within ten blocks of a boundary: no miner could
+/// clear until the 22,000 milli step landed, then one did at once. A
+/// per-block ramp has no such cliff.
 ///
-/// Past `TARGET_PROOF_BLOCKS` a second geometric term at
-/// `OVERDUE_EASE_RATE_MILLI` accrues for every overdue block, so a round
-/// that has waited too long eases faster than one still inside its target.
-/// The two terms multiply, so the threshold stays continuous across the
+/// Past `TARGET_PROOF_BLOCKS` a second phase at the combined baseline plus
+/// `OVERDUE_EASE_RATE_MILLI` rate accrues for every overdue block, so a
+/// round that has waited too long eases faster than one still inside its
+/// target. The phases compose, so the threshold stays continuous across the
 /// target boundary.
 ///
-/// Closed form, so a long stalled round costs the same as a short one. The
-/// `MIN_ENERGY_DELTA_MILLI` floor is pro-rated per block.
+/// Closed form, so a long stalled round costs the same as a short one.
 pub fn apply_decay(
     current: DifficultyConfig,
     elapsed_blocks: u32,
@@ -302,19 +303,44 @@ fn ease_continuous(
     if room <= 0 {
         return current_milli;
     }
-    let retained = |rate_milli: u32, blocks: u32| {
-        let epochs = f64::from(blocks) / f64::from(epoch_length);
-        libm::pow(1.0 - f64::from(rate_milli) / 1000.0, epochs)
-    };
+    let baseline_retained = 1.0 - f64::from(DECAY_RATE_MILLI) / 1000.0;
+    let overdue_retained = baseline_retained * (1.0 - f64::from(OVERDUE_EASE_RATE_MILLI) / 1000.0);
     // The baseline term runs from the first block of the round. The overdue
-    // term starts once the round has passed its target length.
-    let overdue_blocks = elapsed_blocks.saturating_sub(TARGET_PROOF_BLOCKS as u32);
-    let retained = retained(DECAY_RATE_MILLI, elapsed_blocks)
-        * retained(OVERDUE_EASE_RATE_MILLI, overdue_blocks);
-    let geometric = libm::round(room as f64 * (1.0 - retained)) as i64;
-    let floor =
-        MIN_ENERGY_DELTA_MILLI.saturating_mul(i64::from(elapsed_blocks)) / i64::from(epoch_length);
-    current_milli.saturating_add(geometric.max(floor).min(room))
+    // term starts once the round has passed its target length. Run them as
+    // two phases: the second starts from the room the first left, at the
+    // combined rate, which equals the product of the two geometric terms
+    // wherever both phases are geometric.
+    let in_target = elapsed_blocks.min(TARGET_PROOF_BLOCKS as u32);
+    let overdue = elapsed_blocks - in_target;
+    let first = ease_room(room, in_target, epoch_length, 1.0 - baseline_retained);
+    let second = ease_room(room - first, overdue, epoch_length, 1.0 - overdue_retained);
+    current_milli.saturating_add((first + second).min(room))
+}
+
+/// Ease `room` milli over `blocks` at `rate` per epoch, in closed form,
+/// reproducing the retired per-epoch loop. That loop stepped
+/// `max(round(room * rate), MIN_ENERGY_DELTA_MILLI)` once per epoch,
+/// clamped to the room: geometric while `room * rate` beat the floor,
+/// linear at the floor after. The crossover room is `floor / rate`, and the
+/// geometric phase lasts `ln(crossover / room) / ln(1 - rate)` epochs.
+/// Returns the amount eased, at most `room`.
+fn ease_room(room: i64, blocks: u32, epoch_length: u32, rate: f64) -> i64 {
+    if room <= 0 || blocks == 0 || epoch_length == 0 || rate <= 0.0 || rate >= 1.0 {
+        return 0;
+    }
+    let floor = MIN_ENERGY_DELTA_MILLI as f64;
+    let room_f = room as f64;
+    let epochs = f64::from(blocks) / f64::from(epoch_length);
+    let crossover = floor / rate;
+    let geometric_epochs = if room_f <= crossover {
+        0.0
+    } else {
+        (libm::log(crossover / room_f) / libm::log(1.0 - rate)).min(epochs)
+    };
+    let room_after_geometric = room_f * libm::pow(1.0 - rate, geometric_epochs);
+    let linear = (epochs - geometric_epochs) * floor;
+    let eased = libm::round(room_f - room_after_geometric + linear) as i64;
+    eased.min(room)
 }
 
 /// The most a single win may harden the threshold: one decay step measured

@@ -1658,9 +1658,18 @@ fn decay_past_target_adds_the_overdue_term() {
     let room = (curve.max_milli - curve.knee_milli) as f64;
     let expect = |retained: f64| curve.knee_milli + (room * (1.0 - retained)).round() as i64;
     let eased = |elapsed: u32| difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
-    assert_eq!(eased(100), expect(0.975));
-    assert_eq!(eased(200), expect(0.975_f64.powi(3)));
-    assert_eq!(eased(300), expect(0.975_f64.powi(5)));
+    for (elapsed, retained) in [
+        (100, 0.975),
+        (200, 0.975_f64.powi(3)),
+        (300, 0.975_f64.powi(5)),
+    ] {
+        let got = eased(elapsed);
+        let want = expect(retained);
+        assert!(
+            (got - want).abs() <= 1,
+            "elapsed {elapsed}: got {got}, want {want}"
+        );
+    }
 }
 
 #[test]
@@ -1758,6 +1767,58 @@ fn apply_decay_over_one_epoch_equals_the_legacy_epoch_step() {
             /* MIN_ENERGY_DELTA_MILLI */ 1000,
         );
         assert_eq!(eased, legacy_step, "start={start_milli}");
+    }
+}
+
+#[test]
+fn apply_decay_matches_the_stepwise_reference_at_every_epoch() {
+    // The retired rule stepped once per epoch by `max(round(room * rate),
+    // 1_000)`, clamped to the room: geometric while the step beat the floor,
+    // linear at the floor after. Inside the target the rate is the baseline;
+    // past it, the combined baseline-plus-overdue rate. The closed form must
+    // land within one milli per epoch of that loop at every epoch boundary,
+    // through the floor crossover and on to the easy cap.
+    let curve = walkup_curve();
+    let epoch = 100_u32;
+    let target_epochs = 1_usize; // TARGET_PROOF_BLOCKS / epoch
+    let reference = |start: i64, epochs: usize| -> i64 {
+        let mut value = start;
+        for k in 0..epochs {
+            let rate = if k < target_epochs {
+                0.025
+            } else {
+                1.0 - 0.975 * 0.975
+            };
+            let room = curve.max_milli - value;
+            if room <= 0 {
+                break;
+            }
+            let step = ((room as f64 * rate).round() as i64).max(1_000).min(room);
+            value += step;
+        }
+        value
+    };
+    for start in [
+        curve.min_milli,
+        curve.knee_milli,
+        curve.max_milli - 161_000,
+        curve.max_milli - 45_000,
+        curve.max_milli - 3_500,
+    ] {
+        let base = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start,
+            min_diversity_milli: 0,
+        };
+        for epochs in [1_usize, 2, 5, 10, 25, 50, 100, 200] {
+            let closed =
+                difficulty::apply_decay(base, epochs as u32 * epoch, epoch, curve).max_energy_milli;
+            let stepped = reference(start, epochs);
+            assert!(
+                (closed - stepped).abs() <= epochs as i64,
+                "start {start}, epochs {epochs}: closed {closed}, stepped {stepped}"
+            );
+        }
     }
 }
 
