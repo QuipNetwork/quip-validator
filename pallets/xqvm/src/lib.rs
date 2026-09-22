@@ -22,23 +22,99 @@ pub mod pallet {
     use alloc::vec::Vec;
     use frame_support::dispatch::PostDispatchInfo;
     use frame_support::pallet_prelude::*;
+    use frame_support::traits::fungible::MutateHold;
+    use frame_support::traits::tokens::Precision;
+    use frame_support::traits::StorageVersion;
     use frame_system::pallet_prelude::*;
-    use sp_runtime::traits::Hash as _;
+    use sp_runtime::traits::{Hash as _, Saturating};
 
-    use aglais_xqvm_bytecode::Program;
-    use aglais_xqvm_vm::{RegVal, Vm};
+    use xqvm::{Program, RegVal, Vm};
+
+    /// The storage layout this code expects: `Programs`, `ProgramOwner` and
+    /// `ProgramDeposit`, all keyed by program hash.
+    ///
+    /// Declared now, while the layout is fresh and no live chain holds any
+    /// program, so the first in-place upgrade has a recorded version to
+    /// migrate from rather than an implicit zero.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
 
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
+
+    /// The balance type of the configured currency.
+    pub type BalanceOf<T> = <<T as Config>::Currency as frame_support::traits::fungible::Inspect<
+        <T as frame_system::Config>::AccountId,
+    >>::Balance;
 
     #[pallet::config]
     pub trait Config: frame_system::Config {
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
+        /// The currency the storage deposit is taken in.
+        ///
+        /// The pallet itself only ever holds and releases. Benchmarks also
+        /// need to conjure a balance to hold against, so they ask for
+        /// `Mutate` on top; production currencies are not made to promise
+        /// arbitrary mutation for the benchmarks' sake.
+        #[cfg(not(feature = "runtime-benchmarks"))]
+        type Currency: MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
+        #[cfg(feature = "runtime-benchmarks")]
+        type Currency: frame_support::traits::fungible::Mutate<Self::AccountId>
+            + MutateHold<Self::AccountId, Reason = Self::RuntimeHoldReason>;
+
+        /// The overarching hold reason.
+        type RuntimeHoldReason: From<HoldReason>;
+
+        /// Flat part of a program's storage deposit.
+        ///
+        /// Covers the fixed footprint of a stored program -- its entries in
+        /// `Programs`, `ProgramOwner` and `ProgramDeposit`, plus the hold
+        /// recorded against the storer -- in the same spirit as
+        /// `pallet_revive`'s per-item deposit.
+        #[pallet::constant]
+        type DepositBase: Get<BalanceOf<Self>>;
+
+        /// Per-byte part of a program's storage deposit.
+        ///
+        /// This is what makes storage cost something: the extrinsic's weight
+        /// prices decode and verification as execution time, and says nothing
+        /// about every full node keeping the bytes forever.
+        #[pallet::constant]
+        type DepositPerByte: Get<BalanceOf<Self>>;
+
         /// Maximum size of a stored XQVM program in bytes.
         #[pallet::constant]
         type MaxProgramSize: Get<u32>;
+
+        /// Maximum number of basic blocks a stored program may have, counted
+        /// the way the verifier's CFG builder counts them: see
+        /// [`ControlFlowShape`].
+        ///
+        /// Bounds the verifier's memory and time, which `MaxProgramSize`
+        /// does not: the verifier allocates per basic block, about 3 KiB
+        /// natively, and a block can be a single byte, so a 64 KiB program
+        /// can describe ~65,000 of them and ask for ~200 MiB on a runtime
+        /// heap of 128 MiB. A failed allocation inside Wasm traps the whole
+        /// execution rather than returning a fault this pallet could report,
+        /// which is the same reason `MaxVmMemory` exists for the VM's own
+        /// allocations.
+        #[pallet::constant]
+        type MaxProgramBlocks: Get<u32>;
+
+        /// Maximum static loop nesting depth of a stored program.
+        ///
+        /// The verifier walks every loop region's blocks once per enclosing
+        /// loop, so its work is the block count times the nesting depth, and
+        /// nested loops are cheap to write: one `RANGE` and one `NEXT` per
+        /// level. Without this cap a program under `MaxProgramBlocks` could
+        /// still make verification quadratic in its length. Measured
+        /// natively, 2,048 nested `RANGE`/`NEXT` pairs take 255 ms to
+        /// verify and 16,384 take 20 s -- and that cost is paid before the
+        /// verifier gets round to rejecting them.
+        #[pallet::constant]
+        type MaxLoopDepth: Get<u32>;
 
         /// Maximum number of calldata entries (i64 values).
         #[pallet::constant]
@@ -47,6 +123,14 @@ pub mod pallet {
         /// Maximum number of output slots.
         #[pallet::constant]
         type MaxOutputSlots: Get<u32>;
+
+        /// Maximum bytes an execution may allocate.
+        ///
+        /// Bounds the VM's allocation budget, which is a distinct resource
+        /// from the step budget: steps price the *work* an opcode does, this
+        /// bounds what it may ask the runtime to hold while doing it.
+        #[pallet::constant]
+        type MaxVmMemory: Get<u64>;
 
         /// Maximum step limit per execution.
         #[pallet::constant]
@@ -66,9 +150,26 @@ pub mod pallet {
     pub type Programs<T: Config> =
         StorageMap<_, Identity, T::Hash, BoundedVec<u8, T::MaxProgramSize>>;
 
-    /// Who stored each program (for future deposit/removal support).
+    /// Who stored each program. Confers the right to remove it and receive
+    /// the deposit back.
     #[pallet::storage]
     pub type ProgramOwner<T: Config> = StorageMap<_, Identity, T::Hash, T::AccountId>;
+
+    /// The deposit held against each stored program.
+    ///
+    /// Recorded rather than recomputed from the byte length, so that a later
+    /// change to `DepositBase` or `DepositPerByte` cannot release more or
+    /// less than was actually taken.
+    #[pallet::storage]
+    pub type ProgramDeposit<T: Config> = StorageMap<_, Identity, T::Hash, BalanceOf<T>>;
+
+    /// Reasons this pallet holds funds.
+    #[pallet::composite_enum]
+    pub enum HoldReason {
+        /// Deposit backing a program stored on chain.
+        #[codec(index = 0)]
+        StoredProgram,
+    }
 
     // ── Events ───────────────────────────────────────────────────────────
 
@@ -80,6 +181,23 @@ pub mod pallet {
             program_hash: T::Hash,
             owner: T::AccountId,
             size: u32,
+            deposit: BalanceOf<T>,
+        },
+
+        /// A program was removed by its owner and the deposit released.
+        ProgramRemoved {
+            program_hash: T::Hash,
+            owner: T::AccountId,
+            deposit: BalanceOf<T>,
+        },
+
+        /// A program was evicted by root. The deposit is returned: eviction
+        /// clears state, it does not punish, and content addressing means
+        /// anyone can store the same bytes again.
+        ProgramEvicted {
+            program_hash: T::Hash,
+            owner: T::AccountId,
+            deposit: BalanceOf<T>,
         },
 
         /// A program executed successfully.
@@ -95,14 +213,53 @@ pub mod pallet {
 
     #[pallet::error]
     pub enum Error<T> {
-        /// The bytecode failed to decode as a valid XQVM program.
+        /// The bytecode is not a well-formed XQBC container: bad magic,
+        /// unsupported format version, length mismatch, or CRC-32 mismatch.
+        ///
+        /// This covers the container only. Faults in the instruction stream
+        /// itself get their own variants below, from the verifier.
         InvalidBytecode,
+        /// Verifier: an instruction is truncated or uses an unknown opcode.
+        VerifierBadInstruction,
+        /// Verifier: a jump references a target that does not exist.
+        VerifierUndefinedJumpTarget,
+        /// Verifier: loop opens and closes do not balance, or a loop-context
+        /// read occurs with no active loop.
+        VerifierLoopImbalance,
+        /// Verifier: a register is read before it is written, on at least one
+        /// path through the program.
+        VerifierReadUnsetRegister,
+        /// Verifier: a register is read at a type it was not written as.
+        VerifierRegisterTypeMismatch,
+        /// Verifier: the program can underflow or overflow the value stack, or
+        /// reaches a join point at inconsistent stack depths.
+        VerifierStackFault,
+        /// The program has more basic blocks than `MaxProgramBlocks`.
+        ///
+        /// Checked before verification, because the verifier's memory is
+        /// what the bound protects and it is spent during verification.
+        TooManyBlocks,
+        /// The program nests loops deeper than `MaxLoopDepth`.
+        ///
+        /// Checked before verification for the same reason as
+        /// `TooManyBlocks`: the cost it bounds is spent inside the verifier,
+        /// ahead of any fault the verifier would report.
+        LoopNestingTooDeep,
         /// A program with this hash already exists.
         ProgramAlreadyExists,
         /// No program found for the given hash.
         ProgramNotFound,
+        /// The caller is not the account that stored this program.
+        NotProgramOwner,
         /// Requested step limit exceeds MaxStepLimit.
         StepLimitTooHigh,
+        /// A step limit of zero was requested.
+        ///
+        /// Rejected rather than forwarded: a zero-step execution can never
+        /// succeed, and under xqvm 0.3.x the `0` sentinel even meant
+        /// "unlimited". The guard keeps the bound independent of the
+        /// library's convention.
+        ZeroStepLimit,
         /// Output slot count exceeds MaxOutputSlots.
         TooManyOutputSlots,
         /// XQVM: stack underflow.
@@ -113,24 +270,198 @@ pub mod pallet {
         VmDivisionByZero,
         /// XQVM: step limit exceeded.
         VmStepLimitExceeded,
+        /// XQVM: the program asked to allocate more than `MaxVmMemory`.
+        ///
+        /// "Asked for too much memory" is a budgeting answer the caller can
+        /// act on by splitting the work up, not a broken program.
+        VmMemoryLimitExceeded,
         /// XQVM: bad opcode or truncated instruction.
         VmBadBytecode,
         /// XQVM: register type mismatch.
         VmRegisterType,
-        /// XQVM: other runtime fault.
-        VmRuntimeError,
+        /// XQVM: a register was read before anything was written to it.
+        ///
+        /// The verifier rejects this statically at `store_program`, so
+        /// reaching it at run time means a path it could not prove.
+        VmUnsetRegister,
+        /// XQVM: an arithmetic operation left the `i64` range.
+        ///
+        /// Since xqvm 0.4.0 overflow raises instead of wrapping, so this is
+        /// a fault a program can hit rather than a silently wrong result.
+        VmArithmeticOverflow,
+        /// XQVM: an index was outside what it addressed -- a vector or
+        /// sample element, a model's coefficient, or a grid cell.
+        VmIndexOutOfBounds,
+        /// XQVM: a loop opcode ran with no active loop, or a loop was left
+        /// unclosed at the end of the stream.
+        VmLoopStructure,
+        /// XQVM: loop nesting exceeded the interpreter's depth limit.
+        VmLoopStackOverflow,
+        /// XQVM: a jump named a target or label that does not resolve.
+        VmBadJump,
+        /// XQVM: `INPUT` addressed a calldata slot the call did not supply.
+        VmCallDataIndex,
+        /// XQVM: `OUTPUT` addressed a slot beyond the requested count.
+        VmOutputIndex,
+        /// XQVM: two operands disagreed on size, or a vector's length did
+        /// not match what the opcode required.
+        VmSizeMismatch,
+        /// XQVM: a shift amount was negative or at least 64.
+        VmInvalidShift,
+        /// XQVM: grid dimensions were zero or negative, or described more
+        /// cells than the register declares.
+        VmInvalidGridDimensions,
+        /// XQVM: a discrete sample was allocated with `k < 2`.
+        VmInvalidDiscreteK,
+        /// XQVM: an allocation size was negative or otherwise not an
+        /// allocation.
+        VmInvalidAllocation,
+        /// XQVM: the tracing interpreter failed.
+        ///
+        /// Unreachable from this pallet: `TraceFailed` is only raised by
+        /// `Vm::run_trace`, and `execute` calls `Vm::run`. Mapped explicitly
+        /// rather than absorbed, so that the match below stays exhaustive.
+        VmTraceFailed,
     }
 
-    fn map_vm_error<T: Config>(e: &aglais_xqvm_vm::Error) -> Error<T> {
-        use aglais_xqvm_vm::Error as E;
+    /// Map a static-verification failure onto a dispatch error.
+    ///
+    /// Exhaustive on purpose: a new `VerifierError` variant upstream should
+    /// stop this compiling rather than be absorbed by a catch-all, the same
+    /// discipline `map_vm_error` applies to runtime faults.
+    fn map_verifier_error<T: Config>(e: &xqvm::VerifierError) -> Error<T> {
+        use xqvm::VerifierError as V;
+        match e {
+            V::TruncatedInstruction { .. } | V::BadOpcode { .. } => {
+                Error::<T>::VerifierBadInstruction
+            }
+            V::UndefinedJumpTarget { .. } => Error::<T>::VerifierUndefinedJumpTarget,
+            V::NoActiveLoop { .. } | V::UnmatchedLoop { .. } => Error::<T>::VerifierLoopImbalance,
+            V::ReadUnsetRegister { .. } => Error::<T>::VerifierReadUnsetRegister,
+            V::RegisterTypeMismatch { .. } => Error::<T>::VerifierRegisterTypeMismatch,
+            V::StackUnderflow { .. }
+            | V::StackOverflowRisk { .. }
+            | V::LoopStackImbalance { .. }
+            | V::StackDepthMismatch { .. } => Error::<T>::VerifierStackFault,
+        }
+    }
+
+    /// Map a run-time fault onto a dispatch error.
+    ///
+    /// Exhaustive, and deliberately without a catch-all. The wildcard this
+    /// replaced absorbed every variant the pallet had not thought about,
+    /// which is how nine opcodes' worth of new faults arrived across the
+    /// QUI-997 bump without a compile error: on chain they all read as
+    /// "something went wrong in the VM", which is not enough to debug a
+    /// submitted program from the outside. Now a new upstream variant stops
+    /// the build until someone decides what it means here.
+    ///
+    /// Faults are grouped only where the grouping is the answer a caller
+    /// would act on -- an unclosed loop and a loop-context read with no
+    /// active loop are both "the loop structure is wrong".
+    fn map_vm_error<T: Config>(e: &xqvm::Error) -> Error<T> {
+        use xqvm::Error as E;
         match e {
             E::StackUnderflow { .. } => Error::<T>::VmStackUnderflow,
             E::StackOverflow { .. } => Error::<T>::VmStackOverflow,
             E::DivisionByZero { .. } => Error::<T>::VmDivisionByZero,
             E::StepLimitExceeded { .. } => Error::<T>::VmStepLimitExceeded,
             E::BadOpcode { .. } | E::TruncatedInstruction { .. } => Error::<T>::VmBadBytecode,
-            E::RegisterType { .. } => Error::<T>::VmRegisterType,
-            _ => Error::<T>::VmRuntimeError,
+            // `IncompatibleType` is the same fault as `RegisterType` raised
+            // from a site that does not track which register caused it, so
+            // the caller-visible answer is identical.
+            E::RegisterType { .. } | E::IncompatibleType(_) => Error::<T>::VmRegisterType,
+            E::MemoryLimitExceeded { .. } => Error::<T>::VmMemoryLimitExceeded,
+            E::UnsetRegister { .. } => Error::<T>::VmUnsetRegister,
+            E::ArithmeticOverflow { .. } => Error::<T>::VmArithmeticOverflow,
+            E::IndexOutOfBounds { .. } => Error::<T>::VmIndexOutOfBounds,
+            E::NoActiveLoop { .. } | E::UnmatchedLoop { .. } => Error::<T>::VmLoopStructure,
+            E::LoopStackOverflow { .. } => Error::<T>::VmLoopStackOverflow,
+            E::BadJumpTarget { .. } | E::InvalidLabel { .. } => Error::<T>::VmBadJump,
+            E::CallDataIndex { .. } => Error::<T>::VmCallDataIndex,
+            E::OutputIndex { .. } => Error::<T>::VmOutputIndex,
+            E::SizeMismatch { .. } | E::VecLengthMismatch { .. } => Error::<T>::VmSizeMismatch,
+            E::InvalidShift { .. } => Error::<T>::VmInvalidShift,
+            E::InvalidGridDimensions { .. } => Error::<T>::VmInvalidGridDimensions,
+            E::InvalidDiscreteK { .. } => Error::<T>::VmInvalidDiscreteK,
+            E::InvalidAllocation { .. } => Error::<T>::VmInvalidAllocation,
+            E::TraceFailed { .. } => Error::<T>::VmTraceFailed,
+        }
+    }
+
+    /// The static control-flow shape of an instruction stream, as the
+    /// verifier will see it.
+    ///
+    /// `blocks` counts basic-block leaders exactly as the verifier's CFG
+    /// builder does: the entry, every `TARGET`, and the position after every
+    /// jump, `RANGE`, `ITER` and `NEXT` -- a set, so a `TARGET` right after
+    /// a jump is one block, not two. Counting only `TARGET`s, as this pallet
+    /// first did, left a single `TARGET` followed by two thousand `JUMP`s at
+    /// "one block" while the verifier saw two thousand.
+    ///
+    /// `loop_depth` is the deepest static nesting of `RANGE`/`ITER` openers
+    /// before their `NEXT`. An unmatched `NEXT` does not go negative; the
+    /// verifier rejects it, and this is a cost model, not a validator.
+    ///
+    /// One linear pass with the same decoder the verifier uses, so it costs
+    /// what decoding costs and is covered by the per-byte weight term.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ControlFlowShape {
+        /// Basic blocks in the verifier's CFG.
+        pub blocks: u32,
+        /// Deepest static loop nesting.
+        pub loop_depth: u32,
+    }
+
+    impl ControlFlowShape {
+        /// Measure `code`, the raw instruction stream of a decoded program.
+        pub fn of(code: &[u8]) -> Self {
+            use xqvm::{Instruction, InstructionStream};
+
+            // The entry is always a leader. `leader_pending` records that the
+            // previous instruction already made the current position a
+            // leader, so a `TARGET` here must not be counted again.
+            let mut blocks: u32 = 1;
+            let mut leader_pending = true;
+            let mut depth: u32 = 0;
+            let mut loop_depth: u32 = 0;
+
+            let mut stream = InstructionStream::new(code);
+            while let Some(item) = stream.next_instruction() {
+                // A structural fault ends the walk; the verifier will report
+                // it. Everything counted so far still bounds the work the
+                // verifier does before it gets there.
+                let Ok((_, _, instr)) = item else { break };
+                match instr {
+                    Instruction::Target {} => {
+                        if !leader_pending {
+                            blocks = blocks.saturating_add(1);
+                        }
+                        leader_pending = false;
+                    }
+                    Instruction::Jump1 { .. }
+                    | Instruction::Jump2 { .. }
+                    | Instruction::JumpI1 { .. }
+                    | Instruction::JumpI2 { .. } => {
+                        blocks = blocks.saturating_add(1);
+                        leader_pending = true;
+                    }
+                    Instruction::Range {} | Instruction::Iter { .. } => {
+                        blocks = blocks.saturating_add(1);
+                        leader_pending = true;
+                        depth = depth.saturating_add(1);
+                        loop_depth = loop_depth.max(depth);
+                    }
+                    Instruction::Next {} => {
+                        blocks = blocks.saturating_add(1);
+                        leader_pending = true;
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => leader_pending = false,
+                }
+            }
+
+            Self { blocks, loop_depth }
         }
     }
 
@@ -140,18 +471,54 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// Store an XQVM program on-chain.
         ///
-        /// The bytecode is validated by decoding it. The program is stored
-        /// keyed by its Blake2-256 hash for deduplication.
+        /// The bytecode is decoded, which checks the XQBC container, and then
+        /// statically verified, which checks the instruction stream. Both must
+        /// pass before anything is written, so a program that is accepted here
+        /// cannot fail `execute` for a reason the verifier covers.
+        ///
+        /// Verifying at store time rather than at execute time puts the cost
+        /// on the account that introduced the program, once, instead of on
+        /// every account that runs it. It is also what lets `execute` skip
+        /// re-verification later (QUI-1057).
+        ///
+        /// The cost has two dimensions. Decoding is linear in the byte
+        /// length, which the call arguments give. Verification is linear in
+        /// the basic-block count (at a bounded nesting depth, which the
+        /// per-block price assumes at its maximum), and the count is only
+        /// known after decoding, so it is pre-charged at `MaxProgramBlocks`
+        /// and refunded to the actual count -- the shape `execute` uses for
+        /// its size.
+        ///
+        /// The program is stored keyed by its Blake2-256 hash for
+        /// deduplication.
         #[pallet::call_index(0)]
-        #[pallet::weight(T::WeightInfo::store_program(bytecode.len() as u32))]
+        #[pallet::weight(
+            T::WeightInfo::store_program(bytecode.len() as u32, T::MaxProgramBlocks::get())
+        )]
         pub fn store_program(
             origin: OriginFor<T>,
             bytecode: BoundedVec<u8, T::MaxProgramSize>,
-        ) -> DispatchResult {
+        ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
-            // Validate bytecode
-            Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
+            // Container first, then the shape bounds, then the instruction
+            // stream. The shape is one linear walk over the bytes -- already
+            // priced by the per-byte term -- and it has to come before
+            // `verify`, because verification is what spends the memory and
+            // time the bounds protect, and it spends them before it reports
+            // any fault.
+            let program = Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
+            let shape = ControlFlowShape::of(program.code());
+            ensure!(
+                shape.blocks <= T::MaxProgramBlocks::get(),
+                Error::<T>::TooManyBlocks
+            );
+            ensure!(
+                shape.loop_depth <= T::MaxLoopDepth::get(),
+                Error::<T>::LoopNestingTooDeep
+            );
+            let blocks = shape.blocks;
+            xqvm::verifier::verify(&program).map_err(|e| map_verifier_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);
             ensure!(
@@ -160,24 +527,101 @@ pub mod pallet {
             );
 
             let size = bytecode.len() as u32;
+
+            // Taken before the write, so a caller who cannot afford the
+            // deposit does not get the storage.
+            let deposit = Self::deposit_for(size);
+            T::Currency::hold(&HoldReason::StoredProgram.into(), &who, deposit)?;
+
             Programs::<T>::insert(&hash, bytecode);
             ProgramOwner::<T>::insert(&hash, &who);
+            ProgramDeposit::<T>::insert(&hash, deposit);
 
             Self::deposit_event(Event::ProgramStored {
                 program_hash: hash,
                 owner: who,
                 size,
+                deposit,
             });
-            Ok(())
+            Ok(Some(T::WeightInfo::store_program(size, blocks)).into())
+        }
+
+        /// Remove a program stored by the caller and release its deposit.
+        ///
+        /// Removal is not destructive in any lasting sense: programs are
+        /// addressed by the hash of their bytecode, so anyone can store the
+        /// same bytes again by paying a fresh deposit. That is what makes it
+        /// safe to let the owner delete unilaterally without worrying about
+        /// callers mid-way through using it.
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::WeightInfo::remove_program(T::MaxProgramSize::get()))]
+        pub fn remove_program(
+            origin: OriginFor<T>,
+            program_hash: T::Hash,
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+
+            let owner = ProgramOwner::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+            ensure!(owner == who, Error::<T>::NotProgramOwner);
+
+            let (size, deposit) = Self::do_remove(&program_hash, &owner)?;
+
+            Self::deposit_event(Event::ProgramRemoved {
+                program_hash,
+                owner,
+                deposit,
+            });
+
+            // Pre-charged at MaxProgramSize because the length is not known
+            // until storage is read, and refunded to what was actually there,
+            // the same shape `execute` uses for its size component.
+            Ok(Some(T::WeightInfo::remove_program(size)).into())
+        }
+
+        /// Evict a stored program by root, returning the deposit to whoever
+        /// stored it.
+        ///
+        /// A state-management tool rather than a punitive one: the deposit is
+        /// returned, and the same bytes can be stored again by anyone.
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::WeightInfo::evict_program(T::MaxProgramSize::get()))]
+        pub fn evict_program(
+            origin: OriginFor<T>,
+            program_hash: T::Hash,
+        ) -> DispatchResultWithPostInfo {
+            ensure_root(origin)?;
+
+            let owner = ProgramOwner::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+
+            let (size, deposit) = Self::do_remove(&program_hash, &owner)?;
+
+            Self::deposit_event(Event::ProgramEvicted {
+                program_hash,
+                owner,
+                deposit,
+            });
+
+            Ok(Some(T::WeightInfo::evict_program(size)).into())
         }
 
         /// Execute a stored XQVM program.
         ///
-        /// Weight is pre-charged based on `step_limit`. Unused weight is
-        /// refunded via `PostDispatchInfo`.
+        /// Both dimensions of the cost are caller-influenced and neither is
+        /// known from the call arguments alone, so both are pre-charged at
+        /// their worst case and refunded via `PostDispatchInfo`:
+        ///
+        /// * **Program size.** The call carries only a hash, so the length is
+        ///   unknown until storage is read. Decoding runs a full verifier scan
+        ///   over every instruction, which is linear in the byte length, so
+        ///   `MaxProgramSize` is pre-charged and the actual length refunded.
+        /// * **Steps.** Pre-charged on the caller's `step_limit`, refunded to
+        ///   the steps actually executed.
+        ///
+        /// The error path deliberately does not refund: over-charging a failed
+        /// execution is the conservative direction.
         #[pallet::call_index(1)]
         #[pallet::weight(
-            T::WeightInfo::execute_base()
+            T::WeightInfo::execute(T::MaxProgramSize::get())
                 .saturating_add(
                     T::WeightPerStep::get().saturating_mul(*step_limit)
                 )
@@ -191,6 +635,13 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
+            // Defence in depth. `xqvm 0.3.1` mapped a step limit of `0` to
+            // `u64::MAX`, so an unguarded pass-through ran unbounded while
+            // pre-charging only the base weight. xqvm 0.4.0 removed the
+            // sentinel (QUI-1053); this check stays regardless, because a
+            // consensus-critical bound must not depend on a library's
+            // sentinel convention.
+            ensure!(step_limit > 0, Error::<T>::ZeroStepLimit);
             ensure!(
                 step_limit <= T::MaxStepLimit::get(),
                 Error::<T>::StepLimitTooHigh
@@ -201,10 +652,21 @@ pub mod pallet {
             );
 
             let bytecode = Programs::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+            let program_len = bytecode.len() as u32;
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::VmBadBytecode)?;
 
+            // `Vm::new` installs a 1 GiB budget sized for an off-chain
+            // host, so this is not an optimisation -- it is the bound. The
+            // budget has to be set explicitly because the step limit does not
+            // imply it: steps price the work an allocation performs, not the
+            // residency it leaves behind, and the two diverge by orders of
+            // magnitude. Left at the default, a program could ask the runtime
+            // for more than its heap holds, and a failed allocation inside
+            // Wasm traps the whole execution rather than returning a fault
+            // this pallet could report.
             let mut vm = Vm::new();
-            vm.set_step_limit(step_limit)
+            vm.set_memory_limit(T::MaxVmMemory::get())
+                .set_step_limit(step_limit)
                 .set_output_slots(output_slots as usize)
                 .set_calldata(calldata.iter().map(|&v| RegVal::Int(v)).collect());
 
@@ -229,7 +691,7 @@ pub mod pallet {
                         outputs,
                     });
 
-                    let actual_weight = T::WeightInfo::execute_base()
+                    let actual_weight = T::WeightInfo::execute(program_len)
                         .saturating_add(T::WeightPerStep::get().saturating_mul(steps_used));
                     Ok(PostDispatchInfo {
                         actual_weight: Some(actual_weight),
@@ -238,6 +700,45 @@ pub mod pallet {
                 }
                 Err(e) => Err(map_vm_error::<T>(&e).into()),
             }
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
+        /// The deposit a program of `size` bytes costs to keep on chain.
+        pub fn deposit_for(size: u32) -> BalanceOf<T> {
+            T::DepositBase::get()
+                .saturating_add(T::DepositPerByte::get().saturating_mul(size.into()))
+        }
+
+        /// Clear a program's three storage entries and release its deposit.
+        ///
+        /// Returns the program's byte length and the amount actually
+        /// released, which the callers use for the weight refund and the
+        /// event.
+        fn do_remove(
+            program_hash: &T::Hash,
+            owner: &T::AccountId,
+        ) -> Result<(u32, BalanceOf<T>), DispatchError> {
+            let bytecode = Programs::<T>::take(program_hash).ok_or(Error::<T>::ProgramNotFound)?;
+            let size = bytecode.len() as u32;
+            let recorded = ProgramDeposit::<T>::take(program_hash).unwrap_or_default();
+
+            // BestEffort rather than Exact: the entry is being removed either
+            // way, and a hold that has already been reduced elsewhere must not
+            // strand the storage. There is no path that reduces it today, so
+            // this is defence against a future one, not a known case -- and
+            // the event reports what came back, not what was recorded, so it
+            // stays truthful if that future arrives.
+            let released = T::Currency::release(
+                &HoldReason::StoredProgram.into(),
+                owner,
+                recorded,
+                Precision::BestEffort,
+            )?;
+
+            ProgramOwner::<T>::remove(program_hash);
+
+            Ok((size, released))
         }
     }
 }

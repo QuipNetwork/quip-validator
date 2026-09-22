@@ -3239,16 +3239,43 @@ fn assert_weight_covers_observation(
     );
 }
 
+/// Sweep points whose charge is dominated by the dimension coefficients
+/// rather than the ~5 ms benchmarked base. Only these can meaningfully bound
+/// the model from above: at the small points the base alone is many times
+/// the observed cost.
+const COEFFICIENT_DOMINATED_SWEEP_POINTS: [&str; 2] = ["solution_edges", "worst_case"];
+
+fn assert_weight_bounded_by_observation(
+    source: &str,
+    point: &str,
+    nodes: u32,
+    edges: u32,
+    solutions: u32,
+    maximum_ns: u64,
+    maximum_ratio_percent: u128,
+) {
+    let charged = u128::from(calculate_weight(nodes, edges, solutions).ref_time());
+    let observed = u128::from(maximum_ns) * 1_000;
+
+    assert!(
+        charged * 100 <= observed * maximum_ratio_percent,
+        "{source} {point} charge {charged} ps exceeds {maximum_ratio_percent}% of observed \
+         {observed} ps; a coefficient is overcharging"
+    );
+}
+
 #[test]
-fn weight_covers_recorded_node02_sweeps_with_twenty_percent_target() {
+fn weight_covers_recorded_node02_sweeps_with_fifteen_percent_target() {
+    // The recorded target sits five points above the live 10% floor so that
+    // a routine base regeneration (a few percent either way) cannot red it.
     const RECORDED_SWEEPS: &str = include_str!("../testdata/node02-submit-proof-sweeps.tsv");
     const EXPECTED_HEADER: &str =
         "job_id\tcommit_sha\tpoint\tnodes\tedges\tsolutions\tsamples\tmax_ns";
-    const EXPECTED_JOBS: [u64; 3] = [15_552_403_591, 15_618_730_781, 15_638_128_172];
+    const MINIMUM_JOBS: usize = 3;
 
     let mut lines = RECORDED_SWEEPS.lines();
     assert_eq!(lines.next(), Some(EXPECTED_HEADER));
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeMap::<u64, std::collections::BTreeSet<&str>>::new();
 
     for line in lines {
         assert!(
@@ -3279,33 +3306,33 @@ fn weight_covers_recorded_node02_sweeps_with_twenty_percent_target() {
             "recorded dimensions do not match point {point}"
         );
         assert!(
-            seen.insert((job_id, point)),
+            seen.entry(job_id).or_default().insert(point),
             "duplicate recorded sweep row for job {job_id}, point {point}"
         );
 
-        assert_weight_covers_observation(
-            &format!("job {job_id}"),
-            point,
-            nodes,
-            edges,
-            solutions,
-            maximum_ns,
-            20,
-        );
+        let source = format!("job {job_id}");
+        assert_weight_covers_observation(&source, point, nodes, edges, solutions, maximum_ns, 15);
+        if COEFFICIENT_DOMINATED_SWEEP_POINTS.contains(&point) {
+            assert_weight_bounded_by_observation(
+                &source, point, nodes, edges, solutions, maximum_ns, 150,
+            );
+        }
     }
 
-    for job_id in EXPECTED_JOBS {
+    // The job set comes from the fixture itself, so a new sweep can be
+    // appended as evidence without editing this test.
+    for (job_id, points) in &seen {
         for (point, _, _, _) in EXPECTED_SWEEP_POINTS {
             assert!(
-                seen.contains(&(job_id, point)),
+                points.contains(point),
                 "missing recorded sweep row for job {job_id}, point {point}"
             );
         }
     }
-    assert_eq!(
-        seen.len(),
-        18,
-        "recorded fixture must contain three full sweeps"
+    assert!(
+        seen.len() >= MINIMUM_JOBS,
+        "recorded fixture must contain at least {MINIMUM_JOBS} full sweeps, found {}",
+        seen.len()
     );
 }
 
@@ -3439,17 +3466,18 @@ fn submit_proof_uses_parameterized_weight() {
             edges.len() as u32,
             proof.solutions.len() as u32,
         );
+        let base = calculate_weight(0, 0, 0).ref_time();
         assert!(
-            charged.ref_time() >= 10_000_000,
-            "parameterized weight must cover the base extrinsic cost"
+            charged.ref_time() > base,
+            "parameterized weight must add dimension cost above the measured base"
         );
 
-        // QIP-03 guarantee: a large proof is charged well above the retired 60M
-        // flat weight, so large proofs can no longer be under-charged.
+        // QIP-03 guarantee: a large proof is charged well above the measured
+        // base, so large proofs can no longer be under-charged.
         let large = calculate_weight(1_000, 5_000, 32);
         assert!(
-            large.ref_time() > 60_000_000,
-            "large proofs must exceed the retired 60M flat weight"
+            large.ref_time() > base.saturating_mul(2),
+            "large proofs must cost well above the measured base"
         );
 
         // Submission succeeds end-to-end.
@@ -3524,10 +3552,15 @@ fn weight_regression_small_proof_cost_increased() {
 
     let tiny_weight = calculate_weight(2, 1, 1);
 
-    // Even minimal proofs should pay at least the base cost
+    // Even minimal proofs pay the benchmarked base, which is itself
+    // measured in milliseconds rather than the retired flat weights.
     assert!(
-        tiny_weight.ref_time() >= 10_000_000,
-        "Minimal proof should pay at least base cost"
+        calculate_weight(0, 0, 0).ref_time() >= 1_000_000_000,
+        "measured submit_proof base should be at least 1 ms"
+    );
+    assert!(
+        tiny_weight.ref_time() > calculate_weight(0, 0, 0).ref_time(),
+        "Minimal proof should pay more than the base cost"
     );
 }
 
@@ -3536,7 +3569,7 @@ fn weight_proportionality_constant_is_reasonable() {
     // Verify the per-unit weight constants are within reasonable bounds. Each
     // marginal cost is isolated by differencing against the zero-dimension
     // weight, since calculate_weight always includes the fixed extrinsic + DB
-    // base (~535M ref_time) that would otherwise swamp the per-unit terms.
+    // base (~5.02G ref_time) that would otherwise swamp the per-unit terms.
     let base = calculate_weight(0, 0, 0).ref_time();
     let per_node = calculate_weight(1, 0, 0).ref_time() - base;
     let per_edge = calculate_weight(0, 1, 0).ref_time() - base;
@@ -3554,6 +3587,19 @@ fn weight_proportionality_constant_is_reasonable() {
     assert!(
         per_solution_node > per_node,
         "Solution validation adds cost beyond a bare node"
+    );
+
+    // The s*e and n*e terms vanish when either factor is zero, so they need
+    // their own differences to be bounded at all.
+    let per_solution_edge = calculate_weight(0, 1, 1).ref_time() - per_edge - base;
+    let per_node_edge = calculate_weight(1, 1, 0).ref_time() - per_node - per_edge - base;
+    assert!(
+        per_solution_edge > 0 && per_solution_edge < 40_000,
+        "Per-solution-edge marginal cost should be reasonable, got {per_solution_edge}"
+    );
+    assert!(
+        per_node_edge > 0 && per_node_edge < 1_500,
+        "Per-node-edge marginal cost should be reasonable, got {per_node_edge}"
     );
 }
 

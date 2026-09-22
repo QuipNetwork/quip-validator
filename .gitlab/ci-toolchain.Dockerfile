@@ -68,6 +68,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup target add wasm32v1-none \
  && rustup component add rust-src clippy rustfmt
 
+# cargo-sweep prunes the host cache volume that .cargo-host-cache mounts at
+# /ci-cache (scripts/prune-ci-cache.sh, docs/ci-cache.md). It is baked here for
+# the same reason as jq above: the prune runs in an after_script on the heavy
+# Rust jobs, and a per-job `cargo install` would put a crates.io fetch and a
+# source build inside their timeout. Compiling it once per image build costs
+# minutes that the image build already has and the jobs do not.
+ARG CARGO_SWEEP_VERSION=0.8.0
+RUN cargo install cargo-sweep --locked --version "${CARGO_SWEEP_VERSION}"
+
 # Cargo prefers the git CLI for fetching from GitLab; this matches the
 # behavior of the production Dockerfile so cargo can resolve ssh:// deps
 # without an in-image SSH key.

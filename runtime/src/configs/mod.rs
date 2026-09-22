@@ -413,13 +413,103 @@ impl pallet_faucet_ops::Config for Runtime {
 
 parameter_types! {
     pub const MaxProgramSize: u32 = 65_536;
+    /// Maximum basic blocks in a stored program, counted as the verifier's
+    /// CFG builder counts them: the entry, every `TARGET`, and the position
+    /// after every jump, `RANGE`, `ITER` and `NEXT`.
+    ///
+    /// This bounds the verifier's memory, which the byte limit does not.
+    /// Measured natively, decode plus verify of a pure `TARGET` sled peaks
+    /// at ~3 KiB per block: 14 MiB at 4,096 blocks and 200 MiB at the
+    /// 65,520 blocks a `MaxProgramSize` program can hold. The reference
+    /// machine's benchmark run exhausted the 128 MiB runtime heap at about
+    /// 28,000 blocks, so the Wasm allocator costs roughly 2.4x the native
+    /// figure. A failed allocation traps the runtime; it is not a dispatch
+    /// error anyone can report or pay for.
+    ///
+    /// 2,048 blocks is ~7 MiB native, ~17 MiB in Wasm: the same one-eighth
+    /// share of the heap the VM itself gets through `MaxVmMemory`. It is
+    /// also far past any real program -- the toolchain's conformance
+    /// vectors are tens of instructions -- so the ceiling binds abuse, not
+    /// use. The bound is priced separately: `store_program` pre-charges
+    /// verification at this many blocks and refunds to the actual count.
+    pub const MaxProgramBlocks: u32 = 2_048;
+    /// Maximum static loop nesting in a stored program.
+    ///
+    /// The verifier's loop check walks each region's blocks once per
+    /// enclosing loop, so its time is blocks times depth; without a depth
+    /// bound the block bound alone leaves verification quadratic in program
+    /// length, and the cost is spent before the verifier reports anything.
+    /// Measured natively: 2,048 bare nested `RANGE`/`NEXT` pairs take
+    /// 255 ms, 16,384 take 20 s.
+    ///
+    /// At 2,048 blocks, 32 levels cost ~2.7 ms native over the flat case
+    /// (~40 ns per block visit), which the per-block weight is measured
+    /// with. Real programs nest two or three deep; the VM's own dynamic
+    /// loop-stack limit is 8,192, which is a different resource.
+    pub const MaxLoopDepth: u32 = 32;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;
-    pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
+    /// Weight charged per executed XQVM step, measured rather than assumed.
+    ///
+    /// Taken as the slope of the `execute_step` benchmark -- the marginal cost
+    /// of one more step on the reference machine -- multiplied by a safety
+    /// factor. Deriving it from the generated weights means regeneration keeps
+    /// it honest; the previous hand-set 1 ns was roughly 13x below the
+    /// measured cost of the *cheapest* opcode in the ISA.
+    ///
+    /// The safety factor covers the spread between one-step opcodes. A step
+    /// is calibrated upstream as one `NOP` dispatch, while the benchmark
+    /// exercises `NEXT`, which is dearer and still charges a single step; the
+    /// slope therefore already sits above the unit cost, and the factor of 2
+    /// leaves headroom for register and vector opcodes the benchmark does not
+    /// reach.
+    ///
+    /// Since xqvm 0.4.0 it also covers opcodes whose cost scales with their
+    /// operands, which a flat per-step price could not be made sound for
+    /// before (QUI-1056). Those opcodes now charge additional steps for the
+    /// work they are about to do -- `ENERGY` one per model term, the
+    /// constraint expansions one per coefficient written, the grid scans one
+    /// per cell -- so `WeightPerStep * steps` tracks work rather than
+    /// instruction count. The unit counts are normative and specified in the
+    /// toolchain's `spec/xqvm/METERING.md`; the pallet prices them, it does
+    /// not restate them.
+    pub XqvmWeightPerStep: Weight = {
+        const STEP_WEIGHT_SAFETY_FACTOR: u64 = 2;
+        let slope = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0));
+        slope.saturating_mul(STEP_WEIGHT_SAFETY_FACTOR)
+    };
+
+    /// Maximum bytes a single `execute` may allocate inside the VM.
+    ///
+    /// Sized against the Wasm runtime's heap rather than the block's weight
+    /// budget, because that is the resource it protects. The executor's
+    /// default is `DEFAULT_HEAP_ALLOC_PAGES` (2048) 64 KiB pages -- 128 MiB
+    /// -- shared by everything the block does: the storage overlay, decoded
+    /// extrinsics, and every other pallet in the same block. 16 MiB gives the
+    /// VM an eighth of that at the absolute bound and leaves the rest alone.
+    ///
+    /// It is not derived from `MaxStepLimit`, and must not be. The step
+    /// budget bounds allocation only incidentally, through whatever the
+    /// allocating opcodes happen to charge: a sample costs one step per
+    /// element and eight bytes per element, so the step limit alone would
+    /// permit an allocation well past the heap. That incidental coupling is
+    /// what this constant replaces with a stated bound.
+    ///
+    /// 16 MiB is 2,097,152 XQMX variables, orders of magnitude above any
+    /// problem the toolchain's own examples encode, so the ceiling binds
+    /// abuse rather than use.
+    pub const MaxVmMemory: u64 = 16 * 1024 * 1024;
 
     /// Derived from block weight budget so a single execute call always
     /// fits in one block.  Uses 50 % of the normal dispatch budget to
     /// leave room for other extrinsics in the same block.
+    ///
+    /// Falls automatically as the per-step price rises: with the price
+    /// measured rather than assumed, this is roughly an order of magnitude
+    /// below the ~750M steps the hand-set constant used to permit. That is the
+    /// point -- the old limit allowed a single extrinsic to run for over ten
+    /// seconds against a two-second block budget.
     pub MaxStepLimit: u64 = {
         let normal = RuntimeBlockWeights::get()
             .get(frame_support::dispatch::DispatchClass::Normal)
@@ -427,10 +517,10 @@ parameter_types! {
             .unwrap_or(RuntimeBlockWeights::get().max_block);
         // Reserve half for other extrinsics.
         let budget = normal.ref_time() / 2;
-        // Subtract execute_base overhead, then divide by per-step cost.
-        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute_base()
+        // Subtract the worst-case decode overhead, then divide by per-step cost.
+        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
             .ref_time();
-        let per_step = XqvmWeightPerStep::get().ref_time();
+        let per_step = XqvmWeightPerStep::get().ref_time().max(1);
         budget.saturating_sub(base) / per_step
     };
 }
@@ -438,10 +528,21 @@ parameter_types! {
 /// Configure the XQVM pallet for on-chain bytecode execution.
 impl pallet_xqvm::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    // A stored program is priced at the chain storage price like Revive's
+    // code blobs: one item for the program plus its bytes. At `MaxProgramSize`
+    // the per-byte part is 0.655 UNIT, so a full 64 KiB program locks up
+    // roughly 0.855 UNIT in total, returned when the program is removed.
+    type DepositBase = StorageDepositPerItem;
+    type DepositPerByte = StorageDepositPerByte;
     type MaxProgramSize = MaxProgramSize;
+    type MaxProgramBlocks = MaxProgramBlocks;
+    type MaxLoopDepth = MaxLoopDepth;
     type MaxCallDataLen = MaxCallDataLen;
     type MaxOutputSlots = MaxOutputSlots;
     type MaxStepLimit = MaxStepLimit;
+    type MaxVmMemory = MaxVmMemory;
     type WeightPerStep = XqvmWeightPerStep;
     type WeightInfo = pallet_xqvm::SubstrateWeight<Runtime>;
 }
@@ -666,5 +767,85 @@ mod tests {
         let parsed = AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
             .expect("hardcoded SS58 must decode");
         assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
+    }
+}
+
+#[cfg(test)]
+mod xqvm_weights {
+    use super::*;
+
+    /// The VM's allocation budget must stay well under the Wasm runtime's
+    /// heap.
+    ///
+    /// `MaxVmMemory` is hand-set rather than derived, so nothing else would
+    /// notice it being raised past the heap it is sized against. The failure
+    /// it guards is not a rejected extrinsic: an allocation the heap cannot
+    /// satisfy traps the whole runtime execution, which no dispatch error can
+    /// report.
+    #[test]
+    fn vm_memory_budget_stays_under_the_runtime_heap() {
+        /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB
+        /// pages. Restated rather than imported -- it is a client-side
+        /// constant and the runtime does not depend on the executor.
+        const RUNTIME_HEAP_BYTES: u64 = 2048 * 64 * 1024;
+        /// The VM may claim at most this share of the heap at its bound, so
+        /// the storage overlay and every other pallet in the block keep room.
+        /// An eighth, as the `MaxVmMemory` doc promises: 16 MiB of 128 MiB.
+        const MAX_HEAP_SHARE: u64 = 8;
+
+        assert!(
+            MaxVmMemory::get() <= RUNTIME_HEAP_BYTES / MAX_HEAP_SHARE,
+            "MaxVmMemory is {} bytes against a {} byte heap",
+            MaxVmMemory::get(),
+            RUNTIME_HEAP_BYTES,
+        );
+    }
+
+    /// A single `execute` at the maximum step limit must fit inside the budget
+    /// the limit was derived from.
+    ///
+    /// This is the invariant the old hand-set `WeightPerStep` violated: it
+    /// admitted ~750M steps priced at 0.75 s that took over ten seconds to run,
+    /// against a two-second block. Both constants are now derived from the
+    /// generated weights, so this holds by construction -- the test is here to
+    /// catch a regeneration or a refactor that quietly breaks the derivation.
+    #[test]
+    fn max_step_limit_fits_the_reserved_budget() {
+        let normal = RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_total
+            .unwrap_or(RuntimeBlockWeights::get().max_block)
+            .ref_time();
+        let reserved = normal / 2;
+
+        let worst_case = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+            .ref_time()
+            .saturating_add(
+                XqvmWeightPerStep::get()
+                    .ref_time()
+                    .saturating_mul(MaxStepLimit::get()),
+            );
+
+        assert!(
+            worst_case <= reserved,
+            "worst-case execute is {worst_case} ps against {reserved} ps reserved",
+        );
+    }
+
+    /// The per-step price must stay above the measured marginal cost of a step.
+    ///
+    /// Derived from the same benchmark rather than a copied number, so it
+    /// tracks regeneration instead of going stale.
+    #[test]
+    fn per_step_price_exceeds_measured_cost() {
+        let measured = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0))
+            .ref_time();
+
+        assert!(
+            XqvmWeightPerStep::get().ref_time() > measured,
+            "priced {} ps/step is not above the measured {measured} ps/step",
+            XqvmWeightPerStep::get().ref_time(),
+        );
     }
 }

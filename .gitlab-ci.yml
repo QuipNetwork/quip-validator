@@ -168,8 +168,11 @@ workflow:
 # is what keeps the directory warm. CARGO_HOME is shared: the registry is
 # read-mostly and cargo locks it correctly.
 #
-# Pruning is a host concern — a scheduled CI job only ever lands on one runner.
-# Each host needs its own sweep of that volume; see docs/ci-cache.md.
+# Pruning rides along with these jobs rather than running on a schedule. A
+# scheduled job only ever lands on one runner, but the jobs that fill the
+# volume already reach every host in the pool — a host that never runs them has
+# nothing to prune. The script holds a per-host lock and prunes at most once a
+# day, so the cost does not land on every pipeline. See docs/ci-cache.md.
 .cargo-host-cache:
   variables:
     CARGO_HOME: /ci-cache/cargo-home
@@ -179,6 +182,11 @@ workflow:
     # walk never crosses it. Point the builder at the checkout directly.
     WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
   cache: []
+  # after_script also runs when the job fails or is cancelled on timeout, which
+  # is exactly when a slot is left half-written. The script exits 0 on every
+  # path: a prune must never turn a green build red.
+  after_script:
+    - ./scripts/prune-ci-cache.sh
 
 # Single test job: pulls the toolchain image once, and runs fmt → clippy →
 # test → runtime release build sequentially so they share compile artifacts
@@ -197,10 +205,20 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
-# Browser-facing half of the hybrid extrinsic-signing contract. This is kept
-# separate from cargo-test because it additionally installs Node and the pinned
-# wasm-pack release, builds browser bindings, and exercises the actual
+# Node-level suites that need a running chain and the PQ signer. Kept separate
+# from cargo-test because they additionally install Node and the pinned
+# wasm-pack release, build browser bindings, and exercise the actual
 # Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
+#
+# Both suites run here rather than in a job each. They need byte-identical
+# setup -- the same image, the same apt packages, the same wasm-signer, the
+# same debug node -- and splitting them meant building that twice per
+# pipeline, concurrently, on one runner. Measured on !75: 20 minutes of apt
+# and 49 minutes of `cargo build -p quip-network-node`, duplicated, while the
+# xqvm suite's own work was 70 seconds. The duplicate job also pushed the
+# pipeline to four heavy jobs, and the node then could not open its RPC
+# inside the readiness window because it was competing with the very builds
+# that existed to produce it.
 browser-signer-test:
   extends: .cargo-host-cache
   stage: test
@@ -222,7 +240,7 @@ browser-signer-test:
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
   before_script:
-    # nodejs, npm and curl are baked into the toolchain image
+    # nodejs, npm, curl and git are baked into the toolchain image
     # (.gitlab/ci-toolchain.Dockerfile) rather than fetched here.
     - rustup target add wasm32-unknown-unknown
     - mkdir -p "$CARGO_HOME/bin"
@@ -249,6 +267,7 @@ browser-signer-test:
     - npm run build --prefix js/quip-signer
     - cargo build -p quip-network-node
     - bash scripts/test-browser-signer-integration.sh
+    - bash scripts/test-xqvm-onchain.sh
 
 # pallet-revive's runtime benchmarks compile both Solidity/EVM and
 # Solidity/PolkaVM fixtures. Keep these versions aligned with the pinned SDK's
@@ -743,11 +762,15 @@ kaniko-build-evm-sidecar-arm64:
 # Maps a release tag to zero or more floating consumer tags. Tag pipelines
 # carry no branch variable (CI_COMMIT_BRANCH is empty), so commit ancestry
 # decides. Policy:
-#   - rc / pre-release (tag does not match ^v[0-9]+\.[0-9]+\.[0-9]+$):
-#     float nothing — only :<tag> + :sha-*.
-#   - stable vX.Y.Z reachable from origin/main: float both :latest and
-#     :vX.Y (minor series, e.g. v0.2 for v0.2.1).
-#   - stable tag not reachable from origin/main: float nothing.
+#   - stable vX.Y.Z reachable from origin/main: float :latest, :vX.Y (minor
+#     series, e.g. v0.2 for v0.2.1), :stable, and :beta.
+#   - rc vX.Y.Z-rcN reachable from origin/main: float :beta.
+#   - any other tag, or a tag not reachable from origin/main: float nothing,
+#     only :<tag> + :sha-*.
+# :stable and :beta are the channels nodes.quip.network pulls through CHANNEL.
+# A release moves :beta too, because a release is newer than every rc before
+# it. The main-ancestry check keeps a tag cut on an old maintenance branch
+# from moving a channel backwards.
 # GIT_DEPTH 0 forces a full clone — merge-base needs real ancestry, not a
 # shallow tip. FLOATING_TAGS is space-separated (empty when none apply).
 resolve-floating-tag:
@@ -765,10 +788,12 @@ resolve-floating-tag:
     - git fetch origin main
     - |
       FLOATING_TAGS=""
-      if printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+      if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+        if printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
           minor=$(printf '%s' "$CI_COMMIT_TAG" | sed -E 's/^(v[0-9]+\.[0-9]+).*/\1/')
-          FLOATING_TAGS="latest ${minor}"
+          FLOATING_TAGS="latest ${minor} stable beta"
+        elif printf '%s' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$'; then
+          FLOATING_TAGS="beta"
         fi
       fi
       echo "FLOATING_TAGS=$FLOATING_TAGS" > floating-tag.env
