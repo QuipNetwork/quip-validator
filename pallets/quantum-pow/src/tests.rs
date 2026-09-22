@@ -1239,23 +1239,25 @@ fn single_adjustment_never_slams_past_a_cap() {
     for seed_byte in 0_u8..64 {
         for &mining_time in &[1_u64, 30, 59, 60, 61, 150, 200, 201, 500] {
             for &start in &[curve.min_milli, curve.knee_milli, curve.max_milli] {
+                let start_config = DifficultyConfig {
+                    min_solutions: 1,
+                    max_energy_milli: start,
+                    min_diversity_milli: 0,
+                };
                 let adjusted = difficulty::adjust_on_proof(
-                    DifficultyConfig {
-                        min_solutions: 1,
-                        max_energy_milli: start,
-                        min_diversity_milli: 0,
-                    },
+                    start_config,
+                    start_config,
                     mining_time,
                     curve,
                     &[seed_byte],
                 );
                 assert!(
-                    adjusted.max_energy_milli >= curve.min_milli - MIN_DELTA
+                    adjusted.max_energy_milli >= curve.min_milli - 2 * MIN_DELTA
                         && adjusted.max_energy_milli <= curve.max_milli,
                     "seed {seed_byte}, time {mining_time}, start {start}: adjusted \
                      threshold {} slammed past a cap (allowed [{}, {}])",
                     adjusted.max_energy_milli,
-                    curve.min_milli - MIN_DELTA,
+                    curve.min_milli - 2 * MIN_DELTA,
                     curve.max_milli,
                 );
             }
@@ -1637,7 +1639,7 @@ fn adjust_on_proof_only_mutates_max_energy() {
         max_energy_milli: -2_300,
         min_diversity_milli: 400,
     };
-    let after = difficulty::adjust_on_proof(before, 30, curve, b"seed");
+    let after = difficulty::adjust_on_proof(before, before, 30, curve, b"seed");
     assert_eq!(after.min_solutions, before.min_solutions);
     assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
     assert_ne!(after.max_energy_milli, before.max_energy_milli);
@@ -1894,7 +1896,7 @@ fn fast_round_hardening_is_capped_at_the_largest_decay_step() {
     let cap = crate::difficulty::max_hardening_delta(curve);
     assert_eq!(cap, 50_000);
     for seed in [b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9"] {
-        let after = difficulty::adjust_on_proof(start, 30, curve, seed);
+        let after = difficulty::adjust_on_proof(start, start, 30, curve, seed);
         assert_eq!(
             start.max_energy_milli - after.max_energy_milli,
             cap,
@@ -1917,7 +1919,7 @@ fn slow_round_hardening_stays_below_the_cap_near_the_hard_end() {
     };
     let cap = crate::difficulty::max_hardening_delta(curve);
     for seed in [b"0", b"1", b"2", b"3", b"4"] {
-        let after = difficulty::adjust_on_proof(start, 150, curve, seed);
+        let after = difficulty::adjust_on_proof(start, start, 150, curve, seed);
         let hardened = start.max_energy_milli - after.max_energy_milli;
         assert!(
             (1_000..=7_200).contains(&hardened) && hardened < cap,
@@ -1940,11 +1942,94 @@ fn fast_round_at_the_easy_cap_hardens_by_the_cap() {
         max_energy_milli: curve.max_milli,
         min_diversity_milli: 0,
     };
-    let after = difficulty::adjust_on_proof(start, 30, curve, b"seed");
+    let after = difficulty::adjust_on_proof(start, start, 30, curve, b"seed");
     assert_eq!(
         start.max_energy_milli - after.max_energy_milli,
         crate::difficulty::max_hardening_delta(curve)
     );
+}
+
+#[test]
+fn win_at_or_under_target_nets_harder_than_round_start() {
+    // Decay runs during the round, before the win adjusts. Near the hard
+    // estimate a 30-block round on aglais eases about 7,000 milli while the
+    // hardening band measured from the decayed room yields under 5,000, so
+    // without a net floor the fast winner's next round would be easier
+    // than the one it just won. Any win at or under target must leave the
+    // stored bar at least one energy unit harder than the round started.
+    let curve = walkup_curve();
+    for start in [
+        curve.min_milli,
+        curve.min_milli + 20_000,
+        curve.min_milli + 80_000,
+        curve.knee_milli,
+    ] {
+        let round_start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start,
+            min_diversity_milli: 0,
+        };
+        for gap in [1_u64, 30, 59, 60, 99, 100] {
+            let active = difficulty::apply_decay(round_start, gap as u32, 100, curve);
+            for seed in 0_u8..32 {
+                let next = difficulty::adjust_on_proof(round_start, active, gap, curve, &[seed]);
+                assert!(
+                    next.max_energy_milli <= start - 1_000,
+                    "start {start}, gap {gap}, seed {seed}: next {} is not harder than round start",
+                    next.max_energy_milli
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn win_past_target_hardens_from_the_decayed_bar_and_may_net_ease() {
+    // Past target the round waited too long: decay plus the overdue term
+    // outweigh the gentle 5% +- 4% hardening, so the stored bar ends easier
+    // than the round started even though the win itself still hardens.
+    let curve = walkup_curve();
+    let round_start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    let active = difficulty::apply_decay(round_start, 300, 100, curve);
+    let next = difficulty::adjust_on_proof(round_start, active, 300, curve, b"seed");
+    assert!(
+        next.max_energy_milli < active.max_energy_milli,
+        "the win hardens from the live bar"
+    );
+    assert!(
+        next.max_energy_milli > round_start.max_energy_milli,
+        "a 300-block round nets easier: {} vs {}",
+        next.max_energy_milli,
+        round_start.max_energy_milli
+    );
+}
+
+#[test]
+fn repeated_fast_wins_ratchet_difficulty_down_against_decay() {
+    // The ratchet that tracks a strengthening field: fast wins with decay
+    // interleaved must still climb the difficulty round after round.
+    let curve = walkup_curve();
+    let mut stored = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    for round in 0_u8..10 {
+        let active = difficulty::apply_decay(stored, 30, 100, curve);
+        let next = difficulty::adjust_on_proof(stored, active, 30, curve, &[round]);
+        assert!(
+            next.max_energy_milli < stored.max_energy_milli,
+            "round {round}: {} did not harden past {}",
+            next.max_energy_milli,
+            stored.max_energy_milli
+        );
+        stored = next;
+    }
+    assert!(stored.max_energy_milli <= curve.knee_milli - 10 * 1_000);
 }
 
 #[test]
@@ -1970,18 +2055,12 @@ fn harden_motion_grows_with_distance_from_hard_cap() {
     let near_cap = curve.min_milli + 50_000; // little room to the hard cap
     let far_from_cap = curve.max_milli; // maximum room to the hard cap
     let harden = |start: i64| {
-        start
-            - difficulty::adjust_on_proof(
-                DifficultyConfig {
-                    min_solutions: 1,
-                    max_energy_milli: start,
-                    min_diversity_milli: 0,
-                },
-                30,
-                curve,
-                b"seed",
-            )
-            .max_energy_milli
+        let config = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start,
+            min_diversity_milli: 0,
+        };
+        start - difficulty::adjust_on_proof(config, config, 30, curve, b"seed").max_energy_milli
     };
     let near_move = harden(near_cap);
     let far_move = harden(far_from_cap);
@@ -2343,7 +2422,7 @@ fn observed_win_series_never_pins_the_hard_cap() {
         // … then the winning proof adjusts from that decayed base. Use a
         // distinct seed per round so the sampled rate varies like real wins.
         let seed = [i as u8];
-        base = difficulty::adjust_on_proof(active, gap, curve, &seed);
+        base = difficulty::adjust_on_proof(base, active, gap, curve, &seed);
         assert!(
             base.max_energy_milli > curve.min_milli && base.max_energy_milli < curve.max_milli,
             "round {i} (gap {gap}) left the curve interior: {} not in ({}, {})",

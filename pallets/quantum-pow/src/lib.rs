@@ -589,9 +589,12 @@ pub mod pallet {
             // Snapshot the live (decay-applied) threshold this proof had to
             // clear before adjustment rewrites it.
             let active = Self::current_difficulty_for(topology_hash, n);
+            // The bar the round began with: the stored value, before decay.
+            let round_start = Difficulties::<T>::get(topology_hash).unwrap_or_default();
             // Adjust ONLY the winning topology's difficulty, using ITS curve.
             let next = match Self::energy_curve_for(topology_hash) {
                 Some(curve) => crate::difficulty::adjust_on_proof(
+                    round_start,
                     active,
                     mining_time_blocks,
                     curve,

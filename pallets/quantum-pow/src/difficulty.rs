@@ -365,11 +365,18 @@ pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
 /// Adjust difficulty after a winning proof (a qblock). Every win hardens:
 ///
 /// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
-///   hardens at the 35% ± 30% band.
-/// - A slow qblock hardens gently via the graduated band, down to 5% ± 4%.
+///   hardens at the 35% +- 30% band.
+/// - A slow qblock hardens gently via the graduated band, down to 5% +- 4%.
 /// - Hardening is capped at [`max_hardening_delta`], one decay step measured
-///   at the hard estimate, so no single win pushes the next round more than
-///   about an epoch out of reach.
+///   at the hard estimate.
+/// - A win at or under [`TARGET_PROOF_BLOCKS`] leaves the stored bar at
+///   least `MIN_ENERGY_DELTA_MILLI` harder than `round_start`, the bar the
+///   round began with. Decay runs during the round and the step above is
+///   measured from the decayed `active` bar; near the hard estimate that
+///   room is only what decay just opened, so without this floor a 30-block
+///   win could leave the winner an easier round than the one it just won.
+///   Past target the round waited too long and decay is meant to win, so
+///   no floor applies.
 ///
 /// Easing happens only between wins, through [`apply_decay`]: the baseline
 /// decay from the first block of the round, plus the overdue term once the
@@ -383,31 +390,41 @@ pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
 ///
 /// Mutates only `max_energy_milli`; `min_solutions` and
 /// `min_diversity_milli` are chain-static (only the `set_difficulty`
-/// extrinsic — `ensure_root` — can change them).
+/// extrinsic, `ensure_root`, can change them).
 pub fn adjust_on_proof(
-    current: DifficultyConfig,
+    round_start: DifficultyConfig,
+    active: DifficultyConfig,
     mining_time_blocks: u64,
     curve: EnergyCurve,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
     let rate_milli = sample_adjustment_milli(mining_time_blocks, randomness_seed);
     let stepped = adjust_energy_along_curve(
-        current.max_energy_milli,
+        active.max_energy_milli,
         rate_milli,
         Direction::Harder,
         curve,
         MIN_ENERGY_DELTA_MILLI,
     );
-    let new_max_energy_milli = stepped.max(
-        current
+    let capped = stepped.max(
+        active
             .max_energy_milli
             .saturating_sub(max_hardening_delta(curve)),
     );
+    let new_max_energy_milli = if mining_time_blocks <= TARGET_PROOF_BLOCKS {
+        capped.min(
+            round_start
+                .max_energy_milli
+                .saturating_sub(MIN_ENERGY_DELTA_MILLI),
+        )
+    } else {
+        capped
+    };
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
-        // Chain-static — never touched here.
-        min_solutions: current.min_solutions,
-        min_diversity_milli: current.min_diversity_milli,
+        // Chain-static: never touched here.
+        min_solutions: active.min_solutions,
+        min_diversity_milli: active.min_diversity_milli,
     }
 }
 
