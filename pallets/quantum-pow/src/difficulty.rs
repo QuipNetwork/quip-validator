@@ -18,18 +18,17 @@ use crate::types::DifficultyConfig;
 // measuring elapsed chain blocks between consecutive qblocks (PoW-won
 // blocks — formerly referred to as "solution #"/"problem #"). They
 // correspond to the earlier 6-second-block translation:
-// 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
+// 360s -> 60 blocks, 600s -> 100 blocks.
 //
 // `TARGET_PROOF_BLOCKS` is deliberately co-located with the runtime's
 // `QuantumPowEpochLength` (= 100): decay is continuous per block, but its
 // rate is expressed per epoch, and the hardening cap in
-// `adjust_on_proof_with_dominance` is one epoch of that decay. The rate
+// `adjust_on_proof` is one epoch of that decay. The rate
 // bands below and the decay rate therefore share the 100-block unit. The
 // two remain separate constants on purpose: this one anchors the rate
 // bands, the runtime one sets the decay unit. Retune them together.
 const FAST_PROOF_BLOCKS: u64 = 60;
 const TARGET_PROOF_BLOCKS: u64 = 100;
-const SLOW_PROOF_BLOCKS: u64 = 200;
 
 /// Floor on the per-step energy delta — one energy unit (1.0 unit -> 1000
 /// milli). Under the geometric model the step shrinks toward zero as the
@@ -149,45 +148,28 @@ impl EnergyCurve {
     }
 }
 
-// Rate bands mirror v0.1 `calculate_adjustment_rate_with_randomness`:
-//
-// Hardening: <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%;
-// linear interpolation in between. The graduated band matters because slow
-// qblocks won by a non-dominant winner harden too — they need the gentle
-// 5% rates, not the fast-qblock 35% ones.
-//
-// Easing: <600s (100 blocks) -> 2.5% ± 2%; >1200s (200 blocks) -> 15% ± 14%;
-// linear interpolation in between.
-fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -> u32 {
-    let (base, variance) = if harder {
-        if mining_time_blocks < FAST_PROOF_BLOCKS {
-            (350_u32, 300_u32)
-        } else if mining_time_blocks > TARGET_PROOF_BLOCKS {
-            (50_u32, 40_u32)
-        } else {
-            let progress = ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000
-                / (TARGET_PROOF_BLOCKS - FAST_PROOF_BLOCKS)) as u32;
-            (
-                350 - ((350 - 50) * progress / 1000),
-                300 - ((300 - 40) * progress / 1000),
-            )
-        }
-    } else if mining_time_blocks > SLOW_PROOF_BLOCKS {
-        (150_u32, 140_u32)
-    } else if mining_time_blocks < TARGET_PROOF_BLOCKS {
-        (25_u32, 20_u32)
+// Hardening rate band, mirroring v0.1 `calculate_adjustment_rate_with_randomness`:
+// <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%; linear
+// interpolation in between. Every win hardens, so the graduated band is what
+// keeps a slow qblock on the gentle 5% rate instead of the fast-qblock 35%
+// one. Easing between wins comes only from decay (`apply_decay`).
+fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8]) -> u32 {
+    let (base, variance) = if mining_time_blocks < FAST_PROOF_BLOCKS {
+        (350_u32, 300_u32)
+    } else if mining_time_blocks > TARGET_PROOF_BLOCKS {
+        (50_u32, 40_u32)
     } else {
-        let progress = ((mining_time_blocks - TARGET_PROOF_BLOCKS) * 1000
-            / (SLOW_PROOF_BLOCKS - TARGET_PROOF_BLOCKS)) as u32;
+        let progress = ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000
+            / (TARGET_PROOF_BLOCKS - FAST_PROOF_BLOCKS)) as u32;
         (
-            25 + ((150 - 25) * progress / 1000),
-            20 + ((140 - 20) * progress / 1000),
+            350 - ((350 - 50) * progress / 1000),
+            300 - ((300 - 40) * progress / 1000),
         )
     };
 
     let min_rate = base.saturating_sub(variance).max(1);
     let max_rate = base.saturating_add(variance);
-    let digest = blake3::hash(&(seed, mining_time_blocks, harder).encode());
+    let digest = blake3::hash(&(seed, mining_time_blocks).encode());
     let mut bytes = [0_u8; 8];
     bytes.copy_from_slice(&digest.as_bytes()[..8]);
     let sample = u64::from_be_bytes(bytes);
@@ -329,7 +311,22 @@ pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
         .max(MIN_ENERGY_DELTA_MILLI)
 }
 
-/// Adjust difficulty after a winning proof by a non-dominant winner.
+/// Adjust difficulty after a winning proof (a qblock). Every win hardens:
+///
+/// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
+///   hardens at the 35% ± 30% band.
+/// - A slow qblock hardens gently via the graduated band, down to 5% ± 4%.
+/// - Hardening is capped at [`max_hardening_delta`], one decay step measured
+///   at the hard estimate, so no single win pushes the next round more than
+///   about an epoch out of reach.
+///
+/// Easing happens only through decay between wins ([`apply_decay`]). The
+/// win record never changes the direction of a step: the retired
+/// dominant-winner rule (v0.1 `compute_next_block_requirements`, QUI-653)
+/// eased slow wins once one account had won three qblocks in a row, and on
+/// aglais that account was the one winning nearly every round, so the rule
+/// eased the threshold for the miner it was meant to check.
+///
 /// Mutates only `max_energy_milli`; `min_solutions` and
 /// `min_diversity_milli` are chain-static (only the `set_difficulty`
 /// extrinsic — `ensure_root` — can change them).
@@ -339,54 +336,19 @@ pub fn adjust_on_proof(
     curve: EnergyCurve,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
-    adjust_on_proof_with_dominance(current, mining_time_blocks, curve, randomness_seed, false)
-}
-
-/// Adjust difficulty after a winning proof (a qblock), following the v0.1
-/// `compute_next_block_requirements` policy:
-///
-/// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
-///   ALWAYS hardens — even for a dominant winner.
-/// - A slow qblock eases only when the winner dominates (`dominant_winner`,
-///   i.e. the same account won at least `ConsecutiveWinnerEasingThreshold`
-///   consecutive qblocks); otherwise it hardens gently via the graduated
-///   rate band.
-/// - Hardening is capped at [`max_hardening_delta`], one decay step measured
-///   at the hard estimate, so no single win pushes the next round more than
-///   about an epoch out of reach.
-///
-/// v0.1 keyed dominance on the miner *type* repeating once (streak 2); we
-/// key it on the account meeting the configured threshold instead — see
-/// QUI-653 for the rationale.
-pub fn adjust_on_proof_with_dominance(
-    current: DifficultyConfig,
-    mining_time_blocks: u64,
-    curve: EnergyCurve,
-    randomness_seed: &[u8],
-    dominant_winner: bool,
-) -> DifficultyConfig {
-    let harder = mining_time_blocks < FAST_PROOF_BLOCKS || !dominant_winner;
-    let rate_milli = sample_adjustment_milli(mining_time_blocks, harder, randomness_seed);
-    let direction = if harder {
-        Direction::Harder
-    } else {
-        Direction::Easier
-    };
+    let rate_milli = sample_adjustment_milli(mining_time_blocks, randomness_seed);
     let stepped = adjust_energy_along_curve(
         current.max_energy_milli,
         rate_milli,
-        direction,
+        Direction::Harder,
         curve,
         MIN_ENERGY_DELTA_MILLI,
     );
-    let new_max_energy_milli = match direction {
-        Direction::Harder => stepped.max(
-            current
-                .max_energy_milli
-                .saturating_sub(max_hardening_delta(curve)),
-        ),
-        Direction::Easier => stepped,
-    };
+    let new_max_energy_milli = stepped.max(
+        current
+            .max_energy_milli
+            .saturating_sub(max_hardening_delta(curve)),
+    );
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
         // Chain-static — never touched here.

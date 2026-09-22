@@ -109,14 +109,6 @@ pub struct MinerInfo<Balance, BlockNumber> {
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct WinnerStreak<AccountId> {
-    pub miner: AccountId,
-    pub count: u32,
-}
-
-#[derive(
-    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
-)]
 pub struct ProofRecord<AccountId, BlockNumber> {
     pub miner: AccountId,
     pub submitted_at: BlockNumber,

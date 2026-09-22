@@ -4,7 +4,7 @@ use crate::{
     types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulties,
     LastProofBlock, LastProofBlockHash, MineableTopologies, Miners, PackedSpinBytesOf,
-    QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
+    QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks, RegisteredTopologies,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -902,8 +902,7 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
         // min_solutions / min_diversity_milli are chain-static under the new
         // curve policy; only max_energy_milli decays. Set the chain-static
         // fields permissively so the proof passes those gates. A slow win
-        // by a non-dominant (first-streak) winner hardens gently from the
-        // decayed base — the v0.1 rule restored from the original design.
+        // hardens gently from the decayed base.
         let initial = DifficultyConfig {
             min_solutions: 1,
             max_energy_milli: 0,
@@ -927,9 +926,8 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
         QuantumPow::on_finalize(System::block_number());
 
         let next = difficulty_default();
-        // A slow proof by a non-dominant winner hardens the threshold below
-        // the decayed value (gentle 5%±4% band — v0.1 different/new-winner
-        // rule). Decay remains the easing pressure between wins.
+        // A slow proof hardens the threshold below the decayed value (gentle
+        // 5%±4% band). Decay is the only easing pressure between wins.
         assert!(next.max_energy_milli < decayed.max_energy_milli);
         // Chain-static fields untouched throughout decay + adjust.
         assert_eq!(next.min_solutions, initial.min_solutions);
@@ -990,7 +988,7 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
             "old global value removed"
         );
         // on_runtime_upgrade steps cumulatively through v5.
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
         // The live threshold for the default now equals the carried value.
         assert_eq!(
             QuantumPow::current_difficulty_for(hash, System::block_number()),
@@ -1000,135 +998,76 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
 }
 
 #[test]
-fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
-    // The fast cutoff is strict `<`: exactly 60 elapsed blocks is a slow
-    // win, so a dominant winner eases there — one block sooner and even a
-    // dominant winner hardens (v0.1: fast wins always harden).
+fn every_slow_win_hardens_regardless_of_who_won_before() {
+    // Regression guard for the retired dominant-winner rule, which eased a
+    // slow win once the same account had won three qblocks in a row. On
+    // aglais that account was the one winning nearly every round, so the
+    // rule eased the threshold for the miner it was meant to check. Now a
+    // fourth slow win in a row, and a slow win by a newcomer after it, both
+    // harden from the decayed live threshold exactly like the first.
     new_test_ext().execute_with(|| {
-        registered_topology();
+        let (_, _, topology_hash) = registered_topology();
         let curve = test_curve();
-        let initial = DifficultyConfig {
+        set_difficulty_default(DifficultyConfig {
             min_solutions: 1,
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
+        });
         LastProofBlock::<Test>::put(1);
-        // Seed a streak one short of the threshold (3); the next win makes
-        // the miner dominant.
-        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
 
-        finalize_winner(1, 61); // elapsed 60 == cutoff -> slow, dominant
-
-        let next = difficulty_default();
-        assert!(
-            next.max_energy_milli > initial.max_energy_milli,
-            "a dominant winner at 60 elapsed blocks must ease"
-        );
-    });
-
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
-
-        finalize_winner(1, 60); // elapsed 59 < cutoff -> fast, dominance ignored
-
-        let next = difficulty_default();
-        assert!(
-            next.max_energy_milli < initial.max_energy_milli,
-            "a fast win must harden even for a dominant winner"
-        );
+        for (miner, block) in [(1, 100), (1, 200), (1, 300), (1, 400), (2, 500)] {
+            let active = QuantumPow::current_difficulty_for(topology_hash, block).max_energy_milli;
+            finalize_winner(miner, block);
+            let next = difficulty_default().max_energy_milli;
+            assert!(
+                next < active,
+                "slow win by miner {miner} at block {block} must harden: \
+                 active {active}, next {next}"
+            );
+        }
     });
 }
 
 #[test]
-fn slow_win_by_different_miner_hardens() {
-    // Restored v0.1 rule: a slow block won by a *different* miner hardens
-    // difficulty; only dominant repeat winners ease.
+fn migration_v5_to_v6_removes_winner_streak_and_keeps_qblocks() {
     new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
+        let (_, _, hash) = registered_topology();
+        // A v5 chain carries a `WinnerStreak` value and `QBlocks` entries in
+        // the current layout. v6 must drop the former and must not re-run
+        // the v5 re-encode over the latter.
+        let key = crate::migration::v6::winner_streak_key::<Test>();
+        frame_support::storage::unhashed::put(&key, &(1_u64, 3_u32));
+        let qblock = crate::types::QBlock {
+            miner: 1,
+            salt: [7u8; 32],
+            energy_milli: -1_000,
+            reward: 50,
+            submitted_at: 5,
+            difficulty: DifficultyConfig::default(),
+            last_proof_block_hash: sp_core::H256::repeat_byte(9),
+            topology_hash: hash,
+            device_access_time_us: 42,
         };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
+        QBlocks::<Test>::insert(5, qblock.clone());
+        StorageVersion::new(5).put::<QuantumPow>();
 
-        // Make miner 1 dominant so its slow win eases the threshold up to
-        // the curve ceiling — giving the next assertion room to observe a
-        // strict hardening move.
-        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
-        finalize_winner(1, 100);
-        let after_dominant = difficulty_default();
-        assert!(after_dominant.max_energy_milli > initial.max_energy_milli);
+        QuantumPow::on_runtime_upgrade();
 
-        finalize_winner(2, 200); // different miner, slow win
-
-        let after_switch = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-        assert_eq!(streak.miner, 2);
-        assert_eq!(streak.count, 1);
         assert!(
-            after_switch.max_energy_milli < after_dominant.max_energy_milli,
-            "a slow win by a different miner must harden (v0.1 rule)"
+            frame_support::storage::unhashed::get_raw(&key).is_none(),
+            "v6 removes the retired WinnerStreak value"
         );
+        assert_eq!(
+            QBlocks::<Test>::get(5),
+            Some(qblock),
+            "v6 leaves current-layout qblocks untouched"
+        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
 #[test]
-fn repeated_same_winner_forces_easing() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        // Slow wins (elapsed >= 60 blocks): dominance easing only applies
-        // past the fast cutoff, so space the wins ~100 blocks apart.
-        finalize_winner(1, 100);
-        let after_first = difficulty_default();
-        assert!(after_first.max_energy_milli < initial.max_energy_milli);
-
-        finalize_winner(1, 200);
-        let after_second = difficulty_default();
-        // Streak count 2 is still below the threshold (3): slow wins by a
-        // non-dominant winner must keep hardening (or hold at the clamp
-        // floor) — easing here would fire one win early and raise the value.
-        assert!(
-            after_second.max_energy_milli <= after_first.max_energy_milli,
-            "second consecutive win is below the easing threshold and must not ease"
-        );
-
-        finalize_winner(1, 300);
-        let after_third = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-
-        assert_eq!(streak.miner, 1);
-        assert_eq!(streak.count, 3);
-        assert!(
-            after_third.max_energy_milli > after_second.max_energy_milli,
-            "third consecutive slow win must ease for the dominant winner"
-        );
-    });
-}
-
-#[test]
-fn migration_below_v2_wipes_then_bumps_to_v5() {
+fn migration_below_v2_wipes_then_bumps_to_v6() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         QBlockCount::<Test>::put(9);
@@ -1140,7 +1079,7 @@ fn migration_below_v2_wipes_then_bumps_to_v5() {
         assert_eq!(DefaultTopology::<Test>::get(), None);
         assert_eq!(QBlockCount::<Test>::get(), 0);
         assert!(!MineableTopologies::<Test>::contains_key(hash));
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1207,7 +1146,7 @@ fn migration_pre_v4_backfills_topology_and_device_time() {
         assert_eq!(migrated.topology_hash, hash);
         // Pre-112 blocks carry no self-reported compute time — backfilled 0.
         assert_eq!(migrated.device_access_time_us, 0);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1261,7 +1200,7 @@ fn migration_v4_to_v5_appends_device_time_preserving_topology() {
             "v4 → v5 must preserve the stored topology, not backfill the default"
         );
         assert_eq!(migrated.device_access_time_us, 0);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1276,48 +1215,14 @@ fn migration_noop_at_v5() {
         };
         Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(5).put::<QuantumPow>();
+        StorageVersion::new(6).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
         assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
-    });
-}
-
-#[test]
-fn zero_easing_threshold_disables_forced_easing() {
-    new_test_ext().execute_with(|| {
-        ConsecutiveWinnerEasingThreshold::set(0);
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        // Slow wins: with the default threshold (3) the third one would
-        // ease for the dominant winner, so this spacing discriminates.
-        finalize_winner(1, 100);
-        finalize_winner(1, 200);
-        let after_second = difficulty_default();
-        finalize_winner(1, 300);
-        let after_third = difficulty_default();
-
-        // Without the `threshold > 0` guard, `count >= 0` would force
-        // easing on every slow win. A threshold of 0 must mean "disabled":
-        // slow wins keep hardening — easing would raise the threshold and trip
-        // this. (Hardening may walk below the hard estimate `min_milli`; that
-        // is by design, so we assert only the no-easing direction here.)
-        assert!(
-            after_third.max_energy_milli <= after_second.max_energy_milli,
-            "threshold 0 disables streak easing; a slow repeat win must never ease"
-        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1329,71 +1234,33 @@ fn single_adjustment_never_slams_past_a_cap() {
     // ceiling. Under the geometric model a single adjustment moves by at most
     // the remaining room (or one floor step at the tail), so it can overshoot
     // the hard cap by at most one energy unit and never eases past the easy
-    // cap. Sweep many seeds, mining times, starts, and dominance.
+    // cap. Sweep many seeds, mining times, and starts.
     const MIN_DELTA: i64 = 1000; // mirrors MIN_ENERGY_DELTA_MILLI
     for seed_byte in 0_u8..64 {
         for &mining_time in &[1_u64, 30, 59, 60, 61, 150, 200, 201, 500] {
             for &start in &[curve.min_milli, curve.knee_milli, curve.max_milli] {
-                for dominant in [false, true] {
-                    let adjusted = difficulty::adjust_on_proof_with_dominance(
-                        DifficultyConfig {
-                            min_solutions: 1,
-                            max_energy_milli: start,
-                            min_diversity_milli: 0,
-                        },
-                        mining_time,
-                        curve,
-                        &[seed_byte],
-                        dominant,
-                    );
-                    assert!(
-                        adjusted.max_energy_milli >= curve.min_milli - MIN_DELTA
-                            && adjusted.max_energy_milli <= curve.max_milli,
-                        "seed {seed_byte}, time {mining_time}, start {start}, \
-                         dominant {dominant}: adjusted threshold {} slammed past a cap \
-                         (allowed [{}, {}])",
-                        adjusted.max_energy_milli,
-                        curve.min_milli - MIN_DELTA,
-                        curve.max_milli,
-                    );
-                }
+                let adjusted = difficulty::adjust_on_proof(
+                    DifficultyConfig {
+                        min_solutions: 1,
+                        max_energy_milli: start,
+                        min_diversity_milli: 0,
+                    },
+                    mining_time,
+                    curve,
+                    &[seed_byte],
+                );
+                assert!(
+                    adjusted.max_energy_milli >= curve.min_milli - MIN_DELTA
+                        && adjusted.max_energy_milli <= curve.max_milli,
+                    "seed {seed_byte}, time {mining_time}, start {start}: adjusted \
+                     threshold {} slammed past a cap (allowed [{}, {}])",
+                    adjusted.max_energy_milli,
+                    curve.min_milli - MIN_DELTA,
+                    curve.max_milli,
+                );
             }
         }
     }
-}
-
-#[test]
-fn winner_streak_resets_for_different_miner() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        finalize_winner(1, 10);
-        finalize_winner(1, 20);
-        let before_reset = difficulty_default();
-
-        finalize_winner(2, 30);
-        let after_reset = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-
-        assert_eq!(streak.miner, 2);
-        assert_eq!(streak.count, 1);
-        // The regression this guards is the streak *not* resetting: count 3
-        // would force easing, raising the threshold. Hardening may walk below
-        // the hard estimate `min_milli` (by design), so we assert only that
-        // the reset win keeps hardening rather than easing.
-        assert!(
-            after_reset.max_energy_milli <= before_reset.max_energy_milli,
-            "new winner below cutoff must use normal hardening, never easing"
-        );
-    });
 }
 
 #[test]
