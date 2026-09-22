@@ -353,6 +353,14 @@ fn ease_room(room: i64, blocks: u32, epoch_length: u32, rate: f64) -> i64 {
 /// more than one 22,000 milli decay epoch, and every fast round pushed the
 /// next one out to the second epoch. The cap is 24,368 milli on that curve.
 ///
+/// "One epoch out of reach" holds only where decay itself is near one cap
+/// per epoch, that is near the hard estimate. At the easy cap decay is
+/// floor-bound and recovering a capped win takes tens of epochs (39 on the
+/// test curve, about 24 on aglais). Far from the hard end the cap is also
+/// below the retired geometric step, so a burst of fast wins climbs more
+/// slowly than before: about 44 rounds of 59 blocks from the easy cap to the
+/// knee on the test curve.
+///
 /// The span, not the current threshold, defines the cap: decay from
 /// `max_milli` is zero, and a cap read from there would collapse to the
 /// floor exactly where a fast win most needs to bite.

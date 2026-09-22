@@ -2044,6 +2044,57 @@ fn max_hardening_delta_never_drops_below_the_floor() {
 }
 
 #[test]
+fn recovery_from_a_capped_fast_win_at_the_easy_cap_is_floor_bound() {
+    // "About one epoch out of reach" holds at the hard end, where the cap
+    // equals one decay step. At the easy cap the room a capped win leaves
+    // is the cap itself, and decay there runs into the 1,000 milli floor
+    // once the room is under floor / rate. Recovery takes tens of epochs:
+    // one baseline epoch, then the combined-rate phase down to its 20,253
+    // crossover, then 1,000 per epoch.
+    let curve = walkup_curve();
+    let at_cap = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.max_milli,
+        min_diversity_milli: 0,
+    };
+    let hardened = difficulty::adjust_on_proof(at_cap, at_cap, 30, curve, b"seed");
+    assert_eq!(curve.max_milli - hardened.max_energy_milli, 50_000);
+    let epochs_to_recover = (1..=100_u32)
+        .find(|&epochs| {
+            difficulty::apply_decay(hardened, epochs * 100, 100, curve).max_energy_milli
+                == curve.max_milli
+        })
+        .expect("recovers within 100 epochs");
+    assert!(
+        (35..=45).contains(&epochs_to_recover),
+        "epochs to recover: {epochs_to_recover}"
+    );
+}
+
+#[test]
+fn consecutive_fast_wins_from_the_easy_cap_reach_the_knee() {
+    // Far from the hard end the cap is below the retired geometric step, so
+    // a burst of fast wins climbs at most the cap per round, less the decay
+    // of each 59-block round. From the easy cap the knee is 1,600,000 milli
+    // away and the cap is 50,000 less the decay on the growing room, so
+    // about 44 rounds.
+    let curve = walkup_curve();
+    let mut stored = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.max_milli,
+        min_diversity_milli: 0,
+    };
+    let mut rounds = 0_u8;
+    while stored.max_energy_milli > curve.knee_milli {
+        let active = difficulty::apply_decay(stored, 59, 100, curve);
+        stored = difficulty::adjust_on_proof(stored, active, 59, curve, &[rounds]);
+        rounds += 1;
+        assert!(rounds < 60, "did not reach the knee in 60 rounds");
+    }
+    assert!((40..=48).contains(&rounds), "rounds to the knee: {rounds}");
+}
+
+#[test]
 fn harden_motion_grows_with_distance_from_hard_cap() {
     // The geometric model steps a fraction of the gap *remaining* to the hard
     // cap, so a threshold far from the cap moves farther than one near it —
