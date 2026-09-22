@@ -1644,6 +1644,50 @@ fn adjust_on_proof_only_mutates_max_energy() {
 }
 
 #[test]
+fn decay_past_target_adds_the_overdue_term() {
+    // Up to the target round length only the baseline rate applies. Past
+    // it, every overdue block also accrues the overdue rate, so a 200-block
+    // round retains 0.975^2 (baseline) * 0.975^1 (overdue) of its room, and
+    // a 300-block round 0.975^3 * 0.975^2.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    let room = (curve.max_milli - curve.knee_milli) as f64;
+    let expect = |retained: f64| curve.knee_milli + (room * (1.0 - retained)).round() as i64;
+    let eased = |elapsed: u32| difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+    assert_eq!(eased(100), expect(0.975));
+    assert_eq!(eased(200), expect(0.975_f64.powi(3)));
+    assert_eq!(eased(300), expect(0.975_f64.powi(5)));
+}
+
+#[test]
+fn overdue_easing_has_no_jump_at_the_target() {
+    // The overdue term is continuous: the block after the target eases by
+    // about twice the per-block amount of the block before it, not by a
+    // step. Whoever ends the round sees the same live threshold.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    let eased = |elapsed: u32| difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+    let before = eased(100) - eased(99);
+    let after = eased(101) - eased(100);
+    assert!(
+        before > 0,
+        "baseline decay must move the threshold per block"
+    );
+    assert!(
+        after > before && after <= 2 * before + 2,
+        "per-block easing must double past target, not jump: before {before}, after {after}"
+    );
+}
+
+#[test]
 fn apply_decay_only_mutates_max_energy() {
     let curve = test_curve();
     let before = DifficultyConfig {
@@ -1718,13 +1762,31 @@ fn apply_decay_over_one_epoch_equals_the_legacy_epoch_step() {
 }
 
 #[test]
-fn apply_decay_composes_across_epochs() {
+fn apply_decay_composes_inside_the_target() {
     let curve = walkup_curve();
     let start = DifficultyConfig {
         min_solutions: 1,
         max_energy_milli: curve.min_milli,
         min_diversity_milli: 0,
     };
+    // Inside the target only the baseline term runs, and it is memoryless:
+    // one 100-block stretch equals two 50-block stretches.
+    let one_at_once = difficulty::apply_decay(start, 100, 100, curve).max_energy_milli;
+    let half_then_half = difficulty::apply_decay(
+        difficulty::apply_decay(start, 50, 100, curve),
+        50,
+        100,
+        curve,
+    )
+    .max_energy_milli;
+    // Closed form versus two roundings: at most 2 milli apart.
+    assert!(
+        (one_at_once - half_then_half).abs() <= 2,
+        "{one_at_once} vs {half_then_half}"
+    );
+    // Past the target the overdue term depends on the length of the one
+    // round, so a single 200-block round eases more than two 100-block
+    // rounds back to back.
     let two_at_once = difficulty::apply_decay(start, 200, 100, curve).max_energy_milli;
     let one_then_one = difficulty::apply_decay(
         difficulty::apply_decay(start, 100, 100, curve),
@@ -1733,9 +1795,8 @@ fn apply_decay_composes_across_epochs() {
         curve,
     )
     .max_energy_milli;
-    // Closed form versus two roundings: at most 2 milli apart.
     assert!(
-        (two_at_once - one_then_one).abs() <= 2,
+        two_at_once > one_then_one,
         "{two_at_once} vs {one_then_one}"
     );
 }

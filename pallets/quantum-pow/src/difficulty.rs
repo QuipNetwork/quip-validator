@@ -44,6 +44,18 @@ const MIN_ENERGY_DELTA_MILLI: i64 = 1000;
 /// hardening floor (50 per-mille). Mirrors v0.1 `energy_ease_rate = 0.025`.
 const DECAY_RATE_MILLI: u32 = 25;
 
+/// Extra easing rate per epoch, applied only to the blocks of the current
+/// round past `TARGET_PROOF_BLOCKS`. A round that runs past its target is
+/// the signal that the threshold is too hard. This is the continuous form
+/// of the retired "make it easier" step: instead of one easing kick at the
+/// win, which the dominant-winner rule gated on who won, the live threshold
+/// eases faster for every block the round is overdue, whoever ends it.
+/// Equal to `DECAY_RATE_MILLI`, so an overdue round eases at twice the
+/// baseline rate: one extra decay step per overdue epoch, the same size as
+/// the per-win hardening cap. The v0.1 easing band topped out at 15% in a
+/// single uncapped step; that magnitude does not carry over.
+const OVERDUE_EASE_RATE_MILLI: u32 = 25;
+
 /// Direction the energy threshold moves under an adjustment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
@@ -253,6 +265,12 @@ pub(crate) fn adjust_energy_along_curve(
 /// of a boundary: no miner could clear until the 22,000 milli step landed,
 /// then one did at once. A per-block ramp has no such cliff.
 ///
+/// Past `TARGET_PROOF_BLOCKS` a second geometric term at
+/// `OVERDUE_EASE_RATE_MILLI` accrues for every overdue block, so a round
+/// that has waited too long eases faster than one still inside its target.
+/// The two terms multiply, so the threshold stays continuous across the
+/// target boundary.
+///
 /// Closed form, so a long stalled round costs the same as a short one. The
 /// `MIN_ENERGY_DELTA_MILLI` floor is pro-rated per block.
 pub fn apply_decay(
@@ -284,9 +302,16 @@ fn ease_continuous(
     if room <= 0 {
         return current_milli;
     }
-    let retained_per_epoch = 1.0 - f64::from(DECAY_RATE_MILLI) / 1000.0;
-    let epochs = f64::from(elapsed_blocks) / f64::from(epoch_length);
-    let geometric = libm::round(room as f64 * (1.0 - libm::pow(retained_per_epoch, epochs))) as i64;
+    let retained = |rate_milli: u32, blocks: u32| {
+        let epochs = f64::from(blocks) / f64::from(epoch_length);
+        libm::pow(1.0 - f64::from(rate_milli) / 1000.0, epochs)
+    };
+    // The baseline term runs from the first block of the round. The overdue
+    // term starts once the round has passed its target length.
+    let overdue_blocks = elapsed_blocks.saturating_sub(TARGET_PROOF_BLOCKS as u32);
+    let retained = retained(DECAY_RATE_MILLI, elapsed_blocks)
+        * retained(OVERDUE_EASE_RATE_MILLI, overdue_blocks);
+    let geometric = libm::round(room as f64 * (1.0 - retained)) as i64;
     let floor =
         MIN_ENERGY_DELTA_MILLI.saturating_mul(i64::from(elapsed_blocks)) / i64::from(epoch_length);
     current_milli.saturating_add(geometric.max(floor).min(room))
@@ -320,12 +345,15 @@ pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
 ///   at the hard estimate, so no single win pushes the next round more than
 ///   about an epoch out of reach.
 ///
-/// Easing happens only through decay between wins ([`apply_decay`]). The
-/// win record never changes the direction of a step: the retired
-/// dominant-winner rule (v0.1 `compute_next_block_requirements`, QUI-653)
-/// eased slow wins once one account had won three qblocks in a row, and on
-/// aglais that account was the one winning nearly every round, so the rule
-/// eased the threshold for the miner it was meant to check.
+/// Easing happens only between wins, through [`apply_decay`]: the baseline
+/// decay from the first block of the round, plus the overdue term once the
+/// round has run past [`TARGET_PROOF_BLOCKS`]. The win record never changes
+/// the direction of a step: the retired dominant-winner rule (v0.1
+/// `compute_next_block_requirements`, QUI-653) eased slow wins once one
+/// account had won three qblocks in a row, and on aglais that account was
+/// the one winning nearly every round, so the rule eased the threshold for
+/// the miner it was meant to check. The overdue term keeps the "waited too
+/// long" signal and drops the "who won" one.
 ///
 /// Mutates only `max_energy_milli`; `min_solutions` and
 /// `min_diversity_milli` are chain-static (only the `set_difficulty`
