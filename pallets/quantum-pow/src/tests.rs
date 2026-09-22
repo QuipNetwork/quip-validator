@@ -1205,7 +1205,7 @@ fn migration_v4_to_v5_appends_device_time_preserving_topology() {
 }
 
 #[test]
-fn migration_noop_at_v5() {
+fn migration_noop_at_v6() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         let d = DifficultyConfig {
@@ -1248,6 +1248,7 @@ fn single_adjustment_never_slams_past_a_cap() {
                     start_config,
                     start_config,
                     mining_time,
+                    100,
                     curve,
                     &[seed_byte],
                 );
@@ -1639,7 +1640,7 @@ fn adjust_on_proof_only_mutates_max_energy() {
         max_energy_milli: -2_300,
         min_diversity_milli: 400,
     };
-    let after = difficulty::adjust_on_proof(before, before, 30, curve, b"seed");
+    let after = difficulty::adjust_on_proof(before, before, 30, 100, curve, b"seed");
     assert_eq!(after.min_solutions, before.min_solutions);
     assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
     assert_ne!(after.max_energy_milli, before.max_energy_milli);
@@ -1782,7 +1783,7 @@ fn apply_decay_matches_the_stepwise_reference_at_every_epoch() {
     // through the floor crossover and on to the easy cap.
     let curve = walkup_curve();
     let epoch = 100_u32;
-    let target_epochs = 1_usize; // TARGET_PROOF_BLOCKS / epoch
+    let target_epochs = (crate::difficulty::TARGET_PROOF_BLOCKS as u32 / epoch) as usize;
     let reference = |start: i64, epochs: usize| -> i64 {
         let mut value = start;
         for k in 0..epochs {
@@ -1812,7 +1813,7 @@ fn apply_decay_matches_the_stepwise_reference_at_every_epoch() {
             max_energy_milli: start,
             min_diversity_milli: 0,
         };
-        for epochs in [1_usize, 2, 5, 10, 25, 50, 100, 200] {
+        for epochs in 1_usize..=200 {
             let closed =
                 difficulty::apply_decay(base, epochs as u32 * epoch, epoch, curve).max_energy_milli;
             let stepped = reference(start, epochs);
@@ -1851,7 +1852,8 @@ fn print_golden_table() {
             min_diversity_milli: 0,
         };
         let eased = difficulty::apply_decay(start, elapsed, 100, curve);
-        let won = difficulty::adjust_on_proof(start, eased, u64::from(elapsed), curve, b"golden");
+        let won =
+            difficulty::adjust_on_proof(start, eased, u64::from(elapsed), 100, curve, b"golden");
         println!(
             "    ({offset}, {elapsed}, {}, {}),",
             eased.max_energy_milli, won.max_energy_milli
@@ -1874,12 +1876,12 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
         (0, 60, -15969848, -16001000),
         (0, 99, -15950494, -16001000),
         (0, 100, -15950000, -16001000),
-        (0, 101, -15949013, -15950645),
-        (0, 150, -15901250, -15905891),
-        (0, 200, -15853719, -15857522),
-        (0, 500, -15592471, -15598991),
-        (0, 1000, -15236282, -15286282),
-        (0, 10000, -14011452, -14061452),
+        (0, 101, -15949013, -16000013),
+        (0, 150, -15901250, -15952250),
+        (0, 200, -15853719, -15904719),
+        (0, 500, -15592471, -15643471),
+        (0, 1000, -15236282, -15287282),
+        (0, 10000, -14011452, -14062452),
         (1000, 1, -15998494, -16000000),
         (1000, 7, -15995460, -16000000),
         (1000, 30, -15983874, -16000000),
@@ -1887,12 +1889,12 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
         (1000, 60, -15968863, -16000000),
         (1000, 99, -15949519, -16000000),
         (1000, 100, -15949025, -16000000),
-        (1000, 101, -15948038, -15949701),
-        (1000, 150, -15900299, -15904985),
-        (1000, 200, -15852792, -15856619),
-        (1000, 500, -15591675, -15598208),
-        (1000, 1000, -15235664, -15285664),
-        (1000, 10000, -14011442, -14061442),
+        (1000, 101, -15948038, -15999013),
+        (1000, 150, -15900299, -15951274),
+        (1000, 200, -15852792, -15903767),
+        (1000, 500, -15591675, -15642650),
+        (1000, 1000, -15235664, -15286639),
+        (1000, 10000, -14011442, -14062417),
         (20000, 1, -15979499, -15983743),
         (20000, 7, -15976494, -15986743),
         (20000, 30, -15965018, -15983419),
@@ -1900,12 +1902,12 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
         (20000, 60, -15950150, -15981000),
         (20000, 99, -15930989, -15981000),
         (20000, 100, -15930500, -15981000),
-        (20000, 101, -15929523, -15931778),
-        (20000, 150, -15882237, -15887772),
-        (20000, 200, -15835182, -15839467),
-        (20000, 500, -15576546, -15583321),
-        (20000, 1000, -15223920, -15273920),
-        (20000, 10000, -14011254, -14061254),
+        (20000, 101, -15929523, -15980023),
+        (20000, 150, -15882237, -15932737),
+        (20000, 200, -15835182, -15885682),
+        (20000, 500, -15576546, -15627046),
+        (20000, 1000, -15223920, -15274420),
+        (20000, 10000, -14011254, -14061754),
         (80000, 1, -15919514, -15936175),
         (80000, 7, -15916600, -15952962),
         (80000, 30, -15905472, -15955194),
@@ -1913,10 +1915,10 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
         (80000, 60, -15891054, -15921000),
         (80000, 99, -15872474, -15921000),
         (80000, 100, -15872000, -15921000),
-        (80000, 101, -15871052, -15875178),
-        (80000, 150, -15825200, -15833416),
-        (80000, 200, -15779570, -15785301),
-        (80000, 500, -15528772, -15536312),
+        (80000, 101, -15871052, -15920052),
+        (80000, 150, -15825200, -15874200),
+        (80000, 200, -15779570, -15828570),
+        (80000, 500, -15528772, -15577772),
         (80000, 1000, -15186831, -15236831),
         (80000, 10000, -14010646, -14060646),
         (400000, 1, -15599595, -15649595),
@@ -1926,10 +1928,10 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
         (400000, 60, -15575879, -15613202),
         (400000, 99, -15560395, -15601000),
         (400000, 100, -15560000, -15601000),
-        (400000, 101, -15559210, -15573315),
-        (400000, 150, -15521000, -15543513),
-        (400000, 200, -15482975, -15496418),
-        (400000, 500, -15273977, -15285593),
+        (400000, 101, -15559210, -15600210),
+        (400000, 150, -15521000, -15562000),
+        (400000, 200, -15482975, -15523975),
+        (400000, 500, -15273977, -15314977),
         (400000, 1000, -14989026, -15039026),
         (400000, 10000, -14007045, -14057045),
         (1000000, 1, -14999747, -15049747),
@@ -1942,7 +1944,7 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
         (1000000, 101, -14974506, -15007322),
         (1000000, 150, -14950625, -14999946),
         (1000000, 200, -14926859, -14954761),
-        (1000000, 500, -14796236, -14815496),
+        (1000000, 500, -14796236, -14822236),
         (1000000, 1000, -14618141, -14668141),
         (1000000, 10000, -14000000, -14050000),
         (1960000, 1, -14039990, -14089990),
@@ -1985,7 +1987,8 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
             min_diversity_milli: 0,
         };
         let eased = difficulty::apply_decay(start, elapsed, 100, curve);
-        let won = difficulty::adjust_on_proof(start, eased, u64::from(elapsed), curve, b"golden");
+        let won =
+            difficulty::adjust_on_proof(start, eased, u64::from(elapsed), 100, curve, b"golden");
         assert_eq!(
             eased.max_energy_milli, expect_eased,
             "decay at offset {offset}, elapsed {elapsed}"
@@ -2069,7 +2072,7 @@ fn fast_round_hardening_is_capped_at_the_largest_decay_step() {
     let cap = crate::difficulty::max_hardening_delta(curve);
     assert_eq!(cap, 50_000);
     for seed in [b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9"] {
-        let after = difficulty::adjust_on_proof(start, start, 30, curve, seed);
+        let after = difficulty::adjust_on_proof(start, start, 30, 100, curve, seed);
         assert_eq!(
             start.max_energy_milli - after.max_energy_milli,
             cap,
@@ -2092,7 +2095,7 @@ fn slow_round_hardening_stays_below_the_cap_near_the_hard_end() {
     };
     let cap = crate::difficulty::max_hardening_delta(curve);
     for seed in [b"0", b"1", b"2", b"3", b"4"] {
-        let after = difficulty::adjust_on_proof(start, start, 150, curve, seed);
+        let after = difficulty::adjust_on_proof(start, start, 150, 100, curve, seed);
         let hardened = start.max_energy_milli - after.max_energy_milli;
         assert!(
             (1_000..=7_200).contains(&hardened) && hardened < cap,
@@ -2115,7 +2118,7 @@ fn fast_round_at_the_easy_cap_hardens_by_the_cap() {
         max_energy_milli: curve.max_milli,
         min_diversity_milli: 0,
     };
-    let after = difficulty::adjust_on_proof(start, start, 30, curve, b"seed");
+    let after = difficulty::adjust_on_proof(start, start, 30, 100, curve, b"seed");
     assert_eq!(
         start.max_energy_milli - after.max_energy_milli,
         crate::difficulty::max_hardening_delta(curve)
@@ -2145,7 +2148,8 @@ fn win_at_or_under_target_nets_harder_than_round_start() {
         for gap in [1_u64, 30, 59, 60, 99, 100] {
             let active = difficulty::apply_decay(round_start, gap as u32, 100, curve);
             for seed in 0_u8..32 {
-                let next = difficulty::adjust_on_proof(round_start, active, gap, curve, &[seed]);
+                let next =
+                    difficulty::adjust_on_proof(round_start, active, gap, 100, curve, &[seed]);
                 assert!(
                     next.max_energy_milli <= start - 1_000,
                     "start {start}, gap {gap}, seed {seed}: next {} is not harder than round start",
@@ -2168,7 +2172,7 @@ fn win_past_target_hardens_from_the_decayed_bar_and_may_net_ease() {
         min_diversity_milli: 0,
     };
     let active = difficulty::apply_decay(round_start, 300, 100, curve);
-    let next = difficulty::adjust_on_proof(round_start, active, 300, curve, b"seed");
+    let next = difficulty::adjust_on_proof(round_start, active, 300, 100, curve, b"seed");
     assert!(
         next.max_energy_milli < active.max_energy_milli,
         "the win hardens from the live bar"
@@ -2179,6 +2183,80 @@ fn win_past_target_hardens_from_the_decayed_bar_and_may_net_ease() {
         next.max_energy_milli,
         round_start.max_energy_milli
     );
+}
+
+#[test]
+fn stored_bar_is_continuous_across_the_target_seam() {
+    // The composed path, decay then win, must not jump at the target length.
+    // Inside the target the floor holds the stored bar one energy unit under
+    // the round start. Past it the floor releases by the overdue term, so a
+    // win one block later can differ by at most one block of overdue easing
+    // plus the spread of the sampled hardening band. With a hard cutoff at
+    // the target the jump from 100 to 101 blocks was one full cap at the
+    // hard end. The same sweep asserts the documented cap overshoot.
+    let curve = walkup_curve();
+    let target = crate::difficulty::TARGET_PROOF_BLOCKS as u32;
+    // The production epoch length equals the target; the two constants are
+    // tuned together (see the doc on `TARGET_PROOF_BLOCKS`).
+    let epoch = target;
+    let cap = difficulty::max_hardening_delta(curve);
+    for offset in [0_i64, 1_000, 20_000, 80_000, 400_000, 1_000_000, 1_960_000] {
+        let round_start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.min_milli + offset,
+            min_diversity_milli: 0,
+        };
+        let stored = |elapsed: u32, seed: u8| {
+            let active = difficulty::apply_decay(round_start, elapsed, epoch, curve);
+            let next = difficulty::adjust_on_proof(
+                round_start,
+                active,
+                u64::from(elapsed),
+                epoch,
+                curve,
+                &[seed],
+            );
+            (active.max_energy_milli, next.max_energy_milli)
+        };
+        // One block of easing at the combined rate, or at the linear floor.
+        let room_to_max = curve.max_milli - round_start.max_energy_milli;
+        let ease_per_block =
+            ((room_to_max as f64 * 0.049375 / f64::from(epoch)).ceil() as i64).max(10) + 1;
+        for elapsed in target - 5..=target + 10 {
+            for seed in 0_u8..8 {
+                let (active, before) = stored(elapsed, seed);
+                let (active_next, after) = stored(elapsed + 1, seed);
+                // Two samples from the band differ by at most a quarter of
+                // the room in this range of round lengths, and each step is
+                // capped, so the spread is at most the cap.
+                let jitter = ((active_next - curve.min_milli) / 4).clamp(1_000, cap);
+                assert!(
+                    after - before <= ease_per_block + jitter,
+                    "offset {offset}, {elapsed} to {} blocks, seed {seed}: \
+                     waiting one block eased the stored bar by {} (limit {})",
+                    elapsed + 1,
+                    after - before,
+                    ease_per_block + jitter
+                );
+                assert!(
+                    active - before <= cap + 1_000,
+                    "offset {offset}, {elapsed} blocks, seed {seed}: hardened {} from the live \
+                     bar, over the cap {cap} plus the floor",
+                    active - before
+                );
+                if offset <= 80_000 && elapsed == target {
+                    // Near the hard estimate the floor binds whatever the
+                    // seed, so the seam is exactly one block of overdue
+                    // easing.
+                    assert!(
+                        after - before <= ease_per_block,
+                        "offset {offset}, seed {seed}: the seam at the target is {} (limit {ease_per_block})",
+                        after - before
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -2193,7 +2271,7 @@ fn repeated_fast_wins_ratchet_difficulty_down_against_decay() {
     };
     for round in 0_u8..10 {
         let active = difficulty::apply_decay(stored, 30, 100, curve);
-        let next = difficulty::adjust_on_proof(stored, active, 30, curve, &[round]);
+        let next = difficulty::adjust_on_proof(stored, active, 30, 100, curve, &[round]);
         assert!(
             next.max_energy_milli < stored.max_energy_milli,
             "round {round}: {} did not harden past {}",
@@ -2230,7 +2308,7 @@ fn recovery_from_a_capped_fast_win_at_the_easy_cap_is_floor_bound() {
         max_energy_milli: curve.max_milli,
         min_diversity_milli: 0,
     };
-    let hardened = difficulty::adjust_on_proof(at_cap, at_cap, 30, curve, b"seed");
+    let hardened = difficulty::adjust_on_proof(at_cap, at_cap, 30, 100, curve, b"seed");
     assert_eq!(curve.max_milli - hardened.max_energy_milli, 50_000);
     let epochs_to_recover = (1..=100_u32)
         .find(|&epochs| {
@@ -2260,7 +2338,7 @@ fn consecutive_fast_wins_from_the_easy_cap_reach_the_knee() {
     let mut rounds = 0_u8;
     while stored.max_energy_milli > curve.knee_milli {
         let active = difficulty::apply_decay(stored, 59, 100, curve);
-        stored = difficulty::adjust_on_proof(stored, active, 59, curve, &[rounds]);
+        stored = difficulty::adjust_on_proof(stored, active, 59, 100, curve, &[rounds]);
         rounds += 1;
         assert!(rounds < 60, "did not reach the knee in 60 rounds");
     }
@@ -2284,7 +2362,8 @@ fn harden_motion_grows_with_distance_from_hard_cap() {
             max_energy_milli: start,
             min_diversity_milli: 0,
         };
-        start - difficulty::adjust_on_proof(config, config, 30, curve, b"seed").max_energy_milli
+        start
+            - difficulty::adjust_on_proof(config, config, 30, 100, curve, b"seed").max_energy_milli
     };
     let near_move = harden(near_cap);
     let far_move = harden(far_from_cap);
@@ -2646,7 +2725,7 @@ fn observed_win_series_never_pins_the_hard_cap() {
         // … then the winning proof adjusts from that decayed base. Use a
         // distinct seed per round so the sampled rate varies like real wins.
         let seed = [i as u8];
-        base = difficulty::adjust_on_proof(base, active, gap, curve, &seed);
+        base = difficulty::adjust_on_proof(base, active, gap, 100, curve, &seed);
         assert!(
             base.max_energy_milli > curve.min_milli && base.max_energy_milli < curve.max_milli,
             "round {i} (gap {gap}) left the curve interior: {} not in ({}, {})",

@@ -28,7 +28,7 @@ use crate::types::DifficultyConfig;
 // two remain separate constants on purpose: this one anchors the rate
 // bands, the runtime one sets the decay unit. Retune them together.
 const FAST_PROOF_BLOCKS: u64 = 60;
-const TARGET_PROOF_BLOCKS: u64 = 100;
+pub(crate) const TARGET_PROOF_BLOCKS: u64 = 100;
 
 /// Floor on the per-step energy delta — one energy unit (1.0 unit -> 1000
 /// milli). Under the geometric model the step shrinks toward zero as the
@@ -50,10 +50,12 @@ const DECAY_RATE_MILLI: u32 = 25;
 /// of the retired "make it easier" step: instead of one easing kick at the
 /// win, which the dominant-winner rule gated on who won, the live threshold
 /// eases faster for every block the round is overdue, whoever ends it.
-/// Equal to `DECAY_RATE_MILLI`, so an overdue round eases at twice the
-/// baseline rate: one extra decay step per overdue epoch, the same size as
-/// the per-win hardening cap. The v0.1 easing band topped out at 15% in a
-/// single uncapped step; that magnitude does not carry over.
+/// Equal to `DECAY_RATE_MILLI`, so in the geometric regime an overdue round
+/// eases at twice the baseline rate: one extra decay step per overdue epoch,
+/// the same size as the per-win hardening cap. Once the room is under the
+/// floor crossover both phases step `MIN_ENERGY_DELTA_MILLI` per epoch and
+/// the overdue term adds nothing. The v0.1 easing band topped out at 15% in
+/// a single uncapped step; that magnitude does not carry over.
 const OVERDUE_EASE_RATE_MILLI: u32 = 25;
 
 /// Direction the energy threshold moves under an adjustment.
@@ -296,25 +298,40 @@ fn ease_continuous(
     epoch_length: u32,
     curve: EnergyCurve,
 ) -> i64 {
+    let (baseline, overdue) = decay_phases(current_milli, elapsed_blocks, epoch_length, curve);
+    current_milli.saturating_add(baseline + overdue)
+}
+
+/// The two easing amounts `apply_decay` adds to `current_milli` after
+/// `elapsed_blocks`: the baseline term over the blocks inside the target,
+/// then the overdue term over the blocks past it. Both are non-negative and
+/// their sum never exceeds the room to `max_milli`.
+///
+/// The baseline term runs from the first block of the round. The overdue
+/// term starts once the round has passed its target length. They run as two
+/// phases: the second starts from the room the first left, at the combined
+/// rate, which equals the product of the two geometric terms wherever both
+/// phases are geometric.
+fn decay_phases(
+    current_milli: i64,
+    elapsed_blocks: u32,
+    epoch_length: u32,
+    curve: EnergyCurve,
+) -> (i64, i64) {
     if curve.max_milli <= curve.min_milli || elapsed_blocks == 0 || epoch_length == 0 {
-        return current_milli;
+        return (0, 0);
     }
     let room = curve.max_milli.saturating_sub(current_milli);
     if room <= 0 {
-        return current_milli;
+        return (0, 0);
     }
     let baseline_retained = 1.0 - f64::from(DECAY_RATE_MILLI) / 1000.0;
     let overdue_retained = baseline_retained * (1.0 - f64::from(OVERDUE_EASE_RATE_MILLI) / 1000.0);
-    // The baseline term runs from the first block of the round. The overdue
-    // term starts once the round has passed its target length. Run them as
-    // two phases: the second starts from the room the first left, at the
-    // combined rate, which equals the product of the two geometric terms
-    // wherever both phases are geometric.
     let in_target = elapsed_blocks.min(TARGET_PROOF_BLOCKS as u32);
     let overdue = elapsed_blocks - in_target;
     let first = ease_room(room, in_target, epoch_length, 1.0 - baseline_retained);
     let second = ease_room(room - first, overdue, epoch_length, 1.0 - overdue_retained);
-    current_milli.saturating_add((first + second).min(room))
+    (first, second.min(room - first))
 }
 
 /// Ease `room` milli over `blocks` at `rate` per epoch, in closed form,
@@ -356,7 +373,8 @@ fn ease_room(room: i64, blocks: u32, epoch_length: u32, rate: f64) -> i64 {
 /// "One epoch out of reach" holds only where decay itself is near one cap
 /// per epoch, that is near the hard estimate. At the easy cap decay is
 /// floor-bound and recovering a capped win takes tens of epochs (39 on the
-/// test curve, about 24 on aglais). Far from the hard end the cap is also
+/// test curve with the overdue term, about 49 from the baseline alone, and
+/// about 24 on aglais). Far from the hard end the cap is also
 /// below the retired geometric step, so a burst of fast wins climbs more
 /// slowly than before: about 44 rounds of 59 blocks from the easy cap to the
 /// knee on the test curve.
@@ -377,14 +395,26 @@ pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
 /// - A slow qblock hardens gently via the graduated band, down to 5% +- 4%.
 /// - Hardening is capped at [`max_hardening_delta`], one decay step measured
 ///   at the hard estimate.
-/// - A win at or under [`TARGET_PROOF_BLOCKS`] leaves the stored bar at
-///   least `MIN_ENERGY_DELTA_MILLI` harder than `round_start`, the bar the
-///   round began with. Decay runs during the round and the step above is
-///   measured from the decayed `active` bar; near the hard estimate that
-///   room is only what decay just opened, so without this floor a 30-block
-///   win could leave the winner an easier round than the one it just won.
-///   Past target the round waited too long and decay is meant to win, so
-///   no floor applies.
+/// - The stored bar is floored at `MIN_ENERGY_DELTA_MILLI` harder than
+///   `round_start`, the bar the round began with, plus the overdue easing
+///   the round accrued past [`TARGET_PROOF_BLOCKS`]. Decay runs during the
+///   round and the step above is measured from the decayed `active` bar;
+///   near the hard estimate that room is only what decay just opened, so
+///   without this floor a 30-block win could leave the winner an easier
+///   round than the one it just won. Inside the target the overdue term is
+///   zero, so every such win nets at least one energy unit harder. Past
+///   target the floor releases by the overdue term, continuously from zero
+///   at the target block: the round waited too long and the "waited too
+///   long" easing is meant to win, but the baseline decay the round
+///   consumed does not land on the stored bar all at once at block 101.
+///   Waiting one more block never buys more than one more block of overdue
+///   easing.
+/// - The floor is applied after the cap. Where it binds, the stored bar sits
+///   `baseline decay + MIN_ENERGY_DELTA_MILLI` under `active`; the baseline
+///   term over one target length is at most one cap when `round_start` is
+///   at or above the hard estimate, so the cap may be exceeded by at most
+///   `MIN_ENERGY_DELTA_MILLI` there. Below the hard estimate the room to the
+///   easy cap exceeds the span and the overshoot grows with the depth.
 ///
 /// Easing happens only between wins, through [`apply_decay`]: the baseline
 /// decay from the first block of the round, plus the overdue term once the
@@ -403,6 +433,7 @@ pub fn adjust_on_proof(
     round_start: DifficultyConfig,
     active: DifficultyConfig,
     mining_time_blocks: u64,
+    epoch_length: u32,
     curve: EnergyCurve,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
@@ -419,15 +450,13 @@ pub fn adjust_on_proof(
             .max_energy_milli
             .saturating_sub(max_hardening_delta(curve)),
     );
-    let new_max_energy_milli = if mining_time_blocks <= TARGET_PROOF_BLOCKS {
-        capped.min(
-            round_start
-                .max_energy_milli
-                .saturating_sub(MIN_ENERGY_DELTA_MILLI),
-        )
-    } else {
-        capped
-    };
+    let elapsed = u32::try_from(mining_time_blocks).unwrap_or(u32::MAX);
+    let (_, overdue) = decay_phases(round_start.max_energy_milli, elapsed, epoch_length, curve);
+    let floor = round_start
+        .max_energy_milli
+        .saturating_sub(MIN_ENERGY_DELTA_MILLI)
+        .saturating_add(overdue);
+    let new_max_energy_milli = capped.min(floor);
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
         // Chain-static: never touched here.

@@ -71,3 +71,7 @@ Past `TARGET_PROOF_BLOCKS`, the live threshold eases at the baseline rate plus `
 The ease is the same for every account that ends the round.
 Every win hardens the bar.
 A win at or under target leaves the stored bar at least one energy unit harder than the round began with.
+Past target that floor releases by the overdue easing the round accrued, from zero at the target block.
+The stored bar is continuous in the round length.
+A miner who waits one more block gains at most one more block of overdue easing.
+The baseline decay a round consumed is not applied to the stored bar in one step.

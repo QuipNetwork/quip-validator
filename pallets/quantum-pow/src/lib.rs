@@ -597,6 +597,7 @@ pub mod pallet {
                     round_start,
                     active,
                     mining_time_blocks,
+                    T::EpochLength::get().saturated_into::<u32>(),
                     curve,
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
                 ),
