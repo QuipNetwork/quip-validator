@@ -10,7 +10,7 @@ edition.workspace = true
 [dependencies]
 blake3 = { version = "1.8.2", default-features = false }
 codec = { workspace = true, features = ["derive", "max-encoded-len"] }
-libm = { version = "0.2.15", default-features = false }
+libm = { version = "=0.2.16", default-features = false }
 rand_chacha = { version = "0.9.0", default-features = false }
 rand_core = { version = "0.9.3", default-features = false }
 scale-info = { workspace = true, features = ["derive"] }

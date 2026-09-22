@@ -18,19 +18,17 @@ use crate::types::DifficultyConfig;
 // measuring elapsed chain blocks between consecutive qblocks (PoW-won
 // blocks — formerly referred to as "solution #"/"problem #"). They
 // correspond to the earlier 6-second-block translation:
-// 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
+// 360s -> 60 blocks, 600s -> 100 blocks.
 //
 // `TARGET_PROOF_BLOCKS` is deliberately co-located with the runtime's
-// `QuantumPowEpochLength` (= 100, the decay interval): the first decay
-// step, the hardening band's gentle plateau, and the easing rate ramp all
-// begin at the same 100-block boundary. A win round is therefore either
-// "sub-epoch" (adjusts from the stored difficulty) or "decayed" (adjusts
-// gently from the decay-eased base) — never a mix. The two remain separate
-// constants on purpose: this one anchors the rate bands, the runtime one
-// sets decay cadence. Retune them together.
+// `QuantumPowEpochLength` (= 100): decay is continuous per block, but its
+// rate is expressed per epoch, and the hardening cap in
+// `adjust_on_proof` is one epoch of that decay. The rate
+// bands below and the decay rate therefore share the 100-block unit. The
+// two remain separate constants on purpose: this one anchors the rate
+// bands, the runtime one sets the decay unit. Retune them together.
 const FAST_PROOF_BLOCKS: u64 = 60;
-const TARGET_PROOF_BLOCKS: u64 = 100;
-const SLOW_PROOF_BLOCKS: u64 = 200;
+pub(crate) const TARGET_PROOF_BLOCKS: u64 = 100;
 
 /// Floor on the per-step energy delta — one energy unit (1.0 unit -> 1000
 /// milli). Under the geometric model the step shrinks toward zero as the
@@ -45,6 +43,20 @@ const MIN_ENERGY_DELTA_MILLI: i64 = 1000;
 /// Decay rate per epoch step: 25 per-mille = 2.5%, half of the typical
 /// hardening floor (50 per-mille). Mirrors v0.1 `energy_ease_rate = 0.025`.
 const DECAY_RATE_MILLI: u32 = 25;
+
+/// Extra easing rate per epoch, applied only to the blocks of the current
+/// round past `TARGET_PROOF_BLOCKS`. A round that runs past its target is
+/// the signal that the threshold is too hard. This is the continuous form
+/// of the retired "make it easier" step: instead of one easing kick at the
+/// win, which the dominant-winner rule gated on who won, the live threshold
+/// eases faster for every block the round is overdue, whoever ends it.
+/// Equal to `DECAY_RATE_MILLI`, so in the geometric regime an overdue round
+/// eases at twice the baseline rate: one extra decay step per overdue epoch,
+/// the same size as the per-win hardening cap. Once the room is under the
+/// floor crossover both phases step `MIN_ENERGY_DELTA_MILLI` per epoch and
+/// the overdue term adds nothing. The v0.1 easing band topped out at 15% in
+/// a single uncapped step; that magnitude does not carry over.
+const OVERDUE_EASE_RATE_MILLI: u32 = 25;
 
 /// Direction the energy threshold moves under an adjustment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,45 +162,28 @@ impl EnergyCurve {
     }
 }
 
-// Rate bands mirror v0.1 `calculate_adjustment_rate_with_randomness`:
-//
-// Hardening: <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%;
-// linear interpolation in between. The graduated band matters because slow
-// qblocks won by a non-dominant winner harden too — they need the gentle
-// 5% rates, not the fast-qblock 35% ones.
-//
-// Easing: <600s (100 blocks) -> 2.5% ± 2%; >1200s (200 blocks) -> 15% ± 14%;
-// linear interpolation in between.
-fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -> u32 {
-    let (base, variance) = if harder {
-        if mining_time_blocks < FAST_PROOF_BLOCKS {
-            (350_u32, 300_u32)
-        } else if mining_time_blocks > TARGET_PROOF_BLOCKS {
-            (50_u32, 40_u32)
-        } else {
-            let progress = ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000
-                / (TARGET_PROOF_BLOCKS - FAST_PROOF_BLOCKS)) as u32;
-            (
-                350 - ((350 - 50) * progress / 1000),
-                300 - ((300 - 40) * progress / 1000),
-            )
-        }
-    } else if mining_time_blocks > SLOW_PROOF_BLOCKS {
-        (150_u32, 140_u32)
-    } else if mining_time_blocks < TARGET_PROOF_BLOCKS {
-        (25_u32, 20_u32)
+// Hardening rate band, mirroring v0.1 `calculate_adjustment_rate_with_randomness`:
+// <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%; linear
+// interpolation in between. Every win hardens, so the graduated band is what
+// keeps a slow qblock on the gentle 5% rate instead of the fast-qblock 35%
+// one. Easing between wins comes only from decay (`apply_decay`).
+fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8]) -> u32 {
+    let (base, variance) = if mining_time_blocks < FAST_PROOF_BLOCKS {
+        (350_u32, 300_u32)
+    } else if mining_time_blocks > TARGET_PROOF_BLOCKS {
+        (50_u32, 40_u32)
     } else {
-        let progress = ((mining_time_blocks - TARGET_PROOF_BLOCKS) * 1000
-            / (SLOW_PROOF_BLOCKS - TARGET_PROOF_BLOCKS)) as u32;
+        let progress = ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000
+            / (TARGET_PROOF_BLOCKS - FAST_PROOF_BLOCKS)) as u32;
         (
-            25 + ((150 - 25) * progress / 1000),
-            20 + ((140 - 20) * progress / 1000),
+            350 - ((350 - 50) * progress / 1000),
+            300 - ((300 - 40) * progress / 1000),
         )
     };
 
     let min_rate = base.saturating_sub(variance).max(1);
     let max_rate = base.saturating_add(variance);
-    let digest = blake3::hash(&(seed, mining_time_blocks, harder).encode());
+    let digest = blake3::hash(&(seed, mining_time_blocks).encode());
     let mut bytes = [0_u8; 8];
     bytes.copy_from_slice(&digest.as_bytes()[..8]);
     let sample = u64::from_be_bytes(bytes);
@@ -260,80 +255,218 @@ pub(crate) fn adjust_energy_along_curve(
     }
 }
 
-/// Apply per-epoch decay easing to `current`, easing only the energy
-/// threshold via the curve. Diversity, solutions, and quality fields
-/// (when present) are chain-static and never touched here.
-pub fn apply_decay(current: DifficultyConfig, steps: u32, curve: EnergyCurve) -> DifficultyConfig {
+/// Apply continuous decay easing for `elapsed_blocks` blocks, easing only the
+/// energy threshold via the curve. Diversity and solutions are chain-static
+/// and never touched here.
+///
+/// At every whole epoch the result equals the retired per-epoch rule,
+/// `max(round(room * rate), MIN_ENERGY_DELTA_MILLI)` per step, in both of
+/// its regimes: geometric while the step beats the floor, linear at the
+/// floor once the room is under `floor / rate` (40,000 milli at the
+/// baseline rate). Between epochs the threshold eases every block instead
+/// of waiting for the boundary. Measured on aglais under the stepwise rule,
+/// 44% of rounds ended within ten blocks of a boundary: no miner could
+/// clear until the 22,000 milli step landed, then one did at once. A
+/// per-block ramp has no such cliff.
+///
+/// Past `TARGET_PROOF_BLOCKS` a second phase at the combined baseline plus
+/// `OVERDUE_EASE_RATE_MILLI` rate accrues for every overdue block, so a
+/// round that has waited too long eases faster than one still inside its
+/// target. The phases compose, so the threshold stays continuous across the
+/// target boundary.
+///
+/// Closed form, so a long stalled round costs the same as a short one.
+pub fn apply_decay(
+    current: DifficultyConfig,
+    elapsed_blocks: u32,
+    epoch_length: u32,
+    curve: EnergyCurve,
+) -> DifficultyConfig {
     let mut difficulty = current;
-    for _ in 0..steps {
-        difficulty.max_energy_milli = adjust_energy_along_curve(
-            difficulty.max_energy_milli,
-            DECAY_RATE_MILLI,
-            Direction::Easier,
-            curve,
-            MIN_ENERGY_DELTA_MILLI,
-        );
-    }
+    difficulty.max_energy_milli = ease_continuous(
+        current.max_energy_milli,
+        elapsed_blocks,
+        epoch_length,
+        curve,
+    );
     difficulty
 }
 
-/// Adjust difficulty after a winning proof by a non-dominant winner.
-/// Mutates only `max_energy_milli`; `min_solutions` and
-/// `min_diversity_milli` are chain-static (only the `set_difficulty`
-/// extrinsic — `ensure_root` — can change them).
-pub fn adjust_on_proof(
-    current: DifficultyConfig,
-    mining_time_blocks: u64,
+fn ease_continuous(
+    current_milli: i64,
+    elapsed_blocks: u32,
+    epoch_length: u32,
     curve: EnergyCurve,
-    randomness_seed: &[u8],
-) -> DifficultyConfig {
-    adjust_on_proof_with_dominance(current, mining_time_blocks, curve, randomness_seed, false)
+) -> i64 {
+    let (baseline, overdue) = decay_phases(current_milli, elapsed_blocks, epoch_length, curve);
+    current_milli.saturating_add(baseline + overdue)
 }
 
-/// Adjust difficulty after a winning proof (a qblock), following the v0.1
-/// `compute_next_block_requirements` policy:
+/// The two easing amounts `apply_decay` adds to `current_milli` after
+/// `elapsed_blocks`: the baseline term over the blocks inside the target,
+/// then the overdue term over the blocks past it. Both are non-negative and
+/// their sum never exceeds the room to `max_milli`.
+///
+/// The baseline term runs from the first block of the round. The overdue
+/// term starts once the round has passed its target length. They run as two
+/// phases: the second starts from the room the first left, at the combined
+/// rate, which equals the product of the two geometric terms wherever both
+/// phases are geometric.
+fn decay_phases(
+    current_milli: i64,
+    elapsed_blocks: u32,
+    epoch_length: u32,
+    curve: EnergyCurve,
+) -> (i64, i64) {
+    if curve.max_milli <= curve.min_milli || elapsed_blocks == 0 || epoch_length == 0 {
+        return (0, 0);
+    }
+    let room = curve.max_milli.saturating_sub(current_milli);
+    if room <= 0 {
+        return (0, 0);
+    }
+    let baseline_retained = 1.0 - f64::from(DECAY_RATE_MILLI) / 1000.0;
+    let overdue_retained = baseline_retained * (1.0 - f64::from(OVERDUE_EASE_RATE_MILLI) / 1000.0);
+    let in_target = elapsed_blocks.min(TARGET_PROOF_BLOCKS as u32);
+    let overdue = elapsed_blocks - in_target;
+    let first = ease_room(room, in_target, epoch_length, 1.0 - baseline_retained);
+    let second = ease_room(room - first, overdue, epoch_length, 1.0 - overdue_retained);
+    (first, second.min(room - first))
+}
+
+/// Ease `room` milli over `blocks` at `rate` per epoch, in closed form,
+/// reproducing the retired per-epoch loop. That loop stepped
+/// `max(round(room * rate), MIN_ENERGY_DELTA_MILLI)` once per epoch,
+/// clamped to the room: geometric while `room * rate` beat the floor,
+/// linear at the floor after. The crossover room is `floor / rate`, and the
+/// geometric phase lasts `ln(crossover / room) / ln(1 - rate)` epochs.
+/// Returns the amount eased, at most `room`.
+fn ease_room(room: i64, blocks: u32, epoch_length: u32, rate: f64) -> i64 {
+    if room <= 0 || blocks == 0 || epoch_length == 0 || rate <= 0.0 || rate >= 1.0 {
+        return 0;
+    }
+    let floor = MIN_ENERGY_DELTA_MILLI as f64;
+    let room_f = room as f64;
+    let epochs = f64::from(blocks) / f64::from(epoch_length);
+    let crossover = floor / rate;
+    let geometric_epochs = if room_f <= crossover {
+        0.0
+    } else {
+        (libm::log(crossover / room_f) / libm::log(1.0 - rate)).min(epochs)
+    };
+    let room_after_geometric = room_f * libm::pow(1.0 - rate, geometric_epochs);
+    let linear = (epochs - geometric_epochs) * floor;
+    let eased = libm::round(room_f - room_after_geometric + linear) as i64;
+    eased.min(room)
+}
+
+/// The most a single win may harden the threshold: one decay step measured
+/// at the hard estimate, `DECAY_RATE_MILLI` of the full curve span, floored
+/// at `MIN_ENERGY_DELTA_MILLI`. Constant for a curve.
+///
+/// Uncapped, a fast round hardened 35% of the room to the hard estimate. At
+/// the aglais operating point that room is 80,000 milli against 895,000 to
+/// the easy cap, so a fast round (26,000 milli median, up to 41,000) undid
+/// more than one 22,000 milli decay epoch, and every fast round pushed the
+/// next one out to the second epoch. The cap is 24,368 milli on that curve.
+///
+/// "One epoch out of reach" holds only where decay itself is near one cap
+/// per epoch, that is near the hard estimate. At the easy cap decay is
+/// floor-bound and recovering a capped win takes tens of epochs (39 on the
+/// test curve with the overdue term, about 49 from the baseline alone, and
+/// about 24 on aglais). Far from the hard end the cap is also
+/// below the retired geometric step, so a burst of fast wins climbs more
+/// slowly than before: about 44 rounds of 59 blocks from the easy cap to the
+/// knee on the test curve.
+///
+/// The span, not the current threshold, defines the cap: decay from
+/// `max_milli` is zero, and a cap read from there would collapse to the
+/// floor exactly where a fast win most needs to bite.
+pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
+    let span = curve.max_milli.saturating_sub(curve.min_milli).max(0);
+    (libm::round(span as f64 * f64::from(DECAY_RATE_MILLI) / 1000.0) as i64)
+        .max(MIN_ENERGY_DELTA_MILLI)
+}
+
+/// Adjust difficulty after a winning proof (a qblock). Every win hardens:
 ///
 /// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
-///   ALWAYS hardens — even for a dominant winner.
-/// - A slow qblock eases only when the winner dominates (`dominant_winner`,
-///   i.e. the same account won at least `ConsecutiveWinnerEasingThreshold`
-///   consecutive qblocks); otherwise it hardens gently via the graduated
-///   rate band.
+///   hardens at the 35% +- 30% band.
+/// - A slow qblock hardens gently via the graduated band, down to 5% +- 4%.
+/// - Hardening is capped at [`max_hardening_delta`], one decay step measured
+///   at the hard estimate.
+/// - The stored bar is floored at `MIN_ENERGY_DELTA_MILLI` harder than
+///   `round_start`, the bar the round began with, plus the overdue easing
+///   the round accrued past [`TARGET_PROOF_BLOCKS`]. Decay runs during the
+///   round and the step above is measured from the decayed `active` bar;
+///   near the hard estimate that room is only what decay just opened, so
+///   without this floor a 30-block win could leave the winner an easier
+///   round than the one it just won. Inside the target the overdue term is
+///   zero, so every such win nets at least one energy unit harder. Past
+///   target the floor releases by the overdue term, continuously from zero
+///   at the target block: the round waited too long and the "waited too
+///   long" easing is meant to win, but the baseline decay the round
+///   consumed does not land on the stored bar all at once at block 101.
+///   Waiting one more block never buys more than one more block of overdue
+///   easing.
+/// - The floor is applied after the cap. Where it binds, the stored bar sits
+///   `baseline decay + MIN_ENERGY_DELTA_MILLI` under `active`; the baseline
+///   term over one target length is at most one cap when `round_start` is
+///   at or above the hard estimate, so the cap may be exceeded by at most
+///   `MIN_ENERGY_DELTA_MILLI` there. Below the hard estimate the room to the
+///   easy cap exceeds the span and the overshoot grows with the depth.
 ///
-/// v0.1 keyed dominance on the miner *type* repeating once (streak 2); we
-/// key it on the account meeting the configured threshold instead — see
-/// QUI-653 for the rationale.
-pub fn adjust_on_proof_with_dominance(
-    current: DifficultyConfig,
+/// Easing happens only between wins, through [`apply_decay`]: the baseline
+/// decay from the first block of the round, plus the overdue term once the
+/// round has run past [`TARGET_PROOF_BLOCKS`]. The win record never changes
+/// the direction of a step: the retired dominant-winner rule (v0.1
+/// `compute_next_block_requirements`, QUI-653) eased slow wins once one
+/// account had won three qblocks in a row, and on aglais that account was
+/// the one winning nearly every round, so the rule eased the threshold for
+/// the miner it was meant to check. The overdue term keeps the "waited too
+/// long" signal and drops the "who won" one.
+///
+/// Mutates only `max_energy_milli`; `min_solutions` and
+/// `min_diversity_milli` are chain-static (only the `set_difficulty`
+/// extrinsic, `ensure_root`, can change them).
+pub fn adjust_on_proof(
+    round_start: DifficultyConfig,
+    active: DifficultyConfig,
     mining_time_blocks: u64,
+    epoch_length: u32,
     curve: EnergyCurve,
     randomness_seed: &[u8],
-    dominant_winner: bool,
 ) -> DifficultyConfig {
-    let harder = mining_time_blocks < FAST_PROOF_BLOCKS || !dominant_winner;
-    let rate_milli = sample_adjustment_milli(mining_time_blocks, harder, randomness_seed);
-    let direction = if harder {
-        Direction::Harder
-    } else {
-        Direction::Easier
-    };
-    let new_max_energy_milli = adjust_energy_along_curve(
-        current.max_energy_milli,
+    let rate_milli = sample_adjustment_milli(mining_time_blocks, randomness_seed);
+    let stepped = adjust_energy_along_curve(
+        active.max_energy_milli,
         rate_milli,
-        direction,
+        Direction::Harder,
         curve,
         MIN_ENERGY_DELTA_MILLI,
     );
+    let capped = stepped.max(
+        active
+            .max_energy_milli
+            .saturating_sub(max_hardening_delta(curve)),
+    );
+    let elapsed = u32::try_from(mining_time_blocks).unwrap_or(u32::MAX);
+    let (_, overdue) = decay_phases(round_start.max_energy_milli, elapsed, epoch_length, curve);
+    let floor = round_start
+        .max_energy_milli
+        .saturating_sub(MIN_ENERGY_DELTA_MILLI)
+        .saturating_add(overdue);
+    let new_max_energy_milli = capped.min(floor);
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
-        // Chain-static — never touched here.
-        min_solutions: current.min_solutions,
-        min_diversity_milli: current.min_diversity_milli,
+        // Chain-static: never touched here.
+        min_solutions: active.min_solutions,
+        min_diversity_milli: active.min_diversity_milli,
     }
 }
 
-/// Compute the active difficulty for `block_number`, applying decay since
-/// the previous winning proof.
+/// Compute the active difficulty for `block_number`, applying continuous
+/// decay for every block since the previous winning proof.
 ///
 /// This is the per-block view of difficulty that miners must clear and
 /// that `adjust_on_proof` consumes as its baseline. All inputs are
@@ -356,12 +489,11 @@ pub fn current_difficulty(
         return base_difficulty;
     }
     let elapsed = block_number.saturating_sub(last_proof_block);
-    let steps = elapsed / epoch_length;
-    if steps == 0 {
+    if elapsed == 0 {
         return base_difficulty;
     }
     match curve {
-        Some(curve) => apply_decay(base_difficulty, steps, curve),
+        Some(curve) => apply_decay(base_difficulty, elapsed, epoch_length, curve),
         None => base_difficulty,
     }
 }

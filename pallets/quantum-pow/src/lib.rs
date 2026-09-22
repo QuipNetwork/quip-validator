@@ -41,7 +41,6 @@ type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
-type WinnerStreakOf<T> = types::WinnerStreak<AccountIdOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
@@ -144,7 +143,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(6);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -196,15 +195,6 @@ pub mod pallet {
         #[pallet::constant]
         type CurveCHardMilli: Get<u32>;
 
-        /// Consecutive qblocks won by the same account at or above this
-        /// threshold mark the winner as dominant: slow qblocks (at or past
-        /// the fast-proof cutoff) then ease difficulty instead of hardening
-        /// it. Fast qblocks always harden regardless of dominance (v0.1
-        /// policy). Setting this to `0` disables dominant-winner easing
-        /// entirely.
-        #[pallet::constant]
-        type ConsecutiveWinnerEasingThreshold: Get<u32>;
-
         type WeightInfo: WeightInfo;
     }
 
@@ -245,9 +235,6 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type BlockBestProof<T: Config> = StorageValue<_, ProofRecordOf<T>>;
-
-    #[pallet::storage]
-    pub type WinnerStreak<T: Config> = StorageValue<_, WinnerStreakOf<T>, OptionQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -469,10 +456,14 @@ pub mod pallet {
         /// Both paths kill any stale `BlockBestProof` (`ProofRecord` also
         /// changed shape).
         ///
+        /// v5 → v6 (spec 118): the dominant-winner easing rule is removed
+        /// together with the `WinnerStreak` value it read. The step kills
+        /// the retired key; no other value changes shape.
+        ///
         /// The steps are cumulative: a v2 chain runs v3 then the combined
         /// v5 backfill; a v4 chain runs only the device-time append; a `< 2`
         /// chain wipes (which clears `QBlocks`, leaving nothing to
-        /// translate).
+        /// translate). Every path then drops `WinnerStreak`.
         fn on_runtime_upgrade() -> Weight {
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
@@ -489,11 +480,15 @@ pub mod pallet {
                 });
             }
 
-            weight = weight.saturating_add(if on_chain == StorageVersion::new(4) {
-                crate::migration::v5::append_device_time::<T>()
-            } else {
-                crate::migration::v5::backfill_from_pre_topology::<T>()
-            });
+            if on_chain < StorageVersion::new(5) {
+                weight = weight.saturating_add(if on_chain == StorageVersion::new(4) {
+                    crate::migration::v5::append_device_time::<T>()
+                } else {
+                    crate::migration::v5::backfill_from_pre_topology::<T>()
+                });
+            }
+
+            weight = weight.saturating_add(crate::migration::v6::remove_winner_streak::<T>());
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -518,7 +513,14 @@ pub mod pallet {
         fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be >= 5 after upgrade"
+                "storage version must be >= 6 after upgrade"
+            );
+            ensure!(
+                frame_support::storage::unhashed::get_raw(
+                    &crate::migration::v6::winner_streak_key::<T>()
+                )
+                .is_none(),
+                "v6 must remove the retired WinnerStreak value"
             );
             let (was_v2, default, qblocks_before): (bool, Option<H256>, u64) =
                 Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
@@ -587,16 +589,17 @@ pub mod pallet {
             // Snapshot the live (decay-applied) threshold this proof had to
             // clear before adjustment rewrites it.
             let active = Self::current_difficulty_for(topology_hash, n);
-            let winner_streak = Self::update_winner_streak(&record.miner);
-            let dominant_winner = Self::is_dominant_streak(&winner_streak);
+            // The bar the round began with: the stored value, before decay.
+            let round_start = Difficulties::<T>::get(topology_hash).unwrap_or_default();
             // Adjust ONLY the winning topology's difficulty, using ITS curve.
             let next = match Self::energy_curve_for(topology_hash) {
-                Some(curve) => crate::difficulty::adjust_on_proof_with_dominance(
+                Some(curve) => crate::difficulty::adjust_on_proof(
+                    round_start,
                     active,
                     mining_time_blocks,
+                    T::EpochLength::get().saturated_into::<u32>(),
                     curve,
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
-                    dominant_winner,
                 ),
                 None => {
                     frame_support::defensive!(
@@ -1309,30 +1312,6 @@ pub mod pallet {
             .ok()
         }
 
-        fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {
-            let next = match WinnerStreak::<T>::get() {
-                Some(mut streak) if streak.miner == *miner => {
-                    streak.count = streak.count.saturating_add(1);
-                    streak
-                }
-                _ => WinnerStreakOf::<T> {
-                    miner: miner.clone(),
-                    count: 1,
-                },
-            };
-            WinnerStreak::<T>::put(&next);
-            next
-        }
-
-        /// A winner is dominant when the same account has won at least
-        /// `ConsecutiveWinnerEasingThreshold` consecutive qblocks. Dominance
-        /// flips slow-qblock adjustments to easing (fast qblocks always
-        /// harden — see `difficulty::adjust_on_proof_with_dominance`).
-        fn is_dominant_streak(streak: &WinnerStreakOf<T>) -> bool {
-            let threshold = T::ConsecutiveWinnerEasingThreshold::get();
-            threshold > 0 && streak.count >= threshold
-        }
-
         fn validate_proof(
             proof: &QuantumProofOf<T>,
             topology: &TopologyMetaOf<T>,
@@ -1588,6 +1567,32 @@ pub(crate) mod migration {
             kill_stale_best_proof::<T>();
             // One read + one write per entry, plus the `BlockBestProof` kill.
             T::DbWeight::get().reads_writes(count, count.saturating_add(1))
+        }
+    }
+
+    pub(crate) mod v6 {
+        use crate::pallet::{Config, Pallet};
+        use frame_support::traits::{Get, PalletInfoAccess};
+        use frame_support::weights::Weight;
+        use frame_support::{StorageHasher, Twox128};
+
+        /// Raw storage key of the retired `WinnerStreak` StorageValue:
+        /// `twox128(pallet_name) ++ twox128("WinnerStreak")`.
+        pub(crate) fn winner_streak_key<T: Config>() -> [u8; 32] {
+            let mut key = [0u8; 32];
+            key[..16].copy_from_slice(&Twox128::hash(
+                <Pallet<T> as PalletInfoAccess>::name().as_bytes(),
+            ));
+            key[16..].copy_from_slice(&Twox128::hash(b"WinnerStreak"));
+            key
+        }
+
+        /// 5 → 6: drop the `WinnerStreak` value. The dominant-winner easing
+        /// rule that read it is gone, so the value would otherwise sit in
+        /// state unread.
+        pub(crate) fn remove_winner_streak<T: Config>() -> Weight {
+            frame_support::storage::unhashed::kill(&winner_streak_key::<T>());
+            T::DbWeight::get().writes(1)
         }
     }
 }

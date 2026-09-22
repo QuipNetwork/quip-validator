@@ -4,7 +4,7 @@ use crate::{
     types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulties,
     LastProofBlock, LastProofBlockHash, MineableTopologies, Miners, PackedSpinBytesOf,
-    QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
+    QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks, RegisteredTopologies,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -470,14 +470,14 @@ fn set_default_topology_repoints_default_and_curve() {
         };
         set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+        System::set_block_number(101); // 100 blocks elapsed, epoch_length = 20
 
-        let expected = difficulty::apply_decay(initial, 5, curve_b);
+        let expected = difficulty::apply_decay(initial, 100, 20, curve_b);
         let decayed = QuantumPow::mining_snapshot(None).expect("snapshot exists");
         assert_eq!(decayed.difficulty, expected);
         assert_ne!(
             expected,
-            difficulty::apply_decay(initial, 5, test_curve()),
+            difficulty::apply_decay(initial, 100, 20, test_curve()),
             "sanity: A's and B's curves must differ for this test to mean anything"
         );
     });
@@ -902,8 +902,7 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
         // min_solutions / min_diversity_milli are chain-static under the new
         // curve policy; only max_energy_milli decays. Set the chain-static
         // fields permissively so the proof passes those gates. A slow win
-        // by a non-dominant (first-streak) winner hardens gently from the
-        // decayed base — the v0.1 rule restored from the original design.
+        // hardens gently from the decayed base.
         let initial = DifficultyConfig {
             min_solutions: 1,
             max_energy_milli: 0,
@@ -920,15 +919,15 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
 
         let decayed = difficulty::apply_decay(
             initial,
-            (250_u32 - 1) / EpochLength::get() as u32,
+            250_u32 - 1,
+            EpochLength::get() as u32,
             test_curve(),
         );
         QuantumPow::on_finalize(System::block_number());
 
         let next = difficulty_default();
-        // A slow proof by a non-dominant winner hardens the threshold below
-        // the decayed value (gentle 5%±4% band — v0.1 different/new-winner
-        // rule). Decay remains the easing pressure between wins.
+        // A slow proof hardens the threshold below the decayed value (gentle
+        // 5%±4% band). Decay is the only easing pressure between wins.
         assert!(next.max_energy_milli < decayed.max_energy_milli);
         // Chain-static fields untouched throughout decay + adjust.
         assert_eq!(next.min_solutions, initial.min_solutions);
@@ -989,7 +988,7 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
             "old global value removed"
         );
         // on_runtime_upgrade steps cumulatively through v5.
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
         // The live threshold for the default now equals the carried value.
         assert_eq!(
             QuantumPow::current_difficulty_for(hash, System::block_number()),
@@ -999,135 +998,76 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
 }
 
 #[test]
-fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
-    // The fast cutoff is strict `<`: exactly 60 elapsed blocks is a slow
-    // win, so a dominant winner eases there — one block sooner and even a
-    // dominant winner hardens (v0.1: fast wins always harden).
+fn every_slow_win_hardens_regardless_of_who_won_before() {
+    // Regression guard for the retired dominant-winner rule, which eased a
+    // slow win once the same account had won three qblocks in a row. On
+    // aglais that account was the one winning nearly every round, so the
+    // rule eased the threshold for the miner it was meant to check. Now a
+    // fourth slow win in a row, and a slow win by a newcomer after it, both
+    // harden from the decayed live threshold exactly like the first.
     new_test_ext().execute_with(|| {
-        registered_topology();
+        let (_, _, topology_hash) = registered_topology();
         let curve = test_curve();
-        let initial = DifficultyConfig {
+        set_difficulty_default(DifficultyConfig {
             min_solutions: 1,
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
+        });
         LastProofBlock::<Test>::put(1);
-        // Seed a streak one short of the threshold (3); the next win makes
-        // the miner dominant.
-        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
 
-        finalize_winner(1, 61); // elapsed 60 == cutoff -> slow, dominant
-
-        let next = difficulty_default();
-        assert!(
-            next.max_energy_milli > initial.max_energy_milli,
-            "a dominant winner at 60 elapsed blocks must ease"
-        );
-    });
-
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
-
-        finalize_winner(1, 60); // elapsed 59 < cutoff -> fast, dominance ignored
-
-        let next = difficulty_default();
-        assert!(
-            next.max_energy_milli < initial.max_energy_milli,
-            "a fast win must harden even for a dominant winner"
-        );
+        for (miner, block) in [(1, 100), (1, 200), (1, 300), (1, 400), (2, 500)] {
+            let active = QuantumPow::current_difficulty_for(topology_hash, block).max_energy_milli;
+            finalize_winner(miner, block);
+            let next = difficulty_default().max_energy_milli;
+            assert!(
+                next < active,
+                "slow win by miner {miner} at block {block} must harden: \
+                 active {active}, next {next}"
+            );
+        }
     });
 }
 
 #[test]
-fn slow_win_by_different_miner_hardens() {
-    // Restored v0.1 rule: a slow block won by a *different* miner hardens
-    // difficulty; only dominant repeat winners ease.
+fn migration_v5_to_v6_removes_winner_streak_and_keeps_qblocks() {
     new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
+        let (_, _, hash) = registered_topology();
+        // A v5 chain carries a `WinnerStreak` value and `QBlocks` entries in
+        // the current layout. v6 must drop the former and must not re-run
+        // the v5 re-encode over the latter.
+        let key = crate::migration::v6::winner_streak_key::<Test>();
+        frame_support::storage::unhashed::put(&key, &(1_u64, 3_u32));
+        let qblock = crate::types::QBlock {
+            miner: 1,
+            salt: [7u8; 32],
+            energy_milli: -1_000,
+            reward: 50,
+            submitted_at: 5,
+            difficulty: DifficultyConfig::default(),
+            last_proof_block_hash: sp_core::H256::repeat_byte(9),
+            topology_hash: hash,
+            device_access_time_us: 42,
         };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
+        QBlocks::<Test>::insert(5, qblock.clone());
+        StorageVersion::new(5).put::<QuantumPow>();
 
-        // Make miner 1 dominant so its slow win eases the threshold up to
-        // the curve ceiling — giving the next assertion room to observe a
-        // strict hardening move.
-        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
-        finalize_winner(1, 100);
-        let after_dominant = difficulty_default();
-        assert!(after_dominant.max_energy_milli > initial.max_energy_milli);
+        QuantumPow::on_runtime_upgrade();
 
-        finalize_winner(2, 200); // different miner, slow win
-
-        let after_switch = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-        assert_eq!(streak.miner, 2);
-        assert_eq!(streak.count, 1);
         assert!(
-            after_switch.max_energy_milli < after_dominant.max_energy_milli,
-            "a slow win by a different miner must harden (v0.1 rule)"
+            frame_support::storage::unhashed::get_raw(&key).is_none(),
+            "v6 removes the retired WinnerStreak value"
         );
+        assert_eq!(
+            QBlocks::<Test>::get(5),
+            Some(qblock),
+            "v6 leaves current-layout qblocks untouched"
+        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
 #[test]
-fn repeated_same_winner_forces_easing() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        // Slow wins (elapsed >= 60 blocks): dominance easing only applies
-        // past the fast cutoff, so space the wins ~100 blocks apart.
-        finalize_winner(1, 100);
-        let after_first = difficulty_default();
-        assert!(after_first.max_energy_milli < initial.max_energy_milli);
-
-        finalize_winner(1, 200);
-        let after_second = difficulty_default();
-        // Streak count 2 is still below the threshold (3): slow wins by a
-        // non-dominant winner must keep hardening (or hold at the clamp
-        // floor) — easing here would fire one win early and raise the value.
-        assert!(
-            after_second.max_energy_milli <= after_first.max_energy_milli,
-            "second consecutive win is below the easing threshold and must not ease"
-        );
-
-        finalize_winner(1, 300);
-        let after_third = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-
-        assert_eq!(streak.miner, 1);
-        assert_eq!(streak.count, 3);
-        assert!(
-            after_third.max_energy_milli > after_second.max_energy_milli,
-            "third consecutive slow win must ease for the dominant winner"
-        );
-    });
-}
-
-#[test]
-fn migration_below_v2_wipes_then_bumps_to_v5() {
+fn migration_below_v2_wipes_then_bumps_to_v6() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         QBlockCount::<Test>::put(9);
@@ -1139,7 +1079,7 @@ fn migration_below_v2_wipes_then_bumps_to_v5() {
         assert_eq!(DefaultTopology::<Test>::get(), None);
         assert_eq!(QBlockCount::<Test>::get(), 0);
         assert!(!MineableTopologies::<Test>::contains_key(hash));
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1206,7 +1146,7 @@ fn migration_pre_v4_backfills_topology_and_device_time() {
         assert_eq!(migrated.topology_hash, hash);
         // Pre-112 blocks carry no self-reported compute time — backfilled 0.
         assert_eq!(migrated.device_access_time_us, 0);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1260,12 +1200,12 @@ fn migration_v4_to_v5_appends_device_time_preserving_topology() {
             "v4 → v5 must preserve the stored topology, not backfill the default"
         );
         assert_eq!(migrated.device_access_time_us, 0);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
 #[test]
-fn migration_noop_at_v5() {
+fn migration_noop_at_v6() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         let d = DifficultyConfig {
@@ -1275,48 +1215,14 @@ fn migration_noop_at_v5() {
         };
         Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(5).put::<QuantumPow>();
+        StorageVersion::new(6).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
         assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
-    });
-}
-
-#[test]
-fn zero_easing_threshold_disables_forced_easing() {
-    new_test_ext().execute_with(|| {
-        ConsecutiveWinnerEasingThreshold::set(0);
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        // Slow wins: with the default threshold (3) the third one would
-        // ease for the dominant winner, so this spacing discriminates.
-        finalize_winner(1, 100);
-        finalize_winner(1, 200);
-        let after_second = difficulty_default();
-        finalize_winner(1, 300);
-        let after_third = difficulty_default();
-
-        // Without the `threshold > 0` guard, `count >= 0` would force
-        // easing on every slow win. A threshold of 0 must mean "disabled":
-        // slow wins keep hardening — easing would raise the threshold and trip
-        // this. (Hardening may walk below the hard estimate `min_milli`; that
-        // is by design, so we assert only the no-easing direction here.)
-        assert!(
-            after_third.max_energy_milli <= after_second.max_energy_milli,
-            "threshold 0 disables streak easing; a slow repeat win must never ease"
-        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(6));
     });
 }
 
@@ -1328,71 +1234,36 @@ fn single_adjustment_never_slams_past_a_cap() {
     // ceiling. Under the geometric model a single adjustment moves by at most
     // the remaining room (or one floor step at the tail), so it can overshoot
     // the hard cap by at most one energy unit and never eases past the easy
-    // cap. Sweep many seeds, mining times, starts, and dominance.
+    // cap. Sweep many seeds, mining times, and starts.
     const MIN_DELTA: i64 = 1000; // mirrors MIN_ENERGY_DELTA_MILLI
     for seed_byte in 0_u8..64 {
         for &mining_time in &[1_u64, 30, 59, 60, 61, 150, 200, 201, 500] {
             for &start in &[curve.min_milli, curve.knee_milli, curve.max_milli] {
-                for dominant in [false, true] {
-                    let adjusted = difficulty::adjust_on_proof_with_dominance(
-                        DifficultyConfig {
-                            min_solutions: 1,
-                            max_energy_milli: start,
-                            min_diversity_milli: 0,
-                        },
-                        mining_time,
-                        curve,
-                        &[seed_byte],
-                        dominant,
-                    );
-                    assert!(
-                        adjusted.max_energy_milli >= curve.min_milli - MIN_DELTA
-                            && adjusted.max_energy_milli <= curve.max_milli,
-                        "seed {seed_byte}, time {mining_time}, start {start}, \
-                         dominant {dominant}: adjusted threshold {} slammed past a cap \
-                         (allowed [{}, {}])",
-                        adjusted.max_energy_milli,
-                        curve.min_milli - MIN_DELTA,
-                        curve.max_milli,
-                    );
-                }
+                let start_config = DifficultyConfig {
+                    min_solutions: 1,
+                    max_energy_milli: start,
+                    min_diversity_milli: 0,
+                };
+                let adjusted = difficulty::adjust_on_proof(
+                    start_config,
+                    start_config,
+                    mining_time,
+                    100,
+                    curve,
+                    &[seed_byte],
+                );
+                assert!(
+                    adjusted.max_energy_milli >= curve.min_milli - 2 * MIN_DELTA
+                        && adjusted.max_energy_milli <= curve.max_milli,
+                    "seed {seed_byte}, time {mining_time}, start {start}: adjusted \
+                     threshold {} slammed past a cap (allowed [{}, {}])",
+                    adjusted.max_energy_milli,
+                    curve.min_milli - 2 * MIN_DELTA,
+                    curve.max_milli,
+                );
             }
         }
     }
-}
-
-#[test]
-fn winner_streak_resets_for_different_miner() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-
-        finalize_winner(1, 10);
-        finalize_winner(1, 20);
-        let before_reset = difficulty_default();
-
-        finalize_winner(2, 30);
-        let after_reset = difficulty_default();
-        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
-
-        assert_eq!(streak.miner, 2);
-        assert_eq!(streak.count, 1);
-        // The regression this guards is the streak *not* resetting: count 3
-        // would force easing, raising the threshold. Hardening may walk below
-        // the hard estimate `min_milli` (by design), so we assert only that
-        // the reset win keeps hardening rather than easing.
-        assert!(
-            after_reset.max_energy_milli <= before_reset.max_energy_milli,
-            "new winner below cutoff must use normal hardening, never easing"
-        );
-    });
 }
 
 #[test]
@@ -1559,12 +1430,12 @@ fn qblock_records_active_difficulty_threshold() {
         set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(45); // (45 - 1) / 20 = 2 decay steps
+        System::set_block_number(45); // 44 blocks elapsed, epoch_length = 20
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
 
-        let expected_active = difficulty::apply_decay(initial, 2, test_curve());
+        let expected_active = difficulty::apply_decay(initial, 44, 20, test_curve());
         let stored = QBlocks::<Test>::get(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
@@ -1604,10 +1475,10 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
+        System::set_block_number(121); // 120 blocks elapsed, epoch_length = 20
         let snapshot =
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
-        let expected = difficulty::apply_decay(initial, 6, test_curve());
+        let expected = difficulty::apply_decay(initial, 120, 20, test_curve());
         assert_eq!(snapshot.difficulty, expected);
         assert_ne!(
             snapshot.difficulty, initial,
@@ -1687,7 +1558,7 @@ fn submit_proof_rejected_after_intervening_win() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn current_difficulty_passes_through_when_no_decay_steps() {
+fn current_difficulty_passes_through_at_zero_elapsed() {
     let curve = test_curve();
     let base = DifficultyConfig {
         min_solutions: 5,
@@ -1699,25 +1570,35 @@ fn current_difficulty_passes_through_when_no_decay_steps() {
         difficulty::current_difficulty(100, base, 100, 10, Some(curve)),
         base,
     );
-    // Less than one full epoch elapsed: still no decay.
-    assert_eq!(
-        difficulty::current_difficulty(109, base, 100, 10, Some(curve)),
-        base,
-    );
 }
 
 #[test]
-fn current_difficulty_applies_decay_per_full_epoch() {
+fn current_difficulty_eases_within_the_first_epoch() {
     let curve = test_curve();
     let base = DifficultyConfig {
         min_solutions: 5,
         max_energy_milli: -2_500,
         min_diversity_milli: 200,
     };
-    // 25 blocks elapsed, epoch_length=10 → 2 decay steps.
+    // 9 blocks elapsed with epoch_length = 10: decay is continuous, so the
+    // threshold has already eased. The retired stepwise rule left it untouched
+    // until block 110.
+    let result = difficulty::current_difficulty(109, base, 100, 10, Some(curve));
+    assert!(result.max_energy_milli > base.max_energy_milli);
+    assert_eq!(result, difficulty::apply_decay(base, 9, 10, curve));
+}
+
+#[test]
+fn current_difficulty_applies_decay_per_elapsed_block() {
+    let curve = test_curve();
+    let base = DifficultyConfig {
+        min_solutions: 5,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 200,
+    };
+    // 25 blocks elapsed, epoch_length = 10: 2.5 epochs of decay, not 2.
     let result = difficulty::current_difficulty(125, base, 100, 10, Some(curve));
-    let expected = difficulty::apply_decay(base, 2, curve);
-    assert_eq!(result, expected);
+    assert_eq!(result, difficulty::apply_decay(base, 25, 10, curve));
 }
 
 #[test]
@@ -1759,10 +1640,63 @@ fn adjust_on_proof_only_mutates_max_energy() {
         max_energy_milli: -2_300,
         min_diversity_milli: 400,
     };
-    let after = difficulty::adjust_on_proof(before, 30, curve, b"seed");
+    let after = difficulty::adjust_on_proof(before, before, 30, 100, curve, b"seed");
     assert_eq!(after.min_solutions, before.min_solutions);
     assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
     assert_ne!(after.max_energy_milli, before.max_energy_milli);
+}
+
+#[test]
+fn decay_past_target_adds_the_overdue_term() {
+    // Up to the target round length only the baseline rate applies. Past
+    // it, every overdue block also accrues the overdue rate, so a 200-block
+    // round retains 0.975^2 (baseline) * 0.975^1 (overdue) of its room, and
+    // a 300-block round 0.975^3 * 0.975^2.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    let room = (curve.max_milli - curve.knee_milli) as f64;
+    let expect = |retained: f64| curve.knee_milli + (room * (1.0 - retained)).round() as i64;
+    let eased = |elapsed: u32| difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+    for (elapsed, retained) in [
+        (100, 0.975),
+        (200, 0.975_f64.powi(3)),
+        (300, 0.975_f64.powi(5)),
+    ] {
+        let got = eased(elapsed);
+        let want = expect(retained);
+        assert!(
+            (got - want).abs() <= 1,
+            "elapsed {elapsed}: got {got}, want {want}"
+        );
+    }
+}
+
+#[test]
+fn overdue_easing_has_no_jump_at_the_target() {
+    // The overdue term is continuous: the block after the target eases by
+    // about twice the per-block amount of the block before it, not by a
+    // step. Whoever ends the round sees the same live threshold.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    let eased = |elapsed: u32| difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+    let before = eased(100) - eased(99);
+    let after = eased(101) - eased(100);
+    assert!(
+        before > 0,
+        "baseline decay must move the threshold per block"
+    );
+    assert!(
+        after > before && after <= 2 * before + 2,
+        "per-block easing must double past target, not jump: before {before}, after {after}"
+    );
 }
 
 #[test]
@@ -1773,7 +1707,7 @@ fn apply_decay_only_mutates_max_energy() {
         max_energy_milli: -2_500,
         min_diversity_milli: 400,
     };
-    let after = difficulty::apply_decay(before, 3, curve);
+    let after = difficulty::apply_decay(before, 30, 10, curve);
     assert_eq!(after.min_solutions, before.min_solutions);
     assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
     assert!(
@@ -1783,31 +1717,632 @@ fn apply_decay_only_mutates_max_energy() {
 }
 
 #[test]
-fn decay_moves_less_than_hardening_per_step() {
-    // Start from the curve midpoint so the distance to each cap is equal: that
-    // isolates the rate difference (fast harden ≥ 5% of the remaining gap vs
-    // decay's fixed 2.5%) from the geometric room asymmetry. On the tiny
-    // test_curve every step floors to a bound, so use the production-scale
-    // curve where the geometric rates are visible.
+fn apply_decay_eases_within_the_first_epoch() {
     let curve = walkup_curve();
-    let midpoint = (curve.min_milli + curve.max_milli) / 2;
     let start = DifficultyConfig {
         min_solutions: 1,
-        max_energy_milli: midpoint,
+        max_energy_milli: (curve.min_milli + curve.max_milli) / 2,
         min_diversity_milli: 0,
     };
-    let after_decay = difficulty::apply_decay(start, 5, curve);
-    let after_harden = (0..5).fold(start, |d, _| {
-        // mining_time = 30 blocks → fast/hardening branch.
-        difficulty::adjust_on_proof(d, 30, curve, b"seed")
-    });
-    let decay_move = after_decay.max_energy_milli - start.max_energy_milli;
-    let harden_move = start.max_energy_milli - after_harden.max_energy_milli;
+    let half = difficulty::apply_decay(start, 50, 100, curve).max_energy_milli;
+    let full = difficulty::apply_decay(start, 100, 100, curve).max_energy_milli;
     assert!(
-        harden_move > decay_move,
-        "hardening must move energy farther than decay at equal step count \
-         (harden={harden_move}, decay={decay_move})",
+        start.max_energy_milli < half && half < full,
+        "half an epoch must ease strictly between zero and one epoch \
+         (start={}, half={half}, full={full})",
+        start.max_energy_milli
     );
+}
+
+#[test]
+fn apply_decay_is_monotone_in_elapsed_blocks() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli,
+        min_diversity_milli: 0,
+    };
+    let mut previous = start.max_energy_milli;
+    for elapsed in 1..=300_u32 {
+        let now = difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+        assert!(now >= previous, "decay went backwards at elapsed={elapsed}");
+        previous = now;
+    }
+}
+
+#[test]
+fn apply_decay_over_one_epoch_equals_the_legacy_epoch_step() {
+    // Pins the average rate: one epoch of continuous decay is exactly the
+    // retired single 2.5% step, so `DECAY_RATE_MILLI` keeps its meaning.
+    let curve = walkup_curve();
+    for start_milli in [curve.min_milli, curve.knee_milli, curve.max_milli - 50_000] {
+        let start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start_milli,
+            min_diversity_milli: 0,
+        };
+        let eased = difficulty::apply_decay(start, 100, 100, curve).max_energy_milli;
+        let legacy_step = crate::difficulty::adjust_energy_along_curve(
+            start_milli,
+            /* DECAY_RATE_MILLI */ 25,
+            crate::difficulty::Direction::Easier,
+            curve,
+            /* MIN_ENERGY_DELTA_MILLI */ 1000,
+        );
+        assert_eq!(eased, legacy_step, "start={start_milli}");
+    }
+}
+
+#[test]
+fn apply_decay_matches_the_stepwise_reference_at_every_epoch() {
+    // The retired rule stepped once per epoch by `max(round(room * rate),
+    // 1_000)`, clamped to the room: geometric while the step beat the floor,
+    // linear at the floor after. Inside the target the rate is the baseline;
+    // past it, the combined baseline-plus-overdue rate. The closed form must
+    // land within one milli per epoch of that loop at every epoch boundary,
+    // through the floor crossover and on to the easy cap.
+    let curve = walkup_curve();
+    let epoch = 100_u32;
+    let target_epochs = (crate::difficulty::TARGET_PROOF_BLOCKS as u32 / epoch) as usize;
+    let reference = |start: i64, epochs: usize| -> i64 {
+        let mut value = start;
+        for k in 0..epochs {
+            let rate = if k < target_epochs {
+                0.025
+            } else {
+                1.0 - 0.975 * 0.975
+            };
+            let room = curve.max_milli - value;
+            if room <= 0 {
+                break;
+            }
+            let step = ((room as f64 * rate).round() as i64).max(1_000).min(room);
+            value += step;
+        }
+        value
+    };
+    for start in [
+        curve.min_milli,
+        curve.knee_milli,
+        curve.max_milli - 161_000,
+        curve.max_milli - 45_000,
+        curve.max_milli - 3_500,
+    ] {
+        let base = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start,
+            min_diversity_milli: 0,
+        };
+        for epochs in 1_usize..=200 {
+            let closed =
+                difficulty::apply_decay(base, epochs as u32 * epoch, epoch, curve).max_energy_milli;
+            let stepped = reference(start, epochs);
+            assert!(
+                (closed - stepped).abs() <= epochs as i64,
+                "start {start}, epochs {epochs}: closed {closed}, stepped {stepped}"
+            );
+        }
+    }
+}
+
+/// Grid the golden table sweeps: start offsets above `min_milli`, elapsed
+/// blocks, and a fast-win seed. Shared by the printer and the check.
+fn golden_grid() -> Vec<(i64, u32)> {
+    let mut grid = Vec::new();
+    for offset in [
+        0_i64, 1_000, 20_000, 80_000, 400_000, 1_000_000, 1_960_000, 1_999_000,
+    ] {
+        for elapsed in [
+            1_u32, 7, 30, 59, 60, 99, 100, 101, 150, 200, 500, 1_000, 10_000,
+        ] {
+            grid.push((offset, elapsed));
+        }
+    }
+    grid
+}
+
+#[test]
+#[ignore = "prints the rows for apply_decay_and_adjust_on_proof_golden_table; run with --ignored --nocapture"]
+fn print_golden_table() {
+    let curve = walkup_curve();
+    for (offset, elapsed) in golden_grid() {
+        let start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.min_milli + offset,
+            min_diversity_milli: 0,
+        };
+        let eased = difficulty::apply_decay(start, elapsed, 100, curve);
+        let won =
+            difficulty::adjust_on_proof(start, eased, u64::from(elapsed), 100, curve, b"golden");
+        println!(
+            "    ({offset}, {elapsed}, {}, {}),",
+            eased.max_energy_milli, won.max_energy_milli
+        );
+    }
+}
+
+#[test]
+fn apply_decay_and_adjust_on_proof_golden_table() {
+    // Pinned outputs of the float path that gates proof admission. libm is
+    // pure Rust and pinned exactly, so native and wasm agree bit for bit;
+    // this table turns red if either the closed form or the rounding moves.
+    // Regenerate with `cargo test -p pallet-quantum-pow print_golden_table
+    // -- --ignored --nocapture` and paste the rows.
+    const GOLDEN: &[(i64, u32, i64, i64)] = &[
+        (0, 1, -15999494, -16001000),
+        (0, 7, -15996459, -16001000),
+        (0, 30, -15984867, -16001000),
+        (0, 59, -15970347, -16001000),
+        (0, 60, -15969848, -16001000),
+        (0, 99, -15950494, -16001000),
+        (0, 100, -15950000, -16001000),
+        (0, 101, -15949013, -16000013),
+        (0, 150, -15901250, -15952250),
+        (0, 200, -15853719, -15904719),
+        (0, 500, -15592471, -15643471),
+        (0, 1000, -15236282, -15287282),
+        (0, 10000, -14011452, -14062452),
+        (1000, 1, -15998494, -16000000),
+        (1000, 7, -15995460, -16000000),
+        (1000, 30, -15983874, -16000000),
+        (1000, 59, -15969362, -16000000),
+        (1000, 60, -15968863, -16000000),
+        (1000, 99, -15949519, -16000000),
+        (1000, 100, -15949025, -16000000),
+        (1000, 101, -15948038, -15999013),
+        (1000, 150, -15900299, -15951274),
+        (1000, 200, -15852792, -15903767),
+        (1000, 500, -15591675, -15642650),
+        (1000, 1000, -15235664, -15286639),
+        (1000, 10000, -14011442, -14062417),
+        (20000, 1, -15979499, -15983743),
+        (20000, 7, -15976494, -15986743),
+        (20000, 30, -15965018, -15983419),
+        (20000, 59, -15950644, -15981000),
+        (20000, 60, -15950150, -15981000),
+        (20000, 99, -15930989, -15981000),
+        (20000, 100, -15930500, -15981000),
+        (20000, 101, -15929523, -15980023),
+        (20000, 150, -15882237, -15932737),
+        (20000, 200, -15835182, -15885682),
+        (20000, 500, -15576546, -15627046),
+        (20000, 1000, -15223920, -15274420),
+        (20000, 10000, -14011254, -14061754),
+        (80000, 1, -15919514, -15936175),
+        (80000, 7, -15916600, -15952962),
+        (80000, 30, -15905472, -15955194),
+        (80000, 59, -15891533, -15921000),
+        (80000, 60, -15891054, -15921000),
+        (80000, 99, -15872474, -15921000),
+        (80000, 100, -15872000, -15921000),
+        (80000, 101, -15871052, -15920052),
+        (80000, 150, -15825200, -15874200),
+        (80000, 200, -15779570, -15828570),
+        (80000, 500, -15528772, -15577772),
+        (80000, 1000, -15186831, -15236831),
+        (80000, 10000, -14010646, -14060646),
+        (400000, 1, -15599595, -15649595),
+        (400000, 7, -15597167, -15647167),
+        (400000, 30, -15587893, -15637893),
+        (400000, 59, -15576278, -15626278),
+        (400000, 60, -15575879, -15613202),
+        (400000, 99, -15560395, -15601000),
+        (400000, 100, -15560000, -15601000),
+        (400000, 101, -15559210, -15600210),
+        (400000, 150, -15521000, -15562000),
+        (400000, 200, -15482975, -15523975),
+        (400000, 500, -15273977, -15314977),
+        (400000, 1000, -14989026, -15039026),
+        (400000, 10000, -14007045, -14057045),
+        (1000000, 1, -14999747, -15049747),
+        (1000000, 7, -14998229, -15048229),
+        (1000000, 30, -14992433, -15042433),
+        (1000000, 59, -14985174, -15035174),
+        (1000000, 60, -14984924, -15034924),
+        (1000000, 99, -14975247, -15025247),
+        (1000000, 100, -14975000, -15025000),
+        (1000000, 101, -14974506, -15007322),
+        (1000000, 150, -14950625, -14999946),
+        (1000000, 200, -14926859, -14954761),
+        (1000000, 500, -14796236, -14822236),
+        (1000000, 1000, -14618141, -14668141),
+        (1000000, 10000, -14000000, -14050000),
+        (1960000, 1, -14039990, -14089990),
+        (1960000, 7, -14039930, -14089930),
+        (1960000, 30, -14039700, -14089700),
+        (1960000, 59, -14039410, -14089410),
+        (1960000, 60, -14039400, -14089400),
+        (1960000, 99, -14039010, -14089010),
+        (1960000, 100, -14039000, -14089000),
+        (1960000, 101, -14038980, -14088980),
+        (1960000, 150, -14038025, -14088025),
+        (1960000, 200, -14037074, -14087074),
+        (1960000, 500, -14031849, -14063339),
+        (1960000, 1000, -14024726, -14074726),
+        (1960000, 10000, -14000000, -14050000),
+        (1999000, 1, -14000990, -14050990),
+        (1999000, 7, -14000930, -14050930),
+        (1999000, 30, -14000700, -14050700),
+        (1999000, 59, -14000410, -14050410),
+        (1999000, 60, -14000400, -14050400),
+        (1999000, 99, -14000010, -14050010),
+        (1999000, 100, -14000000, -14050000),
+        (1999000, 101, -14000000, -14050000),
+        (1999000, 150, -14000000, -14050000),
+        (1999000, 200, -14000000, -14050000),
+        (1999000, 500, -14000000, -14032000),
+        (1999000, 1000, -14000000, -14050000),
+        (1999000, 10000, -14000000, -14050000),
+    ];
+    let curve = walkup_curve();
+    assert_eq!(
+        GOLDEN.len(),
+        golden_grid().len(),
+        "table covers the whole grid"
+    );
+    for &(offset, elapsed, expect_eased, expect_won) in GOLDEN {
+        let start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.min_milli + offset,
+            min_diversity_milli: 0,
+        };
+        let eased = difficulty::apply_decay(start, elapsed, 100, curve);
+        let won =
+            difficulty::adjust_on_proof(start, eased, u64::from(elapsed), 100, curve, b"golden");
+        assert_eq!(
+            eased.max_energy_milli, expect_eased,
+            "decay at offset {offset}, elapsed {elapsed}"
+        );
+        assert_eq!(
+            won.max_energy_milli, expect_won,
+            "win at offset {offset}, elapsed {elapsed}"
+        );
+    }
+}
+
+#[test]
+fn apply_decay_composes_inside_the_target() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli,
+        min_diversity_milli: 0,
+    };
+    // Inside the target only the baseline term runs, and it is memoryless:
+    // one 100-block stretch equals two 50-block stretches.
+    let one_at_once = difficulty::apply_decay(start, 100, 100, curve).max_energy_milli;
+    let half_then_half = difficulty::apply_decay(
+        difficulty::apply_decay(start, 50, 100, curve),
+        50,
+        100,
+        curve,
+    )
+    .max_energy_milli;
+    // Closed form versus two roundings: at most 2 milli apart.
+    assert!(
+        (one_at_once - half_then_half).abs() <= 2,
+        "{one_at_once} vs {half_then_half}"
+    );
+    // Past the target the overdue term depends on the length of the one
+    // round, so a single 200-block round eases more than two 100-block
+    // rounds back to back.
+    let two_at_once = difficulty::apply_decay(start, 200, 100, curve).max_energy_milli;
+    let one_then_one = difficulty::apply_decay(
+        difficulty::apply_decay(start, 100, 100, curve),
+        100,
+        100,
+        curve,
+    )
+    .max_energy_milli;
+    assert!(
+        two_at_once > one_then_one,
+        "{two_at_once} vs {one_then_one}"
+    );
+}
+
+#[test]
+fn apply_decay_never_eases_past_the_easy_cap() {
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli,
+        min_diversity_milli: 0,
+    };
+    let eased = difficulty::apply_decay(start, 100_000, 100, curve).max_energy_milli;
+    assert_eq!(eased, curve.max_milli);
+    let at_cap = DifficultyConfig {
+        max_energy_milli: curve.max_milli,
+        ..start
+    };
+    assert_eq!(difficulty::apply_decay(at_cap, 100, 100, curve), at_cap);
+}
+
+#[test]
+fn fast_round_hardening_is_capped_at_the_largest_decay_step() {
+    // At the curve midpoint the room to the hard estimate is half the span,
+    // so an uncapped fast round (35% ± 30% of that room, at least 50,000
+    // milli here) always exceeds the cap (2.5% of the full span = 50,000).
+    // The cap must bind for every sampled rate.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: (curve.min_milli + curve.max_milli) / 2,
+        min_diversity_milli: 0,
+    };
+    let cap = crate::difficulty::max_hardening_delta(curve);
+    assert_eq!(cap, 50_000);
+    for seed in [b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9"] {
+        let after = difficulty::adjust_on_proof(start, start, 30, 100, curve, seed);
+        assert_eq!(
+            start.max_energy_milli - after.max_energy_milli,
+            cap,
+            "seed {:?}: a fast round may harden by at most the cap",
+            seed
+        );
+    }
+}
+
+#[test]
+fn slow_round_hardening_stays_below_the_cap_near_the_hard_end() {
+    // Production-like operating point: 80,000 milli above the hard estimate,
+    // where a slow round's 5% ± 4% of that room (at most 7,200 milli) is far
+    // under the 50,000 milli cap. The cap must not touch it.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.min_milli + 80_000,
+        min_diversity_milli: 0,
+    };
+    let cap = crate::difficulty::max_hardening_delta(curve);
+    for seed in [b"0", b"1", b"2", b"3", b"4"] {
+        let after = difficulty::adjust_on_proof(start, start, 150, 100, curve, seed);
+        let hardened = start.max_energy_milli - after.max_energy_milli;
+        assert!(
+            (1_000..=7_200).contains(&hardened) && hardened < cap,
+            "seed {:?}: hardened {hardened}, cap {cap}",
+            seed
+        );
+    }
+}
+
+#[test]
+fn fast_round_at_the_easy_cap_hardens_by_the_cap() {
+    // From max_milli the room to the hard estimate is the whole span, so an
+    // uncapped fast round would take at least 5% of it (100,000 milli). The
+    // cap holds it to one decay step measured at the hard end. Decay from
+    // max_milli is zero, which is why the cap is not defined from the current
+    // threshold: that would collapse it to the floor here.
+    let curve = walkup_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.max_milli,
+        min_diversity_milli: 0,
+    };
+    let after = difficulty::adjust_on_proof(start, start, 30, 100, curve, b"seed");
+    assert_eq!(
+        start.max_energy_milli - after.max_energy_milli,
+        crate::difficulty::max_hardening_delta(curve)
+    );
+}
+
+#[test]
+fn win_at_or_under_target_nets_harder_than_round_start() {
+    // Decay runs during the round, before the win adjusts. Near the hard
+    // estimate a 30-block round on aglais eases about 7,000 milli while the
+    // hardening band measured from the decayed room yields under 5,000, so
+    // without a net floor the fast winner's next round would be easier
+    // than the one it just won. Any win at or under target must leave the
+    // stored bar at least one energy unit harder than the round started.
+    let curve = walkup_curve();
+    for start in [
+        curve.min_milli,
+        curve.min_milli + 20_000,
+        curve.min_milli + 80_000,
+        curve.knee_milli,
+    ] {
+        let round_start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start,
+            min_diversity_milli: 0,
+        };
+        for gap in [1_u64, 30, 59, 60, 99, 100] {
+            let active = difficulty::apply_decay(round_start, gap as u32, 100, curve);
+            for seed in 0_u8..32 {
+                let next =
+                    difficulty::adjust_on_proof(round_start, active, gap, 100, curve, &[seed]);
+                assert!(
+                    next.max_energy_milli <= start - 1_000,
+                    "start {start}, gap {gap}, seed {seed}: next {} is not harder than round start",
+                    next.max_energy_milli
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn win_past_target_hardens_from_the_decayed_bar_and_may_net_ease() {
+    // Past target the round waited too long: decay plus the overdue term
+    // outweigh the gentle 5% +- 4% hardening, so the stored bar ends easier
+    // than the round started even though the win itself still hardens.
+    let curve = walkup_curve();
+    let round_start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    let active = difficulty::apply_decay(round_start, 300, 100, curve);
+    let next = difficulty::adjust_on_proof(round_start, active, 300, 100, curve, b"seed");
+    assert!(
+        next.max_energy_milli < active.max_energy_milli,
+        "the win hardens from the live bar"
+    );
+    assert!(
+        next.max_energy_milli > round_start.max_energy_milli,
+        "a 300-block round nets easier: {} vs {}",
+        next.max_energy_milli,
+        round_start.max_energy_milli
+    );
+}
+
+#[test]
+fn stored_bar_is_continuous_across_the_target_seam() {
+    // The composed path, decay then win, must not jump at the target length.
+    // Inside the target the floor holds the stored bar one energy unit under
+    // the round start. Past it the floor releases by the overdue term, so a
+    // win one block later can differ by at most one block of overdue easing
+    // plus the spread of the sampled hardening band. With a hard cutoff at
+    // the target the jump from 100 to 101 blocks was one full cap at the
+    // hard end. The same sweep asserts the documented cap overshoot.
+    let curve = walkup_curve();
+    let target = crate::difficulty::TARGET_PROOF_BLOCKS as u32;
+    // The production epoch length equals the target; the two constants are
+    // tuned together (see the doc on `TARGET_PROOF_BLOCKS`).
+    let epoch = target;
+    let cap = difficulty::max_hardening_delta(curve);
+    for offset in [0_i64, 1_000, 20_000, 80_000, 400_000, 1_000_000, 1_960_000] {
+        let round_start = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.min_milli + offset,
+            min_diversity_milli: 0,
+        };
+        let stored = |elapsed: u32, seed: u8| {
+            let active = difficulty::apply_decay(round_start, elapsed, epoch, curve);
+            let next = difficulty::adjust_on_proof(
+                round_start,
+                active,
+                u64::from(elapsed),
+                epoch,
+                curve,
+                &[seed],
+            );
+            (active.max_energy_milli, next.max_energy_milli)
+        };
+        // One block of easing at the combined rate, or at the linear floor.
+        let room_to_max = curve.max_milli - round_start.max_energy_milli;
+        let ease_per_block =
+            ((room_to_max as f64 * 0.049375 / f64::from(epoch)).ceil() as i64).max(10) + 1;
+        for elapsed in target - 5..=target + 10 {
+            for seed in 0_u8..8 {
+                let (active, before) = stored(elapsed, seed);
+                let (active_next, after) = stored(elapsed + 1, seed);
+                // Two samples from the band differ by at most a quarter of
+                // the room in this range of round lengths, and each step is
+                // capped, so the spread is at most the cap.
+                let jitter = ((active_next - curve.min_milli) / 4).clamp(1_000, cap);
+                assert!(
+                    after - before <= ease_per_block + jitter,
+                    "offset {offset}, {elapsed} to {} blocks, seed {seed}: \
+                     waiting one block eased the stored bar by {} (limit {})",
+                    elapsed + 1,
+                    after - before,
+                    ease_per_block + jitter
+                );
+                assert!(
+                    active - before <= cap + 1_000,
+                    "offset {offset}, {elapsed} blocks, seed {seed}: hardened {} from the live \
+                     bar, over the cap {cap} plus the floor",
+                    active - before
+                );
+                if offset <= 80_000 && elapsed == target {
+                    // Near the hard estimate the floor binds whatever the
+                    // seed, so the seam is exactly one block of overdue
+                    // easing.
+                    assert!(
+                        after - before <= ease_per_block,
+                        "offset {offset}, seed {seed}: the seam at the target is {} (limit {ease_per_block})",
+                        after - before
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_fast_wins_ratchet_difficulty_down_against_decay() {
+    // The ratchet that tracks a strengthening field: fast wins with decay
+    // interleaved must still climb the difficulty round after round.
+    let curve = walkup_curve();
+    let mut stored = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli,
+        min_diversity_milli: 0,
+    };
+    for round in 0_u8..10 {
+        let active = difficulty::apply_decay(stored, 30, 100, curve);
+        let next = difficulty::adjust_on_proof(stored, active, 30, 100, curve, &[round]);
+        assert!(
+            next.max_energy_milli < stored.max_energy_milli,
+            "round {round}: {} did not harden past {}",
+            next.max_energy_milli,
+            stored.max_energy_milli
+        );
+        stored = next;
+    }
+    assert!(stored.max_energy_milli <= curve.knee_milli - 10 * 1_000);
+}
+
+#[test]
+fn max_hardening_delta_never_drops_below_the_floor() {
+    // A degenerate or tiny curve still lets a fast win harden by the floor.
+    let curve = crate::difficulty::EnergyCurve {
+        min_milli: -3_000,
+        knee_milli: -2_000,
+        max_milli: -1_000,
+    };
+    assert_eq!(crate::difficulty::max_hardening_delta(curve), 1_000);
+}
+
+#[test]
+fn recovery_from_a_capped_fast_win_at_the_easy_cap_is_floor_bound() {
+    // "About one epoch out of reach" holds at the hard end, where the cap
+    // equals one decay step. At the easy cap the room a capped win leaves
+    // is the cap itself, and decay there runs into the 1,000 milli floor
+    // once the room is under floor / rate. Recovery takes tens of epochs:
+    // one baseline epoch, then the combined-rate phase down to its 20,253
+    // crossover, then 1,000 per epoch.
+    let curve = walkup_curve();
+    let at_cap = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.max_milli,
+        min_diversity_milli: 0,
+    };
+    let hardened = difficulty::adjust_on_proof(at_cap, at_cap, 30, 100, curve, b"seed");
+    assert_eq!(curve.max_milli - hardened.max_energy_milli, 50_000);
+    let epochs_to_recover = (1..=100_u32)
+        .find(|&epochs| {
+            difficulty::apply_decay(hardened, epochs * 100, 100, curve).max_energy_milli
+                == curve.max_milli
+        })
+        .expect("recovers within 100 epochs");
+    assert!(
+        (35..=45).contains(&epochs_to_recover),
+        "epochs to recover: {epochs_to_recover}"
+    );
+}
+
+#[test]
+fn consecutive_fast_wins_from_the_easy_cap_reach_the_knee() {
+    // Far from the hard end the cap is below the retired geometric step, so
+    // a burst of fast wins climbs at most the cap per round, less the decay
+    // of each 59-block round. From the easy cap the knee is 1,600,000 milli
+    // away and the cap is 50,000 less the decay on the growing room, so
+    // about 44 rounds.
+    let curve = walkup_curve();
+    let mut stored = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.max_milli,
+        min_diversity_milli: 0,
+    };
+    let mut rounds = 0_u8;
+    while stored.max_energy_milli > curve.knee_milli {
+        let active = difficulty::apply_decay(stored, 59, 100, curve);
+        stored = difficulty::adjust_on_proof(stored, active, 59, 100, curve, &[rounds]);
+        rounds += 1;
+        assert!(rounds < 60, "did not reach the knee in 60 rounds");
+    }
+    assert!((40..=48).contains(&rounds), "rounds to the knee: {rounds}");
 }
 
 #[test]
@@ -1822,18 +2357,13 @@ fn harden_motion_grows_with_distance_from_hard_cap() {
     let near_cap = curve.min_milli + 50_000; // little room to the hard cap
     let far_from_cap = curve.max_milli; // maximum room to the hard cap
     let harden = |start: i64| {
+        let config = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: start,
+            min_diversity_milli: 0,
+        };
         start
-            - difficulty::adjust_on_proof(
-                DifficultyConfig {
-                    min_solutions: 1,
-                    max_energy_milli: start,
-                    min_diversity_milli: 0,
-                },
-                30,
-                curve,
-                b"seed",
-            )
-            .max_energy_milli
+            - difficulty::adjust_on_proof(config, config, 30, 100, curve, b"seed").max_energy_milli
     };
     let near_move = harden(near_cap);
     let far_move = harden(far_from_cap);
@@ -1887,7 +2417,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
         };
         set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
-        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+        System::set_block_number(101); // 100 blocks elapsed, epoch_length = 20
 
         // `mining_snapshot` populates `difficulty` via current_difficulty,
         // which builds its curve from DefaultTopology.
@@ -1895,12 +2425,13 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
 
         // Expected decay using A's curve (the default).
-        let expected_default = difficulty::apply_decay(initial, 5, test_curve());
+        let expected_default = difficulty::apply_decay(initial, 100, 20, test_curve());
         // Decay using B's curve (the *non-default* topology — this is what
         // a miner-controlled curve would produce if the invariant were broken).
         let expected_other = difficulty::apply_decay(
             initial,
-            5,
+            100,
+            20,
             crate::difficulty::EnergyCurve::new(
                 4,
                 4,
@@ -2189,13 +2720,12 @@ fn observed_win_series_never_pins_the_hard_cap() {
         .into_iter()
         .enumerate()
     {
-        // Decay eases the live threshold by one step per elapsed epoch …
-        let steps = (gap / epoch_len) as u32;
-        let active = difficulty::apply_decay(base, steps, curve);
+        // Decay eases the live threshold continuously over the elapsed gap …
+        let active = difficulty::apply_decay(base, gap as u32, epoch_len as u32, curve);
         // … then the winning proof adjusts from that decayed base. Use a
         // distinct seed per round so the sampled rate varies like real wins.
         let seed = [i as u8];
-        base = difficulty::adjust_on_proof(active, gap, curve, &seed);
+        base = difficulty::adjust_on_proof(base, active, gap, 100, curve, &seed);
         assert!(
             base.max_energy_milli > curve.min_milli && base.max_energy_milli < curve.max_milli,
             "round {i} (gap {gap}) left the curve interior: {} not in ({}, {})",

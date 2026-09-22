@@ -33,7 +33,10 @@ pub trait WeightInfo {
 // coefficients retain at least a 15% envelope over every recorded maximum,
 // and at most 1.5x at the coefficient-dominated points;
 // fresh node02 sweeps enforce a separate 10% operational floor so normal host
-// variation does not consume the entire calibration margin.
+// variation does not consume the entire calibration margin. The base
+// regenerated on 2026-09-22 measured about 3% lower than the 2026-08-04 run,
+// which took the solution_edges point under 20%; k4 moved from 18,500 to
+// 18,800 to restore the envelope (about 21% there, 20.7% at worst_case).
 //
 // W(n,e,s) = measured_base
 //          + k1*n + k2*e + k3*s*n + k4*s*e + k5*s²*n + k6*n*e

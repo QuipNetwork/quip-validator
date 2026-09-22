@@ -590,7 +590,6 @@ parameter_types! {
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
     pub const QuantumPowCurveCKneeMilli: u32 = 725;
     pub const QuantumPowCurveCHardMilli: u32 = 750;
-    pub const QuantumPowConsecutiveWinnerEasingThreshold: u32 = 3;
 
     pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
     pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
@@ -667,7 +666,6 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
-    type ConsecutiveWinnerEasingThreshold = QuantumPowConsecutiveWinnerEasingThreshold;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

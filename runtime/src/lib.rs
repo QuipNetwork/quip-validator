@@ -228,10 +228,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 117 to hard-invalidate 116 nodes: the crates.io pqhybridsign
     // rc5 switch and repins carry no interface change, but a spec bump makes
     // any node still on 116 refuse the new runtime outright.
-    // Extended 117 with custody pallets starting at index 16. This unreleased
-    // runtime keeps the existing extrinsic format, so transaction version 7
-    // remains unchanged.
-    spec_version: 117,
+    // Extended 117 with custody pallets starting at index 16, keeping the
+    // existing extrinsic format, so transaction version 7 stayed. 117 shipped
+    // on aglais in the v0.3.x tags; every consensus change after it bumps
+    // (see docs/quantum-pow-difficulty-controller-decisions.md).
+    // Bumped to 118: quantum-pow difficulty decay is continuous per block
+    // instead of stepped per 100-block epoch and eases faster past the
+    // target round length, per-win hardening is capped at one epoch of decay
+    // and always nets harder at or under target, and the dominant-winner
+    // easing rule is gone with its WinnerStreak storage (pallet storage v6).
+    // Same calls; a 117 node computes a different threshold from identical
+    // state, so the version must move. `transaction_version` stays at 7.
+    spec_version: 118,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,
