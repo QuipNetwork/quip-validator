@@ -32,7 +32,10 @@ pub trait WeightInfo {
 // and 15638128172 are independent holdouts used to size the safety buffer. The
 // coefficients retain at least a 20% envelope over every recorded maximum;
 // fresh node02 sweeps enforce a separate 10% operational floor so normal host
-// variation does not consume the entire calibration margin.
+// variation does not consume the entire calibration margin. The base
+// regenerated on 2026-09-22 measured about 3% lower than the 2026-08-04 run,
+// which took the solution_edges point under 20%; k4 moved from 18,500 to
+// 18,800 to restore the envelope (about 21% there, 20.7% at worst_case).
 //
 // W(n,e,s) = measured_base
 //          + k1*n + k2*e + k3*s*n + k4*s*e + k5*s²*n + k6*n*e
@@ -44,7 +47,7 @@ pub trait WeightInfo {
 const SUBMIT_PROOF_K1_NODE: u64 = 1_200;
 const SUBMIT_PROOF_K2_EDGE: u64 = 2_400;
 const SUBMIT_PROOF_K3_SOLUTION_NODE: u64 = 6_000;
-const SUBMIT_PROOF_K4_SOLUTION_EDGE: u64 = 18_500;
+const SUBMIT_PROOF_K4_SOLUTION_EDGE: u64 = 18_800;
 const SUBMIT_PROOF_K5_SOLUTION_SQ_NODE: u64 = 1_200;
 const SUBMIT_PROOF_K6_NODE_EDGE: u64 = 535;
 const REGISTER_TOPOLOGY_ALLOWED_VALUE: u64 = 1_000_000;
