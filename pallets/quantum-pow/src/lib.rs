@@ -137,7 +137,7 @@ pub mod pallet {
     use quantum_validation::{
         calculate_diversity, derive_nonce, energy_of_solution_indexed,
         generate_ising_model_indexed,
-        packed::{packed_solution_byte_len, unpack_solution},
+        packed::{packed_solution_byte_len, spin_signs, unpack_solution},
         select_diverse, validate_topology_consistency, AllowedValueSpec, MilliValue, TopologyIndex,
     };
     use sp_core::H256;
@@ -1337,13 +1337,7 @@ pub mod pallet {
                             _ => DispatchError::from(Error::<T>::InvalidTopology),
                         }
                     })?;
-                let mut spins = Vec::with_capacity(milli.len());
-                for value in milli {
-                    let sign = value.signum();
-                    ensure!(sign == -1 || sign == 1, Error::<T>::InvalidSpinValues);
-                    spins.push(sign as i8);
-                }
-                decoded.push(spins);
+                decoded.push(spin_signs(&milli).map_err(|_| Error::<T>::InvalidSpinValues)?);
             }
 
             let mut energies = Vec::with_capacity(decoded.len());

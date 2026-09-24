@@ -7,10 +7,10 @@
 //! carry magnitudes.
 //!
 //! Note: the v0.2 `pallet-quantum-pow::validate_proof` pipeline currently
-//! collapses every decoded spin to its signum (±1) before evaluating
-//! `energy_of_solution`. That's a v0.2 pallet-level limitation, not a
-//! property of this packing format — when higher-resolution spin magnitudes
-//! are wired into the energy calculation, no change is needed here.
+//! collapses every decoded spin to its signum (±1) with [`spin_signs`] before
+//! evaluating `energy_of_solution`. That's a v0.2 limitation, not a property
+//! of this packing format — when higher-resolution spin magnitudes are wired
+//! into the energy calculation, `spin_signs` drops out and the format stays.
 
 use alloc::vec::Vec;
 
@@ -174,6 +174,23 @@ fn encode_value(
     }
 }
 
+/// Collapse decoded `MilliValue` spins to their signs for energy scoring.
+///
+/// This is the v0.2 limitation noted in the module docs: only the sign of a
+/// decoded spin reaches `energy_of_solution`. A zero has no sign and is
+/// rejected.
+pub fn spin_signs(milli: &[MilliValue]) -> Result<Vec<i8>, ValidationError> {
+    let mut spins = Vec::with_capacity(milli.len());
+    for (index, value) in milli.iter().enumerate() {
+        let sign = value.signum();
+        if sign == 0 {
+            return Err(ValidationError::InvalidSpinValue { index, value: 0 });
+        }
+        spins.push(sign as i8);
+    }
+    Ok(spins)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +202,15 @@ mod tests {
 
     fn ternary_h_spec() -> AllowedValueSpec<&'static [MilliValue]> {
         AllowedValueSpec::Set(&[-6000, 0, 6000])
+    }
+
+    #[test]
+    fn spin_signs_collapses_magnitudes_and_rejects_zero() {
+        assert_eq!(spin_signs(&[3000, -1000, 1, -2]).unwrap(), [1, -1, 1, -1]);
+        assert_eq!(
+            spin_signs(&[1000, 0]),
+            Err(ValidationError::InvalidSpinValue { index: 1, value: 0 })
+        );
     }
 
     #[test]
