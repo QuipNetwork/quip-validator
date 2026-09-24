@@ -239,6 +239,21 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // easing rule is gone with its WinnerStreak storage (pallet storage v6).
     // Same calls; a 117 node computes a different threshold from identical
     // state, so the version must move. `transaction_version` stays at 7.
+    // 118 also moves pallet-xqvm from the aglais git pin (xquad `3cf0b07`),
+    // which 117 shipped, to crates.io xqvm 0.4.0. Stored programs use the
+    // XQBC format, and execution results change: checked arithmetic, a VM
+    // memory budget, per-step charges for the O(model) opcodes, XQMX/XSMX
+    // rejecting k < 2 (the domain stays {0, ..., k-1}), sample-domain checks
+    // on SETLINE/ADDLINE, model registers required by the quadratic opcodes
+    // and joins, and allocations capped at u32::MAX. `store_program` now
+    // verifies bytecode, bounds the CFG and takes a deposit; `execute` is
+    // priced by program size and steps and rejects a zero step limit;
+    // `Error<T>` has a variant per VM fault; `remove_program`/`evict_program`
+    // are new calls. pallet-xqvm declares storage version 1 with no migration,
+    // since no programs were stored before the wipe. Its weights were
+    // regenerated on the reference machine for 0.4.0.
+    // `store_program` and `execute` keep their call indices and arguments, so
+    // `transaction_version` stays at 7.
     spec_version: 118,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
