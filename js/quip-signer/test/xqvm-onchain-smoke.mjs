@@ -1,5 +1,5 @@
 // @ts-nocheck
-// On-chain smoke test for the pallet-xqvm / XQuad 0.4.0-rc1 integration.
+// On-chain smoke test for the pallet-xqvm / XQuad 0.4.0 integration.
 //
 // Replays XQuad conformance vectors through the running node and asserts the
 // chain reproduces the toolchain's normative expectations exactly: the same

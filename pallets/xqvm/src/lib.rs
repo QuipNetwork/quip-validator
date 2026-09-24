@@ -311,8 +311,9 @@ pub mod pallet {
         /// XQVM: grid dimensions were zero or negative, or described more
         /// cells than the register declares.
         VmInvalidGridDimensions,
-        /// XQVM: a discrete sample was allocated with `k < 2`.
-        VmInvalidDiscreteK,
+        /// XQVM: an integer-domain model or sample was allocated with
+        /// `k < 2`.
+        VmInvalidIntegerK,
         /// XQVM: an allocation size was negative or otherwise not an
         /// allocation.
         VmInvalidAllocation,
@@ -322,6 +323,12 @@ pub mod pallet {
         /// `Vm::run_trace`, and `execute` calls `Vm::run`. Mapped explicitly
         /// rather than absorbed, so that the match below stays exhaustive.
         VmTraceFailed,
+        /// XQVM: `SETLINE` or `ADDLINE` wrote a value outside the domain
+        /// the sample was allocated with.
+        ///
+        /// Appended rather than placed beside the other sample faults so
+        /// that the indices of the existing variants do not move.
+        VmSampleOutOfDomain,
     }
 
     /// Map a static-verification failure onto a dispatch error.
@@ -383,7 +390,8 @@ pub mod pallet {
             E::SizeMismatch { .. } | E::VecLengthMismatch { .. } => Error::<T>::VmSizeMismatch,
             E::InvalidShift { .. } => Error::<T>::VmInvalidShift,
             E::InvalidGridDimensions { .. } => Error::<T>::VmInvalidGridDimensions,
-            E::InvalidDiscreteK { .. } => Error::<T>::VmInvalidDiscreteK,
+            E::InvalidIntegerK { .. } => Error::<T>::VmInvalidIntegerK,
+            E::SampleOutOfDomain { .. } => Error::<T>::VmSampleOutOfDomain,
             E::InvalidAllocation { .. } => Error::<T>::VmInvalidAllocation,
             E::TraceFailed { .. } => Error::<T>::VmTraceFailed,
         }

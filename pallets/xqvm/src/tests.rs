@@ -954,10 +954,10 @@ fn oversized_shift_maps_to_its_own_error() {
 }
 
 #[test]
-fn discrete_sample_with_small_k_maps_to_its_own_error() {
+fn integer_sample_with_small_k_maps_to_its_own_error() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // XSMX pops k then size; the discrete domain requires k >= 2.
+        // XSMX pops k then size; the integer domain requires k >= 2.
         let bytecode = build_program(|b| {
             b.emit_push(4)
                 .emit_push(1)
@@ -967,7 +967,29 @@ fn discrete_sample_with_small_k_maps_to_its_own_error() {
 
         assert_eq!(
             execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmInvalidDiscreteK.into()
+            Error::<Test>::VmInvalidIntegerK.into()
+        );
+    });
+}
+
+#[test]
+fn sample_write_outside_its_domain_maps_to_its_own_error() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A binary sample holds {0, 1}; SETLINE pops value then index, and
+        // writing 2 to variable 0 leaves the domain.
+        let bytecode = build_program(|b| {
+            b.emit_push(4)
+                .emit_bsmx(Register(0))
+                .emit_push(0)
+                .emit_push(2)
+                .emit_set_line(Register(0))
+                .emit_halt();
+        });
+
+        assert_eq!(
+            execute_expecting_failure(bytecode, vec![], 0),
+            Error::<Test>::VmSampleOutOfDomain.into()
         );
     });
 }
