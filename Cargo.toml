@@ -4,6 +4,7 @@ authors = ["Quip Network <roman@postquant.xyz>"]
 homepage = "https://www.quip.network/"
 repository = "https://gitlab.com/quip.network/quip-validator.git"
 edition = "2021"
+version = "0.3.2"
 
 [workspace]
 members = [
