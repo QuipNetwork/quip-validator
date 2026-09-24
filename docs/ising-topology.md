@@ -191,17 +191,36 @@ solution, and the pallet decodes them:
   `pack_solution` (`:109-146`) is the inverse.
 - A raw index is decoded through the spin spec: an index into a `Set`, or an
   offset from `min` for an `IntegerRange`.
-- `validate_proof` then collapses each decoded spin to its sign and rejects a
-  zero with `InvalidSpinValues` (`pallets/quantum-pow/src/lib.rs:1340-1345`).
-  Only the sign reaches the energy function (`packed.rs:9-13` records this as
-  a v0.2 limitation). The magnitudes in `allowed_spin_values` are therefore
-  inert today; see the gaps below.
+- `validate_proof` then collapses each decoded spin to its sign with
+  `spin_signs` (`packed.rs:177-192`) and rejects a zero with
+  `InvalidSpinValues`. Only the sign reaches the energy function
+  (`packed.rs:9-13` records this as a v0.2 limitation). The magnitudes in
+  `allowed_spin_values` are therefore inert today; see the gaps below.
 
 The energy of a solution `s` is
 `sum(h[i] * s[i]) + sum(j[k] * s[pos(u)] * s[pos(v)])` over every node
 position `i` and every edge `k = (u, v)`, where `pos` is the `TopologyIndex`
 lookup from label to position. The result is in milli units
 (`crates/quantum-validation/src/energy.rs:48-81`).
+
+`docs/fixtures/ising-topology.json` pins all of the above with one worked
+vector: topology inputs to their canonical hash and its SCALE preimage, a
+nonce to its `h` and `j` sequence, and two packed solutions to their decoded
+spins, signs and energy. The hash is taken over `Set` specs given out of
+order and matches the hash of the sorted specs that registration stores.
+Generation and decoding use the stored specs, since those are the only form a
+chain holds. The graph has five nodes, below the runtime's `MinNodes`, so it
+cannot be registered on chain; none of the pinned functions check that bound.
+The crate code generates the fixture, and a test regenerates it and fails on
+any difference:
+
+```sh
+cargo run -p pallet-quantum-pow --example generate_ising_topology_fixture -- --write
+cargo test -p pallet-quantum-pow --test ising_topology_fixture
+```
+
+A change to hashing, sampling or encoding therefore fails CI until the fixture
+is regenerated on purpose.
 
 ## Registration
 
@@ -397,10 +416,10 @@ production happens to be using.
 - **Self-loops and parallel edges are not rejected.** Registration accepts
   them, as described under [Registration](#registration). Whether they are
   intended protocol inputs is an open question, not a settled rule.
-- **No pinned interoperability vector.** No checked-in vector yet ties
-  topology inputs to a canonical hash, a nonce to its `h` and `j` sequence, or
-  a packed solution to its decoded spins and energy. A second implementation
-  can check itself against this document only by running this crate.
+- **No pinned nonce derivation.** The interoperability vector starts from a
+  nonce. Nothing checked in pins `derive_nonce`
+  (`crates/quantum-validation/src/ising.rs:31-37`), which derives that nonce
+  from the last proof block hash, the miner and the salt.
 - **No permissionless registration.** `register_topology` is root only. There
   is no deposit-backed or governance-voted path, and adding one is not the
   same question as adding topology policy.

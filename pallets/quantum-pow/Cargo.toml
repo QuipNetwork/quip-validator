@@ -31,6 +31,7 @@ sp-io.workspace = true
 sp-runtime.workspace = true
 
 [dev-dependencies]
+serde_json = { workspace = true, features = ["std"] }
 sp-core = { default-features = true, workspace = true }
 sp-io = { default-features = true, workspace = true }
 sp-runtime = { default-features = true, workspace = true }

@@ -7442,6 +7442,7 @@ dependencies = [
  "parity-scale-codec",
  "quantum-validation",
  "scale-info",
+ "serde_json",
  "sp-api",
  "sp-core",
  "sp-io",
