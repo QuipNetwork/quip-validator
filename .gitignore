@@ -38,3 +38,9 @@ __pycache__
 # The script also writes a `*` .gitignore inside the directory; this entry
 # is the outer guardrail in case the directory is moved or recreated.
 /quip-testnet-keys/
+
+# Local task tracking
+.beads/
+.beads-*/
+.beads-credential-key
+.dolt/

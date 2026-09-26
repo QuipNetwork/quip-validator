@@ -239,7 +239,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // easing rule is gone with its WinnerStreak storage (pallet storage v6).
     // Same calls; a 117 node computes a different threshold from identical
     // state, so the version must move. `transaction_version` stays at 7.
-    spec_version: 118,
+    // Bumped to 119: decay starts after 100 blocks, and each win hardens
+    // by a bounded step toward its achieved energy from the live threshold.
+    spec_version: 119,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,

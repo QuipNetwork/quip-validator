@@ -4,70 +4,21 @@ use scale_info::TypeInfo;
 
 use crate::types::DifficultyConfig;
 
-// Difficulty policy is block-based.
-//
-// The earlier timestamp-based approach created a unit mismatch in the pallet,
-// because proof decay was evaluated during block execution while the stored
-// "last proof" marker was expressed in wall-clock units. We now use elapsed
-// blocks everywhere in the difficulty path so:
-// - decay aligns directly with `EpochLength`
-// - proof adjustment and decay reason over the same time unit
-// - validation does not depend on timestamp availability or conversion
-//
-// These constants are the block-native thresholds the current policy uses,
-// measuring elapsed chain blocks between consecutive qblocks (PoW-won
-// blocks — formerly referred to as "solution #"/"problem #"). They
-// correspond to the earlier 6-second-block translation:
-// 360s -> 60 blocks, 600s -> 100 blocks.
-//
-// `TARGET_PROOF_BLOCKS` is deliberately co-located with the runtime's
-// `QuantumPowEpochLength` (= 100): decay is continuous per block, but its
-// rate is expressed per epoch, and the hardening cap in
-// `adjust_on_proof` is one epoch of that decay. The rate
-// bands below and the decay rate therefore share the 100-block unit. The
-// two remain separate constants on purpose: this one anchors the rate
-// bands, the runtime one sets the decay unit. Retune them together.
+// Difficulty uses elapsed chain blocks, not timestamps. The target gates
+// easing; EpochLength sets its rate unit. Production config uses 100 for both.
 const FAST_PROOF_BLOCKS: u64 = 60;
 pub(crate) const TARGET_PROOF_BLOCKS: u64 = 100;
 
-/// Floor on the per-step energy delta — one energy unit (1.0 unit -> 1000
-/// milli). Under the geometric model the step shrinks toward zero as the
-/// threshold nears a curve bound, so this floor sets the granularity of the
-/// tail: the rate at which hardening walks *past* `min_milli` to track a
-/// stronger-than-estimated field, and the final settle onto `max_milli` when
-/// easing. Hardening and easing share the one floor (the walk-up plan's §3 —
-/// it replaces the legacy asymmetric `5.0`/`3.0`-unit floors that let
-/// hardening out-pace easing 5:3 at the tail).
+/// One energy unit per adjustment, limited by the winning energy gap when
+/// hardening. Easing uses this floor per epoch once geometric motion is smaller.
 const MIN_ENERGY_DELTA_MILLI: i64 = 1000;
 
-/// Decay rate per epoch step: 25 per-mille = 2.5%, half of the typical
-/// hardening floor (50 per-mille). Mirrors v0.1 `energy_ease_rate = 0.025`.
+/// The hardening cap remains 2.5% of the calibrated curve span.
 const DECAY_RATE_MILLI: u32 = 25;
 
-/// Extra easing rate per epoch, applied only to the blocks of the current
-/// round past `TARGET_PROOF_BLOCKS`. A round that runs past its target is
-/// the signal that the threshold is too hard. This is the continuous form
-/// of the retired "make it easier" step: instead of one easing kick at the
-/// win, which the dominant-winner rule gated on who won, the live threshold
-/// eases faster for every block the round is overdue, whoever ends it.
-/// Equal to `DECAY_RATE_MILLI`, so in the geometric regime an overdue round
-/// eases at twice the baseline rate: one extra decay step per overdue epoch,
-/// the same size as the per-win hardening cap. Once the room is under the
-/// floor crossover both phases step `MIN_ENERGY_DELTA_MILLI` per epoch and
-/// the overdue term adds nothing. The v0.1 easing band topped out at 15% in
-/// a single uncapped step; that magnitude does not carry over.
+/// Preserve runtime 118's overdue easing rate: the combined retained fraction
+/// is 0.975 * 0.975 per epoch. No easing accrues before the 100-block gate.
 const OVERDUE_EASE_RATE_MILLI: u32 = 25;
-
-/// Direction the energy threshold moves under an adjustment.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Direction {
-    /// Make mining harder — push `max_energy_milli` toward `min_milli`
-    /// (i.e. more negative).
-    Harder,
-    /// Make mining easier — push `max_energy_milli` toward `max_milli`
-    /// (i.e. less negative).
-    Easier,
-}
 
 /// The three per-mille empirical `c` values that calibrate an
 /// [`EnergyCurve`].
@@ -116,7 +67,7 @@ pub struct CurveC {
 /// difficulty threshold therefore tracks *past* `min_milli` when hardening
 /// (to follow a stronger-than-estimated field) but never eases *past*
 /// `max_milli` (difficulty stays at or above the easiest calibrated puzzle).
-/// See [`adjust_energy_along_curve`].
+/// Hardening instead follows the achieved energy; see [`adjust_on_proof`].
 ///
 /// All three values are in milli precision. `min_milli < knee_milli <
 /// max_milli` (all negative).
@@ -192,146 +143,29 @@ fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8]) -> u32 {
     min_rate + (sample % (span + 1)) as u32
 }
 
-/// Move `current_milli` toward the curve bound implied by `direction` by a
-/// geometric fraction of the distance *remaining* to that bound.
-///
-/// The step is a geometric fraction `room × rate` of the distance to the
-/// curve bound the adjustment moves toward, floored at `min_delta_milli`.
-/// Because `rate < 1`, the geometric term is always smaller than `room`, so
-/// from anywhere short of the bound the threshold *walks* toward it a fraction
-/// of the remaining gap at a time — a single fast win can no longer slam the
-/// threshold across the whole range and strand the chain (the slam-and-stall
-/// this replaces; see `quantum-pow-difficulty-hardening-walkup-plan.md`).
-///
-/// The two directions are deliberately asymmetric, because the curve bounds
-/// are GSE *estimates*, not hard limits:
-///
-/// - [`Direction::Harder`] references `min_milli` but is **uncapped**: a
-///   stronger-than-calibrated field finds winning energies below the hard
-///   estimate, so the threshold must keep tracking past `min_milli`. Once at
-///   or past it (`room ≤ 0`) the geometric term vanishes and the floor carries
-///   the threshold one further energy step down.
-/// - [`Direction::Easier`] references `max_milli` and is **capped** there:
-///   difficulty should never ease below the easiest calibrated puzzle, so the
-///   step is clamped to the remaining gap and is a no-op once at/past the easy
-///   cap. Recovery from a too-hard threshold is fastest at the hard end (where
-///   the gap to `max_milli` is largest) and settles gently onto the easy cap.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn adjust_energy_along_curve(
-    current_milli: i64,
-    rate_milli: u32,
-    direction: Direction,
-    curve: EnergyCurve,
-    min_delta_milli: i64,
-) -> i64 {
-    // Defensive: a degenerate curve (e.g. zero-node topology) collapses to a
-    // single point — there is no bound to reference. Leave `current` alone.
-    if curve.max_milli <= curve.min_milli {
-        return current_milli;
-    }
-    let rate = f64::from(rate_milli) / 1000.0;
-    // Geometric step toward the target bound, floored so progress never stalls.
-    // The `as i64` cast saturates (never UB/panic), and every `room`/result
-    // subtraction below saturates too, so the genesis `i64::MAX` sentinel and
-    // extreme curves stay overflow-safe.
-    let geometric_floored =
-        |room: i64| (libm::round(room as f64 * rate) as i64).max(min_delta_milli);
-
-    match direction {
-        Direction::Harder => {
-            // Uncapped: `room` may be ≤ 0 once the threshold has walked below
-            // the hard estimate, where the floor alone advances it one step.
-            let room = current_milli.saturating_sub(curve.min_milli);
-            current_milli.saturating_sub(geometric_floored(room))
-        }
-        Direction::Easier => {
-            // Capped at the easy cap: never ease past `max_milli`.
-            let room = curve.max_milli.saturating_sub(current_milli);
-            if room <= 0 {
-                return current_milli;
-            }
-            current_milli.saturating_add(geometric_floored(room).min(room))
-        }
-    }
-}
-
-/// Apply continuous decay easing for `elapsed_blocks` blocks, easing only the
-/// energy threshold via the curve. Diversity and solutions are chain-static
-/// and never touched here.
-///
-/// At every whole epoch the result equals the retired per-epoch rule,
-/// `max(round(room * rate), MIN_ENERGY_DELTA_MILLI)` per step, in both of
-/// its regimes: geometric while the step beats the floor, linear at the
-/// floor once the room is under `floor / rate` (40,000 milli at the
-/// baseline rate). Between epochs the threshold eases every block instead
-/// of waiting for the boundary. Measured on aglais under the stepwise rule,
-/// 44% of rounds ended within ten blocks of a boundary: no miner could
-/// clear until the 22,000 milli step landed, then one did at once. A
-/// per-block ramp has no such cliff.
-///
-/// Past `TARGET_PROOF_BLOCKS` a second phase at the combined baseline plus
-/// `OVERDUE_EASE_RATE_MILLI` rate accrues for every overdue block, so a
-/// round that has waited too long eases faster than one still inside its
-/// target. The phases compose, so the threshold stays continuous across the
-/// target boundary.
-///
-/// Closed form, so a long stalled round costs the same as a short one.
+/// Ease the threshold only for blocks strictly past `TARGET_PROOF_BLOCKS`.
+/// The first 100 blocks contribute no decay, regardless of `epoch_length`.
+/// At block 101, exactly one block of overdue easing accrues. Each read
+/// recomputes from the stored baseline, so rounding does not compound.
+/// Diversity and minimum solution count remain unchanged.
 pub fn apply_decay(
     current: DifficultyConfig,
     elapsed_blocks: u32,
     epoch_length: u32,
     curve: EnergyCurve,
 ) -> DifficultyConfig {
-    let mut difficulty = current;
-    difficulty.max_energy_milli = ease_continuous(
-        current.max_energy_milli,
-        elapsed_blocks,
-        epoch_length,
-        curve,
-    );
-    difficulty
-}
-
-fn ease_continuous(
-    current_milli: i64,
-    elapsed_blocks: u32,
-    epoch_length: u32,
-    curve: EnergyCurve,
-) -> i64 {
-    let (baseline, overdue) = decay_phases(current_milli, elapsed_blocks, epoch_length, curve);
-    current_milli.saturating_add(baseline + overdue)
-}
-
-/// The two easing amounts `apply_decay` adds to `current_milli` after
-/// `elapsed_blocks`: the baseline term over the blocks inside the target,
-/// then the overdue term over the blocks past it. Both are non-negative and
-/// their sum never exceeds the room to `max_milli`.
-///
-/// The baseline term runs from the first block of the round. The overdue
-/// term starts once the round has passed its target length. They run as two
-/// phases: the second starts from the room the first left, at the combined
-/// rate, which equals the product of the two geometric terms wherever both
-/// phases are geometric.
-fn decay_phases(
-    current_milli: i64,
-    elapsed_blocks: u32,
-    epoch_length: u32,
-    curve: EnergyCurve,
-) -> (i64, i64) {
-    if curve.max_milli <= curve.min_milli || elapsed_blocks == 0 || epoch_length == 0 {
-        return (0, 0);
+    let overdue = elapsed_blocks.saturating_sub(TARGET_PROOF_BLOCKS as u32);
+    if curve.max_milli <= curve.min_milli || overdue == 0 || epoch_length == 0 {
+        return current;
     }
-    let room = curve.max_milli.saturating_sub(current_milli);
-    if room <= 0 {
-        return (0, 0);
+    let room = curve.max_milli.saturating_sub(current.max_energy_milli);
+    let retained = (1.0 - f64::from(DECAY_RATE_MILLI) / 1000.0)
+        * (1.0 - f64::from(OVERDUE_EASE_RATE_MILLI) / 1000.0);
+    let eased = ease_room(room, overdue, epoch_length, 1.0 - retained);
+    DifficultyConfig {
+        max_energy_milli: current.max_energy_milli.saturating_add(eased),
+        ..current
     }
-    let baseline_retained = 1.0 - f64::from(DECAY_RATE_MILLI) / 1000.0;
-    let overdue_retained = baseline_retained * (1.0 - f64::from(OVERDUE_EASE_RATE_MILLI) / 1000.0);
-    let in_target = elapsed_blocks.min(TARGET_PROOF_BLOCKS as u32);
-    let overdue = elapsed_blocks - in_target;
-    let first = ease_room(room, in_target, epoch_length, 1.0 - baseline_retained);
-    let second = ease_room(room - first, overdue, epoch_length, 1.0 - overdue_retained);
-    (first, second.min(room - first))
 }
 
 /// Ease `room` milli over `blocks` at `rate` per epoch, in closed form,
@@ -360,113 +194,47 @@ fn ease_room(room: i64, blocks: u32, epoch_length: u32, rate: f64) -> i64 {
     eased.min(room)
 }
 
-/// The most a single win may harden the threshold: one decay step measured
-/// at the hard estimate, `DECAY_RATE_MILLI` of the full curve span, floored
-/// at `MIN_ENERGY_DELTA_MILLI`. Constant for a curve.
-///
-/// Uncapped, a fast round hardened 35% of the room to the hard estimate. At
-/// the aglais operating point that room is 80,000 milli against 895,000 to
-/// the easy cap, so a fast round (26,000 milli median, up to 41,000) undid
-/// more than one 22,000 milli decay epoch, and every fast round pushed the
-/// next one out to the second epoch. The cap is 24,368 milli on that curve.
-///
-/// "One epoch out of reach" holds only where decay itself is near one cap
-/// per epoch, that is near the hard estimate. At the easy cap decay is
-/// floor-bound and recovering a capped win takes tens of epochs (39 on the
-/// test curve with the overdue term, about 49 from the baseline alone, and
-/// about 24 on aglais). Far from the hard end the cap is also
-/// below the retired geometric step, so a burst of fast wins climbs more
-/// slowly than before: about 44 rounds of 59 blocks from the easy cap to the
-/// knee on the test curve.
-///
-/// The span, not the current threshold, defines the cap: decay from
-/// `max_milli` is zero, and a cap read from there would collapse to the
-/// floor exactly where a fast win most needs to bite.
+/// Maximum hardening per win: 2.5% of the calibrated curve span, with a
+/// one-unit minimum. The winning energy gap can impose a smaller limit.
 pub(crate) fn max_hardening_delta(curve: EnergyCurve) -> i64 {
     let span = curve.max_milli.saturating_sub(curve.min_milli).max(0);
     (libm::round(span as f64 * f64::from(DECAY_RATE_MILLI) / 1000.0) as i64)
         .max(MIN_ENERGY_DELTA_MILLI)
 }
 
-/// Adjust difficulty after a winning proof (a qblock). Every win hardens:
+/// Harden from the live threshold toward the validated winning energy.
+/// The elapsed-block rate band selects a fraction of that energy gap. The
+/// one-unit floor cannot overshoot the winner, and the curve-span cap limits
+/// every step, including wins below the curve's estimated hard end.
 ///
-/// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
-///   hardens at the 35% +- 30% band.
-/// - A slow qblock hardens gently via the graduated band, down to 5% +- 4%.
-/// - Hardening is capped at [`max_hardening_delta`], one decay step measured
-///   at the hard estimate.
-/// - The stored bar is floored at `MIN_ENERGY_DELTA_MILLI` harder than
-///   `round_start`, the bar the round began with, plus the overdue easing
-///   the round accrued past [`TARGET_PROOF_BLOCKS`]. Decay runs during the
-///   round and the step above is measured from the decayed `active` bar;
-///   near the hard estimate that room is only what decay just opened, so
-///   without this floor a 30-block win could leave the winner an easier
-///   round than the one it just won. Inside the target the overdue term is
-///   zero, so every such win nets at least one energy unit harder. Past
-///   target the floor releases by the overdue term, continuously from zero
-///   at the target block: the round waited too long and the "waited too
-///   long" easing is meant to win, but the baseline decay the round
-///   consumed does not land on the stored bar all at once at block 101.
-///   Waiting one more block never buys more than one more block of overdue
-///   easing.
-/// - The floor is applied after the cap. Where it binds, the stored bar sits
-///   `baseline decay + MIN_ENERGY_DELTA_MILLI` under `active`; the baseline
-///   term over one target length is at most one cap when `round_start` is
-///   at or above the hard estimate, so the cap may be exceeded by at most
-///   `MIN_ENERGY_DELTA_MILLI` there. Below the hard estimate the room to the
-///   easy cap exceeds the span and the overshoot grows with the depth.
-///
-/// Easing happens only between wins, through [`apply_decay`]: the baseline
-/// decay from the first block of the round, plus the overdue term once the
-/// round has run past [`TARGET_PROOF_BLOCKS`]. The win record never changes
-/// the direction of a step: the retired dominant-winner rule (v0.1
-/// `compute_next_block_requirements`, QUI-653) eased slow wins once one
-/// account had won three qblocks in a row, and on aglais that account was
-/// the one winning nearly every round, so the rule eased the threshold for
-/// the miner it was meant to check. The overdue term keeps the "waited too
-/// long" signal and drops the "who won" one.
-///
-/// Mutates only `max_energy_milli`; `min_solutions` and
-/// `min_diversity_milli` are chain-static (only the `set_difficulty`
-/// extrinsic, `ensure_root`, can change them).
+/// A late win retains the easing it needed: adjustment starts at `active`,
+/// never at the old round baseline. The caller stores the result and resets
+/// the 100-block gate. Only `max_energy_milli` changes.
 pub fn adjust_on_proof(
-    round_start: DifficultyConfig,
     active: DifficultyConfig,
+    winning_energy_milli: i64,
     mining_time_blocks: u64,
-    epoch_length: u32,
     curve: EnergyCurve,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
+    let gap = active.max_energy_milli.saturating_sub(winning_energy_milli);
+    if gap <= 0 {
+        return active;
+    }
     let rate_milli = sample_adjustment_milli(mining_time_blocks, randomness_seed);
-    let stepped = adjust_energy_along_curve(
-        active.max_energy_milli,
-        rate_milli,
-        Direction::Harder,
-        curve,
-        MIN_ENERGY_DELTA_MILLI,
-    );
-    let capped = stepped.max(
-        active
-            .max_energy_milli
-            .saturating_sub(max_hardening_delta(curve)),
-    );
-    let elapsed = u32::try_from(mining_time_blocks).unwrap_or(u32::MAX);
-    let (_, overdue) = decay_phases(round_start.max_energy_milli, elapsed, epoch_length, curve);
-    let floor = round_start
-        .max_energy_milli
-        .saturating_sub(MIN_ENERGY_DELTA_MILLI)
-        .saturating_add(overdue);
-    let new_max_energy_milli = capped.min(floor);
+    let geometric = libm::round(gap as f64 * f64::from(rate_milli) / 1000.0) as i64;
+    let delta = geometric
+        .max(MIN_ENERGY_DELTA_MILLI)
+        .min(max_hardening_delta(curve))
+        .min(gap);
     DifficultyConfig {
-        max_energy_milli: new_max_energy_milli,
-        // Chain-static: never touched here.
-        min_solutions: active.min_solutions,
-        min_diversity_milli: active.min_diversity_milli,
+        max_energy_milli: active.max_energy_milli.saturating_sub(delta),
+        ..active
     }
 }
 
 /// Compute the active difficulty for `block_number`, applying continuous
-/// decay for every block since the previous winning proof.
+/// decay only for blocks past the target since the previous winning proof.
 ///
 /// This is the per-block view of difficulty that miners must clear and
 /// that `adjust_on_proof` consumes as its baseline. All inputs are
