@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The pinned xqvm version names the toolchain the vectors come from: same
-# crate, same tag. The requirement is an exact pin (`=0.4.0-rc1`), so the
+# crate, same tag. The requirement is an exact pin (`=0.4.0`), so the
 # leading `=` is stripped to get the version the tag is named after.
 xqvm_version="$(
   sed -n 's/^xqvm = { version = "=\{0,1\}\([^"]*\)".*/\1/p' Cargo.toml
@@ -55,7 +55,7 @@ echo "== Pinned xqvm: ${xqvm_version} =="
 # for the published xqvm ${xqvm_version} crate (its `.cargo_vcs_info.json`),
 # so the vectors are asserted to come from exactly the source the pallet
 # links against. Update it together with the version pin in Cargo.toml.
-xquad_commit="a4b5ae0c3e9b28a353b81445d22d8816ea9c3177"
+xquad_commit="1e40da31628026e4cdd47cfae2c0119450044e6c"
 
 if [[ -n "${XQUAD_DIR:-}" ]]; then
   xquad_dir="$XQUAD_DIR"
