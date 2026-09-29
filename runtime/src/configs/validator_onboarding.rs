@@ -30,8 +30,12 @@ impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
     type MaxMembers = ConstU32<32>;
     type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
     type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
-    // Membership is the sole ordinary writer. Root can still bypass any policy.
+    // Membership is the sole ordinary writer in production. Benchmark builds
+    // accept Root so the upstream collective benchmarks can call set_members.
+    #[cfg(not(feature = "runtime-benchmarks"))]
     type SetMembersOrigin = frame_system::EnsureNever<AccountId>;
+    #[cfg(feature = "runtime-benchmarks")]
+    type SetMembersOrigin = frame_system::EnsureRoot<AccountId>;
     type MaxProposalWeight = FoundationProposalWeight;
     type DisapproveOrigin = FoundationOrRoot;
     type KillOrigin = FoundationOrRoot;
