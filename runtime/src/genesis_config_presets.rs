@@ -135,6 +135,12 @@ fn testnet_genesis(
         approved.iter().all(|who| endowed_accounts.contains(who)),
         "every validator must be endowed above its bond"
     );
+    // SDK benchmark setups require low-bond validators and nominators. Keep
+    // the production chainspec limits unchanged in every non-benchmark build.
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    let (max_nominator_count, min_validator_bond) = (Some(0u32), 100 * crate::UNIT);
+    #[cfg(feature = "runtime-benchmarks")]
+    let (max_nominator_count, min_validator_bond) = (None::<u32>, 0u128);
     build_struct_json_patch!(RuntimeGenesisConfig {
         foundation_membership: pallet_membership::GenesisConfig {
             members: vec![root.clone()]
@@ -150,8 +156,8 @@ fn testnet_genesis(
             validator_count: approved.len() as u32,
             minimum_validator_count,
             max_validator_count: None,
-            max_nominator_count: Some(0),
-            min_validator_bond: 100 * crate::UNIT,
+            max_nominator_count: max_nominator_count,
+            min_validator_bond: min_validator_bond,
             stakers: approved
                 .iter()
                 .map(|who| (

@@ -68,8 +68,8 @@ impl pallet_session::historical::Config for Runtime {
 pub struct StakingBenchmarkConfig;
 impl pallet_staking::BenchmarkingConfig for StakingBenchmarkConfig {
     type MaxValidators = ConstU32<32>;
-    // Benchmark dormant nomination/slash paths conservatively; this does not
-    // enable nominations (the live storage cap remains Some(0)).
+    // Exercise dormant nomination/slash paths in benchmark builds. Production
+    // genesis still disables nominations; benchmark genesis allows SDK setup.
     type MaxNominators = ConstU32<32>;
 }
 impl pallet_staking::Config for Runtime {
@@ -95,12 +95,26 @@ impl pallet_staking::Config for Runtime {
     type EraPayout = ();
     type MaxExposurePageSize = ConstU32<32>;
     type NextNewSession = Session;
+    #[cfg(not(feature = "runtime-benchmarks"))]
     type ElectionProvider = AdmissionElection;
+    #[cfg(not(feature = "runtime-benchmarks"))]
     type GenesisElectionProvider = AdmissionElection;
+    #[cfg(feature = "runtime-benchmarks")]
+    type ElectionProvider = onchain::OnChainExecution<BenchmarkOnChainConfig>;
+    #[cfg(feature = "runtime-benchmarks")]
+    type GenesisElectionProvider = onchain::OnChainExecution<BenchmarkOnChainConfig>;
+    #[cfg(not(feature = "runtime-benchmarks"))]
     type VoterList = pallet_staking::UseNominatorsAndValidatorsMap<Self>;
+    #[cfg(feature = "runtime-benchmarks")]
+    type VoterList = benchmark_voter_list::BenchmarkVoterList;
     type TargetList = pallet_staking::UseValidatorsMap<Self>;
     type MaxValidatorSet = ConstU32<32>;
+    #[cfg(not(feature = "runtime-benchmarks"))]
     type NominationsQuota = pallet_staking::FixedNominationsQuota<1>;
+    // The SDK nominate benchmark uses Linear<1, MaxNominations>; a singleton
+    // range panics in median-slopes analysis. Give benchmark builds two points.
+    #[cfg(feature = "runtime-benchmarks")]
+    type NominationsQuota = pallet_staking::FixedNominationsQuota<2>;
     type MaxUnlockingChunks = ConstU32<32>;
     type HistoryDepth = ConstU32<84>;
     type MaxControllersInDeprecationBatch = ConstU32<32>;
@@ -192,6 +206,97 @@ impl onchain::Config for OnChainConfig {
     type WeightInfo = frame_election_provider_support::weights::SubstrateWeight<Runtime>;
     type Bounds = ElectionBoundsConfig;
     type MaxBackersPerWinner = ConstU32<32>;
+    type MaxWinnersPerPage = ConstU32<32>;
+}
+// The SDK map has an unimplemented benchmark score-update hook. Delegate all
+// actual list operations to that same map; it has no score-dependent ordering,
+// so increasing/decreasing stake exercises its only update path.
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmark_voter_list {
+    use super::*;
+    use alloc::boxed::Box;
+    use frame_election_provider_support::SortedListProvider;
+    type Map = pallet_staking::UseNominatorsAndValidatorsMap<Runtime>;
+
+    pub struct BenchmarkVoterList;
+    impl SortedListProvider<AccountId> for BenchmarkVoterList {
+        type Error = <Map as SortedListProvider<AccountId>>::Error;
+        type Score = <Map as SortedListProvider<AccountId>>::Score;
+        fn iter() -> Box<dyn Iterator<Item = AccountId>> {
+            Map::iter()
+        }
+        fn iter_from(
+            start: &AccountId,
+        ) -> Result<Box<dyn Iterator<Item = AccountId>>, Self::Error> {
+            Map::iter_from(start)
+        }
+        fn count() -> u32 {
+            Map::count()
+        }
+        fn contains(id: &AccountId) -> bool {
+            Map::contains(id)
+        }
+        fn on_insert(id: AccountId, score: Self::Score) -> Result<(), Self::Error> {
+            Map::on_insert(id, score)
+        }
+        fn on_update(id: &AccountId, score: Self::Score) -> Result<(), Self::Error> {
+            Map::on_update(id, score)
+        }
+        fn get_score(id: &AccountId) -> Result<Self::Score, Self::Error> {
+            Map::get_score(id)
+        }
+        fn on_remove(id: &AccountId) -> Result<(), Self::Error> {
+            Map::on_remove(id)
+        }
+        fn unsafe_regenerate(
+            all: impl IntoIterator<Item = AccountId>,
+            score_of: Box<dyn Fn(&AccountId) -> Option<Self::Score>>,
+        ) -> u32 {
+            Map::unsafe_regenerate(all, score_of)
+        }
+        fn unsafe_clear() {
+            Map::unsafe_clear()
+        }
+        fn lock() {
+            Map::lock()
+        }
+        fn unlock() {
+            Map::unlock()
+        }
+        #[cfg(feature = "try-runtime")]
+        fn try_state() -> Result<(), sp_runtime::TryRuntimeError> {
+            Map::try_state()
+        }
+        fn score_update_worst_case(who: &AccountId, is_increase: bool) -> Self::Score {
+            let score = Staking::weight_of(who);
+            if is_increase {
+                score.saturating_mul(2)
+            } else {
+                score / 2
+            }
+        }
+    }
+}
+
+// Upstream staking benchmarks create candidates without admission/session keys
+// and require nominator exposures. Their new_era range includes 100 nominators
+// plus 10 validators, independently of BenchmarkingConfig's snapshot ranges.
+#[cfg(feature = "runtime-benchmarks")]
+parameter_types! {
+    pub BenchmarkElectionBounds: ElectionBounds = ElectionBoundsBuilder::default()
+        .voters_count(132.into()).targets_count(32.into()).build();
+}
+#[cfg(feature = "runtime-benchmarks")]
+pub struct BenchmarkOnChainConfig;
+#[cfg(feature = "runtime-benchmarks")]
+impl onchain::Config for BenchmarkOnChainConfig {
+    type Sort = ConstBool<true>;
+    type System = Runtime;
+    type Solver = SequentialPhragmen<AccountId, Perbill>;
+    type DataProvider = Staking;
+    type WeightInfo = frame_election_provider_support::weights::SubstrateWeight<Runtime>;
+    type Bounds = BenchmarkElectionBounds;
+    type MaxBackersPerWinner = ConstU32<132>;
     type MaxWinnersPerPage = ConstU32<32>;
 }
 type FilteredElection = onchain::OnChainExecution<OnChainConfig>;
