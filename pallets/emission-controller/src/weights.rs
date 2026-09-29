@@ -1,17 +1,16 @@
 //! Conservative provisional weights; regenerate on the reference benchmark host.
 use frame_support::{traits::Get, weights::Weight};
 pub trait WeightInfo {
-    fn accrue(routes: u32) -> Weight;
+    fn accrue(r: u32) -> Weight;
     fn reward() -> Weight;
 }
 pub struct SubstrateWeight<T>(core::marker::PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-    fn accrue(routes: u32) -> Weight {
+    fn accrue(r: u32) -> Weight {
         Weight::from_parts(40_000_000, 6_000)
-            .saturating_add(Weight::from_parts(100_000_000, 8_000).saturating_mul(routes.into()))
+            .saturating_add(Weight::from_parts(100_000_000, 8_000).saturating_mul(r.into()))
             .saturating_add(
-                T::DbWeight::get()
-                    .reads_writes(4 + 5 * u64::from(routes), 1 + 4 * u64::from(routes)),
+                T::DbWeight::get().reads_writes(4 + 5 * u64::from(r), 1 + 4 * u64::from(r)),
             )
     }
     fn reward() -> Weight {
