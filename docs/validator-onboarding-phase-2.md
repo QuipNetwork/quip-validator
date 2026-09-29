@@ -16,7 +16,9 @@ appoints Alice/Bob/Charlie, assigns faucet authority to Eve, and uses their sort
 H4 transaction accounts for 2-of-3 multisig sudo. The four-validator floor remains
 unchanged. Development seeds do not establish independent production custody;
 see [testnet key roles](testnet-keys.md#spec-119-genesis-role-assignments).
-Public-testnet sudo and faucet remain with operator 1 pending ops provisioning.
+Public-testnet genesis defaults sudo and faucet to operator 1. Before deploying
+the faucet service, Foundation must use `faucetOps.set_authority` to appoint a
+dedicated funded account; configure only its key in `QUIP_FAUCET_FAUCET_KEY`.
 These preset changes do not migrate existing chain state.
 
 `ValidatorAdmission.dispatch_as_root` is the explicit Root-equivalent path.

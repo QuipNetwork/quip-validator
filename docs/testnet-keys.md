@@ -73,12 +73,29 @@ the regenerated `quip_testnet` preset in
 Fresh `quip-testnet` genesis appoints the three existing operator transaction
 accounts as Foundation members. The two-thirds threshold therefore requires
 at least two operators. Validator stashes and consensus keys are unchanged.
-Operator 1 remains sudo, faucet authority, and Ising spec builder: no dedicated
-faucet public account or agreed sudo custody replacement is committed yet.
-Ops must derive and publish a dedicated faucet account and coordinate the sudo
-multisig signatories before those assignments can change. A live sudo migration
-uses `sudo.set_key` to the agreed 2-of-3 account; editing a genesis preset does
-not migrate an existing chain or update its Foundation membership.
+The preset assigns operator 1 as sudo, faucet authority, and Ising spec builder:
+no dedicated faucet public account or agreed sudo custody replacement is
+committed yet. Changing those genesis defaults requires updated public role
+assignments. After launch, Foundation can rotate the faucet authority on-chain
+with `faucetOps.set_authority`, without editing genesis or committing new key
+material. Editing a genesis preset does not migrate an existing chain or update
+its Foundation membership.
+
+For a fresh spec-119 testnet, complete this operational sequence:
+
+1. **Before deploying the faucet service**, pass a Foundation motion (two of
+   op1/op2/op3) for `faucetOps.set_authority(Some(<dedicated faucet account>))`
+   and fund that account.
+2. Configure `QUIP_FAUCET_FAUCET_KEY` with the dedicated key only. **Never put
+   operator 1's key there or on the faucet host**: it still controls sudo and a
+   Foundation membership. The preset authority is a bootstrap assignment, not
+   a faucet deployment credential.
+3. Once custody signatories are agreed, use `sudo.set_key(<2-of-3 multisig>)`.
+   Later, remove sudo with `sudo.remove_key` only after the governed runtime
+   upgrade path has been proven.
+
+Step 1 requires no committed key material and does not depend on changing the
+preset's `TODO(ops)` assignments.
 
 The `--chain rehearsal` preset uses four development validators (Alice, Bob,
 Charlie, Dave) and keeps the minimum validator count at four. Foundation uses

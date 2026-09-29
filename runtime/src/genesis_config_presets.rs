@@ -410,7 +410,8 @@ pub fn quip_testnet_config_genesis() -> Value {
         GenesisRoles {
             foundation_members: vec![op1_account.clone(), op2_account, op3_account],
             // TODO(ops): derive and commit a dedicated faucet public account and
-            // coordinate sudo multisig custody before changing these assignments.
+            // coordinate sudo multisig custody before changing these genesis defaults.
+            // Post-genesis, rotate via faucetOps.set_authority before faucet deployment.
             faucet_authority: op1_account.clone(),
             sudo_key: Some(op1_account.clone()),
             ising_spec_builder: op1_account,

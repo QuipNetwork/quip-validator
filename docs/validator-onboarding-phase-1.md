@@ -110,16 +110,15 @@ existing chain's runtime-upgrade behavior is as described above.
 
 ## External faucet service rollout dependency
 
-The sibling `faucet` service still wraps mint in `Sudo::sudo`
-(`../faucet/src/calls.rs:14`) and validates `Sudo.Key` at startup
-(`../faucet/src/main.rs:236`). It is incompatible with this runtime's direct
-signed-authority calls. Before enabling a fresh Phase 1 testnet, update that
-service's call builder, authority/fuse/budget checks, configuration descriptions,
-and deployment runbook, or keep the service stopped. Its existing
-`QUIP_FAUCET_FAUCET_KEY` must identify the genesis faucet authority, not merely
-a current sudo key. This Phase 1 runtime MR does not silently change the
-separate service repository or existing deployments. The live network continues
-to use its old runtime/service pairing until a coordinated rollout.
+The legacy sudo-based faucet service is incompatible with this runtime's direct
+signed-authority calls. Deploy the direct-authority service from faucet MR !21
+as part of the coordinated spec-119 rollout; keep the legacy service stopped.
+`QUIP_FAUCET_FAUCET_KEY` must identify the current on-chain `FaucetOps.Authority`,
+including any post-genesis rotation, rather than the genesis bootstrap or sudo
+key. Complete the [authority rotation runbook](testnet-keys.md#spec-119-genesis-role-assignments)
+before deployment. This runtime MR does not itself change existing service
+deployments; the live network keeps its old runtime/service pairing until the
+coordinated rollout.
 
 The separate `faucet` branch `fix/confirm-sudo-topups` fixes the existing silent
 failure independently of runtime 119: it waits for finalization and requires
@@ -142,8 +141,10 @@ these event writes.
 Small development/local presets keep their known single operational account.
 The rehearsal preset separates faucet authority (Eve), Foundation membership
 (Alice/Bob/Charlie), and sudo (their 2-of-3 multisig). Public-testnet faucet and
-sudo remain with operator 1 pending ops provisioning; Foundation membership
-uses all three operators. See [testnet key roles](testnet-keys.md#spec-119-genesis-role-assignments).
+sudo default to operator 1 in genesis; Foundation membership uses all three
+operators. Before faucet deployment, Foundation must rotate the faucet authority
+on-chain to a dedicated funded account via `faucetOps.set_authority`; only that
+key belongs in `QUIP_FAUCET_FAUCET_KEY`. See [testnet key roles](testnet-keys.md#spec-119-genesis-role-assignments).
 
 ## Issuance exceptions and boundaries
 
