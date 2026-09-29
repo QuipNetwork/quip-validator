@@ -21,11 +21,10 @@ set -euo pipefail
 #   stale      touched minus refreshed
 #
 # `touched` is filtered to pallets that actually have a benchmarking.rs in the
-# tree. Currently that excludes faucet-ops, whose weights.rs is hand-maintained,
-# and evm-chain-id, which carries no weights at all. Either way no benchmark run
-# regenerates anything for them, so warning about them would be noise a
-# developer can never action. Reading the tree rather than a hardcoded list
-# means a pallet starts being covered the moment it gains benchmarks.
+# tree. This excludes evm-chain-id, which carries no weights. Faucet and
+# emission-controller now have benchmarks and are included automatically.
+# Reading the tree rather than a hardcoded list means a pallet starts being
+# covered the moment it gains benchmarks.
 #
 # quantum-pow's generated output is benchmark_weights.rs, not weights.rs, hence
 # both names in the `refreshed` pattern.

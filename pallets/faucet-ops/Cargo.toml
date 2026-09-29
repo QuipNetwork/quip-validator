@@ -1,6 +1,6 @@
 [package]
 name = "pallet-faucet-ops"
-description = "FRAME pallet for root-controlled faucet mint operations."
+description = "Governed testnet faucet with an irreversible disable fuse."
 version = { workspace = true }
 license.workspace = true
 authors.workspace = true
@@ -16,6 +16,9 @@ targets = ["x86_64-unknown-linux-gnu"]
 workspace = true
 
 [dependencies]
+serde.workspace = true
+frame-benchmarking = { optional = true, workspace = true }
+pallet-emission-controller.workspace = true
 codec = { features = ["derive"], workspace = true }
 frame-support.workspace = true
 frame-system.workspace = true
@@ -30,6 +33,9 @@ sp-runtime = { default-features = true, workspace = true }
 [features]
 default = ["std"]
 std = [
+  "serde/std",
+  "frame-benchmarking?/std",
+  "pallet-emission-controller/std",
   "codec/std",
   "frame-support/std",
   "frame-system/std",
@@ -38,8 +44,11 @@ std = [
   "sp-runtime/std",
 ]
 try-runtime = [
+  "pallet-emission-controller/try-runtime",
   "frame-support/try-runtime",
   "frame-system/try-runtime",
   "pallet-balances/try-runtime",
   "sp-runtime/try-runtime",
 ]
+
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks", "frame-support/runtime-benchmarks", "frame-system/runtime-benchmarks", "sp-runtime/runtime-benchmarks", "pallet-emission-controller/runtime-benchmarks"]

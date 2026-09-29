@@ -33,6 +33,8 @@ mod runtime {
 
     #[runtime::pallet_index(2)]
     pub type QuantumPow = pallet_quantum_pow::Pallet<Test>;
+    #[runtime::pallet_index(3)]
+    pub type EmissionController = pallet_emission_controller::Pallet<Test>;
 }
 
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
@@ -74,7 +76,26 @@ parameter_types! {
     pub const MaxAllowedValues: u32 = 32;
 }
 
+frame_support::parameter_types! {
+    pub const PotId: frame_support::PalletId = frame_support::PalletId(*b"qp/emiss");
+}
+pub struct Clock;
+impl frame_support::traits::UnixTime for Clock {
+    fn now() -> core::time::Duration {
+        core::time::Duration::from_secs(System::block_number())
+    }
+}
+impl pallet_emission_controller::Config for Test {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type Clock = Clock;
+    type Unit = ConstU128<1_000_000_000_000>;
+    type PotId = PotId;
+    type MaxSubnets = ConstU32<32>;
+    type WeightInfo = ();
+}
 impl pallet_quantum_pow::Config for Test {
+    type RewardPayment = pallet_emission_controller::SubnetRewards<Test, 0>;
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type MaxNodes = MaxNodes;
@@ -101,7 +122,12 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
         // Account 3 is funded so tests can use a miner whose puzzle ground
         // state sits below the energy curve (accounts 1 and 2 happen to map to
         // puzzles easier than the curve's easy cap).
-        balances: vec![(1, 1_000_000), (2, 1_000_000), (3, 1_000_000)],
+        balances: vec![
+            (1, 1_000_000),
+            (2, 1_000_000),
+            (3, 1_000_000),
+            (EmissionController::pot(0), 1_000_000_000),
+        ],
         dev_accounts: None,
     }
     .assimilate_storage(&mut storage)

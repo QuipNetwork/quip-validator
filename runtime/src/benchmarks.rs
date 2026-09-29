@@ -28,6 +28,8 @@ frame_benchmarking::define_benchmarks!(
     [frame_system, SystemBench::<Runtime>]
     [frame_system_extensions, SystemExtensionsBench::<Runtime>]
     [pallet_balances, Balances]
+    [pallet_faucet_ops, FaucetOps]
+    [pallet_emission_controller, EmissionController]
     [pallet_miner_registry, MinerRegistry]
     [pallet_multisig, Multisig]
     [pallet_proxy, Proxy]

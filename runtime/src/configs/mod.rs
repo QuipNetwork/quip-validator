@@ -405,7 +405,22 @@ impl pallet_template::Config for Runtime {
     type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
 }
 
+parameter_types! {
+    pub const EmissionPotId: frame_support::PalletId = frame_support::PalletId(*b"qp/emiss");
+}
+impl pallet_emission_controller::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type Clock = Timestamp;
+    type Unit = ConstU128<UNIT>;
+    type PotId = EmissionPotId;
+    type MaxSubnets = ConstU32<32>;
+    type WeightInfo = pallet_emission_controller::weights::SubstrateWeight<Runtime>;
+}
+
 impl pallet_faucet_ops::Config for Runtime {
+    type MintOrigin = pallet_faucet_ops::EnsureFaucetAuthority<Runtime>;
+    type Emissions = crate::EmissionController;
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
     type WeightInfo = pallet_faucet_ops::weights::SubstrateWeight<Runtime>;
@@ -661,6 +676,10 @@ impl pallet_quantum_pow::Config for Runtime {
     type EpochLength = QuantumPowEpochLength;
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
+    type RewardPayment = pallet_emission_controller::SubnetRewards<
+        Runtime,
+        { pallet_emission_controller::ISING_SUBNET },
+    >;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
     type MaxAllowedValues = QuantumPowMaxAllowedValues;
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;

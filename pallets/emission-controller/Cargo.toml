@@ -1,8 +1,8 @@
 [package]
-name = "pallet-quantum-pow"
-description = "FRAME pallet for QUIP's protocol-level useful-work mining."
+name = "pallet-emission-controller"
+description = "Fixed annual subnet emissions and budgeted testnet issuance."
 version = { workspace = true }
-license = "Unlicense"
+license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -16,54 +16,34 @@ targets = ["x86_64-unknown-linux-gnu"]
 workspace = true
 
 [dependencies]
-pallet-emission-controller.workspace = true
-blake3 = { version = "1.8.2", default-features = false }
 codec = { features = ["derive"], workspace = true }
-libm = { version = "=0.2.16", default-features = false }
 frame-benchmarking = { optional = true, workspace = true }
 frame-support.workspace = true
 frame-system.workspace = true
 pallet-balances.workspace = true
-quantum-validation.workspace = true
 scale-info = { features = ["derive"], workspace = true }
-sp-api.workspace = true
-sp-core.workspace = true
-sp-io.workspace = true
 sp-runtime.workspace = true
 
 [dev-dependencies]
-sp-core = { default-features = true, workspace = true }
 sp-io = { default-features = true, workspace = true }
 sp-runtime = { default-features = true, workspace = true }
 
 [features]
 default = ["std"]
 std = [
-  "pallet-emission-controller/std",
-  "blake3/std",
   "codec/std",
   "frame-benchmarking?/std",
   "frame-support/std",
   "frame-system/std",
   "pallet-balances/std",
-  "quantum-validation/std",
   "scale-info/std",
-  "sp-api/std",
-  "sp-core/std",
-  "sp-io/std",
   "sp-runtime/std",
 ]
-runtime-benchmarks = [
-  "frame-benchmarking/runtime-benchmarks",
-  "frame-support/runtime-benchmarks",
-  "frame-system/runtime-benchmarks",
-  "pallet-balances/runtime-benchmarks",
-  "sp-runtime/runtime-benchmarks",
-]
 try-runtime = [
-  "pallet-emission-controller/try-runtime",
   "frame-support/try-runtime",
   "frame-system/try-runtime",
   "pallet-balances/try-runtime",
   "sp-runtime/try-runtime",
 ]
+
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks", "frame-support/runtime-benchmarks", "frame-system/runtime-benchmarks", "sp-runtime/runtime-benchmarks"]

@@ -13,6 +13,7 @@ members = [
   "crates/transaction-crypto-wasm",
   "crates/transaction-crypto",
   "node",
+  "pallets/emission-controller",
   "pallets/evm-chain-id",
   "pallets/faucet-ops",
   "pallets/miner-registry",
@@ -31,6 +32,7 @@ resolver = "2"
 
 [workspace.dependencies]
 quip-protocol-runtime = { path = "./runtime", default-features = false }
+pallet-emission-controller = { path = "./pallets/emission-controller", default-features = false }
 pallet-evm-chain-id = { path = "./pallets/evm-chain-id", default-features = false }
 pallet-faucet-ops = { path = "./pallets/faucet-ops", default-features = false }
 pallet-miner-registry = { path = "./pallets/miner-registry", default-features = false }

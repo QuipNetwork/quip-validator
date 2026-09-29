@@ -1,4 +1,4 @@
-use crate as pallet_faucet_ops;
+use crate as pallet_emission_controller;
 use frame_support::{
     derive_impl,
     traits::{ConstU128, ConstU32},
@@ -31,8 +31,6 @@ mod runtime {
     #[runtime::pallet_index(1)]
     pub type Balances = pallet_balances::Pallet<Test>;
 
-    #[runtime::pallet_index(2)]
-    pub type FaucetOps = pallet_faucet_ops::Pallet<Test>;
     #[runtime::pallet_index(3)]
     pub type EmissionController = pallet_emission_controller::Pallet<Test>;
 }
@@ -50,7 +48,7 @@ impl pallet_balances::Config for Test {
     type Balance = Balance;
     type RuntimeEvent = RuntimeEvent;
     type DustRemoval = ();
-    type ExistentialDeposit = ConstU128<1>;
+    type ExistentialDeposit = ConstU128<10>;
     type AccountStore = System;
     type WeightInfo = ();
     type FreezeIdentifier = RuntimeFreezeReason;
@@ -78,13 +76,6 @@ impl pallet_emission_controller::Config for Test {
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = ();
 }
-impl pallet_faucet_ops::Config for Test {
-    type MintOrigin = crate::EnsureFaucetAuthority<Test>;
-    type Emissions = EmissionController;
-    type RuntimeEvent = RuntimeEvent;
-    type Currency = Balances;
-    type WeightInfo = ();
-}
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
     let mut storage = frame_system::GenesisConfig::<Test>::default()
@@ -99,12 +90,12 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     .unwrap();
 
     crate::GenesisConfig::<Test> {
-        state: crate::FaucetState::Enabled,
-        authority: Some(1),
-    }
-    .assimilate_storage(&mut storage)
-    .unwrap();
-    pallet_emission_controller::GenesisConfig::<Test> {
+        enabled: true,
+        start_at: Some(100),
+        routes: vec![
+            (0, sp_runtime::Perbill::from_percent(50)),
+            (1, sp_runtime::Perbill::from_percent(50)),
+        ],
         faucet_budget: 10_000,
         ..Default::default()
     }

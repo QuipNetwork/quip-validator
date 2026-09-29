@@ -781,6 +781,8 @@ fn on_finalize_pays_block_reward_for_best_proof() {
         set_difficulty_default(easy_difficulty());
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         let initial_balance = pallet_balances::Pallet::<Test>::free_balance(1);
+        let issuance = Balances::total_issuance();
+        let pot_before = Balances::free_balance(EmissionController::pot(0));
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
@@ -788,6 +790,11 @@ fn on_finalize_pays_block_reward_for_best_proof() {
         assert_eq!(
             pallet_balances::Pallet::<Test>::free_balance(1),
             initial_balance + 50
+        );
+        assert_eq!(Balances::total_issuance(), issuance);
+        assert_eq!(
+            Balances::free_balance(EmissionController::pot(0)),
+            pot_before - 50
         );
         assert!(BlockBestProof::<Test>::get().is_none());
         assert_eq!(LastProofBlock::<Test>::get(), System::block_number());
@@ -3684,3 +3691,24 @@ fn weight_proportionality_constant_is_reasonable() {
 
 // ============================================================================
 // End QIP-03 Weight Regression Tests
+
+#[test]
+fn empty_emission_pot_records_zero_reward_without_losing_valid_proof() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(Balances::force_set_balance(
+            RuntimeOrigin::root(),
+            EmissionController::pot(0),
+            0
+        ));
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let issuance = Balances::total_issuance();
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        QuantumPow::on_finalize(System::block_number());
+        assert_eq!(Balances::total_issuance(), issuance);
+        assert_eq!(Miners::<Test>::get(1).unwrap().rewards_earned, 0);
+        assert_eq!(Miners::<Test>::get(1).unwrap().proofs_won, 1);
+    });
+}

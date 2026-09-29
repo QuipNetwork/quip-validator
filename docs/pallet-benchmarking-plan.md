@@ -25,12 +25,12 @@ This plan covers:
 `pallet_template` already has usable generated weights and requires no further
 work.
 
-`pallet_faucet_ops` is intentionally out of scope. It is an
-operational/development-only pallet rather than a production benchmarking
-target, and its single `mint` call reuses the benchmarked
-`pallet_balances::WeightInfo::force_set_balance_creating` weight for the same
-account-creation/update path. It does not need its own benchmark module,
-`runtime-benchmarks` feature, or `define_benchmarks!` registration.
+`pallet_faucet_ops` and `pallet_emission_controller` now have benchmark modules,
+`runtime-benchmarks` features, and runtime registrations. Phase 1 adds authority,
+fuse, budget, and scheduled issuance storage access, so the previous reused
+Balances weight is no longer sufficient. Run the reference-machine job for their
+`mint`, `disable`, `accrue`, and `reward` paths before release; initial estimates
+are provisional. See `validator-onboarding-phase-1.md`.
 
 `pallet_xqvm` is intentionally out of scope because it is not actively used.
 Its execution and per-step weights should be reviewed before the pallet becomes

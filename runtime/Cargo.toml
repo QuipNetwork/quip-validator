@@ -16,6 +16,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 workspace = true
 
 [dependencies]
+pallet-emission-controller.workspace = true
 codec = { features = ["derive"], workspace = true }
 frame-benchmarking = { optional = true, workspace = true }
 frame-executive.workspace = true
@@ -83,6 +84,7 @@ substrate-wasm-builder = { optional = true, workspace = true, default-features =
 [features]
 default = ["std"]
 std = [
+  "pallet-emission-controller/std",
   "codec/std",
   "frame-benchmarking?/std",
   "frame-executive/std",
@@ -136,6 +138,8 @@ std = [
   "substrate-wasm-builder",
 ]
 runtime-benchmarks = [
+  "pallet-emission-controller/runtime-benchmarks",
+  "pallet-faucet-ops/runtime-benchmarks",
   "frame-benchmarking/runtime-benchmarks",
   "frame-support/runtime-benchmarks",
   "frame-system-benchmarking/runtime-benchmarks",
@@ -157,6 +161,7 @@ runtime-benchmarks = [
   "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [
+  "pallet-emission-controller/try-runtime",
   "frame-executive/try-runtime",
   "frame-support/try-runtime",
   "frame-system/try-runtime",

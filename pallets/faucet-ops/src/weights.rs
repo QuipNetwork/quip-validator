@@ -1,31 +1,25 @@
-#![cfg_attr(rustfmt, rustfmt_skip)]
-#![allow(unused_parens)]
-#![allow(unused_imports)]
-
+//! Provisional upper estimates including controller and origin storage access.
 use core::marker::PhantomData;
-use frame_support::weights::Weight;
-
-/// Weight functions for `pallet-faucet-ops`.
+use frame_support::{traits::Get, weights::Weight};
 pub trait WeightInfo {
-	/// Weight of the root-only `mint` dispatchable.
-	fn mint() -> Weight;
+    fn mint() -> Weight;
+    fn disable() -> Weight;
 }
-
-/// Default substrate database-backed weights for the faucet ops pallet.
 pub struct SubstrateWeight<T>(PhantomData<T>);
-impl<T: frame_system::Config + pallet_balances::Config> WeightInfo for SubstrateWeight<T> {
-	fn mint() -> Weight {
-		// FaucetOps is an operational/development-only pallet, not a production
-		// benchmarking target. Its only state transition follows Balances'
-		// account-creating mint path, so reuse that upstream benchmarked weight
-		// instead of maintaining a pallet-specific benchmark.
-		<<T as pallet_balances::Config>::WeightInfo as pallet_balances::WeightInfo>::force_set_balance_creating()
-	}
+impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+    fn mint() -> Weight {
+        Weight::from_parts(150_000_000, 16_000)
+            .saturating_add(T::DbWeight::get().reads_writes(7, 4))
+    }
+    fn disable() -> Weight {
+        Weight::from_parts(30_000_000, 6_000).saturating_add(T::DbWeight::get().reads_writes(2, 1))
+    }
 }
-
-/// Test and fallback weights for the faucet ops pallet.
 impl WeightInfo for () {
-	fn mint() -> Weight {
-		<() as pallet_balances::WeightInfo>::force_set_balance_creating()
-	}
+    fn mint() -> Weight {
+        Weight::from_parts(150_000_000, 16_000)
+    }
+    fn disable() -> Weight {
+        Weight::from_parts(30_000_000, 6_000)
+    }
 }

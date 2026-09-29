@@ -7298,6 +7298,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-emission-controller"
+version = "0.3.2"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "pallet-balances",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-evm-chain-id"
 version = "0.3.2"
 dependencies = [
@@ -7313,11 +7327,14 @@ dependencies = [
 name = "pallet-faucet-ops"
 version = "0.3.2"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "pallet-balances",
+ "pallet-emission-controller",
  "parity-scale-codec",
  "scale-info",
+ "serde",
  "sp-io",
  "sp-runtime",
 ]
@@ -7439,6 +7456,7 @@ dependencies = [
  "frame-system",
  "libm",
  "pallet-balances",
+ "pallet-emission-controller",
  "parity-scale-codec",
  "quantum-validation",
  "scale-info",
@@ -9217,6 +9235,7 @@ dependencies = [
  "hex",
  "pallet-babe",
  "pallet-balances",
+ "pallet-emission-controller",
  "pallet-evm-chain-id",
  "pallet-faucet-ops",
  "pallet-grandpa",

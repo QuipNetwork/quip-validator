@@ -254,7 +254,8 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // regenerated on the reference machine for 0.4.0.
     // `store_program` and `execute` keep their call indices and arguments, so
     // `transaction_version` stays at 7.
-    spec_version: 118,
+    // 119: fused faucet and fixed-schedule subnet emission controller.
+    spec_version: 119,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,
@@ -1195,4 +1196,7 @@ mod runtime {
 
     #[runtime::pallet_index(18)]
     pub type Proxy = pallet_proxy;
+
+    #[runtime::pallet_index(19)]
+    pub type EmissionController = pallet_emission_controller;
 }

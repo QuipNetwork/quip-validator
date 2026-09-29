@@ -163,6 +163,27 @@ fn testnet_genesis(
         quantum_compute_mempool: QuantumComputeMempoolConfig {
             default_ising_spec_builder: Some(root.clone()),
         },
+        faucet_ops: pallet_faucet_ops::GenesisConfig {
+            state: pallet_faucet_ops::FaucetState::Enabled,
+            authority: Some(root.clone()),
+        },
+        emission_controller: pallet_emission_controller::GenesisConfig {
+            enabled: true,
+            start_at: None,
+            routes: vec![
+                (
+                    pallet_emission_controller::ISING_SUBNET,
+                    sp_runtime::Perbill::from_percent(50)
+                ),
+                (
+                    pallet_emission_controller::QVRF_SUBNET,
+                    sp_runtime::Perbill::from_percent(50)
+                ),
+            ],
+            // Test currency only; mainnet MUST use zero plus the disabled fuse.
+            faucet_budget: 1_000_000_000 * crate::UNIT,
+            ..Default::default()
+        },
         sudo: SudoConfig { key: Some(root) },
     })
 }
@@ -389,6 +410,27 @@ mod tests {
         sp_io::TestExternalities::new_empty().execute_with(|| {
             build_state::<crate::RuntimeGenesisConfig>(bytes)
                 .expect("genesis preset builds storage without panic");
+            assert_eq!(
+                pallet_faucet_ops::State::<crate::Runtime>::get(),
+                pallet_faucet_ops::FaucetState::Enabled
+            );
+            assert_eq!(
+                pallet_faucet_ops::Authority::<crate::Runtime>::get(),
+                pallet_sudo::Key::<crate::Runtime>::get()
+            );
+            assert!(pallet_emission_controller::Enabled::<crate::Runtime>::get());
+            assert_eq!(
+                pallet_emission_controller::Routes::<crate::Runtime>::get().len(),
+                2
+            );
+            assert_eq!(
+                pallet_emission_controller::FaucetBudget::<crate::Runtime>::get(),
+                1_000_000_000 * crate::UNIT
+            );
+            assert_ne!(
+                crate::EmissionController::pot(0),
+                crate::EmissionController::pot(1)
+            );
             assert_eq!(
                 <pallet_evm_chain_id::ChainId<crate::Runtime> as Get<u64>>::get(),
                 expected_chain_id
