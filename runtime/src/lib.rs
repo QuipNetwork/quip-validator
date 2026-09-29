@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![recursion_limit = "256"]
 
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
@@ -1199,4 +1200,14 @@ mod runtime {
 
     #[runtime::pallet_index(19)]
     pub type EmissionController = pallet_emission_controller;
+    #[runtime::pallet_index(20)]
+    pub type Foundation = pallet_collective<Instance1>;
+    #[runtime::pallet_index(21)]
+    pub type FoundationMembership = pallet_membership<Instance1>;
+    #[runtime::pallet_index(22)]
+    pub type ValidatorAdmission = pallet_validator_admission;
+    #[runtime::pallet_index(23)]
+    pub type Staking = pallet_staking;
+    #[runtime::pallet_index(24)]
+    pub type Historical = pallet_session::historical;
 }

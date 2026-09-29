@@ -38,6 +38,7 @@ use sp_keyring::Ed25519Keyring;
 use sp_keyring::Sr25519Keyring;
 
 pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
+pub const REHEARSAL_RUNTIME_PRESET: &str = "validator_rehearsal";
 
 /// Identifier for the public quip-testnet genesis preset.
 ///
@@ -111,14 +112,58 @@ fn tx_account_from_hex(hex: &str, source: &str) -> AccountId {
 //
 // Each authority is a triple of `(account, babe, grandpa)`. The same account is
 // used as both validator stash and controller in `pallet-session`, which is
-// fine for v0.2 where staking is not wired in.
+// used as both stash and controller in classic staking.
 fn testnet_genesis(
     initial_authorities: Vec<(AccountId, BabeId, GrandpaId)>,
     endowed_accounts: Vec<AccountId>,
     root: AccountId,
     chain_id: u64,
+    minimum_validator_count: u32,
 ) -> Value {
+    assert!(
+        !initial_authorities.is_empty() && initial_authorities.len() <= 32,
+        "authority count must be 1..=32"
+    );
+    assert!((1..=initial_authorities.len() as u32).contains(&minimum_validator_count));
+    let approved: Vec<_> = initial_authorities
+        .iter()
+        .map(|(who, _, _)| who.clone())
+        .collect();
+    let unique: alloc::collections::BTreeSet<_> = approved.iter().collect();
+    assert_eq!(unique.len(), approved.len(), "duplicate validator stash");
+    assert!(
+        approved.iter().all(|who| endowed_accounts.contains(who)),
+        "every validator must be endowed above its bond"
+    );
     build_struct_json_patch!(RuntimeGenesisConfig {
+        foundation_membership: pallet_membership::GenesisConfig {
+            members: vec![root.clone()]
+                .try_into()
+                .expect("one founding member fits"),
+            ..Default::default()
+        },
+        validator_admission: pallet_validator_admission::GenesisConfig {
+            mode: pallet_validator_admission::AdmissionMode::FoundationOnly,
+            approved: approved.clone(),
+        },
+        staking: pallet_staking::GenesisConfig {
+            validator_count: approved.len() as u32,
+            minimum_validator_count,
+            max_validator_count: None,
+            max_nominator_count: Some(0),
+            min_validator_bond: 100 * crate::UNIT,
+            stakers: approved
+                .iter()
+                .map(|who| (
+                    who.clone(),
+                    who.clone(),
+                    100 * crate::UNIT,
+                    pallet_staking::StakerStatus::Validator
+                ))
+                .collect(),
+            force_era: pallet_staking::Forcing::NotForcing,
+            ..Default::default()
+        },
         evm_chain_id: pallet_evm_chain_id::GenesisConfig {
             chain_id,
             ..Default::default()
@@ -204,6 +249,7 @@ pub fn development_config_genesis() -> Value {
         ],
         tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        1,
     )
 }
 
@@ -228,6 +274,7 @@ pub fn local_config_genesis() -> Value {
             .collect::<Vec<_>>(),
         tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        1,
     )
 }
 
@@ -257,6 +304,7 @@ pub fn local_three_validator_config_genesis() -> Value {
             .collect::<Vec<_>>(),
         tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        1,
     )
 }
 
@@ -319,6 +367,32 @@ pub fn quip_testnet_config_genesis() -> Value {
         vec![op1_account.clone(), op2_account, op3_account],
         op1_account,
         pallet_evm_chain_id::TESTNET_CHAIN_ID,
+        3,
+    )
+}
+
+/// Four-validator rehearsal with a safety floor of four; dev seeds are not
+/// independent production operators. Add a replacement before removing a member.
+pub fn rehearsal_config_genesis() -> Value {
+    let seeds = ["//Alice", "//Bob", "//Charlie", "//Dave"];
+    testnet_genesis(
+        seeds
+            .iter()
+            .map(|seed| {
+                (
+                    tx_account_from_seed(seed),
+                    babe_authority_from_seed(seed),
+                    grandpa_authority_from_seed(seed),
+                )
+            })
+            .collect(),
+        seeds
+            .iter()
+            .map(|seed| tx_account_from_seed(seed))
+            .collect(),
+        tx_account_from_seed("//Alice"),
+        pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        4,
     )
 }
 
@@ -329,6 +403,7 @@ pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
         LOCAL_THREE_VALIDATOR_RUNTIME_PRESET => local_three_validator_config_genesis(),
         QUIP_TESTNET_RUNTIME_PRESET => quip_testnet_config_genesis(),
+        REHEARSAL_RUNTIME_PRESET => rehearsal_config_genesis(),
         _ => return None,
     };
     Some(
@@ -345,6 +420,7 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
         PresetId::from(QUIP_TESTNET_RUNTIME_PRESET),
+        PresetId::from(REHEARSAL_RUNTIME_PRESET),
     ]
 }
 
@@ -436,6 +512,14 @@ mod tests {
                 expected_chain_id
             );
         });
+    }
+
+    #[test]
+    fn rehearsal_preset_keeps_four_validator_floor() {
+        let patch = rehearsal_config_genesis();
+        assert_eq!(patch["staking"]["minimumValidatorCount"], 4);
+        assert_eq!(patch["staking"]["stakers"].as_array().unwrap().len(), 4);
+        assert_preset_builds_storage_with_chain_id(patch, pallet_evm_chain_id::LOCAL_CHAIN_ID);
     }
 
     #[test]

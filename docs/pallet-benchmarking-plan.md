@@ -217,3 +217,15 @@ The work is complete when:
   results retained as artifacts.
 - Full node02 regeneration succeeds without manual pallet exclusions.
 - Regenerated weights compile and all repository checks pass.
+
+## Validator onboarding Phase 2
+
+The runtime now registers admission, Foundation collective/membership and classic
+staking benchmarks. `pallets/validator-admission/src/weights.rs` is provisional;
+run the reference-machine job before release. The admission snapshot adapter in
+`runtime/src/configs/validator_onboarding.rs` additionally reserves a conservative
+bounded read/CPU/proof budget for at most 32 accounts; calibrate it against the
+maximum approved set with keys and staking ledgers. Upstream governance/staking
+weights are baselines, not Quip reference-machine measurements. Nomination
+benchmark capacity is a measurement parameter only; the live nomination cap
+remains Some(0).

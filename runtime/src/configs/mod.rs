@@ -100,7 +100,7 @@ parameter_types! {
 ///
 /// This can be a tuple of types, each implementing `OnRuntimeUpgrade`.
 #[allow(unused_parens)]
-type SingleBlockMigrations = ();
+type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
 
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
 /// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
@@ -142,7 +142,7 @@ parameter_types! {
 impl pallet_babe::Config for Runtime {
     type EpochDuration = EpochDuration;
     type ExpectedBlockTime = ExpectedBlockTime;
-    type EpochChangeTrigger = pallet_babe::SameAuthoritiesForever;
+    type EpochChangeTrigger = pallet_babe::ExternalTrigger;
     type DisabledValidators = ();
     type WeightInfo = ();
     type MaxAuthorities = ConstU32<32>;
@@ -157,28 +157,23 @@ impl pallet_grandpa::Config for Runtime {
     type WeightInfo = ();
     type MaxAuthorities = ConstU32<32>;
     type MaxNominators = ConstU32<0>;
-    type MaxSetIdSessionEntries = ConstU64<0>;
+    type MaxSetIdSessionEntries = validator_onboarding::SetIdSessionEntries;
 
     type KeyOwnerProof = sp_core::Void;
     type EquivocationReportSystem = ();
 }
 
-/// Session keys (BABE + GRANDPA) are registered at genesis and never rotated by
-/// the runtime — `SessionManager = ()` returns `None` on `new_session`, so the
-/// pallet retains the genesis validator set forever. The session API exists so
-/// that explorers and the polkadot.js client can surface
-/// `api.query.session.validators` and so that hybrid session keys can be
-/// rotated via the standard `author_rotateKeys` RPC flow once that work lands.
+/// Staking queues validators; historical roots start with the first rotation.
 impl pallet_session::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = <Self as frame_system::Config>::AccountId;
     type ValidatorIdOf = ConvertInto;
     type ShouldEndSession = Babe;
     type NextSessionRotation = Babe;
-    type SessionManager = ();
+    type SessionManager = pallet_session::historical::NoteHistoricalRoot<Runtime, crate::Staking>;
     type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
     type Keys = BoxedSessionKeys;
-    type DisablingStrategy = ();
+    type DisablingStrategy = pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
     type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
     type Currency = Balances;
     type KeyDeposit = ();
@@ -419,7 +414,11 @@ impl pallet_emission_controller::Config for Runtime {
 }
 
 impl pallet_faucet_ops::Config for Runtime {
-    type MintOrigin = pallet_faucet_ops::EnsureFaucetAuthority<Runtime>;
+    type MintOrigin = frame_support::traits::EitherOfDiverse<
+        pallet_faucet_ops::EnsureFaucetAuthority<Runtime>,
+        validator_onboarding::FoundationOrigin,
+    >;
+    type AuthorityOrigin = validator_onboarding::FoundationOrigin;
     type Emissions = crate::EmissionController;
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
@@ -868,3 +867,5 @@ mod xqvm_weights {
         );
     }
 }
+
+pub mod validator_onboarding;

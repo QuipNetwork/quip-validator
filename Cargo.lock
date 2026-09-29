@@ -1967,7 +1967,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -7298,6 +7298,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-collective"
+version = "46.0.0"
+source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=845eb9986c7131056b077d14ad7249f9d65ca111#845eb9986c7131056b077d14ad7249f9d65ca111"
+dependencies = [
+ "docify",
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-emission-controller"
 version = "0.3.2"
 dependencies = [
@@ -7359,6 +7376,22 @@ dependencies = [
  "sp-runtime",
  "sp-session",
  "sp-staking",
+]
+
+[[package]]
+name = "pallet-membership"
+version = "46.0.0"
+source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=845eb9986c7131056b077d14ad7249f9d65ca111#845eb9986c7131056b077d14ad7249f9d65ca111"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
 ]
 
 [[package]]
@@ -7722,6 +7755,20 @@ dependencies = [
  "parity-scale-codec",
  "scale-info",
  "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-validator-admission"
+version = "0.3.2"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "serde",
  "sp-io",
  "sp-runtime",
 ]
@@ -9224,6 +9271,7 @@ name = "quip-protocol-runtime"
 version = "0.3.2"
 dependencies = [
  "frame-benchmarking",
+ "frame-election-provider-support",
  "frame-executive",
  "frame-metadata",
  "frame-metadata-hash-extension",
@@ -9235,10 +9283,12 @@ dependencies = [
  "hex",
  "pallet-babe",
  "pallet-balances",
+ "pallet-collective",
  "pallet-emission-controller",
  "pallet-evm-chain-id",
  "pallet-faucet-ops",
  "pallet-grandpa",
+ "pallet-membership",
  "pallet-miner-registry",
  "pallet-multisig",
  "pallet-proxy",
@@ -9246,12 +9296,14 @@ dependencies = [
  "pallet-quantum-pow",
  "pallet-revive",
  "pallet-session",
+ "pallet-staking",
  "pallet-sudo",
  "pallet-template",
  "pallet-timestamp",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc-runtime-api",
  "pallet-utility",
+ "pallet-validator-admission",
  "pallet-xqvm",
  "parity-scale-codec",
  "quantum-validation",
@@ -9275,6 +9327,7 @@ dependencies = [
  "sp-offchain",
  "sp-runtime",
  "sp-session",
+ "sp-staking",
  "sp-storage",
  "sp-transaction-pool",
  "sp-version",

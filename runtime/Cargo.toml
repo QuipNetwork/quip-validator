@@ -16,6 +16,12 @@ targets = ["x86_64-unknown-linux-gnu"]
 workspace = true
 
 [dependencies]
+pallet-validator-admission.workspace = true
+pallet-collective.workspace = true
+pallet-membership.workspace = true
+pallet-staking.workspace = true
+frame-election-provider-support.workspace = true
+sp-staking.workspace = true
 pallet-emission-controller.workspace = true
 codec = { features = ["derive"], workspace = true }
 frame-benchmarking = { optional = true, workspace = true }
@@ -38,7 +44,7 @@ pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
 pallet-revive.workspace = true
 quantum-validation.workspace = true
-pallet-session.workspace = true
+pallet-session = { workspace = true, features = ["historical"] }
 pallet-sudo.workspace = true
 pallet-template.workspace = true
 pallet-xqvm.workspace = true
@@ -84,6 +90,13 @@ substrate-wasm-builder = { optional = true, workspace = true, default-features =
 [features]
 default = ["std"]
 std = [
+  "pallet-validator-admission/std",
+  "pallet-collective/std",
+  "pallet-membership/std",
+  "pallet-staking/std",
+  "frame-election-provider-support/std",
+  "sp-staking/std",
+
   "pallet-emission-controller/std",
   "codec/std",
   "frame-benchmarking?/std",
@@ -138,6 +151,12 @@ std = [
   "substrate-wasm-builder",
 ]
 runtime-benchmarks = [
+  "pallet-validator-admission/runtime-benchmarks",
+  "pallet-collective/runtime-benchmarks",
+  "pallet-membership/runtime-benchmarks",
+  "pallet-staking/runtime-benchmarks",
+  "frame-election-provider-support/runtime-benchmarks",
+
   "pallet-emission-controller/runtime-benchmarks",
   "pallet-faucet-ops/runtime-benchmarks",
   "frame-benchmarking/runtime-benchmarks",
@@ -161,6 +180,11 @@ runtime-benchmarks = [
   "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [
+  "pallet-validator-admission/try-runtime",
+  "pallet-collective/try-runtime",
+  "pallet-membership/try-runtime",
+  "pallet-staking/try-runtime",
+
   "pallet-emission-controller/try-runtime",
   "frame-executive/try-runtime",
   "frame-support/try-runtime",

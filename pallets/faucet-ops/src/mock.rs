@@ -80,6 +80,7 @@ impl pallet_emission_controller::Config for Test {
 }
 impl pallet_faucet_ops::Config for Test {
     type MintOrigin = crate::EnsureFaucetAuthority<Test>;
+    type AuthorityOrigin = frame_system::EnsureRoot<u64>;
     type Emissions = EmissionController;
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;

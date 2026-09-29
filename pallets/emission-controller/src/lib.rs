@@ -158,7 +158,11 @@ pub mod pallet {
                 T::Unit::get().checked_mul(40_000_000).is_some(),
                 "annual emission overflow"
             );
-            assert_ne!(self.start_at, Some(0), "emission start must not be Unix epoch");
+            assert_ne!(
+                self.start_at,
+                Some(0),
+                "emission start must not be Unix epoch"
+            );
             let routes: BoundedVec<_, T::MaxSubnets> =
                 self.routes.clone().try_into().expect("bounded routes");
             Enabled::<T>::put(self.enabled);

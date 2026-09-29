@@ -14,6 +14,7 @@ members = [
   "crates/transaction-crypto",
   "node",
   "pallets/emission-controller",
+  "pallets/validator-admission",
   "pallets/evm-chain-id",
   "pallets/faucet-ops",
   "pallets/miner-registry",
@@ -31,6 +32,13 @@ exclude = ["crates/transaction-crypto-py"]
 resolver = "2"
 
 [workspace.dependencies]
+pallet-collective = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+pallet-membership = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+pallet-staking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+frame-election-provider-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+sp-staking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+
+pallet-validator-admission = { path = "./pallets/validator-admission", default-features = false }
 quip-protocol-runtime = { path = "./runtime", default-features = false }
 pallet-emission-controller = { path = "./pallets/emission-controller", default-features = false }
 pallet-evm-chain-id = { path = "./pallets/evm-chain-id", default-features = false }

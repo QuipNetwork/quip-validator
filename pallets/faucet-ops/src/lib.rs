@@ -1,7 +1,7 @@
 //! Budgeted testnet faucet with an irreversible fuse and explicit authority.
 //! Missing state and default genesis permanently disable the faucet. Phase 1
 //! uses a genesis-designated signed account (which may be a multisig account);
-//! Phase 2 can substitute the Foundation origin without weakening the fuse.
+//! Foundation governance may rotate/revoke that key or mint directly.
 #![cfg_attr(not(feature = "std"), no_std)]
 pub use pallet::*;
 #[cfg(feature = "runtime-benchmarks")]
@@ -38,7 +38,7 @@ pub enum FaucetState {
     /// Closed legacy state; only a reviewed activation migration may enable it.
     Paused,
 }
-/// Signed, genesis-appointed operational authority. Root deliberately fails.
+/// Signed operational authority appointed at genesis or by governance. Root deliberately fails.
 pub struct EnsureFaucetAuthority<T>(core::marker::PhantomData<T>);
 impl<T: Config> EnsureOrigin<T::RuntimeOrigin> for EnsureFaucetAuthority<T> {
     type Success = T::AccountId;
@@ -77,6 +77,7 @@ pub mod pallet {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type Currency: Currency<Self::AccountId>;
         type MintOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+        type AuthorityOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         type Emissions: FaucetMint<Self::AccountId, BalanceOf<Self>>;
         type WeightInfo: WeightInfo;
     }
@@ -116,6 +117,9 @@ pub mod pallet {
             amount: BalanceOf<T>,
         },
         PermanentlyDisabled,
+        AuthorityChanged {
+            authority: Option<T::AccountId>,
+        },
     }
     #[pallet::error]
     pub enum Error<T> {
@@ -186,6 +190,18 @@ pub mod pallet {
             ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
             T::Emissions::mint(&who, amount)?;
             Self::deposit_event(Event::Minted { who, amount });
+            Ok(())
+        }
+        /// Appoint or revoke the operational key without changing the fuse or budget.
+        #[pallet::call_index(2)]
+        #[pallet::weight(<T as Config>::WeightInfo::set_authority())]
+        pub fn set_authority(
+            origin: OriginFor<T>,
+            authority: Option<T::AccountId>,
+        ) -> DispatchResult {
+            T::AuthorityOrigin::ensure_origin(origin)?;
+            Authority::<T>::set(authority.clone());
+            Self::deposit_event(Event::AuthorityChanged { authority });
             Ok(())
         }
         /// Blow the fuse. There is intentionally no enable or reset call.

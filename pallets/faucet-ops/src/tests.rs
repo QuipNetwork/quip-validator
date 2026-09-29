@@ -138,3 +138,37 @@ fn disabled_genesis_cannot_be_enabled_by_its_authority() {
         assert_eq!(pallet_emission_controller::FaucetIssued::<Test>::get(), 0);
     });
 }
+
+#[test]
+fn authority_rotation_revocation_and_disabled_state_are_independent() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            FaucetOps::set_authority(RuntimeOrigin::signed(1), Some(3)),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        assert_ok!(FaucetOps::set_authority(RuntimeOrigin::root(), Some(3)));
+        assert_noop!(
+            FaucetOps::mint(RuntimeOrigin::signed(1), 2, 500),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        assert_ok!(FaucetOps::mint(RuntimeOrigin::signed(3), 2, 500));
+        assert_ok!(FaucetOps::set_authority(RuntimeOrigin::root(), None));
+        assert_noop!(
+            FaucetOps::mint(RuntimeOrigin::signed(3), 2, 500),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        crate::State::<Test>::put(crate::FaucetState::PermanentlyDisabled);
+        assert_ok!(FaucetOps::set_authority(RuntimeOrigin::root(), Some(1)));
+        assert_noop!(
+            FaucetOps::mint(RuntimeOrigin::signed(1), 2, 500),
+            Error::<Test>::Disabled
+        );
+        assert_eq!(pallet_emission_controller::FaucetIssued::<Test>::get(), 500);
+        crate::State::<Test>::put(crate::FaucetState::Paused);
+        assert_ok!(FaucetOps::set_authority(RuntimeOrigin::root(), Some(3)));
+        assert_noop!(
+            FaucetOps::mint(RuntimeOrigin::signed(3), 2, 500),
+            Error::<Test>::Disabled
+        );
+    });
+}

@@ -40,6 +40,7 @@ impl SubstrateCli for Cli {
         let spec = match id {
             "dev" => chain_spec::development_chain_spec()?,
             "local" => chain_spec::local_chain_spec()?,
+            "rehearsal" | "validator_rehearsal" => chain_spec::validator_rehearsal_chain_spec()?,
             "local3" | "local-3" | "local_three_validator" => {
                 chain_spec::local_three_validator_chain_spec()?
             }
@@ -251,6 +252,7 @@ mod tests {
         assert!(chain_spec::development_chain_spec().is_ok());
         assert!(chain_spec::local_chain_spec().is_ok());
         assert!(chain_spec::local_three_validator_chain_spec().is_ok());
+        assert!(chain_spec::validator_rehearsal_chain_spec().is_ok());
     }
 
     #[test]

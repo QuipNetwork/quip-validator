@@ -16,6 +16,14 @@ mod benchmarks {
         _(origin as T::RuntimeOrigin, who, amount);
     }
     #[benchmark]
+    fn set_authority() {
+        let origin = T::AuthorityOrigin::try_successful_origin().expect("benchmark governance");
+        let who: T::AccountId = whitelisted_caller();
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, Some(who.clone()));
+        assert_eq!(Authority::<T>::get(), Some(who));
+    }
+    #[benchmark]
     fn disable() {
         let origin = T::MintOrigin::try_successful_origin().expect("benchmark authority");
         State::<T>::put(FaucetState::Enabled);
