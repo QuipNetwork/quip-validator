@@ -10,10 +10,14 @@ ValidatorAdmission 22, Staking 23, Historical 24. Existing indices stay fixed.
 Foundation approval requires at least two thirds of the collective. Membership
 management accepts Root or that same collective origin. Membership synchronizes
 the collective; direct `collective.set_members` is disabled to avoid two writers.
-Local and existing test presets bootstrap one known Foundation member (the
-existing root account). This is a functional development default, not evidence
-of independent governance: a rehearsal/mainnet spec must appoint independent
-members before testing supermajority security or retiring sudo.
+Small development/local presets bootstrap Alice as the sole Foundation member.
+Fresh public-testnet genesis appoints all three existing operators. Rehearsal
+appoints Alice/Bob/Charlie, assigns faucet authority to Eve, and uses their sorted
+H4 transaction accounts for 2-of-3 multisig sudo. The four-validator floor remains
+unchanged. Development seeds do not establish independent production custody;
+see [testnet key roles](testnet-keys.md#spec-119-genesis-role-assignments).
+Public-testnet sudo and faucet remain with operator 1 pending ops provisioning.
+These preset changes do not migrate existing chain state.
 
 `ValidatorAdmission.dispatch_as_root` is the explicit Root-equivalent path.
 It emits the inner dispatch result; clients must check `RootDispatched.result`,

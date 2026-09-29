@@ -68,6 +68,29 @@ and into the inline `tx_account_from_hex(...)` calls in
 the regenerated `quip_testnet` preset in
 `runtime/src/genesis_config_presets.rs`.
 
+## Spec-119 genesis role assignments
+
+Fresh `quip-testnet` genesis appoints the three existing operator transaction
+accounts as Foundation members. The two-thirds threshold therefore requires
+at least two operators. Validator stashes and consensus keys are unchanged.
+Operator 1 remains sudo, faucet authority, and Ising spec builder: no dedicated
+faucet public account or agreed sudo custody replacement is committed yet.
+Ops must derive and publish a dedicated faucet account and coordinate the sudo
+multisig signatories before those assignments can change. A live sudo migration
+uses `sudo.set_key` to the agreed 2-of-3 account; editing a genesis preset does
+not migrate an existing chain or update its Foundation membership.
+
+The `--chain rehearsal` preset uses four development validators (Alice, Bob,
+Charlie, Dave) and keeps the minimum validator count at four. Foundation uses
+Alice, Bob, and Charlie; Eve is the separate faucet authority. Sudo is the
+2-of-3 `Multisig::multi_account_id` derived from the **sorted H4 transaction
+AccountIds** of Alice, Bob, and Charlie. Eve and the multisig account are endowed
+alongside the validators so they can exercise their roles immediately. Alice
+remains the Ising spec builder. These public development seeds demonstrate
+quorum control only; they are not independent production custody keys.
+
+The small development/local presets retain Alice for their existing roles.
+
 ## Runtime 117 H2/H4 chain-wipe relaunch
 
 Runtime 117 launches from fresh genesis after wiping the previous chain state;

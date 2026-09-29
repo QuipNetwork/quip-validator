@@ -139,9 +139,11 @@ error or no error for empty/self-transfer cases. Events are bounded by the route
 limit and one winning proof per block. Reference weight generation must include
 these event writes.
 
-The existing test presets keep their known single operational account for
-compatibility with local tooling. It can be a multisig account in a rehearsal
-chain spec; the Phase 2 collective is the planned governance replacement.
+Small development/local presets keep their known single operational account.
+The rehearsal preset separates faucet authority (Eve), Foundation membership
+(Alice/Bob/Charlie), and sudo (their 2-of-3 multisig). Public-testnet faucet and
+sudo remain with operator 1 pending ops provisioning; Foundation membership
+uses all three operators. See [testnet key roles](testnet-keys.md#spec-119-genesis-role-assignments).
 
 ## Issuance exceptions and boundaries
 
