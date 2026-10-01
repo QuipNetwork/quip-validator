@@ -678,6 +678,8 @@ mod tests {
             assert_ok!(<Staking as frame_support::traits::Hooks<BlockNumber>>::try_state(1));
         });
     }
+    // Benchmark builds intentionally enable nominations for the SDK fixtures.
+    #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
     fn nominate_is_closed_directly_and_through_utility() {
         ext().execute_with(|| {
@@ -787,6 +789,8 @@ mod tests {
         Session::rotate_session();
         <crate::Grandpa as frame_support::traits::Hooks<BlockNumber>>::on_finalize(i * 100);
     }
+    // Only the production staking provider filters elections through admission.
+    #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
     fn both_consensus_sets_follow_removal_and_history_is_retained() {
         ext().execute_with(|| {
@@ -1007,6 +1011,8 @@ mod tests {
                 .all(|v| v.0 != who));
         });
     }
+    // The SDK benchmark provider deliberately uses its own election/floor path.
+    #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
     fn minimum_floor_retains_old_set_on_over_aggressive_removal() {
         ext().execute_with(|| {

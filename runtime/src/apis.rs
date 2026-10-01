@@ -430,6 +430,9 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
             // first. The SDK close_approved fixture instead depends on a prime
             // aye promoting abstentions. Keep production vote policy in benchmark
             // builds and expose only reachable collective benchmark paths.
+            // Keep upstream collective weights. If replacing them with generated
+            // weights, supply the omitted close_approved trait method with a
+            // conservative bound at least as large as close_early_approved.
             for pallet in &mut list {
                 if pallet.pallet == b"pallet_collective" {
                     pallet.benchmarks.retain(|benchmark| benchmark.name != b"close_approved");

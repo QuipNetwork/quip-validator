@@ -13,6 +13,8 @@ Abstentions always count as no at expiry, even when the prime voted yes or a
 simple majority voted yes. Set the motion threshold to that required count;
 the proposer must also explicitly vote. A lower proposal threshold can close a
 motion but cannot bypass the privileged origin; inspect the inner receipt.
+The proportion uses current membership at close time. Keep membership fixed
+while privileged motions are open; re-propose after a membership change.
 Membership
 management accepts Root or that same collective origin. Membership synchronizes
 the collective; direct `collective.set_members` is disabled to avoid two writers.
@@ -237,6 +239,19 @@ the production node build and browser signing-fixture tests passed. Eight focuse
 Foundation tests also passed with `runtime-benchmarks`; the collective CLI
 preflight passed all 11 reachable benchmarks at 2 steps / 1 repeat. The signer
 package tests passed. Temporary benchmark output was not committed.
+
+After aligning three production-specific tests with the benchmark configuration,
+the full onboarding test module passed in both modes: 18 production tests and
+16 tests with `runtime-benchmarks`, with no failures or ignored tests. Only tests
+for disabled nominations and the production staking election provider are gated;
+direct admission-election tests and all Foundation vote tests remain enabled in
+both modes. The benchmark registry test remains enabled in benchmark mode.
+Reproduce from the validator repository with:
+
+```bash
+SKIP_PALLET_REVIVE_FIXTURES=1 CARGO_NET_OFFLINE=true cargo +1.95 test -p quip-protocol-runtime --lib configs::validator_onboarding::tests
+SKIP_PALLET_REVIVE_FIXTURES=1 CARGO_NET_OFFLINE=true cargo +1.95 test -p quip-protocol-runtime --lib --features runtime-benchmarks configs::validator_onboarding::tests
+```
 
 In the sibling Apps checkout, TypeScript and changed-file ESLint passed. Eleven
 focused browser tests cover the shared inputs in both staking flows, invalid
