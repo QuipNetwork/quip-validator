@@ -90,7 +90,7 @@ try {
       assert(!validators.some(who => addressEq(who.toString(), bob.address)));
       assert.equal((await at.query.babe.authorities()).length, 2);
       assert.equal((await at.query.grandpa.authorities()).length, 2);
-      changedAt = (await api.rpc.chain.getHeader(hash)).number;
+      changedAt = (await api.rpc.chain.getHeader(hash)).number.toBn();
       break;
     }
     await delay(5000);
@@ -100,7 +100,7 @@ try {
   let finalNumber = changedAt;
   while (Date.now() < deadlineAfter && finalNumber.lte(changedAt.addn(3))) {
     await delay(5000);
-    finalNumber = (await api.rpc.chain.getHeader(await api.rpc.chain.getFinalizedHead())).number;
+    finalNumber = (await api.rpc.chain.getHeader(await api.rpc.chain.getFinalizedHead())).number.toBn();
   }
   assert(finalNumber.gt(changedAt.addn(3)), 'finality stopped after authority change');
   console.log(`PASS: finalized set changed at ${changedAt}; finality advanced to ${finalNumber}`);

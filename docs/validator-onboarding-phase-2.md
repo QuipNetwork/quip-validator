@@ -7,7 +7,13 @@ This phase is under implementation and has not been approved for release.
 
 Appended indices: Foundation collective 20, Foundation membership 21,
 ValidatorAdmission 22, Staking 23, Historical 24. Existing indices stay fixed.
-Foundation approval requires at least two thirds of the collective. Membership
+Foundation approval requires actual affirmative votes from at least two thirds
+of the current collective: `ceil(2 * members / 3)` (2 of 3, or 4 of 5).
+Abstentions always count as no at expiry, even when the prime voted yes or a
+simple majority voted yes. Set the motion threshold to that required count;
+the proposer must also explicitly vote. A lower proposal threshold can close a
+motion but cannot bypass the privileged origin; inspect the inner receipt.
+Membership
 management accepts Root or that same collective origin. Membership synchronizes
 the collective; direct `collective.set_members` is disabled to avoid two writers.
 Small development/local presets bootstrap Alice as the sole Foundation member.
@@ -83,14 +89,44 @@ initialization hook alone does not perform that activation. spec_version stays
 1. Insert H4 BABE and H2 GRANDPA keys on the validator node. Use FN-DSA-512 hybrid
    types, not the ML-DSA alternatives.
 2. Generate session keys with `author_rotateKeysWithOwner` / runtime
-   `generate_session_keys(owner=stash)`; retain the ownership proof.
+   `generate_session_keys(owner=stash)`; retain both `keys` and `proof` fields.
+   The RPC owner is the SCALE-encoded stash AccountId, for example
+   `api.createType('AccountId', stash).toHex()`, not the SS58 address text.
 3. Sign `session.set_keys(keys, proof)` as the stash. KeyDeposit is zero, but the
    ownership proof is mandatory at this SDK revision.
-4. Bond using `staking.bond`, then submit `staking.validate`.
+4. Bond using `staking.bond`, then submit `staking.validate`. The Apps
+   **+ Validator** flow batches `bond`, `session.setKeys(keys, proof)` and
+   `validate` atomically with `utility.batchAll`. Both that form and **Session
+   Key** require the matching ownership proof and stash signature on Quip.
+   Changing stash or keys clears the proof. Until the updated Apps is deployed,
+   use **Developer > Extrinsics** to submit these calls with the stash (or the
+   same `utility.batchAll`); the older staking form sends an empty proof.
 5. Foundation approves the stash with `validatorAdmission.approve`.
-6. Wait for the next successful era election and session activation; verify both
-   BABE and GRANDPA membership and advancing finalized heads.
-7. For removal, Foundation revokes admission; removal affects the next successful
+   Approval makes the candidate eligible; it leaves `staking.validatorCount`
+   unchanged and does not guarantee a seat in an already full set.
+6. To expand the active set, read finalized `staking.validatorCount`,
+   `staking.minimumValidatorCount`, admission and registered keys. Choose `N`
+   with `minimumValidatorCount <= N <= 32`, at least `N` eligible, bonded
+   candidates and enough online nodes to maintain finality. For the four-node
+   rehearsal, onboard the fifth node before requesting `N = 5`.
+   Foundation proposes
+   `validatorAdmission.dispatchAsRoot(staking.setValidatorCount(N))` and
+   members explicitly vote and close with the required actual two-thirds ayes.
+   Optionally put `setValidatorCount(N)` and `staking.forceNewEra()` inside
+   `utility.batchAll` under the same `dispatchAsRoot` to accelerate the election.
+   This is a separate decision from approving a stash; approval never
+   automatically increments the desired count.
+7. At the finalized proposal receipt, check `System.ExtrinsicSuccess`,
+   `Foundation.Executed.result` and `ValidatorAdmission.RootDispatched.result`
+   (and `Utility.BatchCompleted` if batched). Read the finalized desired count
+   back. Wait for a successful era election and the queued session activation;
+   `forceNewEra` does not change the current authorities immediately. Verify the
+   newcomer's actual keys in both BABE and GRANDPA authority sets, the Session
+   validator list and a new GRANDPA set id. Then verify finalized block numbers
+   continue advancing after the transition; an accepted proposal alone is
+   insufficient evidence. Capture finalized hashes, events, era/session and
+   authority lists for the rehearsal report.
+8. For removal, Foundation revokes admission; removal affects the next successful
    election, not the current session. Chill/unbond separately. Failed elections
    retain the old set, so never remove capacity below the operating threshold.
 
@@ -152,6 +188,15 @@ faucet integration and published CI/MR remain open. rr approved this implementat
 after the faucet-origin and minor fixes; nothing in that approval or this document
 waives Phase 1 release gates.
 
+Benchmark builds retain the strict abstentions-always-no Foundation policy.
+The SDK's `close_approved` benchmark depends on prime-aye substitution after
+expiry, a branch unreachable with this policy; runtime benchmark discovery
+therefore excludes that fixture. Actual affirmative approval still exercises
+`close_early_approved` (including when closed after expiry), and expiry rejection
+exercises `close_disapproved`. Their benchmarks remain enabled. The conservative
+upstream collective weight implementation is retained; no off-reference weights
+are substituted.
+
 The dedicated network check is `js/quip-signer/test/validator-rotation.mjs`:
 start three nodes on a fresh `local3` chain with the new binary, then run it with
 Node.js and the existing signer dependencies/artifacts. It verifies finalized
@@ -159,7 +204,8 @@ proposal receipts including collective and Root inner results, removes Bob,
 forces a new era through Foundation, observes both consensus sets at finalized
 state, then requires finality to continue beyond the transition. With 10-minute
 epochs, allow 25 minutes for election plus queued activation. This script is not
-yet executed here: Node.js is absent from the host PATH/checked toolchain stores.
+not executed in the original implementation checkout because Node.js was absent.
+The current review validation and network limitation are recorded below.
 
 ## Validation log (implementation checkout)
 
@@ -168,7 +214,7 @@ pre-existing QPoW sweep tests ignored. The earlier SKIP_WASM_BUILD attempt faile
 three chain-spec tests because WASM_BINARY was absent; the Wasm-enabled rerun
 resolved those failures. No tests were weakened or skipped to make them pass.
 
-After the review fixes:
+After the earlier Phase 2 review fixes:
 
 - Runtime library tests with runtime-benchmarks and try-runtime: 46 passed.
 - Faucet tests and benchmarks: 15 passed; admission tests and benchmarks: 10 passed.
@@ -182,3 +228,34 @@ After the review fixes:
 Commands use offline dependencies. `SKIP_PALLET_REVIVE_FIXTURES=1` avoids the
 SDK's external contract fixtures. Existing multisig tests log pre/post-dispatch
 weight diagnostics while passing; this phase does not recalibrate them.
+
+### MR !98 review corrections (2026-10-01)
+
+Newly executed in this checkout: 438 workspace tests passed, with the same two
+pre-existing QPoW tests ignored; production all-target workspace Clippy, rustfmt,
+the production node build and browser signing-fixture tests passed. Eight focused
+Foundation tests also passed with `runtime-benchmarks`; the collective CLI
+preflight passed all 11 reachable benchmarks at 2 steps / 1 repeat. The signer
+package tests passed. Temporary benchmark output was not committed.
+
+In the sibling Apps checkout, TypeScript and changed-file ESLint passed. Eleven
+focused browser tests cover the shared inputs in both staking flows, invalid
+proof input, clearing proof on stash/key changes, Quip stash versus legacy
+controller signing, and requiring atomic `batchAll` for Quip onboarding.
+The installed `react-dropzone` UMD package has a pre-existing Node named-export
+error; these tests used a temporary interoperability loader exposing its real
+exports and Node's `--test-force-exit` for existing open handles. This does not
+claim an unmodified Apps test-runner pass or a deployed Apps update.
+
+A new local3 node startup was attempted for the 3-to-2 rehearsal. After supplying
+the system certificate bundle, this sandbox still rejected socket binding with
+`Operation not permitted`; the service stopped before a network could form.
+Neither a new 3-to-2 finality run nor a 4-to-5 onboarding run is claimed here.
+Prior reviewer network results remain separate evidence. MR CI and the full
+preflight, including revive's external compiler fixtures, remain release checks.
+
+The planner independently queried GitLab source tags and main on 2026-10-01:
+`v0.3.2`, `v0.3.2-rc1`, `v0.3.2-rc2` and main contained spec 118 / transaction
+version 7, with no published spec-119 release evidence. Spec 119 is retained;
+transaction version, signed extensions and the signing fixture values are
+unchanged. This verifies published source, not every operator's running process.

@@ -425,6 +425,17 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
             let mut list = Vec::<BenchmarkList>::new();
             list_benchmarks!(list, extra);
 
+            // With abstentions always voting no, an expired motion can never
+            // become approved: sufficient actual ayes take close_early_approved
+            // first. The SDK close_approved fixture instead depends on a prime
+            // aye promoting abstentions. Keep production vote policy in benchmark
+            // builds and expose only reachable collective benchmark paths.
+            for pallet in &mut list {
+                if pallet.pallet == b"pallet_collective" {
+                    pallet.benchmarks.retain(|benchmark| benchmark.name != b"close_approved");
+                }
+            }
+
             let storage_info = AllPalletsWithSystem::storage_info();
 
             (list, storage_info)

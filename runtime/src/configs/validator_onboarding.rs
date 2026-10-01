@@ -12,6 +12,14 @@ use frame_support::traits::{EitherOfDiverse, Nothing};
 pub type FoundationOrigin =
     pallet_collective::EnsureProportionAtLeast<AccountId, pallet_collective::Instance1, 2, 3>;
 pub type FoundationOrRoot = EitherOfDiverse<frame_system::EnsureRoot<AccountId>, FoundationOrigin>;
+/// Foundation privileges require actual affirmative votes. Neither the prime
+/// nor a simple majority may convert abstentions into approval at expiry.
+pub struct AbstentionsAlwaysNo;
+impl pallet_collective::DefaultVote for AbstentionsAlwaysNo {
+    fn default_vote(_: Option<bool>, _: u32, _: u32, _: u32) -> bool {
+        false
+    }
+}
 parameter_types! {
     pub const SessionsPerEra: u32 = 6;
     pub const BondingDuration: u32 = 28;
@@ -28,7 +36,7 @@ impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
     type MotionDuration = FoundationMotionDuration;
     type MaxProposals = ConstU32<32>;
     type MaxMembers = ConstU32<32>;
-    type DefaultVote = pallet_collective::MoreThanMajorityThenPrimeDefaultVote;
+    type DefaultVote = AbstentionsAlwaysNo;
     type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
     // Membership is the sole ordinary writer in production. Benchmark builds
     // accept Root so the upstream collective benchmarks can call set_members.
@@ -353,8 +361,13 @@ impl frame_support::traits::OnRuntimeUpgrade for InitializeStakingLimits {
 mod tests {
     use super::*;
     use crate::{FoundationMembership, RuntimeGenesisConfig, ValidatorAdmission};
-    use frame_support::{assert_noop, assert_ok, traits::OnRuntimeUpgrade};
-    use sp_runtime::{traits::Dispatchable, BuildStorage};
+    use frame_support::{
+        assert_noop, assert_ok, dispatch::GetDispatchInfo, traits::OnRuntimeUpgrade,
+    };
+    use sp_runtime::{
+        traits::{Dispatchable, Hash as _},
+        BuildStorage,
+    };
 
     fn ext() -> sp_io::TestExternalities {
         fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
@@ -398,6 +411,208 @@ mod tests {
     fn foundation() -> RuntimeOrigin {
         pallet_collective::RawOrigin::<AccountId, pallet_collective::Instance1>::Members(1, 1)
             .into()
+    }
+    fn collective_members(count: u8, prime: bool) -> Vec<AccountId> {
+        let members: Vec<_> = (1..=count).map(|i| AccountId::new([i; 32])).collect();
+        assert_ok!(FoundationMembership::reset_members(
+            RuntimeOrigin::root(),
+            members.clone()
+        ));
+        if prime {
+            assert_ok!(FoundationMembership::set_prime(
+                RuntimeOrigin::root(),
+                crate::Address::Id(members[0].clone())
+            ));
+        }
+        members
+    }
+    fn root_count_proposal() -> RuntimeCall {
+        RuntimeCall::ValidatorAdmission(pallet_validator_admission::Call::dispatch_as_root {
+            call: alloc::boxed::Box::new(RuntimeCall::Staking(
+                pallet_staking::Call::set_validator_count { new: 3 },
+            )),
+        })
+    }
+    fn propose_and_vote(
+        call: &RuntimeCall,
+        members: &[AccountId],
+        threshold: u32,
+        ayes: usize,
+    ) -> Hash {
+        let hash = <Runtime as frame_system::Config>::Hashing::hash_of(call);
+        assert_ok!(Foundation::propose(
+            RuntimeOrigin::signed(members[0].clone()),
+            threshold,
+            alloc::boxed::Box::new(call.clone()),
+            call.encoded_size() as u32,
+        ));
+        for member in members.iter().take(ayes) {
+            assert_ok!(Foundation::vote(
+                RuntimeOrigin::signed(member.clone()),
+                hash,
+                0,
+                true
+            ));
+        }
+        hash
+    }
+    fn close_proposal(
+        call: &RuntimeCall,
+        hash: Hash,
+    ) -> frame_support::dispatch::DispatchResultWithPostInfo {
+        Foundation::close(
+            RuntimeOrigin::signed(AccountId::new([90; 32])),
+            hash,
+            0,
+            call.get_dispatch_info().call_weight,
+            call.encoded_size() as u32,
+        )
+    }
+    #[test]
+    fn foundation_expiry_never_promotes_majority_or_prime_abstentions() {
+        for prime in [false, true] {
+            for ayes in [1, 3] {
+                ext().execute_with(|| {
+                    let members = collective_members(5, prime);
+                    let call = root_count_proposal();
+                    let hash = propose_and_vote(&call, &members, 4, ayes);
+                    assert_noop!(
+                        close_proposal(&call, hash),
+                        pallet_collective::Error::<Runtime, pallet_collective::Instance1>::TooEarly
+                    );
+                    System::set_block_number(1 + FoundationMotionDuration::get());
+                    assert_ok!(close_proposal(&call, hash));
+                    assert_eq!(pallet_staking::ValidatorCount::<Runtime>::get(), 2);
+                    assert!(System::events().iter().any(|record| matches!(&record.event,
+                        RuntimeEvent::Foundation(pallet_collective::Event::Closed { yes, no, .. })
+                            if *yes == ayes as u32 && *no == 5 - ayes as u32)));
+                    assert!(System::events().iter().any(|record| matches!(
+                        &record.event,
+                        RuntimeEvent::Foundation(pallet_collective::Event::Disapproved { .. })
+                    )));
+                    assert!(!System::events().iter().any(|record| matches!(
+                        &record.event,
+                        RuntimeEvent::ValidatorAdmission(
+                            pallet_validator_admission::Event::RootDispatched { .. }
+                        )
+                    )));
+                });
+            }
+        }
+    }
+    #[test]
+    fn foundation_actual_two_thirds_dispatches_with_or_without_prime() {
+        for (seats, ayes) in [(3, 2), (5, 4)] {
+            for prime in [false, true] {
+                for expired in [false, true] {
+                    ext().execute_with(|| {
+                        let members = collective_members(seats, prime);
+                        let call = root_count_proposal();
+                        let hash = propose_and_vote(&call, &members, ayes as u32, ayes);
+                        if expired {
+                            System::set_block_number(1 + FoundationMotionDuration::get());
+                        }
+                        assert_ok!(close_proposal(&call, hash));
+                        assert_eq!(pallet_staking::ValidatorCount::<Runtime>::get(), 3);
+                        assert!(System::events().iter().any(|record| matches!(
+                            &record.event,
+                            RuntimeEvent::Foundation(pallet_collective::Event::Executed {
+                                result: Ok(()),
+                                ..
+                            })
+                        )));
+                        assert!(System::events().iter().any(|record| matches!(
+                            &record.event,
+                            RuntimeEvent::ValidatorAdmission(
+                                pallet_validator_admission::Event::RootDispatched {
+                                    result: Ok(())
+                                }
+                            )
+                        )));
+                    });
+                }
+            }
+        }
+    }
+    #[test]
+    fn foundation_low_proposal_threshold_does_not_bypass_privileged_origin() {
+        ext().execute_with(|| {
+            let members = collective_members(5, true);
+            let call = root_count_proposal();
+            let hash = propose_and_vote(&call, &members, 3, 3);
+            assert_ok!(close_proposal(&call, hash));
+            assert_eq!(pallet_staking::ValidatorCount::<Runtime>::get(), 2);
+            assert!(System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::Foundation(pallet_collective::Event::Executed {
+                    result: Err(sp_runtime::DispatchError::BadOrigin),
+                    ..
+                })
+            )));
+        });
+    }
+    #[test]
+    fn foundation_receipt_preserves_failure_of_root_inner_call() {
+        ext().execute_with(|| {
+            let members = collective_members(3, true);
+            // Faucet authority rotation rejects even Root. Collective execution
+            // succeeds, while the nested Root receipt must retain BadOrigin.
+            let call = RuntimeCall::ValidatorAdmission(
+                pallet_validator_admission::Call::dispatch_as_root {
+                    call: alloc::boxed::Box::new(RuntimeCall::FaucetOps(
+                        pallet_faucet_ops::Call::set_authority { authority: None },
+                    )),
+                },
+            );
+            let before = pallet_faucet_ops::Authority::<Runtime>::get();
+            let hash = propose_and_vote(&call, &members, 2, 2);
+            assert_ok!(close_proposal(&call, hash));
+            assert_eq!(pallet_faucet_ops::Authority::<Runtime>::get(), before);
+            assert!(System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::Foundation(pallet_collective::Event::Executed { result: Ok(()), .. })
+            )));
+            assert!(System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::ValidatorAdmission(
+                    pallet_validator_admission::Event::RootDispatched {
+                        result: Err(sp_runtime::DispatchError::BadOrigin)
+                    }
+                )
+            )));
+        });
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    #[test]
+    fn foundation_benchmarks_cover_reachable_close_paths_with_strict_vote_policy() {
+        use pallet_collective::DefaultVote;
+        assert!(!<Runtime as pallet_collective::Config<
+            pallet_collective::Instance1,
+        >>::DefaultVote::default_vote(Some(true), 3, 0, 5));
+        let encoded =
+            crate::apis::api::dispatch("Benchmark_benchmark_metadata", &false.encode()).unwrap();
+        let (list, _): (
+            Vec<frame_benchmarking::BenchmarkList>,
+            Vec<frame_support::traits::StorageInfo>,
+        ) = Decode::decode(&mut encoded.as_slice()).unwrap();
+        let foundation = list
+            .iter()
+            .find(|pallet| pallet.pallet == b"pallet_collective")
+            .unwrap();
+        for name in [
+            b"close_early_approved".as_slice(),
+            b"close_early_disapproved",
+            b"close_disapproved",
+        ] {
+            assert!(foundation
+                .benchmarks
+                .iter()
+                .any(|benchmark| benchmark.name == name));
+        }
+        assert!(!foundation
+            .benchmarks
+            .iter()
+            .any(|benchmark| benchmark.name == b"close_approved"));
     }
     fn bond(who: AccountId) {
         use frame_support::traits::Currency;
@@ -671,11 +886,12 @@ mod tests {
     #[test]
     fn bonded_candidate_with_owner_proof_joins_both_consensus_sets() {
         ext().execute_with(|| {
+            use frame_support::traits::Currency;
             use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
             use sp_core::proof_of_possession::ProofOfPossessionGenerator;
             use sp_core::Pair;
             let who = AccountId::new([91; 32]);
-            bond(who.clone());
+            let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&who, 1000 * UNIT);
             let mut babe = sr25519_fndsa512::Pair::from_string("//Charlie", None).unwrap();
             let mut grandpa = ed25519_fndsa512::Pair::from_string("//Charlie", None).unwrap();
             let keys: crate::BoxedSessionKeys = crate::SessionKeys {
@@ -692,16 +908,55 @@ mod tests {
                 grandpa.generate_proof_of_possession(&who.encode()),
             )
                 .encode();
-            assert_ok!(Session::set_keys(
-                RuntimeOrigin::signed(who.clone()),
-                keys.clone(),
-                proof
-            ));
+            let wrong_owner = AccountId::new([90; 32]);
+            let wrong_owner_proof = (
+                babe.generate_proof_of_possession(&wrong_owner.encode()),
+                grandpa.generate_proof_of_possession(&wrong_owner.encode()),
+            )
+                .encode();
+            let onboarding = |proof| {
+                RuntimeCall::Utility(pallet_utility::Call::batch_all {
+                    calls: vec![
+                        RuntimeCall::Staking(pallet_staking::Call::bond {
+                            value: 100 * UNIT,
+                            payee: pallet_staking::RewardDestination::Staked,
+                        }),
+                        RuntimeCall::Session(pallet_session::Call::set_keys {
+                            keys: keys.clone(),
+                            proof,
+                        }),
+                        RuntimeCall::Staking(pallet_staking::Call::validate {
+                            prefs: Default::default(),
+                        }),
+                    ],
+                })
+            };
+            let before = Balances::free_balance(&who);
+            for invalid_proof in [vec![], wrong_owner_proof] {
+                assert!(onboarding(invalid_proof)
+                    .dispatch(RuntimeOrigin::signed(who.clone()))
+                    .is_err());
+                assert_eq!(Balances::free_balance(&who), before);
+                assert!(!pallet_staking::Bonded::<Runtime>::contains_key(&who));
+                assert!(!pallet_session::NextKeys::<Runtime>::contains_key(&who));
+                assert!(!pallet_staking::Validators::<Runtime>::contains_key(&who));
+            }
+            assert_ok!(onboarding(proof).dispatch(RuntimeOrigin::signed(who.clone())));
             assert!(!AdmissionData::electable_targets(Default::default(), 0)
                 .unwrap()
                 .contains(&who));
             assert_ok!(ValidatorAdmission::approve(foundation(), who.clone()));
-            assert_ok!(Staking::set_validator_count(RuntimeOrigin::root(), 3));
+            assert_eq!(pallet_staking::ValidatorCount::<Runtime>::get(), 2);
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert_ok!(ValidatorAdmission::dispatch_as_root(
+                foundation(),
+                alloc::boxed::Box::new(RuntimeCall::Staking(
+                    pallet_staking::Call::set_validator_count { new: 3 }
+                ))
+            ));
+            let elected = AdmissionElection::elect(0).unwrap();
+            assert_eq!(elected.len(), 3);
+            assert!(elected.iter().any(|(id, _)| id == &who));
             for _ in 0..8 {
                 rotate();
             }
