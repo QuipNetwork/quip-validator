@@ -175,8 +175,8 @@ still fails; the existing service remains a rollout dependency.
 
 Admission unit tests cover bounds, unauthorized/Root rejection, irreversible
 mode changes, disabled graduation, and inner Root-dispatch errors. Runtime tests
-are being added for snapshots, crowding, wrapped nominations, genesis fallback,
-rotations and governance. Recorded execution results will accompany review.
+cover snapshots, crowding, wrapped nominations, genesis fallback, rotations and
+governance. Recorded execution results are below.
 
 Weights for first-party admission and snapshot work are provisional; upstream
 staking/collective/membership weights are baseline only. Run reference-host
@@ -203,7 +203,7 @@ Node.js and the existing signer dependencies/artifacts. It verifies finalized
 proposal receipts including collective and Root inner results, removes Bob,
 forces a new era through Foundation, observes both consensus sets at finalized
 state, then requires finality to continue beyond the transition. With 10-minute
-epochs, allow 25 minutes for election plus queued activation. This script is not
+epochs, allow 25 minutes for election plus queued activation. This script was
 not executed in the original implementation checkout because Node.js was absent.
 The current review validation and network limitation are recorded below.
 
@@ -223,7 +223,7 @@ After the earlier Phase 2 review fixes:
   The initial release build encountered stale compiled faucet Config during the
   concurrent review edits; the rebuild is against the settled source tree.
 - Real finalized-head transition and authorized-upgrade rehearsals: not executed.
-  Node.js is unavailable for the checked-in network script.
+  At that time, Node.js was unavailable for the checked-in network script.
 
 Commands use offline dependencies. `SKIP_PALLET_REVIVE_FIXTURES=1` avoids the
 SDK's external contract fixtures. Existing multisig tests log pre/post-dispatch
@@ -246,6 +246,65 @@ The installed `react-dropzone` UMD package has a pre-existing Node named-export
 error; these tests used a temporary interoperability loader exposing its real
 exports and Node's `--test-force-exit` for existing open handles. This does not
 claim an unmodified Apps test-runner pass or a deployed Apps update.
+
+The following reproduction uses Node v22.23.3 and installed dependencies, from
+the Apps repository at `39fd001328c7fc2c035848d659decec3f89304d7`. The normal
+runner invocation was attempted first and failed before loading the UI test
+files with `react-dropzone does not provide an export named useDropzone`:
+
+```bash
+node node_modules/@polkadot/dev/scripts/polkadot-dev-run-test.mjs --env browser page-staking
+```
+
+Create the temporary interoperability loader with the same contents used for
+the passing run. It imports the real installed CommonJS module and exposes its
+exports; it does not replace component behavior:
+
+```bash
+cat > /tmp/quip-review-cjs-interop.mjs <<'JS'
+export async function resolve(specifier, context, nextResolve) {
+  const result = await nextResolve(specifier, context);
+  if (specifier === 'react-dropzone') {
+    return { ...result, url: `${result.url}?quip-cjs-interop`, shortCircuit: true };
+  }
+  return result;
+}
+export async function load(url, context, nextLoad) {
+  if (url.endsWith('?quip-cjs-interop')) {
+    const original = url.slice(0, -'?quip-cjs-interop'.length);
+    return { format: 'module', shortCircuit: true,
+      source: `import cjs from ${JSON.stringify(original)}; export const useDropzone = cjs.useDropzone; export const ErrorCode = cjs.ErrorCode; export default cjs.default ?? cjs;` };
+  }
+  return nextLoad(url, context);
+}
+JS
+
+node --no-warnings --enable-source-maps \
+  --loader /tmp/quip-review-cjs-interop.mjs \
+  --require @polkadot/dev-test/browser --loader @polkadot/dev-ts/testCached \
+  --test --test-force-exit --test-timeout=60000 \
+  packages/page-staking/src/Actions/NewValidator.spec.tsx \
+  packages/page-staking/src/Actions/partials/sessionKeyProof.spec.ts \
+  packages/page-staking/src/Actions/partials/SessionKey.spec.tsx \
+  packages/page-staking/src/Actions/Account/SetSessionKey.spec.tsx
+
+node node_modules/typescript/bin/tsc --noEmit --pretty false
+node node_modules/eslint/bin/eslint.js \
+  packages/page-staking/src/Actions/NewValidator.tsx \
+  packages/page-staking/src/Actions/NewValidator.spec.tsx \
+  packages/page-staking/src/Actions/partials/SessionKey.tsx \
+  packages/page-staking/src/Actions/partials/sessionKeyProof.ts \
+  packages/page-staking/src/Actions/partials/sessionKeyProof.spec.ts \
+  packages/page-staking/src/Actions/partials/SessionKey.spec.tsx \
+  packages/page-staking/src/Actions/Account/SetSessionKey.tsx \
+  packages/page-staking/src/Actions/Account/SetSessionKey.spec.tsx
+```
+
+The direct Node test invocation reported 11 passed / 0 failed / 0 skipped.
+`--test-force-exit` ends the process after its tests complete because the
+existing browser dependency graph leaves open handles. It does not establish
+handle-cleanup correctness. Both the normal-run failure and this assisted pass
+are part of the validation evidence, rather than an unmodified runner pass.
 
 A new local3 node startup was attempted for the 3-to-2 rehearsal. After supplying
 the system certificate bundle, this sandbox still rejected socket binding with
