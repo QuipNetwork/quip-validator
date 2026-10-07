@@ -581,6 +581,342 @@ mod tests {
     }
 
     #[test]
+    fn permissionless_reward_settlement_charges_signed_caller() {
+        use frame_support::{
+            assert_ok,
+            traits::{Currency, Hooks},
+        };
+        use pallet_quantum_compute_mempool::{
+            types::{Formulation, JobMode, MinerType, ResultDelivery, RewardResolution},
+            JobOrders, Solvers,
+        };
+        use sp_runtime::traits::Hash as _;
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            let signer = HybridPair::from_string("//Alice", None).unwrap();
+            let caller = account_id_from_public(&signer.public());
+            let proposer = AccountId::new([1; 32]);
+            let winner = AccountId::new([2; 32]);
+            let initial = 100 * UNIT;
+            let reward = 2 * UNIT;
+            for account in [&caller, &proposer, &winner] {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, initial);
+            }
+            let name: frame_support::BoundedVec<u8, frame_support::traits::ConstU32<128>> =
+                b"settlement-fees".to_vec().try_into().unwrap();
+            let spec_id = <Runtime as frame_system::Config>::Hashing::hash_of(&(
+                name.clone(), Formulation::Ising, None::<Hash>, None::<Hash>,
+            ));
+            assert_ok!(QuantumComputeMempool::register_job_spec(
+                RuntimeOrigin::root(), proposer.clone(), name, Formulation::Ising, None, None,
+            ));
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(winner.clone()), MinerType::Cpu,
+            ));
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(proposer.clone()),
+                spec_id,
+                pallet_quantum_compute_mempool::types::IsingParams {
+                    nodes: vec![0, 1].try_into().unwrap(),
+                    edges: vec![(0, 1)].try_into().unwrap(),
+                    h_values: vec![0, 0].try_into().unwrap(),
+                    j_values: vec![-1_000].try_into().unwrap(),
+                    max_energy_milli: None,
+                    min_diversity_milli: None,
+                    min_solutions: None,
+                },
+                reward, JobMode::Open, RewardResolution::SingleBest, 2, 1,
+                ResultDelivery::OnChainOnly,
+            ));
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(winner.clone()), 0,
+                vec![vec![1, 1].try_into().unwrap()].try_into().unwrap(),
+            ));
+            System::set_block_number(2);
+            QuantumComputeMempool::on_initialize(2);
+            assert!(!Solvers::<Runtime>::contains_key(&caller));
+            let call = pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
+            let xt = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call, 0);
+            let expected_fee = TransactionPayment::query_info(xt.clone(), xt.encode().len() as u32)
+                .partial_fee;
+            assert!(expected_fee > 0);
+            assert_ok!(Executive::apply_extrinsic(xt).unwrap());
+            assert_eq!(Balances::free_balance(&caller), initial - expected_fee);
+            assert_eq!(Balances::free_balance(&winner), initial + reward);
+            assert_eq!(Balances::free_balance(&proposer), initial - reward);
+            assert_eq!(Balances::reserved_balance(&proposer), 0);
+            assert!(!Solvers::<Runtime>::contains_key(&caller));
+            assert_eq!(Solvers::<Runtime>::get(&winner).unwrap().rewards_earned, reward);
+            assert_eq!(JobOrders::<Runtime>::get(0).unwrap().status,
+                pallet_quantum_compute_mempool::types::OrderStatus::Closed);
+            assert!(System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::TransactionPayment(pallet_transaction_payment::Event::TransactionFeePaid {
+                    who, actual_fee, tip,
+                }) if who == &caller && *actual_fee == expected_fee && *tip == 0
+            )));
+        });
+    }
+
+    fn prepare_two_winner_settlement(
+        proposer: &AccountId,
+        winners: &[AccountId; 2],
+        reward: Balance,
+    ) -> Hash {
+        use frame_support::assert_ok;
+        use pallet_quantum_compute_mempool::types::{
+            Formulation, JobMode, MinerType, ResultDelivery, RewardResolution,
+        };
+        use sp_runtime::traits::Hash as _;
+
+        let name: frame_support::BoundedVec<u8, frame_support::traits::ConstU32<128>> =
+            b"settlement-rollback".to_vec().try_into().unwrap();
+        let spec_id = <Runtime as frame_system::Config>::Hashing::hash_of(&(
+            name.clone(),
+            Formulation::Ising,
+            None::<Hash>,
+            None::<Hash>,
+        ));
+        assert_ok!(QuantumComputeMempool::register_job_spec(
+            RuntimeOrigin::root(),
+            proposer.clone(),
+            name,
+            Formulation::Ising,
+            None,
+            None,
+        ));
+        for winner in winners {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(winner.clone()),
+                MinerType::Cpu,
+            ));
+        }
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(proposer.clone()),
+            spec_id,
+            pallet_quantum_compute_mempool::types::IsingParams {
+                nodes: vec![0, 1].try_into().unwrap(),
+                edges: vec![(0, 1)].try_into().unwrap(),
+                h_values: vec![0, 0].try_into().unwrap(),
+                j_values: vec![-1_000].try_into().unwrap(),
+                max_energy_milli: None,
+                min_diversity_milli: None,
+                min_solutions: None,
+            },
+            reward,
+            JobMode::Bid {
+                miners: Some(winners.to_vec().try_into().unwrap()),
+                miner_types: None
+            },
+            RewardResolution::TopNEqual { n: 2 },
+            2,
+            1,
+            ResultDelivery::CallbackWithPoll {
+                endpoint: b"https://solver.example/poll".to_vec().try_into().unwrap()
+            },
+        ));
+        for (index, winner) in winners.iter().enumerate() {
+            let spins = if index == 0 { vec![1, 1] } else { vec![1, -1] };
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(winner.clone()),
+                0,
+                vec![spins.try_into().unwrap()].try_into().unwrap(),
+            ));
+        }
+        spec_id
+    }
+
+    #[test]
+    fn signed_settlement_failure_rolls_back_payouts_but_keeps_fee_and_nonce() {
+        use frame_support::{
+            assert_ok,
+            traits::{Currency, Hooks, LockableCurrency, WithdrawReasons},
+        };
+        use pallet_quantum_compute_mempool::{
+            JobOrders, JobSpecs, OpenOrders, OrderResults, Solvers,
+        };
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            let signer = HybridPair::from_string("//Alice", None).unwrap();
+            let caller = account_id_from_public(&signer.public());
+            let proposer = AccountId::new([1; 32]);
+            let winners = [AccountId::new([2; 32]), AccountId::new([3; 32])];
+            let initial = 100 * UNIT;
+            let reward = 2 * UNIT + 1;
+            for account in [&caller, &proposer, &winners[0], &winners[1]] {
+                <Balances as Currency<AccountId>>::make_free_balance_be(account, initial);
+            }
+            let spec_id = prepare_two_winner_settlement(&proposer, &winners, reward);
+            // First payout (UNIT+1) succeeds; the second (UNIT) crosses the lock.
+            Balances::set_lock(*b"settle!!", &proposer, initial - (UNIT + 1) - UNIT / 2, WithdrawReasons::TRANSFER);
+            System::set_block_number(2);
+            QuantumComputeMempool::on_initialize(2);
+            System::reset_events();
+            let order_before = JobOrders::<Runtime>::get(0).unwrap().encode();
+            let spec_before = JobSpecs::<Runtime>::get(spec_id).unwrap();
+            let solvers_before = winners.each_ref().map(|w| Solvers::<Runtime>::get(w).unwrap());
+            let open_before = OpenOrders::<Runtime>::get(0);
+            let result_before = OrderResults::<Runtime>::get(0);
+            assert!(result_before.is_some(), "hook must publish before settlement");
+            assert!(open_before.is_none());
+            assert_eq!(JobOrders::<Runtime>::get(0).unwrap().status,
+                pallet_quantum_compute_mempool::types::OrderStatus::Expired);
+            assert!(!Solvers::<Runtime>::contains_key(&caller));
+            let call: RuntimeCall = pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
+            let xt = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call.clone(), 0);
+            let failed_fee = TransactionPayment::query_info(xt.clone(), xt.encode().len() as u32).partial_fee;
+            let error: sp_runtime::DispatchError = sp_runtime::TokenError::Frozen.into();
+            assert_eq!(Executive::apply_extrinsic(xt).unwrap(), Err(error));
+
+            assert_eq!(Balances::free_balance(&proposer), initial - reward);
+            assert_eq!(Balances::reserved_balance(&proposer), reward);
+            for (winner, solver_before) in winners.iter().zip(&solvers_before) {
+                assert_eq!(Balances::free_balance(winner), initial);
+                assert_eq!(Solvers::<Runtime>::get(winner).unwrap(), *solver_before);
+            }
+            assert_eq!(JobOrders::<Runtime>::get(0).unwrap().encode(), order_before);
+            assert_eq!(JobSpecs::<Runtime>::get(spec_id).unwrap(), spec_before);
+            assert_eq!(OpenOrders::<Runtime>::get(0), open_before);
+            assert_eq!(OrderResults::<Runtime>::get(0), result_before);
+            assert!(failed_fee > 0);
+            assert_eq!(Balances::free_balance(&caller), initial - failed_fee);
+            assert_eq!(System::account_nonce(&caller), 1);
+            let events = System::events();
+            assert!(!events.iter().any(|record| matches!(&record.event,
+                RuntimeEvent::QuantumComputeMempool(_) |
+                RuntimeEvent::Balances(pallet_balances::Event::Transfer { .. } | pallet_balances::Event::Unreserved { .. })
+            )));
+            assert!(events.iter().any(|record| matches!(&record.event,
+                RuntimeEvent::System(frame_system::Event::ExtrinsicFailed { dispatch_error, .. })
+                    if dispatch_error == &error
+            )));
+            assert!(events.iter().any(|record| matches!(&record.event,
+                RuntimeEvent::TransactionPayment(pallet_transaction_payment::Event::TransactionFeePaid { who, actual_fee, tip })
+                    if who == &caller && *actual_fee == failed_fee && *tip == 0
+            )));
+
+            Balances::remove_lock(*b"settle!!", &proposer);
+            System::reset_events();
+            let retry = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call.clone(), 1);
+            let retry_fee = TransactionPayment::query_info(retry.clone(), retry.encode().len() as u32).partial_fee;
+            assert_ok!(Executive::apply_extrinsic(retry).unwrap());
+            assert_eq!(System::account_nonce(&caller), 2);
+            assert_eq!(Balances::free_balance(&caller), initial - failed_fee - retry_fee);
+            assert_eq!(Balances::reserved_balance(&proposer), 0);
+            assert_eq!(Balances::free_balance(&proposer), initial - reward);
+            for (winner, payout) in winners.iter().zip([UNIT + 1, UNIT]) {
+                assert_eq!(Balances::free_balance(winner), initial + payout);
+                assert_eq!(Solvers::<Runtime>::get(winner).unwrap().rewards_earned, payout);
+            }
+            assert_eq!(JobSpecs::<Runtime>::get(spec_id).unwrap().successful_orders, 1);
+            assert!(!OpenOrders::<Runtime>::contains_key(0));
+            assert_eq!(JobOrders::<Runtime>::get(0).unwrap().status,
+                pallet_quantum_compute_mempool::types::OrderStatus::Closed);
+            assert_eq!(OrderResults::<Runtime>::get(0).unwrap().winners.len(), 2);
+            assert_eq!(System::events().iter().filter(|record| matches!(&record.event,
+                RuntimeEvent::QuantumComputeMempool(pallet_quantum_compute_mempool::Event::OrderClosed { successful: true, .. })
+            )).count(), 1);
+            let repeat = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call, 2);
+            assert_eq!(Executive::apply_extrinsic(repeat).unwrap(),
+                Err(pallet_quantum_compute_mempool::Error::<Runtime>::AlreadyClaimed.into()));
+            assert_eq!(JobSpecs::<Runtime>::get(spec_id).unwrap().successful_orders, 1);
+            assert_eq!(Balances::free_balance(&winners[0]), initial + UNIT + 1);
+            assert_eq!(Balances::free_balance(&winners[1]), initial + UNIT);
+        });
+    }
+
+    #[test]
+    fn settlement_burns_dust_and_releases_proposer_balance_provider() {
+        use frame_support::{
+            assert_ok,
+            traits::{Currency, Hooks},
+        };
+        use pallet_quantum_compute_mempool::{JobSpecs, OrderResults, Solvers};
+
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            let proposer = AccountId::new([1; 32]);
+            let winners = [AccountId::new([2; 32]), AccountId::new([3; 32])];
+            let caller = AccountId::new([4; 32]);
+            let reward = 2 * UNIT;
+            let dust = <Balances as Currency<AccountId>>::minimum_balance() - 1;
+            assert!(dust > 0, "production ED must exercise nonzero dust removal");
+            <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 100 * UNIT);
+            let spec_id = prepare_two_winner_settlement(&proposer, &winners, reward);
+            // Reserving creates a consumer, which forbids losing the last
+            // provider. A legitimate independent provider permits sub-ED free
+            // balance while the reward remains reserved.
+            System::inc_providers(&proposer);
+            <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, dust);
+            assert_eq!(Balances::free_balance(&proposer), dust);
+            assert_eq!(Balances::reserved_balance(&proposer), reward);
+            assert_eq!(System::providers(&proposer), 1);
+            assert_eq!(System::consumers(&proposer), 1);
+            System::set_block_number(2);
+            QuantumComputeMempool::on_initialize(2);
+            System::reset_events();
+            let issuance_before = Balances::total_issuance();
+            // Direct dispatch isolates dust burning from signed-extrinsic fee handling.
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(caller),
+                0
+            ));
+            assert!(System::account_exists(&proposer));
+            assert_eq!(System::providers(&proposer), 1);
+            assert_eq!(System::consumers(&proposer), 0);
+            assert_eq!(Balances::free_balance(&proposer), 0);
+            assert_eq!(Balances::reserved_balance(&proposer), 0);
+            assert_eq!(Balances::total_issuance(), issuance_before - dust);
+            for winner in &winners {
+                assert_eq!(Balances::free_balance(winner), UNIT);
+                assert_eq!(
+                    Solvers::<Runtime>::get(winner).unwrap().rewards_earned,
+                    UNIT
+                );
+            }
+            assert_eq!(
+                JobSpecs::<Runtime>::get(spec_id).unwrap().successful_orders,
+                1
+            );
+            assert_eq!(OrderResults::<Runtime>::get(0).unwrap().winners.len(), 2);
+            assert!(System::events().iter().any(|record| matches!(&record.event,
+                RuntimeEvent::Balances(pallet_balances::Event::DustLost { account, amount })
+                    if account == &proposer && *amount == dust
+            )));
+            // Final System reaping happens when the independent provider is
+            // released, not inside settlement. No outstanding reserve consumer
+            // may survive successful settlement.
+            assert_ok!(System::dec_providers(&proposer));
+            assert!(!System::account_exists(&proposer));
+        });
+    }
+
+    #[test]
+    fn settlement_proof_envelope_and_normal_dispatch_limits_are_valid() {
+        use frame_support::{dispatch::GetDispatchInfo, traits::Hooks};
+        use pallet_quantum_compute_mempool::weights::{
+            claim_reward_proof_envelope, CLAIM_REWARD_PROOF_FLOOR,
+        };
+        <QuantumComputeMempool as Hooks<BlockNumber>>::integrity_test();
+        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 996_800);
+        let call: RuntimeCall =
+            pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
+        let info = call.get_dispatch_info();
+        assert!(info.call_weight.proof_size() >= CLAIM_REWARD_PROOF_FLOOR);
+        let limits = <Runtime as frame_system::Config>::BlockWeights::get();
+        let normal = limits.get(frame_support::dispatch::DispatchClass::Normal);
+        assert!(info.call_weight.all_lte(normal.max_extrinsic.unwrap()));
+    }
+
+    #[test]
     fn h4_multisig_uses_hash_approval_then_executes_full_call() {
         use frame_support::{dispatch::GetDispatchInfo, traits::Currency, weights::Weight};
 

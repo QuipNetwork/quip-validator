@@ -200,6 +200,98 @@ fn propose_order_for<T: Config>(
     order_id
 }
 
+// Shared maximal settlement setup; lifecycle variants are measured separately.
+fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::AccountId>, u64) {
+    let caller: T::AccountId = whitelisted_caller();
+    let proposer: T::AccountId = account("proposer", 0, 0);
+    fund_account::<T>(&caller, benchmark_funding::<T>());
+    let winner_count = types::MAX_REWARD_WINNERS;
+    // Keep every weighted payout above the existential deposit, so all
+    // 32 transfers and solver-counter writes execute even in the mock.
+    let payout_floor = benchmark_reward::<T>().max(T::Currency::minimum_balance());
+    let reward = payout_floor.saturating_mul((winner_count * winner_count).saturated_into());
+    let winners: Vec<T::AccountId> = (0..winner_count)
+        .map(|index| account("winner", index, 0))
+        .collect();
+    for winner in &winners {
+        register_solver_for::<T>(winner);
+    }
+    let order_id = propose_order_for::<T>(
+        &proposer,
+        params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None),
+        reward,
+        types::JobMode::Bid {
+            miners: Some(bounded(
+                winners
+                    .iter()
+                    .take(T::MaxBidMiners::get() as usize)
+                    .cloned()
+                    .collect(),
+            )),
+            miner_types: None,
+        },
+        types::RewardResolution::TopNWeighted { n: winner_count },
+        types::ResultDelivery::CallbackWithPoll {
+            endpoint: bounded(vec![b'x'; 256]),
+        },
+    );
+    let ranked: TopSolversOf<T> = bounded(
+        winners
+            .iter()
+            .enumerate()
+            .map(|(index, winner)| types::RankedSolver {
+                solver: winner.clone(),
+                energy_milli: -i64::from(winner_count) + index as i64,
+            })
+            .collect(),
+    );
+    OrderTopSolvers::<T>::insert(order_id, ranked);
+    JobOrders::<T>::mutate(order_id, |maybe_order| {
+        let order = maybe_order.as_mut().expect("benchmark order exists");
+        order.solution_count = winner_count;
+        order.first_solution_at = Some(order.created_at);
+        assert_eq!(order.status, types::OrderStatus::Opened);
+    });
+
+    // Mirror the first-solution reschedule after seeding the maximal ranking.
+    let created_at = JobOrders::<T>::get(order_id).unwrap().created_at;
+    OrdersExpiringAt::<T>::remove(created_at.saturating_add(10u32.into()), order_id);
+    OrdersExpiringAt::<T>::insert(created_at.saturating_add(5u32.into()), order_id, ());
+    // Expiry/result publication is hook work, outside the measured settlement.
+    // Advance every block: the hook intentionally bounds empty-bucket scanning.
+    for offset in 1u32..=5 {
+        let now = created_at.saturating_add(offset.into());
+        frame_system::Pallet::<T>::set_block_number(now);
+        QuantumComputeMempool::<T>::on_initialize(now);
+    }
+    assert_eq!(
+        JobOrders::<T>::get(order_id).unwrap().status,
+        types::OrderStatus::Expired
+    );
+    assert!(!OpenOrders::<T>::contains_key(order_id));
+    assert!(OrderResults::<T>::contains_key(order_id));
+    assert!(!Solvers::<T>::contains_key(&caller));
+
+    (caller, proposer, winners, order_id)
+}
+
+fn verify_claim_reward<T: Config>(order_id: u64, winners: &[T::AccountId]) {
+    let winner_count = types::MAX_REWARD_WINNERS;
+    let order = JobOrders::<T>::get(order_id).expect("order exists");
+    assert_eq!(order.status, types::OrderStatus::Closed);
+    assert!(!OpenOrders::<T>::contains_key(order_id));
+    for winner in winners {
+        assert!(Solvers::<T>::get(winner).unwrap().rewards_earned > 0u32.into());
+    }
+    assert_eq!(
+        OrderResults::<T>::get(order_id)
+            .expect("poll result is stored")
+            .winners
+            .len(),
+        winner_count as usize
+    );
+}
+
 #[benchmarks]
 mod benchmarks {
     use super::*;
@@ -327,51 +419,38 @@ mod benchmarks {
 
     #[benchmark]
     fn claim_reward() {
-        let proposer: T::AccountId = whitelisted_caller();
-        let winner_count = types::MAX_REWARD_WINNERS;
-        let reward = benchmark_reward::<T>().saturating_mul(winner_count.saturated_into());
-        let winners: Vec<T::AccountId> = (0..winner_count)
-            .map(|index| account("winner", index, 0))
-            .collect();
-        for winner in &winners {
-            register_solver_for::<T>(winner);
-        }
-        let caller = winners.first().expect("winner set is nonempty").clone();
-        let order_id = propose_order_for::<T>(
-            &proposer,
-            sample_params::<T>(),
-            reward,
-            types::JobMode::Bid {
-                miners: Some(bounded(vec![caller.clone()])),
-                miner_types: None,
-            },
-            types::RewardResolution::TopNEqual { n: winner_count },
-            types::ResultDelivery::CallbackWithPoll {
-                endpoint: bounded(b"https://solver.example/result".to_vec()),
-            },
-        );
-        let ranked: TopSolversOf<T> = bounded(
-            winners
-                .iter()
-                .enumerate()
-                .map(|(index, winner)| types::RankedSolver {
-                    solver: winner.clone(),
-                    energy_milli: -(index as i64) - 1,
-                })
-                .collect(),
-        );
-        OrderTopSolvers::<T>::insert(order_id, ranked);
-        JobOrders::<T>::mutate(order_id, |maybe_order| {
-            let order = maybe_order.as_mut().expect("benchmark order exists");
-            order.solution_count = winner_count;
-            order.status = types::OrderStatus::Expired;
-        });
+        let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
 
         #[extrinsic_call]
         QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
 
-        let order = JobOrders::<T>::get(order_id).expect("order exists");
-        assert_eq!(order.status, types::OrderStatus::Closed);
+        verify_claim_reward::<T>(order_id, &winners);
+        assert!(T::Currency::free_balance(&proposer) >= T::Currency::minimum_balance());
+    }
+
+    // Diagnostic/reference lifecycle case, not a new dispatchable or an
+    // independently consumed weight. Measure both cases before selecting ref_time.
+    #[benchmark(extra)]
+    fn claim_reward_dust() {
+        let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
+        let dust = T::Currency::minimum_balance().saturating_sub(1u32.into());
+        // A reserve is a consumer: an independent provider is needed before
+        // free balance can fall below ED. Settlement burns the dust and drops
+        // the balance provider; the independent provider keeps System alive.
+        // Mock ED=1 covers provider removal; production ED>1 also burns dust.
+        frame_system::Pallet::<T>::inc_providers(&proposer);
+        fund_account::<T>(&proposer, dust);
+        assert_eq!(T::Currency::free_balance(&proposer), dust);
+        let issuance = T::Currency::total_issuance();
+
+        #[extrinsic_call]
+        QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
+
+        verify_claim_reward::<T>(order_id, &winners);
+        assert_eq!(T::Currency::total_balance(&proposer), 0u32.into());
+        assert_eq!(frame_system::Pallet::<T>::providers(&proposer), 1);
+        assert_eq!(frame_system::Pallet::<T>::consumers(&proposer), 0);
+        assert_eq!(T::Currency::total_issuance(), issuance.saturating_sub(dust));
     }
 
     #[benchmark]

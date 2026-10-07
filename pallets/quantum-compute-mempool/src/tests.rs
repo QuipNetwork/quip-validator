@@ -602,6 +602,133 @@ fn submit_solution_rejects_invalid_spin_values() {
 }
 
 #[test]
+fn claim_reward_rejects_unsigned_and_missing_order() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::none(), 0),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
+            crate::Error::<Test>::OrderNotFound
+        );
+    });
+}
+
+#[test]
+fn claim_reward_rejects_unsolved_expired_order() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            1,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        run_to_block(2);
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
+            crate::Error::<Test>::NoSolutionsAccepted
+        );
+        assert_eq!(
+            JobOrders::<Test>::get(0).unwrap().status,
+            crate::types::OrderStatus::Expired
+        );
+        assert!(!OpenOrders::<Test>::contains_key(0));
+        assert_eq!(Balances::reserved_balance(1), 100);
+    });
+}
+
+#[test]
+fn claim_reward_later_transfer_failure_rolls_back_entire_settlement() {
+    use frame_support::traits::{LockableCurrency, WithdrawReasons};
+
+    new_test_ext().execute_with(|| {
+        for solver in [2, 3] {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(solver),
+                MinerType::Cpu
+            ));
+        }
+        let spec_id = register_spec();
+        let endpoint = bounded(b"https://solver.example/poll".to_vec());
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            101,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2, 3])),
+                miner_types: None
+            },
+            RewardResolution::TopNEqual { n: 2 },
+            2,
+            1,
+            ResultDelivery::CallbackWithPoll { endpoint },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution()
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            0,
+            alternate_solution()
+        ));
+        // Unreserving restores 1,000,000. The first payout (51) fits within
+        // the 75 transferable units; the second payout (50) then fails.
+        Balances::set_lock(*b"settle!!", &1, 999_925, WithdrawReasons::TRANSFER);
+        run_to_block(2);
+        let result_before = crate::OrderResults::<Test>::get(0).expect("hook published result");
+        let events_before = System::events();
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
+            sp_runtime::TokenError::Frozen
+        );
+        // assert_noop also checks the entire storage root, including the
+        // first transfer and any events emitted by the failed settlement.
+        // Hook expiry and its prepublished result remain committed.
+        assert_eq!(Balances::free_balance(1), 999_899);
+        assert_eq!(Balances::reserved_balance(1), 101);
+        assert_eq!(Balances::free_balance(2), 1_000_000);
+        assert_eq!(Balances::free_balance(3), 1_000_000);
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        for solver in [2, 3] {
+            assert_eq!(Solvers::<Test>::get(solver).unwrap().rewards_earned, 0);
+        }
+        assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 0);
+        assert_eq!(
+            JobOrders::<Test>::get(0).unwrap().status,
+            crate::types::OrderStatus::Expired
+        );
+        assert!(!OpenOrders::<Test>::contains_key(0));
+        assert_eq!(crate::OrderResults::<Test>::get(0), Some(result_before));
+        assert_eq!(System::events(), events_before);
+
+        Balances::remove_lock(*b"settle!!", &1);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(Balances::free_balance(2), 1_000_051);
+        assert_eq!(Balances::free_balance(3), 1_000_050);
+        assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 51);
+        assert_eq!(Solvers::<Test>::get(3).unwrap().rewards_earned, 50);
+        assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 1);
+        assert_eq!(
+            crate::OrderResults::<Test>::get(0).unwrap().winners.len(),
+            2
+        );
+    });
+}
+
+#[test]
 fn claim_reward_rejects_before_expiry() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumComputeMempool::register_solver(
@@ -627,7 +754,7 @@ fn claim_reward_rejects_before_expiry() {
         ));
 
         assert_noop!(
-            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(2), 0),
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
             crate::Error::<Test>::OrderNotExpired
         );
     });
@@ -659,16 +786,28 @@ fn claim_reward_single_best_transfers_and_closes_order() {
         ));
 
         run_to_block(2);
+        assert!(!Solvers::<Test>::contains_key(4));
         assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
+            RuntimeOrigin::signed(4),
             0
         ));
+        // Direct pallet calls do not charge transaction fees; the caller gets no reward.
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
 
         let order = JobOrders::<Test>::get(0).unwrap();
         assert_eq!(order.status, crate::types::OrderStatus::Closed);
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(1), 999_900);
         assert_eq!(Balances::free_balance(2), 1_000_100);
+        assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 100);
+        assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 1);
+        assert!(!OpenOrders::<Test>::contains_key(0));
+        assert!(!crate::OrderResults::<Test>::contains_key(0));
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
+            crate::Error::<Test>::AlreadyClaimed
+        );
     });
 }
 
@@ -698,10 +837,14 @@ fn claim_reward_invokes_vm_validate_result() {
         ));
 
         run_to_block(2);
+        assert!(!Solvers::<Test>::contains_key(4));
         assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
+            RuntimeOrigin::signed(4),
             0
         ));
+        // Direct pallet calls do not charge transaction fees; the caller gets no reward.
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
 
         let state = mock_vm_state();
         assert_eq!(state.validate_result_calls, 1);
@@ -737,7 +880,7 @@ fn claim_reward_propagates_vm_result_validation_error() {
 
         run_to_block(2);
         assert_noop!(
-            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(2), 0),
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
             sp_runtime::DispatchError::Other("vm-validate-result")
         );
 
@@ -817,10 +960,14 @@ fn claim_reward_top_n_equal_splits_remainder_to_best() {
         ));
 
         run_to_block(2);
+        assert!(!Solvers::<Test>::contains_key(4));
         assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
+            RuntimeOrigin::signed(4),
             0
         ));
+        // Direct pallet calls do not charge transaction fees; the caller gets no reward.
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
 
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(2), 1_000_051);
@@ -864,10 +1011,14 @@ fn claim_reward_top_n_weighted_splits_by_rank() {
         ));
 
         run_to_block(2);
+        assert!(!Solvers::<Test>::contains_key(4));
         assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
+            RuntimeOrigin::signed(4),
             0
         ));
+        // Direct pallet calls do not charge transaction fees; the caller gets no reward.
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
 
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(2), 1_000_067);
@@ -925,6 +1076,21 @@ fn expiry_emits_result_ready_for_callback_delivery() {
         });
 
         assert!(found);
+
+        let result_before = crate::OrderResults::<Test>::get(0);
+        System::reset_events();
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_eq!(crate::OrderResults::<Test>::get(0), result_before);
+        assert!(!System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::ResultReady { .. })
+        )));
     });
 }
 
@@ -990,6 +1156,21 @@ fn expiry_emits_all_winners_for_callback_delivery() {
         });
 
         assert!(found);
+
+        let result_before = crate::OrderResults::<Test>::get(0);
+        System::reset_events();
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_eq!(crate::OrderResults::<Test>::get(0), result_before);
+        assert!(!System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::ResultReady { .. })
+        )));
     });
 }
 
@@ -1036,6 +1217,21 @@ fn expiry_persists_result_for_callback_with_poll() {
         assert_eq!(result.winners[0].solver, 2);
         assert_eq!(result.winners[0].energy_milli, -1_000);
         assert_eq!(result.winners[0].amount, 100);
+
+        let result_before = crate::OrderResults::<Test>::get(0);
+        System::reset_events();
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_eq!(crate::OrderResults::<Test>::get(0), result_before);
+        assert!(!System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::ResultReady { .. })
+        )));
     });
 }
 
@@ -1070,6 +1266,21 @@ fn expiry_does_not_persist_result_for_callback_only() {
         run_to_block(2);
 
         assert!(QuantumComputeMempool::result_for_order(0).is_none());
+
+        let result_before = crate::OrderResults::<Test>::get(0);
+        System::reset_events();
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(Balances::free_balance(4), 1_000_000);
+        assert!(!Solvers::<Test>::contains_key(4));
+        assert_eq!(crate::OrderResults::<Test>::get(0), result_before);
+        assert!(!System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::ResultReady { .. })
+        )));
     });
 }
 
@@ -1793,4 +2004,33 @@ fn post_upgrade_rejects_an_open_order_missing_from_its_bucket() {
 
         assert!(QuantumComputeMempool::post_upgrade(state).is_err());
     });
+}
+
+#[test]
+fn settlement_wrapper_preserves_reference_time_and_floors_both_weight_providers() {
+    use crate::{benchmark_weights, weights};
+    use frame_support::{traits::Get, weights::constants::RocksDbWeight};
+    use weights::WeightInfo;
+
+    let generated = <() as benchmark_weights::WeightInfo>::claim_reward();
+    let generic =
+        <benchmark_weights::SubstrateWeight<Test> as benchmark_weights::WeightInfo>::claim_reward();
+    let test_db: frame_support::weights::RuntimeDbWeight =
+        <Test as frame_system::Config>::DbWeight::get();
+    // Both generated implementations must have the same measured base once
+    // the modeled 68/68 DB accesses are removed. Reference regeneration may
+    // replace that base without changing this accounting contract.
+    assert_eq!(
+        generated.ref_time() - RocksDbWeight::get().reads_writes(68, 68).ref_time(),
+        generic.ref_time() - test_db.reads_writes(68, 68).ref_time(),
+    );
+    assert_eq!(
+        <() as WeightInfo>::claim_reward().ref_time(),
+        generated.ref_time()
+    );
+    assert!(<() as WeightInfo>::claim_reward().proof_size() >= weights::CLAIM_REWARD_PROOF_FLOOR);
+    let composed = <weights::SubstrateWeight<Test> as WeightInfo>::claim_reward();
+    assert_eq!(composed.ref_time(), generic.ref_time());
+    assert!(composed.proof_size() >= weights::CLAIM_REWARD_PROOF_FLOOR);
+    assert!(weights::claim_reward_proof_envelope::<Test>() <= weights::CLAIM_REWARD_PROOF_FLOOR);
 }

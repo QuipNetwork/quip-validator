@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub use pallet::*;
 
+pub mod benchmark_weights;
 mod delivery;
 mod lifecycle;
 pub mod rewards;
@@ -428,6 +429,7 @@ pub mod pallet {
         BlockWaitTooLong,
         OrderNotExpired,
         NotProposer,
+        // Retained for stable error indices; settlement is permissionless.
         NotWinner,
         AlreadyClaimed,
         NoSolutionsAccepted,
@@ -830,10 +832,12 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Settle an expired solved order. Any signed account may call; rewards
+        /// go only to the selected solvers, with no bounty for the caller.
         #[pallet::call_index(5)]
         #[pallet::weight(<T as Config>::WeightInfo::claim_reward())]
         pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
-            let caller = ensure_signed(origin)?;
+            let _caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
             ensure!(
@@ -847,10 +851,6 @@ pub mod pallet {
             ensure!(order.solution_count > 0, Error::<T>::NoSolutionsAccepted);
 
             let payouts = Self::compute_payouts(order_id, &order)?;
-            ensure!(
-                payouts.iter().any(|(winner, _, _)| winner == &caller),
-                Error::<T>::NotWinner
-            );
             let winners = Self::winner_summaries_from_payouts(&payouts);
             T::VM::validate_result(
                 &order.spec_id,
@@ -950,6 +950,10 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        fn integrity_test() {
+            weights::check_claim_reward_weight::<T>();
+        }
+
         /// Finalise the orders whose effective expiry is at or before `now`.
         ///
         /// Work is bounded by `MAX_FINALISED_ORDERS_PER_BLOCK`. Overflow

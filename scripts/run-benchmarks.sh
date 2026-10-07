@@ -72,6 +72,12 @@ check_output_resolver() {
     return 1
   fi
 
+  if [ "$(resolve_weight_output pallets/quantum-compute-mempool)" != \
+    "pallets/quantum-compute-mempool/src/benchmark_weights.rs" ]; then
+    echo "ERROR: Quantum Compute Mempool did not resolve to benchmark_weights.rs" >&2
+    exit 1
+  fi
+
   echo "Weight output resolver checks passed."
 }
 

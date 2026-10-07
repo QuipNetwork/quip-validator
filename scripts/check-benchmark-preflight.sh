@@ -106,11 +106,36 @@ check_quantum_pow_wrapper() {
   done
 }
 
+check_quantum_compute_mempool_wrapper() {
+  local file="$1"
+  local normalized
+  local required
+
+  if [ ! -f "$file" ]; then
+    echo "ERROR: Quantum Compute Mempool public weights wrapper not found at $file" >&2
+    return 1
+  fi
+  normalized="$(normalize_signature < "$file")"
+  for required in \
+    'usecrate::benchmark_weights' \
+    'pubconstCLAIM_REWARD_PROOF_FLOOR:u64=1024*1024;' \
+    'fnwith_claim_reward_proof_floor(' \
+    'weight.max(Weight::from_parts(0,CLAIM_REWARD_PROOF_FLOOR))' \
+    'with_claim_reward_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::claim_reward())' \
+    'with_claim_reward_proof_floor(<()asBenchmarkWeightInfo>::claim_reward())'; do
+    if [[ "$normalized" != *"$required"* ]]; then
+      echo "ERROR: Quantum Compute Mempool public wrapper lost invariant '$required'" >&2
+      return 1
+    fi
+  done
+}
+
 check_wrapper_guard() {
   local temp_dir
   local plain_generated
 
   check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
+  check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/weights.rs
 
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/quip-wrapper-guard.XXXXXX")"
   trap 'rm -rf "$temp_dir"' RETURN
@@ -127,7 +152,12 @@ check_wrapper_guard() {
     return 1
   fi
 
-  echo "Quantum PoW public wrapper guard checks passed."
+  if check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/benchmark_weights.rs >/dev/null 2>&1; then
+    echo "ERROR: generated mempool weights passed the public wrapper guard" >&2
+    return 1
+  fi
+
+  echo "Quantum PoW and Quantum Compute Mempool public wrapper guard checks passed."
 }
 
 case "${1:-}" in
@@ -148,6 +178,7 @@ case "${1:-}" in
 esac
 
 check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
+check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/weights.rs
 
 echo "== Building debug node with runtime-benchmarks =="
 cargo build --features runtime-benchmarks -p quip-network-node
@@ -191,7 +222,7 @@ for pallet in "${pallets[@]}"; do
   pallet_dir="pallets/$(echo "${pallet#pallet_}" | tr '_' '-')"
   tracked_weights="$pallet_dir/src/weights.rs"
   public_weights="$tracked_weights"
-  if [ "$pallet" = "pallet_quantum_pow" ]; then
+  if [ -f "$pallet_dir/src/benchmark_weights.rs" ]; then
     tracked_weights="$pallet_dir/src/benchmark_weights.rs"
   fi
   if [ ! -f "$tracked_weights" ]; then
@@ -215,12 +246,12 @@ for pallet in "${pallets[@]}"; do
       exit 1
     fi
 
-    if [ "$pallet" = "pallet_quantum_pow" ]; then
+    if [ "$public_weights" != "$tracked_weights" ]; then
       public_signature="$(extract_signature "$extrinsic" "$public_weights")"
       if [ -z "$public_signature" ] || \
         [ "$(printf '%s' "$public_signature" | normalize_signature)" != \
           "$(printf '%s' "$generated_signature" | normalize_signature)" ]; then
-        echo "ERROR: public nonlinear wrapper signature differs for $pallet::$extrinsic" >&2
+        echo "ERROR: public wrapper signature differs for $pallet::$extrinsic" >&2
         echo "  public:    $public_signature" >&2
         echo "  generated: $generated_signature" >&2
         exit 1

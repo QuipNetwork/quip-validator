@@ -229,3 +229,141 @@ maximum approved set with keys and staking ledgers. Upstream governance/staking
 weights are baselines, not Quip reference-machine measurements. Nomination
 benchmark capacity is a measurement parameter only; the live nomination cap
 remains Some(0).
+
+
+## Permissionless settlement: outstanding merge and release timing gate
+
+`claim_reward` remains **blocked for merge and release pending reference timing**. After
+rebasing onto main `7ac712699d3deefeb8cc70edadd75d2e1ae9aca6`, its
+`1_705_641_000` ps base and all unrelated measurements are retained from main's
+fresh benchmark output (e87f8f0). That claim benchmark whitelisted the proposer,
+used smaller topology and equal payouts; it does not establish a timing bound
+for the maximal permissionless or dust cases. The earlier pre-rebase timing
+`1_737_510_000` is superseded and is not restored. No local diagnostic run is
+being represented as reference regeneration.
+
+The public mempool `weights.rs` composes generated `benchmark_weights.rs`,
+including main's `finalise_expired_orders(k)` method unchanged. Only settlement's
+generated DB accounting is adjusted in both implementations: main's 67 reads /
+67 writes become 68 / 68 because the proposer account is no longer whitelisted.
+This is an access-model correction pending fresh measurement, **not a full
+weight regeneration**. The old lazy-expiry 68 / 69 count no longer applies:
+result publication now runs in `on_initialize`, outside the claim. The wrapper
+has no permanent +1 DB adjustment: future reference generation writes directly
+to `benchmark_weights.rs` and supplies the complete DB counts. The resolver and
+preflight protect the public wrapper.
+
+### Proof envelope and integrity checks
+
+The pinned SDK (`845eb9986c7131056b077d14ad7249f9d65ca111`), in
+`substrate/utils/frame/benchmarking-cli/src/pallet/writer.rs`, takes the maximum
+proof estimate across prefixes. The retained generated claim proof is 644411
+bytes. The pre-rebase production-sized preflight recorded 646565, demonstrating
+why a maximum across prefixes was insufficient; that observation is historical,
+not a measurement of this rebased implementation. Regeneration alone does not
+repair that estimator behavior. Settlement uses a maintained 1 MiB proof floor instead;
+any larger generated proof estimate is preserved.
+
+The floor covers an additive envelope derived from the runtime's actual storage
+metadata (`StorageInfo::max_size` includes the map key/hasher part and the value's
+`MaxEncodedLen`), rather than one dominating prefix:
+
+| Storage | Distinct keys | Maximum encoded size per key |
+|---|---:|---:|
+| JobOrders | 1 | 640946 |
+| JobSpecs | 1 | 297 |
+| OrderTopSolvers, or the larger ranking representation | 1 | 1305 |
+| System Account (proposer + winners) | 33 | 128 |
+| Solvers | 32 | 109 |
+| OpenOrders (removal included conservatively) | 1 | 24 |
+
+These 69 keys total 650284 bytes. Result publication is hook work, so
+`OrderResults` is no longer part of the claim envelope. Charge the SDK's largest u32 map-cardinality
+bucket (eight radix-16 layers), plus two additional/global layers, **separately
+for every key**, without claiming trie-node sharing:
+`(8 + 2) * 15 * 33 = 4950` bytes per key. Conservatively include the whitelisted
+16-byte TotalIssuance value and another 4950 bytes. The result is
+`650284 + 69 * 4950 + 16 + 4950 = 996800`, below 1048576.
+
+This is a conservative envelope **under the SDK's stated estimation model**, not
+an enforced storage-cardinality cap or an unconditional bound for every possible
+adversarial trie shape. A protocol requirement for an assumption-free trie bound
+needs a separate codec/path analysis. No SDK-wide estimator change is included.
+
+The pallet's integrity hook derives the envelope from configured encoded types
+and limits, rejects an insufficient floor or a weight provider that bypasses it,
+pins the winner limit underlying the modeled DB counts, and checks the weight
+against normal max-extrinsic and block allowances in both dimensions. Runtime
+tests additionally check the actual dispatch weight.
+Currency, VM or account-hook changes require a fresh access/timing review.
+
+### Lifecycle cases to measure
+
+Measure both `claim_reward` (surviving, well-funded proposer) and the extra
+`claim_reward_dust` case. Both settle 32 weighted winners with maximum topology,
+bid list and callback endpoint sizes. Both run the expiry hook before the measured
+claim and verify that its prepublished result survives settlement. Neither case
+is asserted to be slower before reference measurements.
+
+A reserve creates a consumer in the pinned balances implementation. Lowering a
+sole-provider reserved account's free balance below ED is rejected with
+`ConsumerRemaining`; forcing that state would be an invalid benchmark setup.
+The dust case first establishes an independent provider, then leaves ED-1 free
+with the reward still reserved. Settlement burns the residual dust, removes the
+reserve consumer and releases the balance provider. The independent provider
+keeps the System account alive; removing it subsequently reaps the System account.
+That last removal is outside settlement and is not claimed as benchmarked work.
+The mock's ED=1 exercises zero-dust provider removal; a runtime test with the
+production ED verifies actual nonzero dust burning and subsequent reaping.
+
+The H4 Executive failure test also covers a later payout failure: the first
+winner's transfer/counter/event roll back together. Hook expiry, the removed
+open-order index and the prepublished result remain committed, while the
+failed signed transaction's fee, nonce, System failure event and fee event persist.
+Removing the lock and retrying at the next nonce settles once. The dispatchable
+uses the pinned FRAME macro's `with_storage_layer`; no redundant transaction
+wrapper was added.
+
+### Reference procedure, when access and scheduling are authorized
+
+The current `benchmark-weights` CI job always invokes `push-weights.sh`, which
+commits and pushes. Do not trigger it while the no-push instruction applies. No verified direct node02 access or no-push settlement CI job was
+available during this work. The following is a pending operator procedure, not
+a completed reference run:
+
+1. Reserve exclusive use of node02 coordinated with the CI
+   `reference-machine` resource lock. Use its normal pinned toolchain/image and
+   a temporary checkout of the exact base plus the reviewed uncommitted patch.
+2. Record base commit, a full patch hash (including new `benchmark_weights.rs`),
+   source/lockfile hashes, SDK revision, Rust version, runner/image identity,
+   machine-check evidence and a SHA256 of the fresh benchmark Wasm.
+3. Build a release runner and runtime with the normal reference fixture tooling:
+
+```bash
+cargo build --release --features runtime-benchmarks -p quip-network-node
+```
+
+4. Run both cases into temporary artifacts; do not overwrite tracked weights or
+   call `push-weights.sh`:
+
+```bash
+benchmark_output=$(mktemp -d)
+for settlement_case in claim_reward claim_reward_dust; do
+  target/release/quip-network-node benchmark pallet \
+    --runtime target/release/wbuild/quip-protocol-runtime/quip_protocol_runtime.wasm \
+    --genesis-builder runtime \
+    --pallets pallet_quantum_compute_mempool \
+    --extrinsic "$settlement_case" --extra \
+    --steps 50 --repeat 20 \
+    --json-file "$benchmark_output/$settlement_case.json" \
+    --output "$benchmark_output/$settlement_case.rs"
+done
+```
+
+Retain command lines, stdout, raw samples and artifact hashes. Review the timing
+and DB envelope across both cases, then update only settlement's generated timing
+and access terms from trustworthy evidence while preserving the proof wrapper.
+Check that the resulting dispatch weight still fits normal limits; run tests,
+strict Clippy, formatting and wrapper guards. Merge and release acceptance remain deferred
+until that evidence exists. Local diagnostic builds may skip unrelated Revive
+fixtures when `solc` is absent; that is not a substitute for reference provenance.
