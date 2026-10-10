@@ -21,6 +21,7 @@ mod tests;
 pub use weights::*;
 
 use frame_support::traits::Currency;
+use pallet_emission_controller::MiningReward;
 
 type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
 type BlockNumberOf<T> = frame_system::pallet_prelude::BlockNumberFor<T>;
@@ -176,6 +177,9 @@ pub mod pallet {
         type MinerDeposit: Get<BalanceOf<Self>>;
         #[pallet::constant]
         type BlockReward: Get<BalanceOf<Self>>;
+
+        /// Pays from a prefunded subnet pot; never mints outside the controller.
+        type RewardPayment: MiningReward<Self::AccountId, BalanceOf<Self>>;
         #[pallet::constant]
         type MaxProofsPerBlock: Get<u32>;
 
@@ -420,7 +424,7 @@ pub mod pallet {
                 LastProofBlockHash::<T>::put(H256::from(Self::hash_to_bytes_32(parent)));
             }
 
-            <T as Config>::WeightInfo::register_miner()
+            <T as Config>::WeightInfo::register_miner().saturating_add(T::RewardPayment::weight())
         }
 
         /// Cumulative storage migration to the in-code `STORAGE_VERSION`.
@@ -558,8 +562,7 @@ pub mod pallet {
                 return;
             };
 
-            let reward = T::BlockReward::get();
-            let _ = T::Currency::deposit_creating(&record.miner, reward);
+            let reward = T::RewardPayment::pay(&record.miner, T::BlockReward::get());
 
             if let Some(mut miner) = Miners::<T>::get(&record.miner) {
                 miner.proofs_won = miner.proofs_won.saturating_add(1);

@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![recursion_limit = "256"]
 
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
@@ -254,7 +255,8 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // regenerated on the reference machine for 0.4.0.
     // `store_program` and `execute` keep their call indices and arguments, so
     // `transaction_version` stays at 7.
-    spec_version: 118,
+    // 119: fused faucet and fixed-schedule subnet emission controller.
+    spec_version: 119,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,
@@ -1195,4 +1197,17 @@ mod runtime {
 
     #[runtime::pallet_index(18)]
     pub type Proxy = pallet_proxy;
+
+    #[runtime::pallet_index(19)]
+    pub type EmissionController = pallet_emission_controller;
+    #[runtime::pallet_index(20)]
+    pub type Foundation = pallet_collective<Instance1>;
+    #[runtime::pallet_index(21)]
+    pub type FoundationMembership = pallet_membership<Instance1>;
+    #[runtime::pallet_index(22)]
+    pub type ValidatorAdmission = pallet_validator_admission;
+    #[runtime::pallet_index(23)]
+    pub type Staking = pallet_staking;
+    #[runtime::pallet_index(24)]
+    pub type Historical = pallet_session::historical;
 }
