@@ -38,6 +38,7 @@ use sp_keyring::Ed25519Keyring;
 use sp_keyring::Sr25519Keyring;
 
 pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
+pub const REHEARSAL_RUNTIME_PRESET: &str = "validator_rehearsal";
 
 /// Identifier for the public quip-testnet genesis preset.
 ///
@@ -111,14 +112,94 @@ fn tx_account_from_hex(hex: &str, source: &str) -> AccountId {
 //
 // Each authority is a triple of `(account, babe, grandpa)`. The same account is
 // used as both validator stash and controller in `pallet-session`, which is
-// fine for v0.2 where staking is not wired in.
+// used as both stash and controller in classic staking.
+struct GenesisRoles {
+    foundation_members: Vec<AccountId>,
+    faucet_authority: AccountId,
+    sudo_key: Option<AccountId>,
+    ising_spec_builder: AccountId,
+}
+
+// Small local presets retain their single-key convenience. Rehearsal and the
+// public testnet explicitly assign each role instead.
+fn development_roles() -> GenesisRoles {
+    let alice = tx_account_from_seed(&Sr25519Keyring::Alice.to_seed());
+    GenesisRoles {
+        foundation_members: vec![alice.clone()],
+        faucet_authority: alice.clone(),
+        sudo_key: Some(alice.clone()),
+        ising_spec_builder: alice,
+    }
+}
+
 fn testnet_genesis(
     initial_authorities: Vec<(AccountId, BabeId, GrandpaId)>,
     endowed_accounts: Vec<AccountId>,
-    root: AccountId,
+    roles: GenesisRoles,
     chain_id: u64,
+    minimum_validator_count: u32,
 ) -> Value {
+    assert!(
+        !initial_authorities.is_empty() && initial_authorities.len() <= 32,
+        "authority count must be 1..=32"
+    );
+    assert!((1..=initial_authorities.len() as u32).contains(&minimum_validator_count));
+    let approved: Vec<_> = initial_authorities
+        .iter()
+        .map(|(who, _, _)| who.clone())
+        .collect();
+    let unique: alloc::collections::BTreeSet<_> = approved.iter().collect();
+    assert_eq!(unique.len(), approved.len(), "duplicate validator stash");
+    assert!(
+        approved.iter().all(|who| endowed_accounts.contains(who)),
+        "every validator must be endowed above its bond"
+    );
+    assert!(
+        !roles.foundation_members.is_empty(),
+        "Foundation needs members"
+    );
+    let unique_members: alloc::collections::BTreeSet<_> = roles.foundation_members.iter().collect();
+    assert_eq!(
+        unique_members.len(),
+        roles.foundation_members.len(),
+        "duplicate Foundation member"
+    );
+    // SDK benchmark setups require low-bond validators and nominators. Keep
+    // the production chainspec limits unchanged in every non-benchmark build.
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    let (max_nominator_count, min_validator_bond) = (Some(0u32), 100 * crate::UNIT);
+    #[cfg(feature = "runtime-benchmarks")]
+    let (max_nominator_count, min_validator_bond) = (None::<u32>, 0u128);
     build_struct_json_patch!(RuntimeGenesisConfig {
+        foundation_membership: pallet_membership::GenesisConfig {
+            members: roles
+                .foundation_members
+                .try_into()
+                .expect("Foundation members fit"),
+            ..Default::default()
+        },
+        validator_admission: pallet_validator_admission::GenesisConfig {
+            mode: pallet_validator_admission::AdmissionMode::FoundationOnly,
+            approved: approved.clone(),
+        },
+        staking: pallet_staking::GenesisConfig {
+            validator_count: approved.len() as u32,
+            minimum_validator_count,
+            max_validator_count: None,
+            max_nominator_count: max_nominator_count,
+            min_validator_bond: min_validator_bond,
+            stakers: approved
+                .iter()
+                .map(|who| (
+                    who.clone(),
+                    who.clone(),
+                    100 * crate::UNIT,
+                    pallet_staking::StakerStatus::Validator
+                ))
+                .collect(),
+            force_era: pallet_staking::Forcing::NotForcing,
+            ..Default::default()
+        },
         evm_chain_id: pallet_evm_chain_id::GenesisConfig {
             chain_id,
             ..Default::default()
@@ -161,9 +242,32 @@ fn testnet_genesis(
         },
         // Must match QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58 on the canonical testnet
         quantum_compute_mempool: QuantumComputeMempoolConfig {
-            default_ising_spec_builder: Some(root.clone()),
+            default_ising_spec_builder: Some(roles.ising_spec_builder),
         },
-        sudo: SudoConfig { key: Some(root) },
+        faucet_ops: pallet_faucet_ops::GenesisConfig {
+            state: pallet_faucet_ops::FaucetState::Enabled,
+            authority: Some(roles.faucet_authority),
+        },
+        emission_controller: pallet_emission_controller::GenesisConfig {
+            enabled: true,
+            start_at: None,
+            routes: vec![
+                (
+                    pallet_emission_controller::ISING_SUBNET,
+                    sp_runtime::Perbill::from_percent(50)
+                ),
+                (
+                    pallet_emission_controller::QVRF_SUBNET,
+                    sp_runtime::Perbill::from_percent(50)
+                ),
+            ],
+            // Test currency only; mainnet MUST use zero plus the disabled fuse.
+            faucet_budget: 1_000_000_000 * crate::UNIT,
+            ..Default::default()
+        },
+        sudo: SudoConfig {
+            key: roles.sudo_key
+        },
     })
 }
 
@@ -181,8 +285,9 @@ pub fn development_config_genesis() -> Value {
             tx_account_from_seed(&Sr25519Keyring::AliceStash.to_seed()),
             tx_account_from_seed(&Sr25519Keyring::BobStash.to_seed()),
         ],
-        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+        development_roles(),
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        1,
     )
 }
 
@@ -205,8 +310,9 @@ pub fn local_config_genesis() -> Value {
             .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
             .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
-        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+        development_roles(),
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        1,
     )
 }
 
@@ -234,8 +340,9 @@ pub fn local_three_validator_config_genesis() -> Value {
             .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
             .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
-        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+        development_roles(),
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        1,
     )
 }
 
@@ -247,9 +354,9 @@ pub fn local_three_validator_config_genesis() -> Value {
 /// public bytes are committed in this repository; private material lives on
 /// each operator's host.
 ///
-/// The endowed set is intentionally identical to the authority set for v0.2.0
-/// — there is no separate faucet account yet. Sudo is held by operator 1; a
-/// migration to a multisig is tracked for a later release.
+/// Fresh spec-119 genesis gives all three operators Foundation membership.
+/// Operator 1 remains sudo, faucet authority and Ising spec builder until ops
+/// provisions separate role accounts; this preset does not migrate live state.
 pub fn quip_testnet_config_genesis() -> Value {
     let op1_babe = babe_authority_from_public_hex(
         include_str!("genesis_quip_testnet/operator_1_babe.hex"),
@@ -295,9 +402,61 @@ pub fn quip_testnet_config_genesis() -> Value {
             (op2_account.clone(), op2_babe, op2_grandpa),
             (op3_account.clone(), op3_babe, op3_grandpa),
         ],
-        vec![op1_account.clone(), op2_account, op3_account],
-        op1_account,
+        vec![
+            op1_account.clone(),
+            op2_account.clone(),
+            op3_account.clone(),
+        ],
+        GenesisRoles {
+            foundation_members: vec![op1_account.clone(), op2_account, op3_account],
+            // TODO(ops): derive and commit a dedicated faucet public account and
+            // coordinate sudo multisig custody before changing these genesis defaults.
+            // Post-genesis, rotate via faucetOps.set_authority before faucet deployment.
+            faucet_authority: op1_account.clone(),
+            sudo_key: Some(op1_account.clone()),
+            ising_spec_builder: op1_account,
+        },
         pallet_evm_chain_id::TESTNET_CHAIN_ID,
+        3,
+    )
+}
+
+/// Four-validator rehearsal with a safety floor of four; dev seeds are not
+/// independent production operators. Add a replacement before removing a member.
+pub fn rehearsal_config_genesis() -> Value {
+    let seeds = ["//Alice", "//Bob", "//Charlie", "//Dave"];
+    let mut foundation_members: Vec<_> = seeds[..3]
+        .iter()
+        .map(|seed| tx_account_from_seed(seed))
+        .collect();
+    foundation_members.sort();
+    let sudo = crate::Multisig::multi_account_id(&foundation_members, 2);
+    let faucet_authority = tx_account_from_seed("//Eve");
+    let mut endowed_accounts: Vec<_> = seeds
+        .iter()
+        .map(|seed| tx_account_from_seed(seed))
+        .collect();
+    endowed_accounts.extend([faucet_authority.clone(), sudo.clone()]);
+    testnet_genesis(
+        seeds
+            .iter()
+            .map(|seed| {
+                (
+                    tx_account_from_seed(seed),
+                    babe_authority_from_seed(seed),
+                    grandpa_authority_from_seed(seed),
+                )
+            })
+            .collect(),
+        endowed_accounts,
+        GenesisRoles {
+            foundation_members,
+            faucet_authority,
+            sudo_key: Some(sudo),
+            ising_spec_builder: tx_account_from_seed("//Alice"),
+        },
+        pallet_evm_chain_id::LOCAL_CHAIN_ID,
+        4,
     )
 }
 
@@ -308,6 +467,7 @@ pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
         LOCAL_THREE_VALIDATOR_RUNTIME_PRESET => local_three_validator_config_genesis(),
         QUIP_TESTNET_RUNTIME_PRESET => quip_testnet_config_genesis(),
+        REHEARSAL_RUNTIME_PRESET => rehearsal_config_genesis(),
         _ => return None,
     };
     Some(
@@ -324,6 +484,7 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
         PresetId::from(QUIP_TESTNET_RUNTIME_PRESET),
+        PresetId::from(REHEARSAL_RUNTIME_PRESET),
     ]
 }
 
@@ -384,16 +545,101 @@ mod tests {
 
         let mut full = serde_json::to_value(crate::RuntimeGenesisConfig::default())
             .expect("default runtime genesis config serialises");
+        let expected_faucet: Option<AccountId> =
+            serde_json::from_value(patch["faucetOps"]["authority"].clone()).unwrap();
+        let expected_sudo: Option<AccountId> =
+            serde_json::from_value(patch["sudo"]["key"].clone()).unwrap();
+        let mut expected_members: Vec<AccountId> =
+            serde_json::from_value(patch["foundationMembership"]["members"].clone()).unwrap();
+        expected_members.sort();
         merge_json(&mut full, patch);
         let bytes = serde_json::to_vec(&full).expect("merged runtime config serialises");
         sp_io::TestExternalities::new_empty().execute_with(|| {
             build_state::<crate::RuntimeGenesisConfig>(bytes)
                 .expect("genesis preset builds storage without panic");
             assert_eq!(
+                pallet_faucet_ops::State::<crate::Runtime>::get(),
+                pallet_faucet_ops::FaucetState::Enabled
+            );
+            assert_eq!(
+                pallet_faucet_ops::Authority::<crate::Runtime>::get(),
+                expected_faucet
+            );
+            assert_eq!(pallet_sudo::Key::<crate::Runtime>::get(), expected_sudo);
+            assert_eq!(
+                pallet_collective::Members::<crate::Runtime, pallet_collective::Instance1>::get(),
+                expected_members
+            );
+            #[cfg(not(feature = "runtime-benchmarks"))]
+            {
+                assert_eq!(
+                    pallet_staking::MaxNominatorsCount::<crate::Runtime>::get(),
+                    Some(0)
+                );
+                assert_eq!(
+                    pallet_staking::MinValidatorBond::<crate::Runtime>::get(),
+                    100 * crate::UNIT
+                );
+            }
+            #[cfg(feature = "runtime-benchmarks")]
+            {
+                assert_eq!(
+                    pallet_staking::MaxNominatorsCount::<crate::Runtime>::get(),
+                    None
+                );
+                assert_eq!(pallet_staking::MinValidatorBond::<crate::Runtime>::get(), 0);
+            }
+            assert!(pallet_emission_controller::Enabled::<crate::Runtime>::get());
+            assert_eq!(
+                pallet_emission_controller::Routes::<crate::Runtime>::get().len(),
+                2
+            );
+            assert_eq!(
+                pallet_emission_controller::FaucetBudget::<crate::Runtime>::get(),
+                1_000_000_000 * crate::UNIT
+            );
+            assert_ne!(
+                crate::EmissionController::pot(0),
+                crate::EmissionController::pot(1)
+            );
+            assert_eq!(
                 <pallet_evm_chain_id::ChainId<crate::Runtime> as Get<u64>>::get(),
                 expected_chain_id
             );
         });
+    }
+
+    #[test]
+    fn rehearsal_preset_keeps_four_validator_floor() {
+        let patch = rehearsal_config_genesis();
+        assert_eq!(patch["staking"]["minimumValidatorCount"], 4);
+        assert_eq!(patch["staking"]["stakers"].as_array().unwrap().len(), 4);
+        let members: Vec<AccountId> =
+            serde_json::from_value(patch["foundationMembership"]["members"].clone()).unwrap();
+        let mut expected: Vec<_> = ["//Alice", "//Bob", "//Charlie"]
+            .iter()
+            .map(|seed| tx_account_from_seed(seed))
+            .collect();
+        expected.sort();
+        assert_eq!(members, expected);
+        let faucet = tx_account_from_seed("//Eve");
+        assert!(!members.contains(&faucet));
+        assert_eq!(
+            patch["faucetOps"]["authority"],
+            serde_json::to_value(&faucet).unwrap()
+        );
+        let sudo = crate::Multisig::multi_account_id(&expected, 2);
+        assert_eq!(patch["sudo"]["key"], serde_json::to_value(&sudo).unwrap());
+        assert!(!members.contains(&sudo));
+        assert_ne!(sudo, faucet);
+        let balances: Vec<(AccountId, crate::Balance)> =
+            serde_json::from_value(patch["balances"]["balances"].clone()).unwrap();
+        for account in [faucet, sudo] {
+            assert!(balances
+                .iter()
+                .any(|(who, balance)| who == &account && *balance > 0));
+        }
+        assert_preset_builds_storage_with_chain_id(patch, pallet_evm_chain_id::LOCAL_CHAIN_ID);
     }
 
     #[test]
@@ -422,10 +668,19 @@ mod tests {
 
     #[test]
     fn quip_testnet_preset_builds() {
-        assert_preset_builds_storage_with_chain_id(
-            quip_testnet_config_genesis(),
-            pallet_evm_chain_id::TESTNET_CHAIN_ID,
+        let patch = quip_testnet_config_genesis();
+        let members = patch["foundationMembership"]["members"].as_array().unwrap();
+        let approved = patch["validatorAdmission"]["approved"].as_array().unwrap();
+        assert_eq!(members.len(), 3);
+        assert_eq!(members, approved);
+        assert!(members[0] != members[1] && members[0] != members[2] && members[1] != members[2]);
+        assert_eq!(patch["sudo"]["key"], members[0]);
+        assert_eq!(patch["faucetOps"]["authority"], members[0]);
+        assert_eq!(
+            patch["quantumComputeMempool"]["defaultIsingSpecBuilder"],
+            members[0]
         );
+        assert_preset_builds_storage_with_chain_id(patch, pallet_evm_chain_id::TESTNET_CHAIN_ID);
     }
 
     #[test]

@@ -16,6 +16,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 workspace = true
 
 [dependencies]
+pallet-emission-controller.workspace = true
 blake3 = { version = "1.8.2", default-features = false }
 codec = { features = ["derive"], workspace = true }
 libm = { version = "=0.2.16", default-features = false }
@@ -38,6 +39,7 @@ sp-runtime = { default-features = true, workspace = true }
 [features]
 default = ["std"]
 std = [
+  "pallet-emission-controller/std",
   "blake3/std",
   "codec/std",
   "frame-benchmarking?/std",
@@ -59,6 +61,7 @@ runtime-benchmarks = [
   "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [
+  "pallet-emission-controller/try-runtime",
   "frame-support/try-runtime",
   "frame-system/try-runtime",
   "pallet-balances/try-runtime",

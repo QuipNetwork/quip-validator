@@ -42,6 +42,20 @@ pub fn local_three_validator_chain_spec() -> Result<ChainSpec, String> {
     .build())
 }
 
+pub fn validator_rehearsal_chain_spec() -> Result<ChainSpec, String> {
+    Ok(ChainSpec::builder(
+        WASM_BINARY.ok_or_else(|| "Rehearsal wasm not available".to_string())?,
+        None,
+    )
+    .with_name("Validator Rehearsal (4 Validators)")
+    .with_id("validator_rehearsal")
+    .with_chain_type(ChainType::Local)
+    .with_genesis_config_preset_name(
+        quip_protocol_runtime::genesis_config_presets::REHEARSAL_RUNTIME_PRESET,
+    )
+    .build())
+}
+
 /// Canonical public quip-testnet chain spec.
 ///
 /// The raw export of this builder (`quip-network-node export-chain-spec
