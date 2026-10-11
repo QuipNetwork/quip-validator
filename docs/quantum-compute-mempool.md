@@ -328,3 +328,7 @@ missing reserve through an authorised recovery before retrying. No cleanup,
 forced-close or solved-order refund mechanism is provided, and eventual closure
 is not guaranteed. Runtime 119 starts with empty indexes at fresh genesis; no
 pre-reset cleanup/import/migration is included.
+
+The [Quip compute interaction protocol](quip-evm-compute-interaction.md) defines
+finalised evidence, remark correlation, retry/reset rules and the independent
+recipient-metadata contract. It does not activate EVM rewards.
