@@ -1,8 +1,9 @@
 # QUI-1512 follow-up plan
 
-Status: implementation plan with recorded user decisions, 2026-10-11. This records remaining
-chain-side work for QVM/EVM compute interaction. It does not claim
-completion of the Trustee or EVM contract implementation.
+Status: independent A–D implemented on the review branch, 2026-10-11; review,
+reference timing and deployment gates remain. The decisions and original scope
+below are retained for review. This does not claim completion of the Trustee or
+EVM contract implementation.
 
 ## Decisions agreed with the user
 
@@ -389,3 +390,58 @@ The Quip-chain precompile (QUI-999), XQVM-on-chain (QUI-1475), ZK proofs (QUI-11
 hardware attestation, royalties, external-network selection/deployment settings,
 and building the full Trustee/EVM application are separate workstreams. This
 document records needed tracker issues but does not itself create them.
+
+
+## Implementation handoff, 2026-10-11
+
+| Commit | Delivered scope |
+| --- | --- |
+| `8716519` | User decisions, reset boundary and EVM scope/reward deferral. |
+| `eb34061` | A: strictly improving replacements and deterministic best-anchored subset. |
+| `89e2d74` | B: outstanding proposer slots, atomic closure pruning and reserve-failure rollback. |
+| `19bcacd` | C: [chain-agnostic correlation/evidence protocol](quip-evm-compute-interaction.md). |
+| `af51d6d` | D: appended signed metadata APIs, all-path requirements, expiry freeze and retained evidence. |
+
+Runtime remains spec 119 / transaction 7. Existing calls and order/solution
+encodings are preserved. Sparse payee maps use storage version 4. No pre-reset
+state import, payee inference, activation registry, EVM execution or native
+reward/closure changes were added.
+
+Local validation on `af51d6d`: 478 workspace tests passed (two existing ignored
+PoW diagnostic/sweep tests), 95 mempool tests with runtime-benchmarks + try-runtime
+passed, workspace/all-target strict Clippy and feature strict Clippy passed.
+The workspace total includes 56 runtime unit tests and signing/metadata
+integration tests. Formatting, diff checks, shell syntax, signature helpers,
+weight-output resolver and public-wrapper guards passed. A real H4-signed atomic
+batch verifies both correlation rollback on mismatched payee and successful
+binding to the actual signer. Native amounts and retained metadata are covered
+across all payout modes, expiry backlog, closure and polling-result purge.
+
+Production proof unions are 1,002,055 bytes for claim, 666,169 for refund,
+792,516 for submission and 686,322 for proposal. All four families use maintained
+1 MiB floors, cover both weight providers, preserve larger generated proofs, and
+pass Normal max_extrinsic/max_total integrity checks. Metadata is not accessed
+by closure, so its keys are not included in closure envelopes.
+
+The exact-commit release runtime-benchmarks Wasm build passed locally. Blob
+SHA-256: `219cfea9ac30f8192966fb4b1e6c0e61010b8279fb26f22c435504800b254b66`.
+All **13 mempool benchmarks**, including extra replacement and dust cases, passed
+against this blob through the local debug runner with `--steps 2 --repeat 1
+--min-duration 0 --extra --genesis-builder runtime`. Component endpoints include
+production maxima of 5,000 nodes / 50,000 edges / 20 solutions and 16 bid miners /
+8 types. Observed DB counts match the modeled bounds: first submission 6/7,
+replacement 6/5, claim including dust 69/69, refund 2/3, and required-payee proposal
+3/7 (reads/writes, with benchmark whitelists). Outputs were temporary only.
+
+Remaining gates: independent reviewer/rr review; CI Wasm/preflight checks; fresh
+reference-machine timing/weight regeneration for affected proposal, submission
+(first and replacement) and closure (ordinary and dust) paths; post-deployment
+QUI-1676 SDK regression. Local benchmark execution cannot substitute for reference
+measurements. Retained baseline timing and new-call compositions are provisional.
+
+Deferred product/integration work remains exactly the agreed local/external EVM
+scope, native/EVM reward relationship, EVM payment activation/execution and closure,
+network/contract deployment, finality/escrow/refund settings, trust/signing policy,
+archive and reset cutover, and cross-language protocol codec/hash fixtures in the
+future consuming integration. Royalties and the full Trustee/bridge application
+are separate work. No push, merge or manual CI job was performed for this handoff.
