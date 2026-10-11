@@ -81,13 +81,99 @@ check_output_resolver() {
   echo "Weight output resolver checks passed."
 }
 
-if [ "${1:-}" = "--check-output-resolver" ]; then
-  check_output_resolver
-  exit 0
-fi
+verify_regenerated_mempool_weights() {
+  local file="$1"
+  local name
+  local count
+
+  if [ ! -f "$file" ]; then
+    echo "ERROR: regenerated mempool weights missing: $file" >&2
+    return 1
+  fi
+  # The repository template emits one trait declaration and two implementations.
+  # Catch incomplete/stale regeneration even if an old composition still compiles.
+  for name in propose_job_with_payee_requirement submit_solution_with_payee; do
+    count="$(awk -v name="$name" '$0 ~ "fn[[:space:]]+" name "[[:space:]]*\\(" {n++} END {print n+0}' "$file")"
+    if [ "$count" -ne 3 ]; then
+      echo "ERROR: regenerated $name must have a trait declaration and both implementations" >&2
+      return 1
+    fi
+  done
+  if grep -Eiq 'provisional|pending regeneration|NOT new measured timings|as[[:space:]]+WeightInfo>::(propose_job|submit_solution)\(' "$file"; then
+    echo "ERROR: regenerated mempool weights retain provisional compositions or markers" >&2
+    return 1
+  fi
+}
+
+check_regenerated_mempool_guard() {
+  local temp_dir
+  local valid
+  local invalid
+  local name
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/quip-regenerated-guard.XXXXXX")"
+  trap 'rm -rf "$temp_dir"' RETURN
+  valid="$temp_dir/generated.rs"
+  invalid="$temp_dir/incomplete.rs"
+  # Synthetic syntax fixture only; these are not benchmark measurements.
+  cat > "$valid" <<'EOF'
+pub trait WeightInfo {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight;
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight;
+}
+impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight { Weight::from_parts(0, 0) }
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight { Weight::from_parts(0, 0) }
+}
+impl WeightInfo for () {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight { Weight::from_parts(0, 0) }
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight { Weight::from_parts(0, 0) }
+}
+EOF
+  verify_regenerated_mempool_weights "$valid"
+  for name in propose_job_with_payee_requirement submit_solution_with_payee; do
+    awk -v name="$name" '$0 ~ "fn " name && !removed {removed=1; next} {print}' "$valid" > "$invalid"
+    if verify_regenerated_mempool_weights "$invalid" >/dev/null 2>&1; then
+      echo "ERROR: incomplete $name passed regeneration guard" >&2
+      return 1
+    fi
+  done
+  cp "$valid" "$invalid"
+  printf '%s\n' '// Provisional composition, timing pending regeneration.' >> "$invalid"
+  if verify_regenerated_mempool_weights "$invalid" >/dev/null 2>&1; then
+    echo "ERROR: provisional markers passed regeneration guard" >&2
+    return 1
+  fi
+  cp "$valid" "$invalid"
+  printf '%s\n' '<Self as WeightInfo>::submit_solution(n, e, s)' >> "$invalid"
+  if verify_regenerated_mempool_weights "$invalid" >/dev/null 2>&1; then
+    echo "ERROR: delegated timing passed regeneration guard" >&2
+    return 1
+  fi
+  echo "Post-regeneration mempool weight guard checks passed."
+}
+
+case "${1:-}" in
+  --check-output-resolver)
+    check_output_resolver
+    exit 0
+    ;;
+  --check-regenerated-mempool-guard)
+    check_regenerated_mempool_guard
+    exit 0
+    ;;
+  --verify-regenerated-mempool)
+    if [ "$#" -ne 2 ]; then
+      echo "Usage: $0 --verify-regenerated-mempool <generated-file>" >&2
+      exit 2
+    fi
+    verify_regenerated_mempool_weights "$2"
+    exit 0
+    ;;
+esac
 
 if [ "$#" -ne 0 ]; then
-  echo "Usage: $0 [--check-output-resolver]" >&2
+  echo "Usage: $0 [--check-output-resolver|--check-regenerated-mempool-guard|--verify-regenerated-mempool <file>]" >&2
   exit 2
 fi
 
@@ -144,6 +230,10 @@ for pallet in "${pallets[@]}"; do
     --repeat "$REPEAT" \
     --template .maintain/frame-weight-template.hbs \
     --output "$output"
+
+  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
+    verify_regenerated_mempool_weights "$output"
+  fi
 done
 
 echo "== Benchmarking runtime execution overhead -> runtime/src/weights =="

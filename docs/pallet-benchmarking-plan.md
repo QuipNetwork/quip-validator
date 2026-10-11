@@ -433,3 +433,20 @@ JobSpecs, ProposerOrders, proposer System account, NextOrderId, OpenOrders,
 OrdersExpiringAt, OrderPayeeRequirements and System::Number). Both proposal APIs
 apply the 1 MiB floor with generic/unit provider and Normal-limit integrity checks.
 This covers the additional requirement key together with existing proposal keys.
+
+### Post-regeneration completeness guard
+
+`run-benchmarks.sh` now verifies regenerated mempool output immediately after that
+pallet finishes. Both appended calls must have their trait declaration and generic
+and unit implementations. Provisional markers and delegation to the old proposal
+or submission timing are rejected. This is a structural completeness check; it
+does not certify reference hardware, sample quality or the conservative envelope
+across first/replacement and ordinary/dust cases.
+
+Run `bash scripts/run-benchmarks.sh --check-regenerated-mempool-guard` for positive
+and negative fixtures. To inspect generated repository-template output without
+building or changing weights, use
+`bash scripts/run-benchmarks.sh --verify-regenerated-mempool <generated-file>`.
+The currently committed provisional weights intentionally fail the latter check
+until real regeneration replaces them. No manual CI run is implied or authorised
+by adding this guard.
