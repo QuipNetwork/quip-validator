@@ -255,7 +255,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // regenerated on the reference machine for 0.4.0.
     // `store_program` and `execute` keep their call indices and arguments, so
     // `transaction_version` stays at 7.
-    // 119: fused faucet and fixed-schedule subnet emission controller.
+    // 119 carries three QuantumComputeMempool changes. `IsingParams` renames
+    // `min_energy_milli` to `max_energy_milli` (same SCALE position and type).
+    // `TopNWeighted` splits by rank instead of energy magnitude.
+    // `on_initialize` finalises orders from their effective expiry block: new
+    // `OrdersExpiringAt` and `NextExpiryBucket` storage, pallet storage v2 -> v3
+    // with an index-building migration, and `ResultReady` plus `OrderResults`
+    // move from `claim_reward` to expiry. Call encodings are unchanged, so
+    // `transaction_version` stays at 7.
     spec_version: 119,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

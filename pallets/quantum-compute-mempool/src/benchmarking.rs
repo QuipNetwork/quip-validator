@@ -8,7 +8,7 @@ use alloc::{vec, vec::Vec};
 use frame_benchmarking::v2::*;
 use frame_support::{
     pallet_prelude::ConstU32,
-    traits::{Currency, Get},
+    traits::{Currency, Get, Hooks},
     BoundedVec,
 };
 use frame_system::RawOrigin;
@@ -70,7 +70,7 @@ fn sample_params<T: Config>() -> IsingParamsOf<T> {
         edges: bounded(vec![(0, 1)]),
         h_values: bounded(vec![0, 0]),
         j_values: bounded(vec![-1_000]),
-        min_energy_milli: None,
+        max_energy_milli: None,
         min_diversity_milli: None,
         min_solutions: None,
     }
@@ -99,7 +99,7 @@ fn params_with_dimensions<T: Config>(
         edges: bounded(edges),
         h_values: bounded(vec![0; node_count as usize]),
         j_values: bounded(vec![-1_000; edge_count as usize]),
-        min_energy_milli: None,
+        max_energy_milli: None,
         min_diversity_milli: None,
         min_solutions,
     }
@@ -372,13 +372,6 @@ mod benchmarks {
 
         let order = JobOrders::<T>::get(order_id).expect("order exists");
         assert_eq!(order.status, types::OrderStatus::Closed);
-        assert_eq!(
-            OrderResults::<T>::get(order_id)
-                .expect("poll result is stored")
-                .winners
-                .len(),
-            winner_count as usize
-        );
     }
 
     #[benchmark]
@@ -392,7 +385,10 @@ mod benchmarks {
             1u32.into(),
             types::ResultDelivery::OnChainOnly,
         );
-        frame_system::Pallet::<T>::set_block_number(2u32.into());
+        JobOrders::<T>::mutate(order_id, |maybe_order| {
+            let order = maybe_order.as_mut().expect("benchmark order exists");
+            order.status = types::OrderStatus::Expired;
+        });
 
         #[extrinsic_call]
         QuantumComputeMempool::reclaim_order(RawOrigin::Signed(proposer.clone()), order_id);
@@ -435,11 +431,8 @@ mod benchmarks {
         )
         .is_ok());
         frame_system::Pallet::<T>::set_block_number(2u32.into());
-        assert!(QuantumComputeMempool::<T>::claim_reward(
-            RawOrigin::Signed(solver.clone()).into(),
-            order_id,
-        )
-        .is_ok());
+        QuantumComputeMempool::<T>::on_initialize(2u32.into());
+        assert!(OrderResults::<T>::get(order_id).is_some());
         frame_system::Pallet::<T>::set_block_number(
             T::ResultTtlBlocks::get().saturating_add(2u32.into()),
         );
@@ -448,6 +441,92 @@ mod benchmarks {
         QuantumComputeMempool::purge_result(RawOrigin::Signed(cleaner), order_id);
 
         assert!(OrderResults::<T>::get(order_id).is_none());
+    }
+
+    /// Measures the worst-case order: maximum nodes and edges, 32 weighted
+    /// winners with full-size solution vectors, and `CallbackWithPoll` with
+    /// a maximum-length endpoint, including the `OrderResults` write.
+    #[benchmark]
+    fn finalise_expired_orders(k: Linear<0, { types::MAX_FINALISED_ORDERS_PER_BLOCK }>) {
+        let proposer: T::AccountId = whitelisted_caller();
+        let winner_count = types::MAX_REWARD_WINNERS;
+        let reward = benchmark_reward::<T>().saturating_mul(winner_count.saturated_into());
+        fund_account::<T>(
+            &proposer,
+            reward
+                .saturating_mul(k.saturating_add(1).saturated_into())
+                .saturating_mul(2u32.saturated_into()),
+        );
+        let spec_id = register_spec_for::<T>(&proposer);
+        let winners: Vec<T::AccountId> = (0..winner_count)
+            .map(|index| account("winner", index, 0))
+            .collect();
+        for winner in &winners {
+            register_solver_for::<T>(winner);
+        }
+        let bid_miner = winners.first().expect("winner set is nonempty").clone();
+
+        let mut order_ids = Vec::new();
+        for _ in 0..k {
+            let order_id = NextOrderId::<T>::get();
+            assert!(QuantumComputeMempool::<T>::propose_job(
+                RawOrigin::Signed(proposer.clone()).into(),
+                spec_id,
+                params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None),
+                reward,
+                types::JobMode::Bid {
+                    miners: Some(bounded(vec![bid_miner.clone()])),
+                    miner_types: None,
+                },
+                types::RewardResolution::TopNWeighted { n: winner_count },
+                1u32.into(),
+                1u32.into(),
+                types::ResultDelivery::CallbackWithPoll {
+                    endpoint: bounded(vec![b'x'; <ConstU32<256> as Get<u32>>::get() as usize]),
+                },
+            )
+            .is_ok());
+            for winner in &winners {
+                // Rotate the fixture's bid allow-list because the mock's
+                // MaxBidMiners is smaller than the 32-winner settlement bound.
+                JobOrders::<T>::mutate(order_id, |maybe_order| {
+                    let order = maybe_order.as_mut().expect("benchmark order exists");
+                    order.mode = types::JobMode::Bid {
+                        miners: Some(bounded(vec![winner.clone()])),
+                        miner_types: None,
+                    };
+                });
+                assert!(QuantumComputeMempool::<T>::submit_solution(
+                    RawOrigin::Signed(winner.clone()).into(),
+                    order_id,
+                    solutions_with_dimensions::<T>(T::MaxNodes::get(), 1),
+                )
+                .is_ok());
+            }
+            order_ids.push(order_id);
+        }
+
+        let expiry_block = frame_system::Pallet::<T>::block_number().saturating_add(1u32.into());
+        frame_system::Pallet::<T>::set_block_number(expiry_block);
+        // Measure one full bucket, not the empty buckets before it.
+        NextExpiryBucket::<T>::put(expiry_block);
+
+        #[block]
+        {
+            QuantumComputeMempool::<T>::on_initialize(expiry_block);
+        }
+
+        for order_id in order_ids {
+            let order = JobOrders::<T>::get(order_id).expect("order exists");
+            assert_eq!(order.status, types::OrderStatus::Expired);
+            assert_eq!(
+                OrderResults::<T>::get(order_id)
+                    .expect("poll result is stored")
+                    .winners
+                    .len(),
+                winner_count as usize
+            );
+        }
     }
 
     impl_benchmark_test_suite!(

@@ -61,10 +61,12 @@ Coefficients are fixed-point milli values. `h_values` and `j_values` are
 ```
 
 The same milli convention is used for `best_energy_milli`,
-`min_energy_milli`, `diversity_milli`, and `min_diversity_milli`. Energy
-values are signed (`i64`); diversity values are unsigned (`u32`). Keep any
-constant offset introduced by a QUBO-to-Ising transform in the adapter, or
-adjust user-facing energy thresholds before submitting the job.
+`max_energy_milli`, `diversity_milli`, and `min_diversity_milli`. Energy
+values are signed (`i64`); diversity values are unsigned (`u32`).
+`max_energy_milli` is an energy ceiling. `submit_solution` drops every vector
+whose energy is above it. Keep any constant offset introduced by a
+QUBO-to-Ising transform in the adapter, or adjust user-facing energy
+thresholds before submitting the job.
 
 ## Accepted Solution Storage
 
@@ -174,25 +176,47 @@ ResultReady
 ```
 
 `SolutionAccepted` is emitted when a solver submission is accepted and written
-to `OrderSolutions`. `ResultReady` is emitted when settlement produces a final
-winner payload for callback delivery modes. Settlement also emits
+to `OrderSolutions`. `ResultReady` is emitted at expiry for callback delivery
+modes. Settlement also emits
 `RewardClaimed` for each winner payout, and `ResultPurged` is emitted when a
 stored poll payload is deleted after its TTL — `CallbackWithPoll` consumers
 must fetch results before the purge.
 
-`OrderExpired` is emitted lazily when an extrinsic touches an expired open
-order and the pallet updates the status. It is not emitted automatically at the
-exact expiry block, so SDKs that need exact deadline handling should also read
-`JobOrders` and compute the effective expiry as:
+`OrderExpired` is emitted by the pallet's `on_initialize` hook at the order's
+effective expiry block, even when no extrinsic touches the order.
+An expiry that falls in the current block (a zero `block_wait` after the first
+solution, or a zero `deadline_blocks`) is scheduled for the next block,
+because that block's hook has already run. The hook finalises at most 8 orders
+per block (`MAX_FINALISED_ORDERS_PER_BLOCK`).
+When more orders expire in one block, the rest carry over to the following
+blocks in order, so an order can read `Opened` for several blocks after its
+expiry under heavy load: the backlog drains eight orders per block, and the
+hook also scans at most eight expiry buckets per block when it has fallen
+behind. `submit_solution` rejects the order from the expiry block regardless.
+
+At the same point, `Callback` and `CallbackWithPoll` orders that received at
+least one accepted solution emit `ResultReady` with each winner's allocation,
+and `CallbackWithPoll` orders get their `OrderResults` entry with `settled_at`
+set to the block in which the hook finalises the order. That is the expiry
+block unless the expiry fell in the current block or a backlog carried it
+over. `claim_reward` only moves funds and emits `RewardClaimed` and
+`OrderClosed`.
+
+The effective expiry is:
 
 ```text
 min(created_at + timing.deadline_blocks, first_solution_at + timing.block_wait)
 ```
 
 Before the first solution arrives, `first_solution_at` is null and the expiry
-is just `created_at + timing.deadline_blocks`. Note that `created_at` and
-`first_solution_at` are top-level `JobOrder` fields, while `deadline_blocks`
-and `block_wait` are nested inside the order's `timing` struct.
+is `created_at + timing.deadline_blocks`. `created_at` and `first_solution_at`
+are top-level `JobOrder` fields. `deadline_blocks` and `block_wait` are nested
+inside the order's `timing` struct.
+
+`TopNWeighted { n }` splits the reward by rank. With `k` ranked solvers, rank
+`r` (0 is best) has weight `k - r`, so two solvers split 2:1 and three split
+3:2:1. Energy values only decide the order. Any rounding remainder goes to
+rank 0. `TopNEqual { n }` splits evenly with the same remainder rule.
 
 ### Read events from a block with substrate-interface
 

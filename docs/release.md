@@ -77,6 +77,30 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
   Expect peer discovery against at least one of the three canonical bootnodes
   within 60 seconds.
 
+## Runtime 119 mempool changes
+
+Runtime 119 has not shipped. The next tag that carries it includes these
+`QuantumComputeMempool` changes:
+
+- `IsingParams.min_energy_milli` is renamed to `max_energy_milli`. The SCALE
+  position and type are unchanged, so positional decoders keep working.
+  Clients that encode `propose_job` by metadata field name must use the new
+  name.
+- `TopNWeighted` splits the reward by rank. With `k` ranked solvers, rank `r`
+  (0 is best) has weight `k - r`. Energy sign and magnitude no longer affect
+  the split. Any rounding remainder goes to rank 0.
+- Orders are finalised in `on_initialize` at their effective expiry block, at
+  most 8 per block with overflow carried to the next block. An expiry that falls
+  in the current block (zero `block_wait` or zero `deadline_blocks`) is finalised
+  in the next block. `OrderExpired` fires there for every order. `ResultReady`
+  and `OrderResults` move from `claim_reward` to expiry. `claim_reward` only pays
+  and emits `RewardClaimed` and `OrderClosed`.
+- Pallet storage version moves 2 to 3. The migration indexes existing open
+  orders. Orders already past expiry are finalised from the upgrade block
+  onwards, eight per block. The migration runs inside one block and reads every
+  open order, so check the `OpenOrders` count on the live chain before scheduling
+  the upgrade.
+
 ## What v0.2.0 ships
 
 - First semver tag for the validator image; previously only `:latest` and

@@ -219,3 +219,16 @@ pub fn new_test_ext_with_default_ising_spec(
     });
     ext
 }
+
+/// Advance to block `n`, running this pallet's `on_initialize` for every
+/// block after the current one. Mirrors `Executive`: hooks run before any
+/// extrinsic in the same block.
+pub fn run_to_block(n: u64) {
+    use frame_support::traits::Hooks;
+
+    while System::block_number() < n {
+        let next = System::block_number() + 1;
+        System::set_block_number(next);
+        QuantumComputeMempool::on_initialize(next);
+    }
+}

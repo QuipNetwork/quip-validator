@@ -5,6 +5,10 @@ use scale_info::TypeInfo;
 /// Maximum number of solvers that can share one settled reward.
 pub const MAX_REWARD_WINNERS: u32 = 32;
 
+/// Maximum number of orders `on_initialize` finalises in one block. Orders
+/// beyond this bound carry over to the following blocks in bucket order.
+pub const MAX_FINALISED_ORDERS_PER_BLOCK: u32 = 8;
+
 /// Registered problem families. v0 supports Ising only.
 #[derive(
     Clone,
@@ -104,7 +108,13 @@ pub enum ResultDelivery {
     },
 }
 
-/// Ising problem parameters and optional quality floors.
+/// Ising problem parameters and optional acceptance thresholds.
+///
+/// `max_energy_milli` is an energy ceiling: `submit_solution` drops every
+/// vector whose energy is above it. Lower energy is better, so the ceiling
+/// is a quality floor expressed on the energy axis, the same rule as
+/// `DifficultyConfig::max_energy_milli` in `pallet-quantum-pow`.
+/// `min_diversity_milli` and `min_solutions` are floors on the selected set.
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
@@ -113,7 +123,8 @@ pub struct IsingParams<Nodes, Edges, Fields, Couplings> {
     pub edges: Edges,
     pub h_values: Fields,
     pub j_values: Couplings,
-    pub min_energy_milli: Option<i64>,
+    /// Energy ceiling in milli units. Vectors with energy above it are dropped.
+    pub max_energy_milli: Option<i64>,
     pub min_diversity_milli: Option<u32>,
     pub min_solutions: Option<u32>,
 }
