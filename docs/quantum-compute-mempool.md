@@ -117,7 +117,10 @@ adds the vector with the greatest minimum symmetric Hamming distance to those
 already selected, breaking ties by input order. Diversity thresholds apply to
 this actual subset. `min_solutions = None` retains all valid vectors; zero or one
 retains exactly the best vector; larger values require that many valid vectors.
-Positive diversity with an explicit count below two remains invalid.
+Positive diversity with an explicit count below two remains invalid. Anchoring
+selection on the actual best vector can yield a different, less diverse subset
+than the old selector: a set accepted previously may now fail `InsufficientDiversity`.
+The threshold is unchanged; clients must supply a qualifying best-anchored set.
 
 SDK/coordinator error handling: decode the pallet error by metadata name.
 `SolutionNotImproved` is a terminal rejection for that unchanged submission:
@@ -349,7 +352,11 @@ address. Nonzero u64 chain IDs are syntactically supported; this is not network
 activation or evidence of address ownership. On required orders, the original
 submission call (4) rejects with `PayeeRequired`, and a mismatching call 9 rejects
 with `PayeeChainMismatch`. Having previously stored a matching payee does not
-allow a later call 4 to bypass the requirement.
+allow a later call 4 to bypass the requirement. For a registered solver, nonempty
+input and an existing open order/spec, call 4 checks the requirement before
+eligibility, VM/energy validation and strict improvement: it returns `PayeeRequired`
+even if that payload would also fail `SolutionNotImproved`. Origin, registration,
+empty-input, missing order/spec and expiry checks can still fail earlier.
 
 An accepted submission writes `OrderPayees[order_id, solver]` atomically with the
 accepted payload, ranking, counters and events. Strict improvement, VM validation,
@@ -378,3 +385,10 @@ rank-based payouts and closure are unchanged, with no royalties. Local Quip EVM
 versus external EVM scope, and the relationship between native and EVM rewards,
 remain deferred. See the [interaction specification](quip-evm-compute-interaction.md)
 for finality, correlation, evidence and deployment requirements.
+
+
+Reserve-isolation follow-up: the current currency uses unnamed, aggregate reserves
+per proposer, not a separate escrow identifier per order. `RewardReserveMissing`
+protects closure when aggregate reserves cannot supply the order amount; other
+reservations can mask an individual order's missing backing. Per-order reserve
+isolation and its recovery policy are future work, not implemented in this change.

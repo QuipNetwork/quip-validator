@@ -60,6 +60,13 @@ expiry, even during hook backlog. The finalised block's state is the destination
 snapshot: the Trustee captures its exact values alongside the solutions and
 allocation; no later “latest state” lookup may substitute for it.
 
+Deployment-domain administration is deferred integration work: the authority that
+assigns source/consumer/reset domains, authenticates and publishes their mappings,
+and authorises rotations/cutovers must be specified before activation. Consumers
+and Trustees must authenticate the same configuration; an untrusted remark cannot
+establish it. Unknown or unauthenticated domains block admission/issuance. This
+specification does not introduce an on-chain domain registry or choose its operator.
+
 ## Versioned job correlation
 
 The Trustee submits exactly one successful atomic batch:
@@ -98,7 +105,11 @@ when chain ID, address and job ID are reused.
 
 Verify `System.Remarked`'s runtime hash against these exact bytes, and associate
 exactly one `JobProposed` from the same successful outer batch/extrinsic. Require
-matching proposer, spec and complete job parameters. Reject failed batches,
+matching proposer and spec. Recover the full proposal parameters from the decoded
+inner proposal call in the retained signed extrinsic, and crosscheck them against
+`JobOrders` at the canonical finalisation block defined below. `JobProposed` alone
+does not contain the full topology, timing, delivery or reward-resolution arguments
+and is insufficient to establish that match. Reject failed batches,
 ambiguous nested batches, multiple proposals, mismatched hashes, unsupported
 versions and unconfigured domains. `remark_with_event` emits only a hash: retain
 the signed extrinsic/decoded bytes or guaranteed archive retrieval. Never use a
@@ -108,11 +119,14 @@ storage. Native block builders do not enforce uniqueness of this business key.
 ## Finality and evidence
 
 Discover all delivery modes through `OrderExpired`, emitted by `on_initialize`.
-Wait for a GRANDPA-finalised block containing actual finalisation. Nominal expiry
-alone is insufficient: the bounded hook may have a backlog. The order must be
-Expired or Closed, and its finalisation event and immutable state must be verified.
+Let **B** be the actual block that emitted `OrderExpired` for the order. Wait until
+B is GRANDPA-finalised, then bind the post-state and header of **that exact B**.
+Nominal expiry alone is insufficient: the bounded hook may have a backlog. B's
+post-state must show Expired or Closed; native settlement later in the same block
+can legitimately make it Closed. Verify the event and state at B, even if the
+finalised head has advanced beyond B. A later finalised block is not a substitute.
 
-Read all evidence at ONE finalised block hash:
+Read all evidence at this canonical finalisation block hash B:
 
 - Genesis/reset identity, runtime spec and metadata/storage versions, block hash
   and number, and the finality proof/verification reference.
@@ -130,10 +144,13 @@ Read all evidence at ONE finalised block hash:
 `ResultReady` exists only for callback modes. `OrderResults` exists only for
 CallbackWithPoll and can be purged at `settled_at + ResultTtlBlocks`; its
 `settled_at` is the hook finalisation height, not proof of payment. Capture the
-payload before purge or reconstruct the same allocation from archived finalised
-order/ranking/solution state. If evidence is unavailable, stop attestation and
-enter the deployment's recovery process; never invent a result from a latest
-partial view. Do not require poll records for OnChainOnly discovery.
+canonical evidence at B before it becomes unavailable, or recover that exact
+post-state/header from an archive or retained verified snapshot. Recomputing the
+same allocation from a later block does not recover B's evidence: status, job-spec
+counters or other encoded fields may differ and change its digest. Missing canonical
+evidence blocks issuance until that exact evidence is recovered. Never replace B
+with a later block or use a latest partial view. Poll records are not required for
+OnChainOnly discovery.
 
 For current NoOpVM/Ising jobs, evidence establishes validation of supplied spins
 and energy under the supported chain rules. It is not proof of executing an
@@ -146,7 +163,7 @@ A result attestation MUST bind, in a canonical versioned schema:
 
 - Protocol version and a distinct result domain (`QUIP/QVM/result/v1`).
 - Source chain/deployment/contract/job identity and provenance reference.
-- Quip genesis/reset domain, finalised block hash/number and order ID.
+- Quip genesis/reset domain, canonical OrderExpired block B hash/number and order ID.
 - Supported runtime/storage/validation schema versions and a content-addressed
   digest of the canonical complete evidence bundle (including transformed
   vectors, not just a claimed minimum score).
@@ -177,8 +194,10 @@ BLAKE2b-512). The evidence digest uses the same hash over SCALE encoding of:
 Vec<u8> encoded_JobOrder, Vec<u8> encoded_JobSpec,
 Vec<(AccountId32, Vec<u8> encoded_JobSolution, Option<WinnerPayee>)>,
 Option<u64> required_chain_id)`. Include every accepted solver, sorted by raw
-AccountId32 bytes; values use the supported runtime metadata version at the bound
-block. Reject duplicate/unsorted records, trailing bytes, noncanonical encodings,
+AccountId32 bytes; the header and values MUST be B's post-state/header, decoded
+using the supported metadata version at B. Every retry retains B and the same
+canonical evidence digest; later native settlement is never a reason to change
+the evidence block. Reject duplicate/unsorted records, trailing bytes, noncanonical encodings,
 unknown enum tags and inconsistent derived allocations. Finality/storage proofs
 are verification attachments; their transport encoding does not alter this digest.
 
@@ -204,7 +223,10 @@ nonce and network/reset domain. Recommended observation states are
 Observed → SourceFinal → ProposalPrepared → ProposalIncluded → ProposalFinal →
 ResultFinal → EvidenceReady. Future Attested/Submitted/Fulfilled states require
 the deferred consumer contract. Every transition records its causal evidence;
-recovery resumes the same intent, never creates a fresh one by default.
+recovery resumes the same intent, never creates a fresh one by default. Persist
+B's header/hash and verified canonical evidence digest with EvidenceReady, and
+reuse them for every issuance/retry. If B's evidence cannot be recovered, keep
+issuance blocked rather than taking a new snapshot at a later finalised head.
 
 Deduplicate source events by provenance and jobs by business key. If broadcast
 outcome is unknown, reconcile transaction hash, account nonce, inclusion and batch
