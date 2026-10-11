@@ -420,6 +420,11 @@ production happens to be using.
   nonce. Nothing checked in pins `derive_nonce`
   (`crates/quantum-validation/src/ising.rs:31-37`), which derives that nonce
   from the last proof block hash, the miner and the salt.
+- **`device_access_time_us` is self-reported.** The miner sets this
+  `QuantumProof` field, and the chain stores it in `QBlocks` without a check.
+  Consensus never reads it (`pallets/quantum-pow/src/types.rs:33-38`). Do not
+  show it as a measured solve time. A miner can report the same value on every
+  proof.
 - **No permissionless registration.** `register_topology` is root only. There
   is no deposit-backed or governance-voted path, and adding one is not the
   same question as adding topology policy.
