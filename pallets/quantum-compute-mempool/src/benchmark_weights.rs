@@ -39,7 +39,7 @@
 // --template
 // .maintain/frame-weight-template.hbs
 // --output
-// pallets/quantum-compute-mempool/src/weights.rs
+// pallets/quantum-compute-mempool/src/benchmark_weights.rs
 
 #![cfg_attr(rustfmt, rustfmt_skip)]
 #![allow(unused_parens)]
@@ -52,13 +52,13 @@ use core::marker::PhantomData;
 
 /// Weight functions needed for `pallet_quantum_compute_mempool`.
 pub trait WeightInfo {
-    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight;
-    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight;
 	fn register_solver() -> Weight;
 	fn deregister_solver() -> Weight;
 	fn register_job_spec() -> Weight;
 	fn propose_job(n: u32, e: u32, b: u32, t: u32, ) -> Weight;
 	fn submit_solution(n: u32, e: u32, s: u32, ) -> Weight;
+	fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32, ) -> Weight;
+	fn submit_solution_with_payee(n: u32, e: u32, s: u32, ) -> Weight;
 	fn claim_reward() -> Weight;
 	fn reclaim_order() -> Weight;
 	fn purge_result() -> Weight;
@@ -68,24 +68,14 @@ pub trait WeightInfo {
 /// Weights for `pallet_quantum_compute_mempool` using the Substrate node and recommended hardware.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-    // Provisional compositions, NOT new measured timings. Regenerate before merge.
-    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
-        <Self as WeightInfo>::propose_job(n, e, b, t)
-            .saturating_add(T::DbWeight::get().writes(1))
-            .saturating_add(Weight::from_parts(0, 32 + 4950))
-    }
-    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
-        <Self as WeightInfo>::submit_solution(n, e, s)
-    }
-
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	fn register_solver() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `42`
 		//  Estimated: `3574`
-		// Minimum execution time: 14_567_000 picoseconds.
-		Weight::from_parts(15_349_000, 3574)
+		// Minimum execution time: 14_597_000 picoseconds.
+		Weight::from_parts(15_298_000, 3574)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -95,8 +85,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `143`
 		//  Estimated: `3574`
-		// Minimum execution time: 14_848_000 picoseconds.
-		Weight::from_parts(15_670_000, 3574)
+		// Minimum execution time: 14_868_000 picoseconds.
+		Weight::from_parts(15_629_000, 3574)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -106,8 +96,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `109`
 		//  Estimated: `3762`
-		// Minimum execution time: 17_593_000 picoseconds.
-		Weight::from_parts(18_485_000, 3762)
+		// Minimum execution time: 17_793_000 picoseconds.
+		Weight::from_parts(18_615_000, 3762)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -131,12 +121,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
 		//  Estimated: `3770`
-		// Minimum execution time: 516_796_000 picoseconds.
-		Weight::from_parts(518_048_000, 3770)
-			// Standard Error: 5_175
-			.saturating_add(Weight::from_parts(258_532, 0).saturating_mul(n.into()))
-			// Standard Error: 517
-			.saturating_add(Weight::from_parts(79_425, 0).saturating_mul(e.into()))
+		// Minimum execution time: 513_779_000 picoseconds.
+		Weight::from_parts(516_615_000, 3770)
+			// Standard Error: 5_127
+			.saturating_add(Weight::from_parts(259_980, 0).saturating_mul(n.into()))
+			// Standard Error: 512
+			.saturating_add(Weight::from_parts(78_518, 0).saturating_mul(e.into()))
 			.saturating_add(T::DbWeight::get().reads(3_u64))
 			.saturating_add(T::DbWeight::get().writes(6_u64))
 	}
@@ -146,26 +136,92 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:0)
 	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayeeRequirements` (r:1 w:0)
+	/// Proof: `QuantumComputeMempool::OrderPayeeRequirements` (`max_values`: None, `max_size`: Some(32), added: 2507, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OrderSolutions` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::OrderSolutions` (`max_values`: None, `max_size`: Some(100166), added: 102641, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OrderTopSolvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::OrderTopSolvers` (`max_values`: None, `max_size`: Some(1305), added: 3780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OrdersExpiringAt` (r:0 w:2)
 	/// Proof: `QuantumComputeMempool::OrdersExpiringAt` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayees` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrderPayees` (`max_values`: None, `max_size`: Some(101), added: 2576, mode: `MaxEncodedLen`)
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
 	fn submit_solution(_n: u32, e: u32, s: u32, ) -> Weight {
-		// Payee requirement read + destination write/delete; timing pending regeneration.
 		// Proof Size summary in bytes:
 		//  Measured:  `1946 + e * (12 ±0) + n * (8 ±0)`
 		//  Estimated: `644411`
-		// Minimum execution time: 2_715_908_000 picoseconds.
-		Weight::from_parts(2_733_771_000, 644411)
-			// Standard Error: 22_076
-			.saturating_add(Weight::from_parts(862_672, 0).saturating_mul(e.into()))
-			// Standard Error: 55_585_055
-			.saturating_add(Weight::from_parts(1_980_400_392, 0).saturating_mul(s.into()))
+		// Minimum execution time: 3_738_161_000 picoseconds.
+		Weight::from_parts(3_784_559_000, 644411)
+			// Standard Error: 21_974
+			.saturating_add(Weight::from_parts(828_112, 0).saturating_mul(e.into()))
+			// Standard Error: 55_328_186
+			.saturating_add(Weight::from_parts(1_964_568_690, 0).saturating_mul(s.into()))
+			.saturating_add(T::DbWeight::get().reads(6_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
+	}
+	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::NextOrderId` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::NextOrderId` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayeeRequirements` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrderPayeeRequirements` (`max_values`: None, `max_size`: Some(32), added: 2507, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::JobOrders` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrdersExpiringAt` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrdersExpiringAt` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
+	/// The range of component `n` is `[2, 5000]`.
+	/// The range of component `e` is `[1, 50000]`.
+	/// The range of component `b` is `[1, 16]`.
+	/// The range of component `t` is `[0, 8]`.
+	fn propose_job_with_payee_requirement(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `180`
+		//  Estimated: `3770`
+		// Minimum execution time: 525_060_000 picoseconds.
+		Weight::from_parts(526_152_000, 3770)
+			// Standard Error: 5_185
+			.saturating_add(Weight::from_parts(262_567, 0).saturating_mul(n.into()))
+			// Standard Error: 518
+			.saturating_add(Weight::from_parts(79_378, 0).saturating_mul(e.into()))
+			.saturating_add(T::DbWeight::get().reads(3_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
+	}
+	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:0)
+	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayeeRequirements` (r:1 w:0)
+	/// Proof: `QuantumComputeMempool::OrderPayeeRequirements` (`max_values`: None, `max_size`: Some(32), added: 2507, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderSolutions` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::OrderSolutions` (`max_values`: None, `max_size`: Some(100166), added: 102641, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderTopSolvers` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::OrderTopSolvers` (`max_values`: None, `max_size`: Some(1305), added: 3780, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrdersExpiringAt` (r:0 w:2)
+	/// Proof: `QuantumComputeMempool::OrdersExpiringAt` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayees` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrderPayees` (`max_values`: None, `max_size`: Some(101), added: 2576, mode: `MaxEncodedLen`)
+	/// The range of component `n` is `[2, 5000]`.
+	/// The range of component `e` is `[1, 50000]`.
+	/// The range of component `s` is `[1, 20]`.
+	fn submit_solution_with_payee(_n: u32, e: u32, s: u32, ) -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `1999 + e * (12 ±0) + n * (8 ±0)`
+		//  Estimated: `644411`
+		// Minimum execution time: 3_774_119_000 picoseconds.
+		Weight::from_parts(3_855_653_000, 644411)
+			// Standard Error: 22_046
+			.saturating_add(Weight::from_parts(832_427, 0).saturating_mul(e.into()))
+			// Standard Error: 55_508_731
+			.saturating_add(Weight::from_parts(1_984_987_692, 0).saturating_mul(s.into()))
 			.saturating_add(T::DbWeight::get().reads(6_u64))
 			.saturating_add(T::DbWeight::get().writes(7_u64))
 	}
@@ -179,34 +235,31 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::Solvers` (r:32 w:32)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn claim_reward() -> Weight {
-		// Added bounded proposer-index read/write; timing is pending regeneration.
-		// Proposer is no longer whitelisted: add its account read/write.
-		// Access-model correction, not regeneration; reference timing for
-		// maximal permissionless settlement and dust remains a release gate.
 		// Proof Size summary in bytes:
-		//  Measured:  `5801`
+		//  Measured:  `646885`
 		//  Estimated: `644411`
-		// Minimum execution time: 1_681_556_000 picoseconds.
-		Weight::from_parts(1_705_641_000, 644411)
+		// Minimum execution time: 2_347_444_000 picoseconds.
+		Weight::from_parts(2_367_341_000, 644411)
 			.saturating_add(T::DbWeight::get().reads(69_u64))
 			.saturating_add(T::DbWeight::get().writes(69_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn reclaim_order() -> Weight {
-		// Added bounded proposer-index read/write; timing is pending regeneration.
 		// Proof Size summary in bytes:
-		//  Measured:  `356`
+		//  Measured:  `640592`
 		//  Estimated: `644411`
-		// Minimum execution time: 39_064_000 picoseconds.
-		Weight::from_parts(40_236_000, 644411)
+		// Minimum execution time: 658_402_000 picoseconds.
+		Weight::from_parts(667_621_000, 644411)
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
@@ -216,8 +269,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `302`
 		//  Estimated: `5549`
-		// Minimum execution time: 18_325_000 picoseconds.
-		Weight::from_parts(19_026_000, 5549)
+		// Minimum execution time: 18_446_000 picoseconds.
+		Weight::from_parts(19_227_000, 5549)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -238,10 +291,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `468 + k * (641784 ±0)`
 		//  Estimated: `3616 + k * (643421 ±0)`
-		// Minimum execution time: 11_813_000 picoseconds.
-		Weight::from_parts(695_711, 3616)
-			// Standard Error: 472_022
-			.saturating_add(Weight::from_parts(670_797_538, 0).saturating_mul(k.into()))
+		// Minimum execution time: 11_872_000 picoseconds.
+		Weight::from_parts(4_938, 3616)
+			// Standard Error: 581_698
+			.saturating_add(Weight::from_parts(638_766_097, 0).saturating_mul(k.into()))
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().reads((3_u64).saturating_mul(k.into())))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
@@ -252,24 +305,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 // For backwards compatibility and tests.
 impl WeightInfo for () {
-    // Provisional compositions, NOT new measured timings. Regenerate before merge.
-    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
-        <Self as WeightInfo>::propose_job(n, e, b, t)
-            .saturating_add(RocksDbWeight::get().writes(1))
-            .saturating_add(Weight::from_parts(0, 32 + 4950))
-    }
-    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
-        <Self as WeightInfo>::submit_solution(n, e, s)
-    }
-
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	fn register_solver() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `42`
 		//  Estimated: `3574`
-		// Minimum execution time: 14_567_000 picoseconds.
-		Weight::from_parts(15_349_000, 3574)
+		// Minimum execution time: 14_597_000 picoseconds.
+		Weight::from_parts(15_298_000, 3574)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -279,8 +322,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `143`
 		//  Estimated: `3574`
-		// Minimum execution time: 14_848_000 picoseconds.
-		Weight::from_parts(15_670_000, 3574)
+		// Minimum execution time: 14_868_000 picoseconds.
+		Weight::from_parts(15_629_000, 3574)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -290,8 +333,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `109`
 		//  Estimated: `3762`
-		// Minimum execution time: 17_593_000 picoseconds.
-		Weight::from_parts(18_485_000, 3762)
+		// Minimum execution time: 17_793_000 picoseconds.
+		Weight::from_parts(18_615_000, 3762)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -315,12 +358,12 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
 		//  Estimated: `3770`
-		// Minimum execution time: 516_796_000 picoseconds.
-		Weight::from_parts(518_048_000, 3770)
-			// Standard Error: 5_175
-			.saturating_add(Weight::from_parts(258_532, 0).saturating_mul(n.into()))
-			// Standard Error: 517
-			.saturating_add(Weight::from_parts(79_425, 0).saturating_mul(e.into()))
+		// Minimum execution time: 513_779_000 picoseconds.
+		Weight::from_parts(516_615_000, 3770)
+			// Standard Error: 5_127
+			.saturating_add(Weight::from_parts(259_980, 0).saturating_mul(n.into()))
+			// Standard Error: 512
+			.saturating_add(Weight::from_parts(78_518, 0).saturating_mul(e.into()))
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
 			.saturating_add(RocksDbWeight::get().writes(6_u64))
 	}
@@ -330,26 +373,92 @@ impl WeightInfo for () {
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:0)
 	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayeeRequirements` (r:1 w:0)
+	/// Proof: `QuantumComputeMempool::OrderPayeeRequirements` (`max_values`: None, `max_size`: Some(32), added: 2507, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OrderSolutions` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::OrderSolutions` (`max_values`: None, `max_size`: Some(100166), added: 102641, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OrderTopSolvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::OrderTopSolvers` (`max_values`: None, `max_size`: Some(1305), added: 3780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OrdersExpiringAt` (r:0 w:2)
 	/// Proof: `QuantumComputeMempool::OrdersExpiringAt` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayees` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrderPayees` (`max_values`: None, `max_size`: Some(101), added: 2576, mode: `MaxEncodedLen`)
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
 	fn submit_solution(_n: u32, e: u32, s: u32, ) -> Weight {
-		// Payee requirement read + destination write/delete; timing pending regeneration.
 		// Proof Size summary in bytes:
 		//  Measured:  `1946 + e * (12 ±0) + n * (8 ±0)`
 		//  Estimated: `644411`
-		// Minimum execution time: 2_715_908_000 picoseconds.
-		Weight::from_parts(2_733_771_000, 644411)
-			// Standard Error: 22_076
-			.saturating_add(Weight::from_parts(862_672, 0).saturating_mul(e.into()))
-			// Standard Error: 55_585_055
-			.saturating_add(Weight::from_parts(1_980_400_392, 0).saturating_mul(s.into()))
+		// Minimum execution time: 3_738_161_000 picoseconds.
+		Weight::from_parts(3_784_559_000, 644411)
+			// Standard Error: 21_974
+			.saturating_add(Weight::from_parts(828_112, 0).saturating_mul(e.into()))
+			// Standard Error: 55_328_186
+			.saturating_add(Weight::from_parts(1_964_568_690, 0).saturating_mul(s.into()))
+			.saturating_add(RocksDbWeight::get().reads(6_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
+	}
+	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::NextOrderId` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::NextOrderId` (`max_values`: Some(1), `max_size`: Some(8), added: 503, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayeeRequirements` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrderPayeeRequirements` (`max_values`: None, `max_size`: Some(32), added: 2507, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::JobOrders` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrdersExpiringAt` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrdersExpiringAt` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
+	/// The range of component `n` is `[2, 5000]`.
+	/// The range of component `e` is `[1, 50000]`.
+	/// The range of component `b` is `[1, 16]`.
+	/// The range of component `t` is `[0, 8]`.
+	fn propose_job_with_payee_requirement(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `180`
+		//  Estimated: `3770`
+		// Minimum execution time: 525_060_000 picoseconds.
+		Weight::from_parts(526_152_000, 3770)
+			// Standard Error: 5_185
+			.saturating_add(Weight::from_parts(262_567, 0).saturating_mul(n.into()))
+			// Standard Error: 518
+			.saturating_add(Weight::from_parts(79_378, 0).saturating_mul(e.into()))
+			.saturating_add(RocksDbWeight::get().reads(3_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
+	}
+	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:0)
+	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayeeRequirements` (r:1 w:0)
+	/// Proof: `QuantumComputeMempool::OrderPayeeRequirements` (`max_values`: None, `max_size`: Some(32), added: 2507, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderSolutions` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::OrderSolutions` (`max_values`: None, `max_size`: Some(100166), added: 102641, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderTopSolvers` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::OrderTopSolvers` (`max_values`: None, `max_size`: Some(1305), added: 3780, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrdersExpiringAt` (r:0 w:2)
+	/// Proof: `QuantumComputeMempool::OrdersExpiringAt` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::OrderPayees` (r:0 w:1)
+	/// Proof: `QuantumComputeMempool::OrderPayees` (`max_values`: None, `max_size`: Some(101), added: 2576, mode: `MaxEncodedLen`)
+	/// The range of component `n` is `[2, 5000]`.
+	/// The range of component `e` is `[1, 50000]`.
+	/// The range of component `s` is `[1, 20]`.
+	fn submit_solution_with_payee(_n: u32, e: u32, s: u32, ) -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `1999 + e * (12 ±0) + n * (8 ±0)`
+		//  Estimated: `644411`
+		// Minimum execution time: 3_774_119_000 picoseconds.
+		Weight::from_parts(3_855_653_000, 644411)
+			// Standard Error: 22_046
+			.saturating_add(Weight::from_parts(832_427, 0).saturating_mul(e.into()))
+			// Standard Error: 55_508_731
+			.saturating_add(Weight::from_parts(1_984_987_692, 0).saturating_mul(s.into()))
 			.saturating_add(RocksDbWeight::get().reads(6_u64))
 			.saturating_add(RocksDbWeight::get().writes(7_u64))
 	}
@@ -363,34 +472,31 @@ impl WeightInfo for () {
 	/// Proof: `System::Account` (`max_values`: None, `max_size`: Some(128), added: 2603, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::Solvers` (r:32 w:32)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn claim_reward() -> Weight {
-		// Added bounded proposer-index read/write; timing is pending regeneration.
-		// Proposer is no longer whitelisted: add its account read/write.
-		// Access-model correction, not regeneration; reference timing for
-		// maximal permissionless settlement and dust remains a release gate.
 		// Proof Size summary in bytes:
-		//  Measured:  `5801`
+		//  Measured:  `646885`
 		//  Estimated: `644411`
-		// Minimum execution time: 1_681_556_000 picoseconds.
-		Weight::from_parts(1_705_641_000, 644411)
+		// Minimum execution time: 2_347_444_000 picoseconds.
+		Weight::from_parts(2_367_341_000, 644411)
 			.saturating_add(RocksDbWeight::get().reads(69_u64))
 			.saturating_add(RocksDbWeight::get().writes(69_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
+	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn reclaim_order() -> Weight {
-		// Added bounded proposer-index read/write; timing is pending regeneration.
 		// Proof Size summary in bytes:
-		//  Measured:  `356`
+		//  Measured:  `640592`
 		//  Estimated: `644411`
-		// Minimum execution time: 39_064_000 picoseconds.
-		Weight::from_parts(40_236_000, 644411)
+		// Minimum execution time: 658_402_000 picoseconds.
+		Weight::from_parts(667_621_000, 644411)
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
@@ -400,8 +506,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `302`
 		//  Estimated: `5549`
-		// Minimum execution time: 18_325_000 picoseconds.
-		Weight::from_parts(19_026_000, 5549)
+		// Minimum execution time: 18_446_000 picoseconds.
+		Weight::from_parts(19_227_000, 5549)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -422,10 +528,10 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `468 + k * (641784 ±0)`
 		//  Estimated: `3616 + k * (643421 ±0)`
-		// Minimum execution time: 11_813_000 picoseconds.
-		Weight::from_parts(695_711, 3616)
-			// Standard Error: 472_022
-			.saturating_add(Weight::from_parts(670_797_538, 0).saturating_mul(k.into()))
+		// Minimum execution time: 11_872_000 picoseconds.
+		Weight::from_parts(4_938, 3616)
+			// Standard Error: 581_698
+			.saturating_add(Weight::from_parts(638_766_097, 0).saturating_mul(k.into()))
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().reads((3_u64).saturating_mul(k.into())))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
