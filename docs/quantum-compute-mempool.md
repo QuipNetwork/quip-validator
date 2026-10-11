@@ -332,3 +332,49 @@ pre-reset cleanup/import/migration is included.
 The [Quip compute interaction protocol](quip-evm-compute-interaction.md) defines
 finalised evidence, remark correlation, retry/reset rules and the independent
 recipient-metadata contract. It does not activate EVM rewards.
+
+## Signed destination metadata (runtime 119 reset)
+
+Call 8, `propose_job_with_payee_requirement`, accepts the original proposal
+arguments followed by `required_chain_id: u64`. It reserves the same native
+reward, applies the same proposer cap and validations, and records an immutable
+`OrderPayeeRequirements[order_id]`. Chain ID zero fails with `InvalidPayeeChain`.
+The original proposal call (3) creates an order without this requirement.
+
+Call 9, `submit_solution_with_payee(order_id, solutions, payee)`, accepts
+`WinnerPayee::V1 { chain_id: u64, address: H160 }`. Its SCALE variant index is 0
+and encoded length is 29 bytes. The destination is bound to the signed solver,
+never a supplied solver account. `InvalidPayee` rejects a zero chain ID or zero
+address. Nonzero u64 chain IDs are syntactically supported; this is not network
+activation or evidence of address ownership. On required orders, the original
+submission call (4) rejects with `PayeeRequired`, and a mismatching call 9 rejects
+with `PayeeChainMismatch`. Having previously stored a matching payee does not
+allow a later call 4 to bypass the requirement.
+
+An accepted submission writes `OrderPayees[order_id, solver]` atomically with the
+accepted payload, ranking, counters and events. Strict improvement, VM validation,
+diversity and eligibility rules apply identically to both APIs. Optional payees
+on ordinary native orders are cleared by a later accepted legacy submission.
+Rejected submissions do not update or clear payees. `PayeeRequirementSet` and
+`SolutionPayeeSet` are appended events; the latter also reports optional clearing.
+Existing call, error and stored order/solution encodings remain stable.
+
+Clients MUST show the chain ID and full address before signing and confirm the
+accepted destination at the finalised submission block. These metadata errors
+and `SolutionNotImproved` require input reconciliation, not blind retries; rejected
+included transactions can still consume nonce and fees. A changed destination
+requires a strictly improving solution before effective expiry. There is no
+payee-only edit API. After expiry, even before a delayed hook runs, destinations
+freeze; native claim/refund and polling-result purge retain them and the solution
+evidence. This supports a finalised-state snapshot without adding closure work.
+
+Storage version 4 adds sparse maps without changing existing values. Deployment
+uses fresh runtime 119 genesis, with empty order/payee indexes; no pre-reset
+payees are imported or inferred. The historical v3-to-v4 version-marker path
+does not rescan expiry indexes or backfill metadata.
+
+Destination metadata neither executes nor promises EVM payment. Native funding,
+rank-based payouts and closure are unchanged, with no royalties. Local Quip EVM
+versus external EVM scope, and the relationship between native and EVM rewards,
+remain deferred. See the [interaction specification](quip-evm-compute-interaction.md)
+for finality, correlation, evidence and deployment requirements.

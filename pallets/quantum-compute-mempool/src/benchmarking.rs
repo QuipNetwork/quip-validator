@@ -429,6 +429,161 @@ mod benchmarks {
     }
 
     #[benchmark]
+    fn propose_job_with_payee_requirement(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        b: Linear<1, { T::MaxBidMiners::get() }>,
+        t: Linear<0, 8>,
+    ) {
+        let caller: T::AccountId = whitelisted_caller();
+        fund_account::<T>(&caller, benchmark_funding::<T>());
+        let spec_id = register_spec_for::<T>(&caller);
+        let reward = benchmark_reward::<T>();
+        let miners = bounded((0..b).map(|index| account("bid-miner", index, 0)).collect());
+        let miner_types = if t == 0 {
+            None
+        } else {
+            Some(bounded(vec![types::MinerType::Cpu; t as usize]))
+        };
+
+        #[extrinsic_call]
+        QuantumComputeMempool::propose_job_with_payee_requirement(
+            RawOrigin::Signed(caller.clone()),
+            spec_id,
+            params_with_dimensions::<T>(n, e, None),
+            reward,
+            types::JobMode::Bid {
+                miners: Some(miners),
+                miner_types,
+            },
+            types::RewardResolution::SingleBest,
+            10u32.into(),
+            5u32.into(),
+            types::ResultDelivery::OnChainOnly,
+            20033,
+        );
+
+        assert!(JobOrders::<T>::contains_key(0));
+        assert_eq!(OrderPayeeRequirements::<T>::get(0), Some(20033));
+    }
+
+    #[benchmark]
+    fn submit_solution_with_payee(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let proposer: T::AccountId = whitelisted_caller();
+        let solver: T::AccountId = account("solver", 0, 0);
+        register_solver_for::<T>(&solver);
+        let min_solutions = if s > 1 { s - 1 } else { 1 };
+        let order_id = propose_order_for::<T>(
+            &proposer,
+            params_with_dimensions::<T>(n, e, Some(min_solutions)),
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::TopNEqual {
+                n: types::MAX_REWARD_WINNERS,
+            },
+            types::ResultDelivery::OnChainOnly,
+        );
+        let ranked: TopSolversOf<T> = bounded(
+            (0..types::MAX_REWARD_WINNERS)
+                .map(|index| types::RankedSolver {
+                    solver: account("ranked-solver", index, 0),
+                    energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
+                })
+                .collect(),
+        );
+        OrderTopSolvers::<T>::insert(order_id, ranked);
+
+        OrderPayeeRequirements::<T>::insert(order_id, 20033);
+        let payee = types::WinnerPayee::V1 {
+            chain_id: 20033,
+            address: sp_core::H160::repeat_byte(1),
+        };
+
+        #[extrinsic_call]
+        QuantumComputeMempool::submit_solution_with_payee(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            solutions_with_dimensions::<T>(n, s),
+            payee,
+        );
+
+        assert!(OrderSolutions::<T>::contains_key(order_id, &solver));
+        assert_eq!(OrderPayees::<T>::get(order_id, &solver), Some(payee));
+    }
+
+    // Reading/replacing the largest previously accepted payload is a separate
+    // timing case. Compare this with first-submission rescheduling before
+    // generating the public submission weights.
+    #[benchmark(extra)]
+    fn submit_solution_replacement(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let proposer: T::AccountId = whitelisted_caller();
+        let solver: T::AccountId = account("solver", 0, 0);
+        register_solver_for::<T>(&solver);
+        let mut params = params_with_dimensions::<T>(n, e, Some(s));
+        // An isolated local field makes all-minus strictly worse than all-plus
+        // at every dimension, without relying on a fabricated stored score.
+        params.h_values[0] = -1_000;
+        let order_id = propose_order_for::<T>(
+            &proposer,
+            params,
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::TopNEqual {
+                n: types::MAX_REWARD_WINNERS,
+            },
+            types::ResultDelivery::OnChainOnly,
+        );
+        let payee = types::WinnerPayee::V1 {
+            chain_id: 20033,
+            address: sp_core::H160::repeat_byte(1),
+        };
+        OrderPayeeRequirements::<T>::insert(order_id, 20033);
+        assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
+            RawOrigin::Signed(solver.clone()).into(),
+            order_id,
+            bounded(vec![bounded(vec![-1; n as usize]); s as usize]),
+            payee,
+        )
+        .is_ok());
+        let old_energy = OrderSolutions::<T>::get(order_id, &solver)
+            .unwrap()
+            .best_energy_milli;
+        let ranked: TopSolversOf<T> = bounded(
+            (0..types::MAX_REWARD_WINNERS)
+                .map(|index| types::RankedSolver {
+                    solver: account("ranked-solver", index, 0),
+                    energy_milli: old_energy + i64::from(index),
+                })
+                .collect(),
+        );
+        OrderTopSolvers::<T>::insert(order_id, ranked);
+
+        #[extrinsic_call]
+        QuantumComputeMempool::submit_solution_with_payee(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            bounded(vec![bounded(vec![1; n as usize]); s as usize]),
+            payee,
+        );
+
+        assert!(
+            OrderSolutions::<T>::get(order_id, &solver)
+                .unwrap()
+                .best_energy_milli
+                < old_energy
+        );
+        assert_eq!(OrderPayees::<T>::get(order_id, &solver), Some(payee));
+    }
+
+    #[benchmark]
     fn claim_reward() {
         let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
 

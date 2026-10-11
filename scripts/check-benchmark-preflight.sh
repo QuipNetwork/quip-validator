@@ -126,7 +126,19 @@ check_quantum_compute_mempool_wrapper() {
     'pubconstRECLAIM_ORDER_PROOF_FLOOR:u64=1024*1024;' \
     'weight.max(Weight::from_parts(0,RECLAIM_ORDER_PROOF_FLOOR))' \
     'with_reclaim_order_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::reclaim_order())' \
-    'with_reclaim_order_proof_floor(<()asBenchmarkWeightInfo>::reclaim_order())'; do
+    'with_reclaim_order_proof_floor(<()asBenchmarkWeightInfo>::reclaim_order())' \
+    'pubconstPROPOSE_JOB_PROOF_FLOOR:u64=1024*1024;' \
+    'weight.max(Weight::from_parts(0,PROPOSE_JOB_PROOF_FLOOR))' \
+    'with_propose_job_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::propose_job(' \
+    'with_propose_job_proof_floor(<()asBenchmarkWeightInfo>::propose_job(' \
+    'with_propose_job_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::propose_job_with_payee_requirement(' \
+    'with_propose_job_proof_floor(<()asBenchmarkWeightInfo>::propose_job_with_payee_requirement(' \
+    'pubconstSUBMIT_SOLUTION_PROOF_FLOOR:u64=1024*1024;' \
+    'weight.max(Weight::from_parts(0,SUBMIT_SOLUTION_PROOF_FLOOR))' \
+    'with_submit_solution_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::submit_solution(' \
+    'with_submit_solution_proof_floor(<()asBenchmarkWeightInfo>::submit_solution(' \
+    'with_submit_solution_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::submit_solution_with_payee(' \
+    'with_submit_solution_proof_floor(<()asBenchmarkWeightInfo>::submit_solution_with_payee('; do
     if [[ "$normalized" != *"$required"* ]]; then
       echo "ERROR: Quantum Compute Mempool public wrapper lost invariant '$required'" >&2
       return 1

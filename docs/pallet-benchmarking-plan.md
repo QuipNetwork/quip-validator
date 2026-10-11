@@ -394,3 +394,42 @@ ProposerOrders, System Account, OpenOrders and TotalIssuance. Both use a maintai
 **1 MiB** floor and runtime integrity checks against the actual storage metadata
 and Normal dispatch limits. Claim/refund do not read stored solutions, poll
 results or payees. The same documented trie-model assumptions apply.
+
+### QUI-1512 D: signed destination metadata and submission evidence
+
+Both submit entry points share validation and accepted-write logic. Their model
+adds one requirement read and one payee write/delete: 6 reads / 7 writes relative
+to the prior 5 / 6 generated model (System bookkeeping follows SDK benchmarking
+whitelists). `propose_job_with_payee_requirement` adds one write to the original
+proposal. New-call timing compositions are explicitly provisional: no new
+reference-machine ref_time is claimed. Regenerate both proposal and submission
+APIs, as well as B closure paths, before merge/release.
+
+Submission now reads a previously accepted payload for strict improvement. The
+public wrapper sums the actual runtime storage bounds for JobOrders, JobSpecs,
+Solvers, OrderSolutions, the larger ranking, both expiry keys, required-chain and
+payee keys, and System::Number, adding 4,950 trie bytes per key under the same SDK
+model documented above. The production envelope is **792,516 bytes**. Both submit
+APIs and both weight providers enforce a 1 MiB proof floor; integrity checks also
+verify the maximal charged submission weights against Normal max_extrinsic and
+max_total. Closure envelopes remain **1,002,055 claim / 666,169 refund bytes**:
+metadata is retained, so neither closure path accesses those new maps.
+
+Benchmark coverage adds calls 8 and 9 and an extra `submit_solution_replacement`
+case with a real, full-sized prior accepted payload, full ranking, required payee,
+and strictly better replacement. Measure first-submission rescheduling and
+replacement independently and use their conservative timing envelope. Selection
+and prior-payload decoding changed in A and are not validated by the inherited
+reference fit. Run extra cases explicitly; default generated dispatch weights
+must not silently omit their cost. Ordinary/dust claim remains a two-case gate.
+
+Native mock benchmark tests, runtime bound checks and wrapper guards are local
+correctness evidence, not reference timings or production Wasm preflight. Fresh
+Wasm build/preflight and reference-machine measurements are separate required
+checks; manual CI regeneration also pushes files and requires separate permission.
+
+The proposal wrapper likewise uses a **686,322-byte** union envelope (JobOrders,
+JobSpecs, ProposerOrders, proposer System account, NextOrderId, OpenOrders,
+OrdersExpiringAt, OrderPayeeRequirements and System::Number). Both proposal APIs
+apply the 1 MiB floor with generic/unit provider and Normal-limit integrity checks.
+This covers the additional requirement key together with existing proposal keys.

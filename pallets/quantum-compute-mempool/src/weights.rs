@@ -6,6 +6,7 @@
 //! storage prefixes instead of adding their simultaneous proof contributions.
 
 use crate::benchmark_weights::{self, WeightInfo as BenchmarkWeightInfo};
+use codec::MaxEncodedLen;
 use core::marker::PhantomData;
 use frame_support::{
     traits::{Get, StorageInfoTrait},
@@ -15,6 +16,8 @@ use frame_support::{
 /// Conservative settlement proof floor under the documented SDK trie model.
 pub const CLAIM_REWARD_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const RECLAIM_ORDER_PROOF_FLOOR: u64 = 1024 * 1024;
+pub const PROPOSE_JOB_PROOF_FLOOR: u64 = 1024 * 1024;
+pub const SUBMIT_SOLUTION_PROOF_FLOOR: u64 = 1024 * 1024;
 
 // SDK model: largest u32 map-cardinality bucket (eight radix-16 layers),
 // plus two global trie layers, each charged separately to EVERY touched key.
@@ -63,6 +66,42 @@ pub fn reclaim_order_proof_envelope<T: crate::Config>() -> u64 {
         .saturating_add(storage_key_envelope::<pallet_balances::TotalIssuance<T>>())
 }
 
+/// Conservative union of proposal keys, including the optional requirement.
+pub fn propose_job_proof_envelope<T: crate::Config>() -> u64 {
+    storage_key_envelope::<crate::JobOrders<T>>()
+        .saturating_add(storage_key_envelope::<crate::JobSpecs<T>>())
+        .saturating_add(storage_key_envelope::<crate::ProposerOrders<T>>())
+        .saturating_add(storage_key_envelope::<frame_system::Account<T>>())
+        .saturating_add(storage_key_envelope::<crate::NextOrderId<T>>())
+        .saturating_add(storage_key_envelope::<crate::OpenOrders<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrdersExpiringAt<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderPayeeRequirements<T>>())
+        .saturating_add(
+            frame_system::pallet_prelude::BlockNumberFor::<T>::max_encoded_len() as u64
+                + TRIE_OVERHEAD_PER_KEY,
+        )
+}
+
+/// Both submission APIs touch these bounded keys; count either ranking and
+/// both expiry entries, even though a replacement need not reschedule expiry.
+pub fn submit_solution_proof_envelope<T: crate::Config>() -> u64 {
+    storage_key_envelope::<crate::JobOrders<T>>()
+        .saturating_add(storage_key_envelope::<crate::JobSpecs<T>>())
+        .saturating_add(storage_key_envelope::<crate::Solvers<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderSolutions<T>>())
+        .saturating_add(
+            storage_key_envelope::<crate::OrderTopSolvers<T>>()
+                .max(storage_key_envelope::<crate::OrderFrontRunner<T>>()),
+        )
+        .saturating_add(storage_key_envelope::<crate::OrdersExpiringAt<T>>().saturating_mul(2))
+        .saturating_add(storage_key_envelope::<crate::OrderPayeeRequirements<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderPayees<T>>())
+        .saturating_add(
+            frame_system::pallet_prelude::BlockNumberFor::<T>::max_encoded_len() as u64
+                + TRIE_OVERHEAD_PER_KEY,
+        )
+}
+
 /// Fail runtime integrity validation if the fixed floor or normal call limit
 /// no longer covers settlement. Currency/VM changes also require rebenchmarking.
 pub fn check_claim_reward_weight<T: crate::Config>() {
@@ -79,9 +118,35 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
         reclaim_order_proof_envelope::<T>() <= RECLAIM_ORDER_PROOF_FLOOR,
         "refund proof floor no longer covers configured storage bounds"
     );
+    assert!(
+        submit_solution_proof_envelope::<T>() <= SUBMIT_SOLUTION_PROOF_FLOOR,
+        "submission proof floor no longer covers storage bounds"
+    );
+    assert!(
+        propose_job_proof_envelope::<T>() <= PROPOSE_JOB_PROOF_FLOOR,
+        "proposal proof floor no longer covers storage bounds"
+    );
     let limits = T::BlockWeights::get();
     let normal = limits.get(frame_support::dispatch::DispatchClass::Normal);
     for (weight, floor) in [
+        (
+            <T as crate::Config>::WeightInfo::propose_job(
+                T::MaxNodes::get(),
+                T::MaxEdges::get(),
+                T::MaxBidMiners::get(),
+                8,
+            ),
+            PROPOSE_JOB_PROOF_FLOOR,
+        ),
+        (
+            <T as crate::Config>::WeightInfo::propose_job_with_payee_requirement(
+                T::MaxNodes::get(),
+                T::MaxEdges::get(),
+                T::MaxBidMiners::get(),
+                8,
+            ),
+            PROPOSE_JOB_PROOF_FLOOR,
+        ),
         (
             <T as crate::Config>::WeightInfo::claim_reward(),
             CLAIM_REWARD_PROOF_FLOOR,
@@ -90,18 +155,34 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
             <T as crate::Config>::WeightInfo::reclaim_order(),
             RECLAIM_ORDER_PROOF_FLOOR,
         ),
+        (
+            <T as crate::Config>::WeightInfo::submit_solution(
+                T::MaxNodes::get(),
+                T::MaxEdges::get(),
+                T::MaxSolutions::get(),
+            ),
+            SUBMIT_SOLUTION_PROOF_FLOOR,
+        ),
+        (
+            <T as crate::Config>::WeightInfo::submit_solution_with_payee(
+                T::MaxNodes::get(),
+                T::MaxEdges::get(),
+                T::MaxSolutions::get(),
+            ),
+            SUBMIT_SOLUTION_PROOF_FLOOR,
+        ),
     ] {
         assert!(
             weight.proof_size() >= floor,
-            "weight provider bypasses closure proof floor"
+            "weight provider bypasses proof floor"
         );
         assert!(
             weight.all_lte(normal.max_extrinsic.unwrap_or(limits.max_block)),
-            "closure weight exceeds normal max_extrinsic"
+            "call weight exceeds normal max_extrinsic"
         );
         assert!(
             weight.all_lte(normal.max_total.unwrap_or(limits.max_block)),
-            "closure weight exceeds normal block allowance"
+            "call weight exceeds normal block allowance"
         );
     }
 }
@@ -114,7 +195,17 @@ fn with_reclaim_order_proof_floor(weight: Weight) -> Weight {
     weight.max(Weight::from_parts(0, RECLAIM_ORDER_PROOF_FLOOR))
 }
 
+fn with_propose_job_proof_floor(weight: Weight) -> Weight {
+    weight.max(Weight::from_parts(0, PROPOSE_JOB_PROOF_FLOOR))
+}
+
+fn with_submit_solution_proof_floor(weight: Weight) -> Weight {
+    weight.max(Weight::from_parts(0, SUBMIT_SOLUTION_PROOF_FLOOR))
+}
+
 pub trait WeightInfo {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight;
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight;
     fn register_solver() -> Weight;
     fn deregister_solver() -> Weight;
     fn register_job_spec() -> Weight;
@@ -128,6 +219,13 @@ pub trait WeightInfo {
 
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
+        with_propose_job_proof_floor(<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::propose_job_with_payee_requirement(n, e, b, t))
+    }
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
+        with_submit_solution_proof_floor(<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_solution_with_payee(n, e, s))
+    }
+
     fn register_solver() -> Weight {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::register_solver()
     }
@@ -138,10 +236,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::register_job_spec()
     }
     fn propose_job(n: u32, e: u32, b: u32, t: u32) -> Weight {
-        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::propose_job(n, e, b, t)
+        with_propose_job_proof_floor(
+            <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::propose_job(n, e, b, t),
+        )
     }
     fn submit_solution(n: u32, e: u32, s: u32) -> Weight {
-        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_solution(n, e, s)
+        with_submit_solution_proof_floor(
+            <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_solution(
+                n, e, s,
+            ),
+        )
     }
     fn claim_reward() -> Weight {
         with_claim_reward_proof_floor(
@@ -161,6 +265,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     }
 }
 impl WeightInfo for () {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
+        with_propose_job_proof_floor(
+            <() as BenchmarkWeightInfo>::propose_job_with_payee_requirement(n, e, b, t),
+        )
+    }
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
+        with_submit_solution_proof_floor(<() as BenchmarkWeightInfo>::submit_solution_with_payee(
+            n, e, s,
+        ))
+    }
+
     fn register_solver() -> Weight {
         <() as BenchmarkWeightInfo>::register_solver()
     }
@@ -171,10 +286,10 @@ impl WeightInfo for () {
         <() as BenchmarkWeightInfo>::register_job_spec()
     }
     fn propose_job(n: u32, e: u32, b: u32, t: u32) -> Weight {
-        <() as BenchmarkWeightInfo>::propose_job(n, e, b, t)
+        with_propose_job_proof_floor(<() as BenchmarkWeightInfo>::propose_job(n, e, b, t))
     }
     fn submit_solution(n: u32, e: u32, s: u32) -> Weight {
-        <() as BenchmarkWeightInfo>::submit_solution(n, e, s)
+        with_submit_solution_proof_floor(<() as BenchmarkWeightInfo>::submit_solution(n, e, s))
     }
     fn claim_reward() -> Weight {
         with_claim_reward_proof_floor(<() as BenchmarkWeightInfo>::claim_reward())

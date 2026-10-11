@@ -52,6 +52,8 @@ use core::marker::PhantomData;
 
 /// Weight functions needed for `pallet_quantum_compute_mempool`.
 pub trait WeightInfo {
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight;
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight;
 	fn register_solver() -> Weight;
 	fn deregister_solver() -> Weight;
 	fn register_job_spec() -> Weight;
@@ -66,6 +68,16 @@ pub trait WeightInfo {
 /// Weights for `pallet_quantum_compute_mempool` using the Substrate node and recommended hardware.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+    // Provisional compositions, NOT new measured timings. Regenerate before merge.
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
+        <Self as WeightInfo>::propose_job(n, e, b, t)
+            .saturating_add(T::DbWeight::get().writes(1))
+            .saturating_add(Weight::from_parts(0, 32 + 4950))
+    }
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
+        <Self as WeightInfo>::submit_solution(n, e, s)
+    }
+
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	fn register_solver() -> Weight {
@@ -144,6 +156,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
 	fn submit_solution(_n: u32, e: u32, s: u32, ) -> Weight {
+		// Payee requirement read + destination write/delete; timing pending regeneration.
 		// Proof Size summary in bytes:
 		//  Measured:  `1946 + e * (12 ±0) + n * (8 ±0)`
 		//  Estimated: `644411`
@@ -153,8 +166,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(862_672, 0).saturating_mul(e.into()))
 			// Standard Error: 55_585_055
 			.saturating_add(Weight::from_parts(1_980_400_392, 0).saturating_mul(s.into()))
-			.saturating_add(T::DbWeight::get().reads(5_u64))
-			.saturating_add(T::DbWeight::get().writes(6_u64))
+			.saturating_add(T::DbWeight::get().reads(6_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
@@ -239,6 +252,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 // For backwards compatibility and tests.
 impl WeightInfo for () {
+    // Provisional compositions, NOT new measured timings. Regenerate before merge.
+    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
+        <Self as WeightInfo>::propose_job(n, e, b, t)
+            .saturating_add(RocksDbWeight::get().writes(1))
+            .saturating_add(Weight::from_parts(0, 32 + 4950))
+    }
+    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
+        <Self as WeightInfo>::submit_solution(n, e, s)
+    }
+
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	fn register_solver() -> Weight {
@@ -317,6 +340,7 @@ impl WeightInfo for () {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
 	fn submit_solution(_n: u32, e: u32, s: u32, ) -> Weight {
+		// Payee requirement read + destination write/delete; timing pending regeneration.
 		// Proof Size summary in bytes:
 		//  Measured:  `1946 + e * (12 ±0) + n * (8 ±0)`
 		//  Estimated: `644411`
@@ -326,8 +350,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(862_672, 0).saturating_mul(e.into()))
 			// Standard Error: 55_585_055
 			.saturating_add(Weight::from_parts(1_980_400_392, 0).saturating_mul(s.into()))
-			.saturating_add(RocksDbWeight::get().reads(5_u64))
-			.saturating_add(RocksDbWeight::get().writes(6_u64))
+			.saturating_add(RocksDbWeight::get().reads(6_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)

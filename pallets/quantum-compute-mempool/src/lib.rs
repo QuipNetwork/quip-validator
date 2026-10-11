@@ -178,7 +178,8 @@ pub mod pallet {
     /// the canonical default plain Ising spec. v3 adds the expiry index
     /// (`OrdersExpiringAt`, `NextExpiryBucket`) and indexes the open orders
     /// already in storage.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+    // v4 adds sparse optional payee metadata; runtime119 launches at fresh genesis.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -303,6 +304,21 @@ pub mod pallet {
         JobSolutionOf<T>,
     >;
 
+    /// Immutable destination chain required by a native proposal; no payment activation.
+    #[pallet::storage]
+    pub type OrderPayeeRequirements<T: Config> = StorageMap<_, Blake2_128Concat, u64, u64>;
+
+    /// Latest accepted signed destination; frozen at effective expiry and retained on closure.
+    #[pallet::storage]
+    pub type OrderPayees<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        T::AccountId,
+        types::WinnerPayee,
+    >;
+
     #[pallet::storage]
     pub type OrderFrontRunner<T: Config> = StorageMap<_, Blake2_128Concat, u64, FrontRunnerOf<T>>;
 
@@ -401,6 +417,15 @@ pub mod pallet {
             endpoint: BoundedVec<u8, ConstU32<256>>,
             winners: WinnerSummariesOf<T>,
         },
+        PayeeRequirementSet {
+            order_id: u64,
+            chain_id: u64,
+        },
+        SolutionPayeeSet {
+            order_id: u64,
+            solver: T::AccountId,
+            payee: Option<types::WinnerPayee>,
+        },
     }
 
     #[pallet::error]
@@ -443,6 +468,10 @@ pub mod pallet {
         SolutionNotImproved,
         /// Reserved funds are insufficient; retain the order and retry after recovery.
         RewardReserveMissing,
+        InvalidPayeeChain,
+        PayeeRequired,
+        InvalidPayee,
+        PayeeChainMismatch,
     }
 
     #[pallet::call]
@@ -538,104 +567,18 @@ pub mod pallet {
             delivery: types::ResultDelivery,
         ) -> DispatchResult {
             let proposer = ensure_signed(origin)?;
-            ensure!(reward >= T::MinReward::get(), Error::<T>::RewardTooLow);
-            ensure!(
-                deadline_blocks <= T::MaxDeadlineBlocks::get(),
-                Error::<T>::DeadlineTooLong
-            );
-            ensure!(
-                block_wait <= T::MaxBlockWait::get(),
-                Error::<T>::BlockWaitTooLong
-            );
-            ensure!(
-                JobSpecs::<T>::contains_key(&spec_id),
-                Error::<T>::JobSpecNotFound
-            );
-
-            if let Some(min_solutions) = ising_params.min_solutions {
-                ensure!(
-                    min_solutions <= T::MaxSolutions::get(),
-                    Error::<T>::TooManySolutions
-                );
-            }
-            if ising_params.min_diversity_milli.unwrap_or(0) > 0 {
-                ensure!(
-                    ising_params
-                        .min_solutions
-                        .is_none_or(|min_solutions| min_solutions >= 2),
-                    Error::<T>::InvalidDiversityConfig
-                );
-            }
-
-            ensure!(
-                quantum_validation::validate_topology_consistency(
-                    ising_params.nodes.as_slice(),
-                    ising_params.edges.as_slice(),
-                    ising_params.h_values.as_slice(),
-                    ising_params.j_values.as_slice(),
-                    None,
-                    None,
-                )
-                .is_empty(),
-                Error::<T>::InvalidTopology
-            );
-
-            ensure!(
-                delivery::validate_delivery_mode(&delivery, &mode),
-                Error::<T>::InvalidDeliveryMode
-            );
-            Self::ensure_valid_mode(&mode)?;
-            Self::ensure_valid_resolution(&resolution)?;
-
-            let mut proposer_orders = ProposerOrders::<T>::get(&proposer);
-            proposer_orders
-                .try_push(NextOrderId::<T>::get())
-                .map_err(|_| Error::<T>::OrderLimitReached)?;
-
-            T::Currency::reserve(&proposer, reward)?;
-
-            let order_id = NextOrderId::<T>::get();
-            NextOrderId::<T>::put(order_id.saturating_add(1));
-
-            let created_at = frame_system::Pallet::<T>::block_number();
-            JobOrders::<T>::insert(
-                order_id,
-                JobOrderOf::<T> {
-                    spec_id,
-                    proposer: proposer.clone(),
-                    ising_params,
-                    reward,
-                    mode,
-                    resolution,
-                    timing: types::OrderTiming {
-                        deadline_blocks,
-                        block_wait,
-                    },
-                    delivery,
-                    status: types::OrderStatus::Opened,
-                    created_at,
-                    first_solution_at: None,
-                    solution_count: 0,
-                },
-            );
-            OpenOrders::<T>::insert(order_id, ());
-            Self::schedule_expiry(order_id, created_at.saturating_add(deadline_blocks));
-            ProposerOrders::<T>::insert(&proposer, proposer_orders);
-            JobSpecs::<T>::mutate(spec_id, |maybe_spec| {
-                if let Some(spec) = maybe_spec {
-                    spec.total_orders = spec.total_orders.saturating_add(1);
-                }
-            });
-
-            Self::deposit_event(Event::JobProposed {
-                order_id,
-                spec_id,
+            Self::do_propose_job(
                 proposer,
+                spec_id,
+                ising_params,
                 reward,
+                mode,
+                resolution,
                 deadline_blocks,
                 block_wait,
-            });
-            Ok(())
+                delivery,
+            )
+            .map(|_| ())
         }
 
         /// Submit a first solution or a strictly lower-energy replacement.
@@ -661,195 +604,7 @@ pub mod pallet {
             order_id: u64,
             solutions: SolutionsOf<T>,
         ) -> DispatchResult {
-            let solver = ensure_signed(origin)?;
-            let mut solver_info =
-                Solvers::<T>::get(&solver).ok_or(Error::<T>::SolverNotRegistered)?;
-            ensure!(!solutions.is_empty(), Error::<T>::NoSolutionsSubmitted);
-
-            let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
-            let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
-            let now = frame_system::Pallet::<T>::block_number();
-            ensure!(
-                order.status == types::OrderStatus::Opened
-                    && !lifecycle::is_expired(
-                        now,
-                        order.created_at,
-                        order.first_solution_at,
-                        &order.timing,
-                    ),
-                Error::<T>::OrderNotOpen
-            );
-
-            ensure!(
-                Self::solver_is_eligible(&solver, solver_info.solver_type, &order.mode),
-                Error::<T>::NotEligibleSolver
-            );
-
-            let nodes = order.ising_params.nodes.as_slice();
-            let edges = order.ising_params.edges.as_slice();
-            let h_values = order.ising_params.h_values.as_slice();
-            let j_values = order.ising_params.j_values.as_slice();
-            let topology = TopologyIndex::new(nodes, edges).map_err(Self::map_validation_error)?;
-            let transformed_solutions = T::VM::transform_solutions(
-                &order.spec_id,
-                spec.validation_program.as_ref(),
-                spec.transform_program.as_ref(),
-                &solver,
-                solutions
-                    .iter()
-                    .map(|solution| solution.as_slice().to_vec())
-                    .collect(),
-            )?;
-            ensure!(
-                !transformed_solutions.is_empty(),
-                Error::<T>::NoSolutionsSubmitted
-            );
-            ensure!(
-                transformed_solutions.len() <= T::MaxSolutions::get() as usize,
-                Error::<T>::TooManySolutions
-            );
-
-            let mut valid_solutions: Vec<Vec<i8>> = Vec::new();
-            let mut best_energy = i64::MAX;
-            let mut best_index = 0;
-
-            for solution in &transformed_solutions {
-                let energy = energy_of_solution_indexed(
-                    solution.as_slice(),
-                    h_values,
-                    edges,
-                    j_values,
-                    &topology,
-                )
-                .map_err(Self::map_validation_error)?;
-                if let Some(max_energy) = order.ising_params.max_energy_milli {
-                    if energy > max_energy {
-                        continue;
-                    }
-                }
-
-                if energy < best_energy {
-                    best_energy = energy;
-                    best_index = valid_solutions.len();
-                }
-                valid_solutions.push(solution.as_slice().to_vec());
-            }
-
-            ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
-
-            let previous = OrderSolutions::<T>::get(order_id, &solver);
-            ensure!(
-                previous
-                    .as_ref()
-                    .is_none_or(|accepted| best_energy < accepted.best_energy_milli),
-                Error::<T>::SolutionNotImproved
-            );
-
-            let target_count = order
-                .ising_params
-                .min_solutions
-                .unwrap_or(valid_solutions.len() as u32)
-                .max(1)
-                .min(valid_solutions.len() as u32) as usize;
-
-            ensure!(
-                valid_solutions.len() >= target_count.max(1),
-                Error::<T>::InsufficientSolutions
-            );
-
-            let selected_indices =
-                crate::selection::select_from_best(&valid_solutions, best_index, target_count)
-                    .map_err(Self::map_validation_error)?;
-            let selected_solutions: Vec<Vec<i8>> = selected_indices
-                .into_iter()
-                .map(|index| valid_solutions[index].clone())
-                .collect();
-
-            if let Some(min_solutions) = order.ising_params.min_solutions {
-                ensure!(
-                    (selected_solutions.len() as u32) >= min_solutions,
-                    Error::<T>::InsufficientSolutions
-                );
-            }
-
-            let diversity_milli =
-                calculate_diversity(&selected_solutions).map_err(Self::map_validation_error)?;
-            if let Some(min_diversity) = order.ising_params.min_diversity_milli {
-                ensure!(
-                    diversity_milli >= min_diversity,
-                    Error::<T>::InsufficientDiversity
-                );
-            }
-
-            let bounded_solutions: SolutionsOf<T> = selected_solutions
-                .iter()
-                .map(|solution| {
-                    BoundedVec::<i8, T::MaxNodes>::try_from(solution.clone())
-                        .expect("validated against MaxNodes")
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .expect("selected subset cannot exceed MaxSolutions");
-
-            let is_new_solver = previous.is_none();
-            OrderSolutions::<T>::insert(
-                order_id,
-                &solver,
-                JobSolutionOf::<T> {
-                    solver: solver.clone(),
-                    solver_type: solver_info.solver_type,
-                    solutions: bounded_solutions,
-                    best_energy_milli: best_energy,
-                    diversity_milli,
-                    num_valid: selected_solutions.len() as u32,
-                    submitted_at: now,
-                },
-            );
-
-            if is_new_solver {
-                order.solution_count = order.solution_count.saturating_add(1);
-            }
-
-            if order.first_solution_at.is_none() {
-                order.first_solution_at = Some(now);
-                let closes_at = lifecycle::effective_expiry(
-                    order.created_at,
-                    order.first_solution_at,
-                    &order.timing,
-                );
-                let hard_deadline = order
-                    .created_at
-                    .saturating_add(order.timing.deadline_blocks);
-                if closes_at < hard_deadline {
-                    // A first solution only arrives before the hard deadline, so
-                    // the order sits in exactly the hard-deadline bucket.
-                    OrdersExpiringAt::<T>::remove(hard_deadline, order_id);
-                    Self::schedule_expiry(order_id, closes_at);
-                }
-                Self::deposit_event(Event::FirstSolutionReceived {
-                    order_id,
-                    solver: solver.clone(),
-                    effective_expiry: closes_at,
-                });
-                Self::deposit_event(Event::BlockWaitStarted {
-                    order_id,
-                    first_solution_at: now,
-                    closes_at,
-                });
-            }
-
-            Self::update_ranking(order_id, &order.resolution, &solver, best_energy)?;
-            solver_info.solutions_submitted = solver_info.solutions_submitted.saturating_add(1);
-            Solvers::<T>::insert(&solver, solver_info);
-            JobOrders::<T>::insert(order_id, order);
-
-            Self::deposit_event(Event::SolutionAccepted {
-                order_id,
-                solver,
-                energy_milli: best_energy,
-                diversity_milli,
-            });
-            Ok(())
+            Self::do_submit_solution(ensure_signed(origin)?, order_id, solutions, None)
         }
 
         /// Settle an expired solved order. Any signed account may call; rewards
@@ -968,6 +723,60 @@ pub mod pallet {
             Self::deposit_event(Event::ResultPurged { order_id });
             Ok(())
         }
+
+        /// Native proposal with an immutable destination-metadata requirement.
+        /// This neither activates EVM payment nor changes native funding/closure.
+        #[pallet::call_index(8)]
+        #[pallet::weight({
+            let (b, t) = Pallet::<T>::bid_dimensions(&mode);
+            <T as Config>::WeightInfo::propose_job_with_payee_requirement(
+                ising_params.nodes.len() as u32, ising_params.edges.len() as u32, b, t)
+        })]
+        pub fn propose_job_with_payee_requirement(
+            origin: OriginFor<T>,
+            spec_id: T::Hash,
+            ising_params: IsingParamsOf<T>,
+            reward: BalanceOf<T>,
+            mode: JobModeOf<T>,
+            resolution: types::RewardResolution,
+            deadline_blocks: BlockNumberFor<T>,
+            block_wait: BlockNumberFor<T>,
+            delivery: types::ResultDelivery,
+            required_chain_id: u64,
+        ) -> DispatchResult {
+            let proposer = ensure_signed(origin)?;
+            ensure!(required_chain_id != 0, Error::<T>::InvalidPayeeChain);
+            let order_id = Self::do_propose_job(
+                proposer,
+                spec_id,
+                ising_params,
+                reward,
+                mode,
+                resolution,
+                deadline_blocks,
+                block_wait,
+                delivery,
+            )?;
+            OrderPayeeRequirements::<T>::insert(order_id, required_chain_id);
+            Self::deposit_event(Event::PayeeRequirementSet {
+                order_id,
+                chain_id: required_chain_id,
+            });
+            Ok(())
+        }
+
+        /// Bind destination metadata to this signed, accepted solution.
+        #[pallet::call_index(9)]
+        #[pallet::weight(<T as Config>::WeightInfo::submit_solution_with_payee(
+            T::MaxNodes::get(), T::MaxEdges::get(), T::MaxSolutions::get()))]
+        pub fn submit_solution_with_payee(
+            origin: OriginFor<T>,
+            order_id: u64,
+            solutions: SolutionsOf<T>,
+            payee: types::WinnerPayee,
+        ) -> DispatchResult {
+            Self::do_submit_solution(ensure_signed(origin)?, order_id, solutions, Some(payee))
+        }
     }
 
     #[pallet::hooks]
@@ -998,6 +807,8 @@ pub mod pallet {
         ///   finalised from the upgrade block onwards, eight per block, because
         ///   migrations run before `System::initialize` so `now + 1` is the
         ///   upgrade block.
+        /// - on-chain `3`: bump the schema marker for sparse payee maps only.
+        ///   Runtime 119 is a fresh-genesis reset; no payees are imported/backfilled.
         fn on_runtime_upgrade() -> Weight {
             use frame_support::{traits::PalletInfoAccess, StorageHasher};
 
@@ -1031,7 +842,9 @@ pub mod pallet {
             }
 
             // v2 -> v3. After a wipe there are no orders, so this is cheap.
-            weight = weight.saturating_add(Self::index_open_orders_for_expiry());
+            if on_chain < 3 {
+                weight = weight.saturating_add(Self::index_open_orders_for_expiry());
+            }
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().writes(1))
@@ -1235,6 +1048,335 @@ pub mod pallet {
                 Self::deposit_event(Event::JobSpecRegistered { spec_id, builder });
             }
             Ok(spec_id)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn do_propose_job(
+            proposer: T::AccountId,
+            spec_id: T::Hash,
+            ising_params: IsingParamsOf<T>,
+            reward: BalanceOf<T>,
+            mode: JobModeOf<T>,
+            resolution: types::RewardResolution,
+            deadline_blocks: BlockNumberFor<T>,
+            block_wait: BlockNumberFor<T>,
+            delivery: types::ResultDelivery,
+        ) -> Result<u64, DispatchError> {
+            ensure!(reward >= T::MinReward::get(), Error::<T>::RewardTooLow);
+            ensure!(
+                deadline_blocks <= T::MaxDeadlineBlocks::get(),
+                Error::<T>::DeadlineTooLong
+            );
+            ensure!(
+                block_wait <= T::MaxBlockWait::get(),
+                Error::<T>::BlockWaitTooLong
+            );
+            ensure!(
+                JobSpecs::<T>::contains_key(&spec_id),
+                Error::<T>::JobSpecNotFound
+            );
+
+            if let Some(min_solutions) = ising_params.min_solutions {
+                ensure!(
+                    min_solutions <= T::MaxSolutions::get(),
+                    Error::<T>::TooManySolutions
+                );
+            }
+            if ising_params.min_diversity_milli.unwrap_or(0) > 0 {
+                ensure!(
+                    ising_params
+                        .min_solutions
+                        .is_none_or(|min_solutions| min_solutions >= 2),
+                    Error::<T>::InvalidDiversityConfig
+                );
+            }
+
+            ensure!(
+                quantum_validation::validate_topology_consistency(
+                    ising_params.nodes.as_slice(),
+                    ising_params.edges.as_slice(),
+                    ising_params.h_values.as_slice(),
+                    ising_params.j_values.as_slice(),
+                    None,
+                    None,
+                )
+                .is_empty(),
+                Error::<T>::InvalidTopology
+            );
+
+            ensure!(
+                delivery::validate_delivery_mode(&delivery, &mode),
+                Error::<T>::InvalidDeliveryMode
+            );
+            Self::ensure_valid_mode(&mode)?;
+            Self::ensure_valid_resolution(&resolution)?;
+
+            let mut proposer_orders = ProposerOrders::<T>::get(&proposer);
+            proposer_orders
+                .try_push(NextOrderId::<T>::get())
+                .map_err(|_| Error::<T>::OrderLimitReached)?;
+
+            T::Currency::reserve(&proposer, reward)?;
+
+            let order_id = NextOrderId::<T>::get();
+            NextOrderId::<T>::put(order_id.saturating_add(1));
+
+            let created_at = frame_system::Pallet::<T>::block_number();
+            JobOrders::<T>::insert(
+                order_id,
+                JobOrderOf::<T> {
+                    spec_id,
+                    proposer: proposer.clone(),
+                    ising_params,
+                    reward,
+                    mode,
+                    resolution,
+                    timing: types::OrderTiming {
+                        deadline_blocks,
+                        block_wait,
+                    },
+                    delivery,
+                    status: types::OrderStatus::Opened,
+                    created_at,
+                    first_solution_at: None,
+                    solution_count: 0,
+                },
+            );
+            OpenOrders::<T>::insert(order_id, ());
+            Self::schedule_expiry(order_id, created_at.saturating_add(deadline_blocks));
+            ProposerOrders::<T>::insert(&proposer, proposer_orders);
+            JobSpecs::<T>::mutate(spec_id, |maybe_spec| {
+                if let Some(spec) = maybe_spec {
+                    spec.total_orders = spec.total_orders.saturating_add(1);
+                }
+            });
+
+            Self::deposit_event(Event::JobProposed {
+                order_id,
+                spec_id,
+                proposer,
+                reward,
+                deadline_blocks,
+                block_wait,
+            });
+            Ok(order_id)
+        }
+
+        fn do_submit_solution(
+            solver: T::AccountId,
+            order_id: u64,
+            solutions: SolutionsOf<T>,
+            payee: Option<types::WinnerPayee>,
+        ) -> DispatchResult {
+            let mut solver_info =
+                Solvers::<T>::get(&solver).ok_or(Error::<T>::SolverNotRegistered)?;
+            ensure!(!solutions.is_empty(), Error::<T>::NoSolutionsSubmitted);
+
+            let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
+            let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
+            let now = frame_system::Pallet::<T>::block_number();
+            ensure!(
+                order.status == types::OrderStatus::Opened
+                    && !lifecycle::is_expired(
+                        now,
+                        order.created_at,
+                        order.first_solution_at,
+                        &order.timing,
+                    ),
+                Error::<T>::OrderNotOpen
+            );
+
+            let required_chain = OrderPayeeRequirements::<T>::get(order_id);
+            if let Some(destination) = &payee {
+                ensure!(destination.is_valid(), Error::<T>::InvalidPayee);
+            }
+            if let Some(chain_id) = required_chain {
+                let destination = payee.as_ref().ok_or(Error::<T>::PayeeRequired)?;
+                ensure!(
+                    destination.chain_id() == chain_id,
+                    Error::<T>::PayeeChainMismatch
+                );
+            }
+
+            ensure!(
+                Self::solver_is_eligible(&solver, solver_info.solver_type, &order.mode),
+                Error::<T>::NotEligibleSolver
+            );
+
+            let nodes = order.ising_params.nodes.as_slice();
+            let edges = order.ising_params.edges.as_slice();
+            let h_values = order.ising_params.h_values.as_slice();
+            let j_values = order.ising_params.j_values.as_slice();
+            let topology = TopologyIndex::new(nodes, edges).map_err(Self::map_validation_error)?;
+            let transformed_solutions = T::VM::transform_solutions(
+                &order.spec_id,
+                spec.validation_program.as_ref(),
+                spec.transform_program.as_ref(),
+                &solver,
+                solutions
+                    .iter()
+                    .map(|solution| solution.as_slice().to_vec())
+                    .collect(),
+            )?;
+            ensure!(
+                !transformed_solutions.is_empty(),
+                Error::<T>::NoSolutionsSubmitted
+            );
+            ensure!(
+                transformed_solutions.len() <= T::MaxSolutions::get() as usize,
+                Error::<T>::TooManySolutions
+            );
+
+            let mut valid_solutions: Vec<Vec<i8>> = Vec::new();
+            let mut best_energy = i64::MAX;
+            let mut best_index = 0;
+
+            for solution in &transformed_solutions {
+                let energy = energy_of_solution_indexed(
+                    solution.as_slice(),
+                    h_values,
+                    edges,
+                    j_values,
+                    &topology,
+                )
+                .map_err(Self::map_validation_error)?;
+                if let Some(max_energy) = order.ising_params.max_energy_milli {
+                    if energy > max_energy {
+                        continue;
+                    }
+                }
+
+                if energy < best_energy {
+                    best_energy = energy;
+                    best_index = valid_solutions.len();
+                }
+                valid_solutions.push(solution.as_slice().to_vec());
+            }
+
+            ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
+
+            let previous = OrderSolutions::<T>::get(order_id, &solver);
+            ensure!(
+                previous
+                    .as_ref()
+                    .is_none_or(|accepted| best_energy < accepted.best_energy_milli),
+                Error::<T>::SolutionNotImproved
+            );
+
+            let target_count = order
+                .ising_params
+                .min_solutions
+                .unwrap_or(valid_solutions.len() as u32)
+                .max(1)
+                .min(valid_solutions.len() as u32) as usize;
+
+            ensure!(
+                valid_solutions.len() >= target_count.max(1),
+                Error::<T>::InsufficientSolutions
+            );
+
+            let selected_indices =
+                crate::selection::select_from_best(&valid_solutions, best_index, target_count)
+                    .map_err(Self::map_validation_error)?;
+            let selected_solutions: Vec<Vec<i8>> = selected_indices
+                .into_iter()
+                .map(|index| valid_solutions[index].clone())
+                .collect();
+
+            if let Some(min_solutions) = order.ising_params.min_solutions {
+                ensure!(
+                    (selected_solutions.len() as u32) >= min_solutions,
+                    Error::<T>::InsufficientSolutions
+                );
+            }
+
+            let diversity_milli =
+                calculate_diversity(&selected_solutions).map_err(Self::map_validation_error)?;
+            if let Some(min_diversity) = order.ising_params.min_diversity_milli {
+                ensure!(
+                    diversity_milli >= min_diversity,
+                    Error::<T>::InsufficientDiversity
+                );
+            }
+
+            let bounded_solutions: SolutionsOf<T> = selected_solutions
+                .iter()
+                .map(|solution| {
+                    BoundedVec::<i8, T::MaxNodes>::try_from(solution.clone())
+                        .expect("validated against MaxNodes")
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .expect("selected subset cannot exceed MaxSolutions");
+
+            let is_new_solver = previous.is_none();
+            OrderSolutions::<T>::insert(
+                order_id,
+                &solver,
+                JobSolutionOf::<T> {
+                    solver: solver.clone(),
+                    solver_type: solver_info.solver_type,
+                    solutions: bounded_solutions,
+                    best_energy_milli: best_energy,
+                    diversity_milli,
+                    num_valid: selected_solutions.len() as u32,
+                    submitted_at: now,
+                },
+            );
+
+            if is_new_solver {
+                order.solution_count = order.solution_count.saturating_add(1);
+            }
+
+            if order.first_solution_at.is_none() {
+                order.first_solution_at = Some(now);
+                let closes_at = lifecycle::effective_expiry(
+                    order.created_at,
+                    order.first_solution_at,
+                    &order.timing,
+                );
+                let hard_deadline = order
+                    .created_at
+                    .saturating_add(order.timing.deadline_blocks);
+                if closes_at < hard_deadline {
+                    // A first solution only arrives before the hard deadline, so
+                    // the order sits in exactly the hard-deadline bucket.
+                    OrdersExpiringAt::<T>::remove(hard_deadline, order_id);
+                    Self::schedule_expiry(order_id, closes_at);
+                }
+                Self::deposit_event(Event::FirstSolutionReceived {
+                    order_id,
+                    solver: solver.clone(),
+                    effective_expiry: closes_at,
+                });
+                Self::deposit_event(Event::BlockWaitStarted {
+                    order_id,
+                    first_solution_at: now,
+                    closes_at,
+                });
+            }
+
+            Self::update_ranking(order_id, &order.resolution, &solver, best_energy)?;
+            match payee {
+                Some(destination) => OrderPayees::<T>::insert(order_id, &solver, destination),
+                None => OrderPayees::<T>::remove(order_id, &solver),
+            }
+            Self::deposit_event(Event::SolutionPayeeSet {
+                order_id,
+                solver: solver.clone(),
+                payee,
+            });
+            solver_info.solutions_submitted = solver_info.solutions_submitted.saturating_add(1);
+            Solvers::<T>::insert(&solver, solver_info);
+            JobOrders::<T>::insert(order_id, order);
+
+            Self::deposit_event(Event::SolutionAccepted {
+                order_id,
+                solver,
+                energy_milli: best_energy,
+                diversity_milli,
+            });
+            Ok(())
         }
 
         fn ensure_valid_mode(mode: &JobModeOf<T>) -> Result<(), DispatchError> {

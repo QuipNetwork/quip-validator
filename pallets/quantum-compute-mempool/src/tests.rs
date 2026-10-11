@@ -342,7 +342,7 @@ fn network_upgrade_wipes_mempool_and_reseeds_default_spec() {
         );
         assert_eq!(
             StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(3)
+            StorageVersion::new(4)
         );
     });
 }
@@ -352,7 +352,7 @@ fn network_upgrade_is_noop_once_at_v3() {
     new_test_ext_with_default_ising_spec(true).execute_with(|| {
         // Fresh chain already at the post-upgrade version: the guard must
         // short-circuit so live state is neither wiped nor re-seeded.
-        StorageVersion::new(3).put::<QuantumComputeMempool>();
+        StorageVersion::new(4).put::<QuantumComputeMempool>();
         let spec_id = QuantumComputeMempool::default_ising_spec_id();
         let pre = JobSpecs::<Test>::get(spec_id).unwrap();
 
@@ -364,7 +364,7 @@ fn network_upgrade_is_noop_once_at_v3() {
         assert_eq!(post.registered_at, pre.registered_at);
         assert_eq!(
             StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(3)
+            StorageVersion::new(4)
         );
     });
 }
@@ -1355,10 +1355,11 @@ fn purge_result_is_permissionless_after_ttl() {
             1,
             ResultDelivery::CallbackWithPoll { endpoint },
         ));
-        assert_ok!(QuantumComputeMempool::submit_solution(
+        assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
             RuntimeOrigin::signed(2),
             0,
             sample_solution(),
+            payee(20033, 2),
         ));
 
         run_to_block(2);
@@ -1374,6 +1375,7 @@ fn purge_result_is_permissionless_after_ttl() {
         ));
 
         assert!(QuantumComputeMempool::result_for_order(0).is_none());
+        assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 2)));
     });
 }
 
@@ -1962,7 +1964,7 @@ fn network_upgrade_v2_to_v3_indexes_open_orders() {
 
         assert_eq!(
             StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(3)
+            StorageVersion::new(4)
         );
         assert_eq!(NextOrderId::<Test>::get(), 2, "v2 orders are kept");
         assert_eq!(
@@ -2366,4 +2368,318 @@ fn missing_reserve_cannot_close_or_release_a_slot() {
             assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
         });
     }
+}
+
+fn payee(chain_id: u64, byte: u8) -> crate::types::WinnerPayee {
+    crate::types::WinnerPayee::V1 {
+        chain_id,
+        address: sp_core::H160::repeat_byte(byte),
+    }
+}
+
+fn propose_required_payee(resolution: RewardResolution) {
+    let spec = register_spec();
+    assert_ok!(QuantumComputeMempool::propose_job_with_payee_requirement(
+        RuntimeOrigin::signed(1),
+        spec,
+        weighted_params(),
+        100,
+        JobMode::Open,
+        resolution,
+        10,
+        5,
+        ResultDelivery::OnChainOnly,
+        20033,
+    ));
+    assert_eq!(crate::OrderPayeeRequirements::<Test>::get(0), Some(20033));
+    assert_eq!(Balances::reserved_balance(1), 100);
+}
+
+#[test]
+fn required_payees_bind_each_signed_winner_and_survive_native_closure() {
+    for resolution in [
+        RewardResolution::SingleBest,
+        RewardResolution::TopNEqual { n: 2 },
+        RewardResolution::TopNWeighted { n: 2 },
+    ] {
+        new_test_ext().execute_with(|| {
+            propose_required_payee(resolution);
+            for solver in [2, 3] {
+                assert_ok!(QuantumComputeMempool::register_solver(
+                    RuntimeOrigin::signed(solver),
+                    MinerType::Cpu
+                ));
+                assert_noop!(
+                    QuantumComputeMempool::submit_solution(
+                        RuntimeOrigin::signed(solver),
+                        0,
+                        sample_solution()
+                    ),
+                    crate::Error::<Test>::PayeeRequired
+                );
+                assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+                    RuntimeOrigin::signed(solver),
+                    0,
+                    sample_solution(),
+                    payee(20033, solver as u8)
+                ));
+                // Even an existing destination does not authorize a legacy submission.
+                assert_noop!(
+                    QuantumComputeMempool::submit_solution(
+                        RuntimeOrigin::signed(solver),
+                        0,
+                        alternate_solution()
+                    ),
+                    crate::Error::<Test>::PayeeRequired
+                );
+            }
+            assert!(crate::OrderPayees::<Test>::get(0, 1).is_none());
+            let before = Balances::free_balance(2) + Balances::free_balance(3);
+            run_to_block(6);
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
+                0
+            ));
+            assert_eq!(
+                Balances::free_balance(2) + Balances::free_balance(3),
+                before + 100
+            );
+            assert_eq!(Balances::reserved_balance(1), 0);
+            assert_eq!(
+                JobOrders::<Test>::get(0).unwrap().status,
+                OrderStatus::Closed
+            );
+            assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
+            for solver in [2, 3] {
+                assert_eq!(
+                    crate::OrderPayees::<Test>::get(0, solver),
+                    Some(payee(20033, solver as u8))
+                );
+                assert_noop!(
+                    QuantumComputeMempool::submit_solution_with_payee(
+                        RuntimeOrigin::signed(solver),
+                        0,
+                        sample_solution(),
+                        payee(20033, 9)
+                    ),
+                    crate::Error::<Test>::OrderNotOpen
+                );
+            }
+            assert_eq!(crate::OrderPayeeRequirements::<Test>::get(0), Some(20033));
+        });
+    }
+}
+
+#[test]
+fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metadata() {
+    new_test_ext().execute_with(|| {
+        propose_required_payee(RewardResolution::SingleBest);
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_noop!(
+            QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::root(),
+                0,
+                sample_solution(),
+                payee(20033, 2)
+            ),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        for (destination, error) in [
+            (payee(0, 2), crate::Error::<Test>::InvalidPayee),
+            (payee(20033, 0), crate::Error::<Test>::InvalidPayee),
+            (payee(1, 2), crate::Error::<Test>::PayeeChainMismatch),
+        ] {
+            assert_noop!(
+                QuantumComputeMempool::submit_solution_with_payee(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    sample_solution(),
+                    destination
+                ),
+                error
+            );
+        }
+        assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+            RuntimeOrigin::signed(2),
+            0,
+            alternate_solution(),
+            payee(20033, 2)
+        ));
+        assert_noop!(
+            QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::signed(2),
+                0,
+                alternate_solution(),
+                payee(20033, 9)
+            ),
+            crate::Error::<Test>::SolutionNotImproved
+        );
+        assert_noop!(
+            QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::signed(2),
+                0,
+                sample_solution(),
+                payee(1, 9)
+            ),
+            crate::Error::<Test>::PayeeChainMismatch
+        );
+        assert_noop!(
+            QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::signed(2),
+                0,
+                bounded(vec![bounded(vec![0, 1])]),
+                payee(20033, 9)
+            ),
+            crate::Error::<Test>::InvalidSpinValues
+        );
+        assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 2)));
+        assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+            RuntimeOrigin::signed(2),
+            0,
+            bounded(vec![bounded(vec![-1, -1])]),
+            payee(20033, 3)
+        ));
+        assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 3)));
+        assert_eq!(
+            OrderSolutions::<Test>::get(0, 2).unwrap().best_energy_milli,
+            -500
+        );
+        // Leave the hook behind: expiry is enforced from timing, not stored status.
+        System::set_block_number(6);
+        assert_eq!(
+            JobOrders::<Test>::get(0).unwrap().status,
+            OrderStatus::Opened
+        );
+        assert_noop!(
+            QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::signed(2),
+                0,
+                sample_solution(),
+                payee(20033, 4)
+            ),
+            crate::Error::<Test>::OrderNotOpen
+        );
+        assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 3)));
+    });
+}
+
+#[test]
+fn optional_payee_is_replaced_or_cleared_only_with_an_accepted_payload() {
+    new_test_ext().execute_with(|| {
+        let id = propose_single_best(1, 10, 5);
+        assert!(crate::OrderPayeeRequirements::<Test>::get(id).is_none());
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+            RuntimeOrigin::signed(2),
+            id,
+            alternate_solution(),
+            payee(u64::MAX, 2)
+        ));
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                alternate_solution()
+            ),
+            crate::Error::<Test>::SolutionNotImproved
+        );
+        assert_eq!(
+            crate::OrderPayees::<Test>::get(id, 2),
+            Some(payee(u64::MAX, 2))
+        );
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            id,
+            sample_solution()
+        ));
+        assert!(crate::OrderPayees::<Test>::get(id, 2).is_none());
+    });
+}
+
+#[test]
+fn required_payee_proposal_reuses_native_checks_and_has_no_partial_writes() {
+    new_test_ext().execute_with(|| {
+        let spec = register_spec();
+        for (chain, reward, expected) in [
+            (0, 100, crate::Error::<Test>::InvalidPayeeChain),
+            (1, 0, crate::Error::<Test>::RewardTooLow),
+        ] {
+            assert_noop!(
+                QuantumComputeMempool::propose_job_with_payee_requirement(
+                    RuntimeOrigin::signed(1),
+                    spec,
+                    sample_params(),
+                    reward,
+                    JobMode::Open,
+                    RewardResolution::SingleBest,
+                    10,
+                    5,
+                    ResultDelivery::OnChainOnly,
+                    chain
+                ),
+                expected
+            );
+        }
+        assert_eq!(NextOrderId::<Test>::get(), 0);
+        assert_eq!(crate::OrderPayeeRequirements::<Test>::iter().count(), 0);
+        assert_eq!(crate::OrderPayees::<Test>::iter().count(), 0);
+        assert_eq!(Balances::reserved_balance(1), 0);
+    });
+}
+
+#[test]
+fn metadata_storage_version_bump_does_not_reindex_or_backfill() {
+    new_test_ext().execute_with(|| {
+        // Individual pallet genesis builders omit the runtime on_genesis hook.
+        <QuantumComputeMempool as frame_support::traits::OnGenesis>::on_genesis();
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(4)
+        );
+        let id = propose_single_best(1, 10, 5);
+        OrdersExpiringAt::<Test>::remove(11, id);
+        OrdersExpiringAt::<Test>::insert(3, id, ());
+        StorageVersion::new(3).put::<QuantumComputeMempool>();
+        QuantumComputeMempool::on_runtime_upgrade();
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(4)
+        );
+        assert!(OrdersExpiringAt::<Test>::contains_key(3, id));
+        assert!(!OrdersExpiringAt::<Test>::contains_key(11, id));
+        assert!(crate::OrderPayeeRequirements::<Test>::iter()
+            .next()
+            .is_none());
+        assert!(crate::OrderPayees::<Test>::iter().next().is_none());
+    });
+}
+
+#[test]
+fn payee_calls_append_indices_and_keep_legacy_submission_bytes() {
+    use codec::Encode;
+    let old = crate::Call::<Test>::submit_solution {
+        order_id: 42,
+        solutions: sample_solution(),
+    }
+    .encode();
+    let mut expected = vec![4];
+    expected.extend(42u64.encode());
+    expected.extend(sample_solution().encode());
+    assert_eq!(old, expected);
+    let new = crate::Call::<Test>::submit_solution_with_payee {
+        order_id: 42,
+        solutions: sample_solution(),
+        payee: payee(20033, 2),
+    }
+    .encode();
+    assert_eq!(new[0], 9);
+    assert_eq!(&new[1..old.len()], &old[1..]);
+    assert_eq!(payee(20033, 2).encode().len(), 29);
+    assert_eq!(payee(20033, 2).encode()[0], 0);
 }

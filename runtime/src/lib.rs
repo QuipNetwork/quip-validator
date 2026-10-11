@@ -911,6 +911,13 @@ mod tests {
             pallet_quantum_compute_mempool::weights::reclaim_order_proof_envelope::<Runtime>(),
             666_169
         );
+        let submission =
+            pallet_quantum_compute_mempool::weights::submit_solution_proof_envelope::<Runtime>();
+        assert_eq!(submission, 792_516);
+        let proposal =
+            pallet_quantum_compute_mempool::weights::propose_job_proof_envelope::<Runtime>();
+        assert_eq!(proposal, 686_322);
+        assert!(submission <= pallet_quantum_compute_mempool::weights::SUBMIT_SOLUTION_PROOF_FLOOR);
         let call: RuntimeCall =
             pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
         let info = call.get_dispatch_info();
@@ -918,6 +925,95 @@ mod tests {
         let limits = <Runtime as frame_system::Config>::BlockWeights::get();
         let normal = limits.get(frame_support::dispatch::DispatchClass::Normal);
         assert!(info.call_weight.all_lte(normal.max_extrinsic.unwrap()));
+    }
+
+    #[test]
+    fn signed_payee_batch_binds_signer_and_rolls_back_failed_correlation() {
+        use frame_support::{assert_ok, traits::Currency};
+        use pallet_quantum_compute_mempool::{
+            types::*, NextOrderId, OrderPayeeRequirements, OrderPayees,
+        };
+        let mut genesis = RuntimeGenesisConfig::default();
+        genesis.quantum_compute_mempool.default_ising_spec_builder = Some(AccountId::new([1; 32]));
+        let mut ext = sp_io::TestExternalities::new(genesis.build_storage().unwrap());
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            let signer = HybridPair::from_string("//Alice", None).unwrap();
+            let caller = account_id_from_public(&signer.public());
+            <Balances as Currency<AccountId>>::make_free_balance_be(&caller, 100 * UNIT);
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(caller.clone()),
+                MinerType::Cpu
+            ));
+            let spec = QuantumComputeMempool::default_ising_spec_id();
+            // Runtime genesis must seed the canonical spec and empty payee maps.
+            assert!(pallet_quantum_compute_mempool::JobSpecs::<Runtime>::contains_key(spec));
+            assert!(OrderPayees::<Runtime>::iter().next().is_none());
+            assert!(OrderPayeeRequirements::<Runtime>::iter().next().is_none());
+            for (nonce, chain_id) in [(0, 1), (1, 20033)] {
+                let destination = WinnerPayee::V1 {
+                    chain_id,
+                    address: sp_core::H160::repeat_byte(7),
+                };
+                let calls = vec![
+                    RuntimeCall::System(frame_system::Call::remark_with_event {
+                        remark: b"correlation-test".to_vec(),
+                    }),
+                    RuntimeCall::QuantumComputeMempool(
+                        pallet_quantum_compute_mempool::Call::propose_job_with_payee_requirement {
+                            spec_id: spec,
+                            ising_params: IsingParams {
+                                nodes: vec![0, 1].try_into().unwrap(),
+                                edges: vec![(0, 1)].try_into().unwrap(),
+                                h_values: vec![0, 0].try_into().unwrap(),
+                                j_values: vec![-1000].try_into().unwrap(),
+                                max_energy_milli: None,
+                                min_diversity_milli: None,
+                                min_solutions: None,
+                            },
+                            reward: UNIT,
+                            mode: JobMode::Open,
+                            resolution: RewardResolution::SingleBest,
+                            deadline_blocks: 10,
+                            block_wait: 5,
+                            delivery: ResultDelivery::OnChainOnly,
+                            required_chain_id: 20033,
+                        },
+                    ),
+                    RuntimeCall::QuantumComputeMempool(
+                        pallet_quantum_compute_mempool::Call::submit_solution_with_payee {
+                            order_id: 0,
+                            solutions: vec![vec![1, 1].try_into().unwrap()].try_into().unwrap(),
+                            payee: destination,
+                        },
+                    ),
+                ];
+                let call = RuntimeCall::Utility(pallet_utility::Call::batch_all { calls });
+                let xt = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call, nonce);
+                let result = Executive::apply_extrinsic(xt).unwrap();
+                if nonce == 0 {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        pallet_quantum_compute_mempool::Error::<Runtime>::PayeeChainMismatch.into()
+                    );
+                    assert_eq!(NextOrderId::<Runtime>::get(), 0);
+                    assert_eq!(Balances::reserved_balance(&caller), 0);
+                    assert!(OrderPayeeRequirements::<Runtime>::get(0).is_none());
+                    assert!(OrderPayees::<Runtime>::get(0, &caller).is_none());
+                    assert!(!System::events().iter().any(|event| matches!(
+                        event.event,
+                        RuntimeEvent::System(frame_system::Event::Remarked { .. })
+                    )));
+                } else {
+                    assert_ok!(result);
+                    assert_eq!(NextOrderId::<Runtime>::get(), 1);
+                    assert_eq!(Balances::reserved_balance(&caller), UNIT);
+                    assert_eq!(OrderPayees::<Runtime>::get(0, &caller), Some(destination));
+                    assert_eq!(OrderPayees::<Runtime>::iter_prefix(0).count(), 1);
+                    assert_eq!(OrderPayeeRequirements::<Runtime>::get(0), Some(20033));
+                }
+            }
+        });
     }
 
     #[test]
