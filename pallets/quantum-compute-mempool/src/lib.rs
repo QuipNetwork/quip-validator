@@ -658,7 +658,7 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
-            ProposerOrders::<T>::mutate(&order.proposer, |ids| ids.retain(|id| *id != order_id));
+            Self::release_proposer_slot(&order.proposer, order_id);
             JobSpecs::<T>::mutate(order.spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
                     spec.successful_orders = spec.successful_orders.saturating_add(1);
@@ -694,7 +694,7 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
-            ProposerOrders::<T>::mutate(&order.proposer, |ids| ids.retain(|id| *id != order_id));
+            Self::release_proposer_slot(&order.proposer, order_id);
 
             Self::deposit_event(Event::RewardReclaimed {
                 order_id,
@@ -1048,6 +1048,19 @@ pub mod pallet {
                 Self::deposit_event(Event::JobSpecRegistered { spec_id, builder });
             }
             Ok(spec_id)
+        }
+
+        /// Delete the index key after its last successful native closure.
+        /// Called inside the dispatch storage transaction, after funds settle.
+        fn release_proposer_slot(proposer: &T::AccountId, order_id: u64) {
+            ProposerOrders::<T>::mutate_exists(proposer, |maybe_ids| {
+                if let Some(ids) = maybe_ids {
+                    ids.retain(|id| *id != order_id);
+                    if ids.is_empty() {
+                        *maybe_ids = None;
+                    }
+                }
+            });
         }
 
         #[allow(clippy::too_many_arguments)]

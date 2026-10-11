@@ -356,7 +356,7 @@ mod benchmarks {
         n: Linear<2, { T::MaxNodes::get() }>,
         e: Linear<1, { T::MaxEdges::get() }>,
         b: Linear<1, { T::MaxBidMiners::get() }>,
-        t: Linear<0, 8>,
+        t: Linear<0, { MinerTypesOf::bound() as u32 }>,
     ) {
         let caller: T::AccountId = whitelisted_caller();
         fund_account::<T>(&caller, benchmark_funding::<T>());
@@ -433,7 +433,7 @@ mod benchmarks {
         n: Linear<2, { T::MaxNodes::get() }>,
         e: Linear<1, { T::MaxEdges::get() }>,
         b: Linear<1, { T::MaxBidMiners::get() }>,
-        t: Linear<0, 8>,
+        t: Linear<0, { MinerTypesOf::bound() as u32 }>,
     ) {
         let caller: T::AccountId = whitelisted_caller();
         fund_account::<T>(&caller, benchmark_funding::<T>());
