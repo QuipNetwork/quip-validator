@@ -14,12 +14,12 @@ Recorded 2026-10-11:
   submissions and preserve the accepted payload and tie priority.
 - Unpaid orders retain their proposer slot and funds. No forced-close or
   forced-refund mechanism is included.
-- Correlate external jobs using an atomic remark-plus-proposal batch for now.
-- Require an EVM payee for submissions to orders designated for external payment.
+- Correlate EVM-facing jobs using an atomic remark-plus-proposal batch for now.
+- Require an EVM payee for submissions to orders explicitly requiring that metadata.
 - Implement winner payees only; defer solver/program royalties to later work.
 - Deliver a chain-agnostic interaction specification for C. Choose the initial
   EVM network, chain-specific finality policy and escrow timelock/refund settings
-  during the later EVM/Trustee deployment work, before admitting external jobs.
+  during the later EVM/Trustee deployment work, before admitting EVM-facing jobs.
 
 ### Deferred EVM scope and reward decision
 
@@ -192,7 +192,7 @@ reward execution/closure rules as unresolved where they depend on that choice.
 The initial EVM network, its source-event finality policy, and escrow timelock,
 expiry and refund settings are explicitly deferred deployment decisions. The
 specification must identify those required settings and their consistency
-constraints. External jobs must not launch until they are supplied and validated;
+constraints. EVM-facing jobs must not launch until they are supplied and validated;
 there are no implicit production defaults. Deferring deployment settings does
 not defer completion of C's specification before the runtime 119 reset.
 
@@ -263,7 +263,7 @@ program execution, particular hardware, or exclusive original work. Miner type
 remains self-declared, as accepted in the reply. Hardware attestation is outside
 this plan.
 
-## D. Bind an external winner payee to the accepted solution
+## D. Bind an EVM winner payee to the accepted solution
 
 Implement the deployment-independent part of point 7: the winner payee accompanies
 the signed solution. This binds metadata; it does not execute an EVM payout or
@@ -277,12 +277,18 @@ define eligibility for existing post-reset orders and migrate only if the chosen
 encoding requires it.
 
 - The Quip solver's signature authorises the destination for that order and
-  submission. Validate supported destination chains and address policy.
+  submission. Accept any nonzero `u64` destination chain ID and any nonzero
+  `H160` address, with exact chain-ID matching when required by the order.
+  This is syntactic validation, not network support, address-ownership proof or
+  payment activation. A supported-network policy is deferred with deployment;
+  no chain allowlist, config constant or registry is introduced.
 - Update payee, payload and ranking atomically under A's acceptance policy.
   Rejected equal/worse submissions cannot redirect payment. Reject destination
   changes once effective expiry is reached, including while the expiry hook has
-  a backlog; snapshot the destination at hook finalisation into the finalised
-  Trustee evidence.
+  a backlog. The Trustee snapshots the retained destination by reading it at
+  the GRANDPA-finalised block hash containing hook finalisation, together with
+  the order, ranking and solutions. No additional snapshot map or changed
+  finalisation-event encoding is needed.
   Document the consequence in SDK/miner guidance: a syntactically valid but
   mistyped payee cannot be corrected through an equal-score resubmission. Changing
   it requires a strictly better accepted solution before expiry. There is no
@@ -290,10 +296,13 @@ encoding requires it.
   confirm the destination before signing.
 - Preserve existing native payout behaviour. An order requiring an EVM payee
   must explicitly record its required destination chain at proposal time,
-  immutably for the order's lifetime. This is a payee requirement, not an activated
-  EVM-payment mode, and is separate from the external
-  job reference carried by the remark. Specify its encoding and proposal API
-  alongside C; do not infer an enforceable runtime policy from remark events.
+  immutably for the order's lifetime. Any signed proposer may use the appended
+  proposal API under the same native funding, validation and outstanding-cap
+  rules. Its required nonzero `u64` argument creates the requirement; there is
+  no separate flag that could represent a required payee without a destination
+  chain. This is a payee requirement, not an activated EVM-payment mode, and is
+  separate from the contract job reference carried by the remark. C specifies
+  the encoding and proposal API; do not infer runtime policy from remark events.
   Use an appended proposal call for explicit payee requirements if needed, without
   assigning it EVM funding or settlement semantics. Preserve the
   argument encoding of existing proposal and submission calls; do not add a
