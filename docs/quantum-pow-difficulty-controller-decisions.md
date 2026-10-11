@@ -1,12 +1,12 @@
 # Quantum PoW difficulty controller decisions
 
-The maintainer recorded these decisions on 2026-09-22.
-They answer the review of merge request !87.
-These decisions bind !87 and !71.
+The maintainer approved the runtime 119 correction on 2026-09-25.
+Section 4 replaces the timing and hardening rules from runtime 118.
+Sections 1 and 2 record the earlier release decisions for !87 and !71.
 
 ## 1. The !87 controller ships
 
-The chain keeps `adjust_on_proof` and `apply_decay` from !87.
+Runtime 118 introduced `adjust_on_proof` and `apply_decay` from !87.
 `adjust_on_proof` changes the bar after each win.
 `apply_decay` is the continuous decay.
 After !87 merges, !71 must rebase onto main.
@@ -41,7 +41,7 @@ When `spec_version` changes, regenerate the signing fixture:
 It rounds the result to an integer.
 That integer decides if the chain admits the proof.
 This extends the existing precedent.
-`adjust_energy_along_curve` calls `libm::round`.
+`adjust_on_proof` calls `libm::round`.
 `expected_gse` calls `libm::sqrt`.
 `register_topology` runs that call on chain.
 
@@ -54,24 +54,45 @@ All three are in place.
 - The code bounds the inputs.
   Each `u32` operand converts to `f64` exactly.
   The cast `as i64` saturates.
-  The code clamps the result to the curve.
+  Decay cannot exceed the easy curve bound.
+  Hardening cannot exceed the winning energy gap or the per-win cap.
   Each run recomputes from the stored base and the total elapsed blocks.
   Rounding never compounds across blocks.
 - `pallets/quantum-pow/src/tests.rs` holds the golden table `apply_decay_and_adjust_on_proof_golden_table`.
   The table pins integer outputs across a swept grid.
   Any change in rounding turns that test red.
 
-## 4. Overdue easing replaces dominant-winner easing
+## 4. Runtime 119 gates easing and follows winning energy
 
-The retired rule eased a slow round once one account had won three qblocks in a row.
-On aglais one account has won every qblock since about qblock 5,000.
-The rule eased the threshold for that account, which is the account the rule targets.
-The "waited too long" signal stays, in continuous form.
-Past `TARGET_PROOF_BLOCKS`, the live threshold eases at the baseline rate plus `OVERDUE_EASE_RATE_MILLI`.
-The ease is the same for every account that ends the round.
-Every win hardens the bar.
-A win at or under target leaves the stored bar at least one energy unit harder than the round began with.
-Past target that floor releases by the overdue easing the round accrued, from zero at the target block.
-The stored bar is continuous in the round length.
-A miner who waits one more block gains at most one more block of overdue easing.
-The baseline decay a round consumed is not applied to the stored bar in one step.
+Runtime 118 eased the live threshold from the first block of each round.
+Its post-win rule could then undo that easing in one step.
+That behavior did not match the intended 100-block gate.
+
+The threshold now stays fixed through 100 elapsed chain blocks after a win.
+At block 101, it receives one block of gradual easing.
+No easing from the first 100 blocks carries forward.
+The gate uses chain blocks, not wall-clock time.
+
+The overdue rate remains 4.9375% of the gap to the easy bound per epoch.
+This is the existing combined rate: `1 - 0.975 * 0.975`.
+An epoch is 100 blocks in production.
+Near the easy bound, easing uses the one-energy-unit floor per epoch.
+It never crosses that bound.
+
+Each win hardens from the live threshold toward the proof's achieved energy.
+The achieved energy is the lowest validated solution energy in the winning proof.
+The existing elapsed-block rate bands select a fraction of that gap.
+The step is at least one unit unless the winning energy gap is smaller.
+It cannot exceed 2.5% of the calibrated curve span, or one unit for a smaller span.
+This cap applies even below the estimated hard end of the curve.
+No later rule overrides it.
+
+A late win preserves the easing needed to clear the threshold.
+Its hardening starts from that live threshold, not the previous stored baseline.
+The result becomes the next baseline and restarts the 100-block gate.
+A win within the gate always makes the next target harder.
+Winner identity cannot make a win ease the threshold.
+
+This consensus change requires `spec_version = 119`, since 118 is live.
+The storage layout, call encoding, and transaction version remain unchanged.
+The signing fixture must match runtime 119.
