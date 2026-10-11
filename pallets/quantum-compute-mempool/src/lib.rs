@@ -171,11 +171,13 @@ pub mod pallet {
         calculate_diversity, energy_of_solution_indexed, select_diverse, TopologyIndex,
         ValidationError,
     };
-    use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating, Zero};
+    use sp_runtime::traits::{Hash as _, One, SaturatedConversion, Saturating, Zero};
 
-    /// v2 drops all v0.2 mempool data on the network upgrade and reseeds the
-    /// canonical default plain Ising spec from scratch.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+    /// v2 dropped all v0.2 mempool data on the network upgrade and reseeded
+    /// the canonical default plain Ising spec. v3 adds the expiry index
+    /// (`OrdersExpiringAt`, `NextExpiryBucket`) and indexes the open orders
+    /// already in storage.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -274,6 +276,21 @@ pub mod pallet {
     /// do not have to treat this index as authoritative for time-based expiry.
     #[pallet::storage]
     pub type OpenOrders<T: Config> = StorageMap<_, Blake2_128Concat, u64, (), OptionQuery>;
+
+    /// Open orders bucketed by the block whose `on_initialize` finalises them.
+    ///
+    /// `propose_job` buckets an order at its hard deadline. The first accepted
+    /// solution moves it to the earlier `block_wait` expiry when that is
+    /// sooner. `schedule_expiry` never buckets an order at or before the
+    /// current block, because that block's hooks have already run.
+    #[pallet::storage]
+    pub type OrdersExpiringAt<T: Config> =
+        StorageDoubleMap<_, Twox64Concat, BlockNumberFor<T>, Twox64Concat, u64, (), OptionQuery>;
+
+    /// Earliest `OrdersExpiringAt` bucket that `on_initialize` has not yet
+    /// drained. It lags the current block only while a backlog carries over.
+    #[pallet::storage]
+    pub type NextExpiryBucket<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
     #[pallet::storage]
     pub type OrderSolutions<T: Config> = StorageDoubleMap<
@@ -596,6 +613,7 @@ pub mod pallet {
                 },
             );
             OpenOrders::<T>::insert(order_id, ());
+            Self::schedule_expiry(order_id, created_at.saturating_add(deadline_blocks));
             ProposerOrders::<T>::insert(&proposer, proposer_orders);
             JobSpecs::<T>::mutate(spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
@@ -642,9 +660,15 @@ pub mod pallet {
 
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
-            Self::expire_order_if_needed(order_id, &mut order);
+            let now = frame_system::Pallet::<T>::block_number();
             ensure!(
-                order.status == types::OrderStatus::Opened,
+                order.status == types::OrderStatus::Opened
+                    && !lifecycle::is_expired(
+                        now,
+                        order.created_at,
+                        order.first_solution_at,
+                        &order.timing,
+                    ),
                 Error::<T>::OrderNotOpen
             );
 
@@ -689,8 +713,8 @@ pub mod pallet {
                     &topology,
                 )
                 .map_err(Self::map_validation_error)?;
-                if let Some(min_energy) = order.ising_params.min_energy_milli {
-                    if energy > min_energy {
+                if let Some(max_energy) = order.ising_params.max_energy_milli {
+                    if energy > max_energy {
                         continue;
                     }
                 }
@@ -746,7 +770,6 @@ pub mod pallet {
                 .expect("selected subset cannot exceed MaxSolutions");
 
             let is_new_solver = !OrderSolutions::<T>::contains_key(order_id, &solver);
-            let now = frame_system::Pallet::<T>::block_number();
             OrderSolutions::<T>::insert(
                 order_id,
                 &solver,
@@ -772,6 +795,15 @@ pub mod pallet {
                     order.first_solution_at,
                     &order.timing,
                 );
+                let hard_deadline = order
+                    .created_at
+                    .saturating_add(order.timing.deadline_blocks);
+                if closes_at < hard_deadline {
+                    // A first solution only arrives before the hard deadline, so
+                    // the order sits in exactly the hard-deadline bucket.
+                    OrdersExpiringAt::<T>::remove(hard_deadline, order_id);
+                    Self::schedule_expiry(order_id, closes_at);
+                }
                 Self::deposit_event(Event::FirstSolutionReceived {
                     order_id,
                     solver: solver.clone(),
@@ -804,7 +836,6 @@ pub mod pallet {
             let caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
-            Self::expire_order_if_needed(order_id, &mut order);
             ensure!(
                 order.status != types::OrderStatus::Closed,
                 Error::<T>::AlreadyClaimed
@@ -858,8 +889,6 @@ pub mod pallet {
                 }
             });
 
-            Self::persist_result_if_needed(order_id, &order, winners.clone());
-            Self::emit_result_ready(order_id, &order.delivery, winners);
             Self::deposit_event(Event::OrderClosed {
                 order_id,
                 successful: true,
@@ -873,7 +902,6 @@ pub mod pallet {
             let caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             ensure!(order.proposer == caller, Error::<T>::NotProposer);
-            Self::expire_order_if_needed(order_id, &mut order);
             ensure!(
                 order.status != types::OrderStatus::Closed,
                 Error::<T>::AlreadyClaimed
@@ -922,19 +950,28 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        /// Network upgrade (v0.2 → v2): drop all mempool state instead of
-        /// carrying it forward.
+        /// Finalise the orders whose effective expiry is at or before `now`.
         ///
-        /// The v0.2 layout (orders, solutions, solver/proposer records, job
-        /// specs, counters) is intentionally not migrated. We clear the entire
-        /// pallet prefix and then reseed the canonical default plain Ising spec
-        /// exactly as genesis would on a fresh chain. The reseed is best-effort:
-        /// a failure (e.g. a future VM that rejects empty programs) emits a
-        /// defensive log and still bumps the version so this never retries every
-        /// block; operators can backfill via root `register_job_spec`.
+        /// Work is bounded by `MAX_FINALISED_ORDERS_PER_BLOCK`. Overflow
+        /// stays in its bucket and carries over to the next block.
+        fn on_initialize(now: BlockNumberFor<T>) -> Weight {
+            let (finalised, buckets_visited) = Self::finalise_expired_orders(now);
+            <T as Config>::WeightInfo::finalise_expired_orders(finalised)
+                .saturating_add(T::DbWeight::get().reads(buckets_visited))
+        }
+
+        /// Cumulative migration to the in-code `STORAGE_VERSION`.
         ///
-        /// The version guard makes this run exactly once: v0.2 chains sit at
-        /// version 1, fresh chains are seeded at version 2 by genesis and skip.
+        /// - on-chain `< 2`: the v0.2 wipe. Clear the pallet prefix and reseed
+        ///   the canonical default plain Ising spec exactly as genesis would.
+        ///   The reseed is best-effort: a failure emits a defensive log and the
+        ///   version still moves so this never retries every block; operators
+        ///   can backfill via root `register_job_spec`.
+        /// - on-chain `< 3`: index every open order by its effective expiry so
+        ///   `on_initialize` finalises it. Orders already past expiry are
+        ///   finalised from the upgrade block onwards, eight per block, because
+        ///   migrations run before `System::initialize` so `now + 1` is the
+        ///   upgrade block.
         fn on_runtime_upgrade() -> Weight {
             use frame_support::{traits::PalletInfoAccess, StorageHasher};
 
@@ -943,34 +980,46 @@ pub mod pallet {
                 return T::DbWeight::get().reads(1);
             }
 
-            let pallet_prefix =
-                frame_support::Twox128::hash(<Pallet<T> as PalletInfoAccess>::name().as_bytes());
-            let cleared =
-                frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
+            let mut weight = T::DbWeight::get().reads(1);
 
-            if let Err(err) =
-                Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
-            {
-                frame_support::defensive!(
-                    "on_runtime_upgrade: failed to reseed default Ising spec",
-                    err
+            if on_chain < 2 {
+                let pallet_prefix = frame_support::Twox128::hash(
+                    <Pallet<T> as PalletInfoAccess>::name().as_bytes(),
+                );
+                let cleared =
+                    frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None)
+                        .backend;
+
+                if let Err(err) =
+                    Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
+                {
+                    frame_support::defensive!(
+                        "on_runtime_upgrade: failed to reseed default Ising spec",
+                        err
+                    );
+                }
+                // 1 write per cleared key + reseed (~2 writes).
+                weight = weight.saturating_add(
+                    T::DbWeight::get().writes(u64::from(cleared).saturating_add(2)),
                 );
             }
 
-            STORAGE_VERSION.put::<Pallet<T>>();
+            // v2 -> v3. After a wipe there are no orders, so this is cheap.
+            weight = weight.saturating_add(Self::index_open_orders_for_expiry());
 
-            // 1 read (version) + 1 write per cleared key + reseed (~2 writes)
-            // + 1 write (version).
-            T::DbWeight::get().reads_writes(1, u64::from(cleared).saturating_add(3))
+            STORAGE_VERSION.put::<Pallet<T>>();
+            weight.saturating_add(T::DbWeight::get().writes(1))
         }
 
         #[cfg(feature = "try-runtime")]
         fn pre_upgrade() -> Result<alloc::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
-            Ok(alloc::vec::Vec::new())
+            Ok(Pallet::<T>::on_chain_storage_version().encode())
         }
 
         #[cfg(feature = "try-runtime")]
-        fn post_upgrade(_state: alloc::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+        fn post_upgrade(state: alloc::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+            let pre_version = StorageVersion::decode(&mut state.as_slice())
+                .map_err(|_| sp_runtime::TryRuntimeError::Other("bad pre_upgrade state"))?;
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
                 sp_runtime::TryRuntimeError::Other("storage version not bumped"),
@@ -979,14 +1028,39 @@ pub mod pallet {
             let spec = JobSpecs::<T>::get(spec_id).ok_or(sp_runtime::TryRuntimeError::Other(
                 "default Ising spec missing after network upgrade",
             ))?;
-            ensure!(
-                spec.builder == T::DefaultJobSpecBuilder::get(),
-                sp_runtime::TryRuntimeError::Other("default Ising spec builder mismatch"),
-            );
-            ensure!(
-                NextOrderId::<T>::get() == 0,
-                sp_runtime::TryRuntimeError::Other("network upgrade must leave orders wiped"),
-            );
+            if pre_version < StorageVersion::new(2) {
+                ensure!(
+                    spec.builder == T::DefaultJobSpecBuilder::get(),
+                    sp_runtime::TryRuntimeError::Other("default Ising spec builder mismatch"),
+                );
+                ensure!(
+                    NextOrderId::<T>::get() == 0,
+                    sp_runtime::TryRuntimeError::Other("network upgrade must leave orders wiped"),
+                );
+            }
+            // Only the v2 -> v3 indexing guarantees this bucket. Afterwards a
+            // backlog order may legitimately sit in an earlier bucket.
+            if pre_version < StorageVersion::new(3) {
+                for order_id in OpenOrders::<T>::iter_keys() {
+                    let Some(order) = JobOrders::<T>::get(order_id) else {
+                        continue;
+                    };
+                    if order.status != types::OrderStatus::Opened {
+                        continue;
+                    }
+                    let bucket = Self::expiry_bucket(lifecycle::effective_expiry(
+                        order.created_at,
+                        order.first_solution_at,
+                        &order.timing,
+                    ));
+                    ensure!(
+                        OrdersExpiringAt::<T>::contains_key(bucket, order_id),
+                        sp_runtime::TryRuntimeError::Other(
+                            "open order missing from its expiry bucket"
+                        ),
+                    );
+                }
+            }
             Ok(())
         }
     }
@@ -1170,6 +1244,19 @@ pub mod pallet {
             }
         }
 
+        /// Block whose `on_initialize` must finalise an order with `expiry`.
+        ///
+        /// The current block's hooks have already run, so an expiry at or
+        /// before `now` lands in the next block.
+        fn expiry_bucket(expiry: BlockNumberFor<T>) -> BlockNumberFor<T> {
+            let next_block = frame_system::Pallet::<T>::block_number().saturating_add(One::one());
+            expiry.max(next_block)
+        }
+
+        fn schedule_expiry(order_id: u64, expiry: BlockNumberFor<T>) {
+            OrdersExpiringAt::<T>::insert(Self::expiry_bucket(expiry), order_id, ());
+        }
+
         fn ensure_valid_resolution(
             resolution: &types::RewardResolution,
         ) -> Result<(), DispatchError> {
@@ -1210,20 +1297,115 @@ pub mod pallet {
             }
         }
 
-        fn expire_order_if_needed(order_id: u64, order: &mut JobOrderOf<T>) {
+        /// Schedule every open order for finalisation and point the cursor at
+        /// the next block. Used once by the v2 -> v3 migration.
+        /// Since `frame_executive` runs migrations before `System::initialize`,
+        /// the `now + 1` cursor is the upgrade block itself and overdue orders
+        /// can finalise in that same block.
+        ///
+        /// Weight counts the initial block-number read, each `OpenOrders` key and
+        /// `JobOrders` value read, and the block-number read in each `schedule_expiry`.
+        /// Writes cover each expiry entry and the `NextExpiryBucket` cursor.
+        fn index_open_orders_for_expiry() -> Weight {
             let now = frame_system::Pallet::<T>::block_number();
-            if order.status == types::OrderStatus::Opened
-                && lifecycle::is_expired(
-                    now,
+            let mut reads: u64 = 1;
+            let mut writes: u64 = 1;
+
+            for order_id in OpenOrders::<T>::iter_keys() {
+                reads = reads.saturating_add(2);
+                let Some(order) = JobOrders::<T>::get(order_id) else {
+                    continue;
+                };
+                if order.status != types::OrderStatus::Opened {
+                    continue;
+                }
+                let expiry = lifecycle::effective_expiry(
                     order.created_at,
                     order.first_solution_at,
                     &order.timing,
-                )
-            {
-                order.status = types::OrderStatus::Expired;
-                JobOrders::<T>::insert(order_id, order.clone());
-                OpenOrders::<T>::remove(order_id);
-                Self::deposit_event(Event::OrderExpired { order_id });
+                );
+                Self::schedule_expiry(order_id, expiry);
+                reads = reads.saturating_add(1);
+                writes = writes.saturating_add(1);
+            }
+
+            NextExpiryBucket::<T>::put(now.saturating_add(One::one()));
+            T::DbWeight::get().reads_writes(reads, writes)
+        }
+
+        /// Drain expiry buckets at or before `now`, at most
+        /// `MAX_FINALISED_ORDERS_PER_BLOCK` orders and as many bucket reads
+        /// per call.
+        ///
+        /// Each loop iteration either drains one bucket and advances, or
+        /// stops on a bucket that may still hold entries so the next block
+        /// resumes there. The bucket budget bounds the loop when the cursor
+        /// lags behind `now` across empty buckets. Returns the number of
+        /// orders finalised and the number of buckets visited.
+        fn finalise_expired_orders(now: BlockNumberFor<T>) -> (u32, u64) {
+            let mut order_budget = types::MAX_FINALISED_ORDERS_PER_BLOCK;
+            let mut bucket_budget = types::MAX_FINALISED_ORDERS_PER_BLOCK;
+            let mut bucket = NextExpiryBucket::<T>::get();
+            let mut finalised: u32 = 0;
+            let mut buckets_visited: u64 = 0;
+
+            while bucket <= now && order_budget > 0 && bucket_budget > 0 {
+                let order_ids: Vec<u64> = OrdersExpiringAt::<T>::iter_key_prefix(bucket)
+                    .take(order_budget as usize)
+                    .collect();
+                let taken = order_ids.len() as u32;
+                for order_id in order_ids {
+                    OrdersExpiringAt::<T>::remove(bucket, order_id);
+                    Self::finalise_order(order_id);
+                }
+                finalised = finalised.saturating_add(taken);
+                buckets_visited = buckets_visited.saturating_add(1);
+
+                if taken == order_budget {
+                    // The bucket may hold more entries. Resume here next block.
+                    break;
+                }
+                order_budget = order_budget.saturating_sub(taken);
+                bucket_budget = bucket_budget.saturating_sub(1);
+                bucket = bucket.saturating_add(One::one());
+            }
+
+            NextExpiryBucket::<T>::put(bucket);
+            (finalised, buckets_visited)
+        }
+
+        /// Mark an open order expired at its effective expiry and announce the
+        /// result: `OrderExpired`, then for callback orders with at least one
+        /// accepted solution `ResultReady` with each winner's allocation, and
+        /// for `CallbackWithPoll` the `OrderResults` payload. Payment stays in
+        /// `claim_reward`.
+        fn finalise_order(order_id: u64) {
+            let Some(mut order) = JobOrders::<T>::get(order_id) else {
+                return;
+            };
+            if order.status != types::OrderStatus::Opened {
+                return;
+            }
+
+            order.status = types::OrderStatus::Expired;
+            JobOrders::<T>::insert(order_id, &order);
+            OpenOrders::<T>::remove(order_id);
+            Self::deposit_event(Event::OrderExpired { order_id });
+
+            if order.solution_count == 0 {
+                return;
+            }
+            match Self::compute_payouts(order_id, &order) {
+                Ok(payouts) => {
+                    let winners = Self::winner_summaries_from_payouts(&payouts);
+                    Self::persist_result_if_needed(order_id, &order, winners.clone());
+                    Self::emit_result_ready(order_id, &order.delivery, winners);
+                }
+                Err(err) => {
+                    // solution_count > 0 implies ranking state exists; reaching
+                    // this branch means storage is inconsistent.
+                    frame_support::defensive!("finalise_order: payouts unavailable", err);
+                }
             }
         }
 

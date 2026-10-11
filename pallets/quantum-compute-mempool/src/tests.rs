@@ -1,8 +1,10 @@
 use super::mock::*;
-use crate::types::{Formulation, JobMode, MinerType, ResultDelivery, RewardResolution};
+use crate::types::{
+    Formulation, JobMode, MinerType, OrderStatus, ResultDelivery, RewardResolution,
+};
 use crate::{
-    Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, NextOrderId, OpenOrders,
-    OrderFrontRunner, Solvers,
+    Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, NextExpiryBucket, NextOrderId,
+    OpenOrders, OrderFrontRunner, OrderSolutions, OrdersExpiringAt, Solvers,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -33,7 +35,7 @@ fn sample_params() -> crate::IsingParamsOf<Test> {
         edges: bounded(vec![(0, 1)]),
         h_values: bounded(vec![0, 0]),
         j_values: bounded(vec![-1_000]),
-        min_energy_milli: None,
+        max_energy_milli: None,
         min_diversity_milli: None,
         min_solutions: None,
     }
@@ -53,7 +55,7 @@ fn weighted_params() -> crate::IsingParamsOf<Test> {
         edges: bounded(vec![(0, 1)]),
         h_values: bounded(vec![-500, 0]),
         j_values: bounded(vec![-1_000]),
-        min_energy_milli: None,
+        max_energy_milli: None,
         min_diversity_milli: None,
         min_solutions: None,
     }
@@ -340,17 +342,17 @@ fn network_upgrade_wipes_mempool_and_reseeds_default_spec() {
         );
         assert_eq!(
             StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(2)
+            StorageVersion::new(3)
         );
     });
 }
 
 #[test]
-fn network_upgrade_is_noop_once_at_v2() {
+fn network_upgrade_is_noop_once_at_v3() {
     new_test_ext_with_default_ising_spec(true).execute_with(|| {
         // Fresh chain already at the post-upgrade version: the guard must
         // short-circuit so live state is neither wiped nor re-seeded.
-        StorageVersion::new(2).put::<QuantumComputeMempool>();
+        StorageVersion::new(3).put::<QuantumComputeMempool>();
         let spec_id = QuantumComputeMempool::default_ising_spec_id();
         let pre = JobSpecs::<Test>::get(spec_id).unwrap();
 
@@ -362,7 +364,7 @@ fn network_upgrade_is_noop_once_at_v2() {
         assert_eq!(post.registered_at, pre.registered_at);
         assert_eq!(
             StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(2)
+            StorageVersion::new(3)
         );
     });
 }
@@ -656,7 +658,7 @@ fn claim_reward_single_best_transfers_and_closes_order() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::claim_reward(
             RuntimeOrigin::signed(2),
             0
@@ -695,7 +697,7 @@ fn claim_reward_invokes_vm_validate_result() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::claim_reward(
             RuntimeOrigin::signed(2),
             0
@@ -733,14 +735,14 @@ fn claim_reward_propagates_vm_result_validation_error() {
         ));
         set_vm_fail_validate_result(true);
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_noop!(
             QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(2), 0),
             sp_runtime::DispatchError::Other("vm-validate-result")
         );
 
         let order = JobOrders::<Test>::get(0).unwrap();
-        assert_eq!(order.status, crate::types::OrderStatus::Opened);
+        assert_eq!(order.status, crate::types::OrderStatus::Expired);
         assert_eq!(Balances::reserved_balance(1), 100);
     });
 }
@@ -761,7 +763,7 @@ fn reclaim_order_returns_reserved_reward_when_no_solutions() {
             ResultDelivery::OnChainOnly,
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::reclaim_order(
             RuntimeOrigin::signed(1),
             0
@@ -814,7 +816,7 @@ fn claim_reward_top_n_equal_splits_remainder_to_best() {
             alternate_solution(),
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::claim_reward(
             RuntimeOrigin::signed(2),
             0
@@ -827,7 +829,7 @@ fn claim_reward_top_n_equal_splits_remainder_to_best() {
 }
 
 #[test]
-fn claim_reward_top_n_weighted_splits_by_absolute_energy() {
+fn claim_reward_top_n_weighted_splits_by_rank() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumComputeMempool::register_solver(
             RuntimeOrigin::signed(2),
@@ -861,20 +863,20 @@ fn claim_reward_top_n_weighted_splits_by_absolute_energy() {
             alternate_solution(),
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::claim_reward(
             RuntimeOrigin::signed(2),
             0
         ));
 
         assert_eq!(Balances::reserved_balance(1), 0);
-        assert_eq!(Balances::free_balance(2), 1_000_075);
-        assert_eq!(Balances::free_balance(3), 1_000_025);
+        assert_eq!(Balances::free_balance(2), 1_000_067);
+        assert_eq!(Balances::free_balance(3), 1_000_033);
     });
 }
 
 #[test]
-fn claim_reward_emits_result_ready_for_callback_delivery() {
+fn expiry_emits_result_ready_for_callback_delivery() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumComputeMempool::register_solver(
             RuntimeOrigin::signed(2),
@@ -903,11 +905,7 @@ fn claim_reward_emits_result_ready_for_callback_delivery() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
-        assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
-            0
-        ));
+        run_to_block(2);
 
         let found = System::events().into_iter().any(|record| {
             matches!(
@@ -931,7 +929,7 @@ fn claim_reward_emits_result_ready_for_callback_delivery() {
 }
 
 #[test]
-fn claim_reward_emits_all_winners_for_callback_delivery() {
+fn expiry_emits_all_winners_for_callback_delivery() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumComputeMempool::register_solver(
             RuntimeOrigin::signed(2),
@@ -969,11 +967,7 @@ fn claim_reward_emits_all_winners_for_callback_delivery() {
             alternate_solution(),
         ));
 
-        System::set_block_number(2);
-        assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
-            0
-        ));
+        run_to_block(2);
 
         let found = System::events().into_iter().any(|record| {
             matches!(
@@ -1000,7 +994,7 @@ fn claim_reward_emits_all_winners_for_callback_delivery() {
 }
 
 #[test]
-fn claim_reward_persists_result_for_callback_with_poll() {
+fn expiry_persists_result_for_callback_with_poll() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumComputeMempool::register_solver(
             RuntimeOrigin::signed(2),
@@ -1032,11 +1026,7 @@ fn claim_reward_persists_result_for_callback_with_poll() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
-        assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
-            0
-        ));
+        run_to_block(2);
 
         let result = QuantumComputeMempool::result_for_order(0).unwrap();
         assert_eq!(result.endpoint, endpoint);
@@ -1050,7 +1040,7 @@ fn claim_reward_persists_result_for_callback_with_poll() {
 }
 
 #[test]
-fn claim_reward_does_not_persist_result_for_callback_only() {
+fn expiry_does_not_persist_result_for_callback_only() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumComputeMempool::register_solver(
             RuntimeOrigin::signed(2),
@@ -1077,11 +1067,7 @@ fn claim_reward_does_not_persist_result_for_callback_only() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
-        assert_ok!(QuantumComputeMempool::claim_reward(
-            RuntimeOrigin::signed(2),
-            0
-        ));
+        run_to_block(2);
 
         assert!(QuantumComputeMempool::result_for_order(0).is_none());
     });
@@ -1118,7 +1104,7 @@ fn purge_result_rejects_before_ttl() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::claim_reward(
             RuntimeOrigin::signed(2),
             0
@@ -1162,13 +1148,13 @@ fn purge_result_is_permissionless_after_ttl() {
             sample_solution(),
         ));
 
-        System::set_block_number(2);
+        run_to_block(2);
         assert_ok!(QuantumComputeMempool::claim_reward(
             RuntimeOrigin::signed(2),
             0
         ));
 
-        System::set_block_number(12);
+        run_to_block(12);
         assert_ok!(QuantumComputeMempool::purge_result(
             RuntimeOrigin::signed(4),
             0
@@ -1229,5 +1215,582 @@ fn submit_solution_dispatch_info_charges_configured_maxima() {
                 MaxSolutions::get(),
             ),
         );
+    });
+}
+
+#[test]
+fn submit_solution_drops_vectors_above_max_energy() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let mut params = sample_params();
+        // sample_solution() scores -1_000; alternate_solution() scores +1_000.
+        params.max_energy_milli = Some(0);
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            params,
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            5,
+            2,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                0,
+                alternate_solution(),
+            ),
+            crate::Error::<Test>::InsufficientEnergy
+        );
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+    });
+}
+
+#[test]
+fn submit_solution_keeps_vectors_at_the_energy_ceiling() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let mut params = sample_params();
+        params.max_energy_milli = Some(-1_000);
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            params,
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            5,
+            2,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+        assert_eq!(
+            OrderSolutions::<Test>::get(0, 2).unwrap().solutions,
+            sample_solution()
+        );
+    });
+}
+
+#[test]
+fn submit_solution_keeps_only_vectors_within_the_ceiling_from_a_mixed_submission() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let mut params = sample_params();
+        params.max_energy_milli = Some(0);
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            params,
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            5,
+            2,
+            ResultDelivery::OnChainOnly,
+        ));
+        let solutions: crate::SolutionsOf<Test> = bounded(vec![
+            alternate_solution()[0].clone(),
+            sample_solution()[0].clone(),
+        ]);
+
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            solutions,
+        ));
+        assert_eq!(
+            OrderSolutions::<Test>::get(0, 2).unwrap().solutions,
+            sample_solution()
+        );
+    });
+}
+
+fn propose_single_best(proposer: u64, deadline_blocks: u64, block_wait: u64) -> u64 {
+    let spec_id = match JobSpecs::<Test>::iter_keys().next() {
+        Some(spec_id) => spec_id,
+        None => register_spec(),
+    };
+    let order_id = NextOrderId::<Test>::get();
+    assert_ok!(QuantumComputeMempool::propose_job(
+        RuntimeOrigin::signed(proposer),
+        spec_id,
+        sample_params(),
+        100,
+        JobMode::Open,
+        RewardResolution::SingleBest,
+        deadline_blocks,
+        block_wait,
+        ResultDelivery::OnChainOnly,
+    ));
+    order_id
+}
+
+fn bucket_ids(block: u64) -> Vec<u64> {
+    let mut ids: Vec<u64> = OrdersExpiringAt::<Test>::iter_key_prefix(block).collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn propose_job_schedules_expiry_at_hard_deadline() {
+    new_test_ext().execute_with(|| {
+        let order_id = propose_single_best(1, 5, 2);
+        assert_eq!(bucket_ids(6), vec![order_id]);
+    });
+}
+
+#[test]
+fn propose_job_with_zero_deadline_schedules_next_block() {
+    new_test_ext().execute_with(|| {
+        let order_id = propose_single_best(1, 0, 0);
+        assert_eq!(bucket_ids(1), Vec::<u64>::new());
+        assert_eq!(bucket_ids(2), vec![order_id]);
+    });
+}
+
+#[test]
+fn first_solution_moves_expiry_to_block_wait() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let order_id = propose_single_best(1, 5, 1);
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            order_id,
+            sample_solution(),
+        ));
+        assert_eq!(bucket_ids(6), Vec::<u64>::new());
+        assert_eq!(bucket_ids(3), vec![order_id]);
+    });
+}
+
+#[test]
+fn first_solution_with_zero_block_wait_schedules_next_block() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let order_id = propose_single_best(1, 5, 0);
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            order_id,
+            sample_solution(),
+        ));
+        assert_eq!(bucket_ids(6), Vec::<u64>::new());
+        assert_eq!(bucket_ids(2), Vec::<u64>::new());
+        assert_eq!(bucket_ids(3), vec![order_id]);
+    });
+}
+
+#[test]
+fn first_solution_keeps_hard_deadline_when_block_wait_is_not_sooner() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let order_id = propose_single_best(1, 2, 5);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            order_id,
+            sample_solution(),
+        ));
+        assert_eq!(bucket_ids(3), vec![order_id]);
+        assert_eq!(OrdersExpiringAt::<Test>::iter().count(), 1);
+    });
+}
+
+#[test]
+fn second_solution_does_not_reschedule() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(3),
+            MinerType::Gpu
+        ));
+        let order_id = propose_single_best(1, 5, 2);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            order_id,
+            sample_solution(),
+        ));
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            order_id,
+            alternate_solution(),
+        ));
+        assert_eq!(bucket_ids(3), vec![order_id]);
+        assert_eq!(OrdersExpiringAt::<Test>::iter().count(), 1);
+    });
+}
+
+#[test]
+fn on_initialize_charges_proof_weight_when_no_order_expires() {
+    new_test_ext().execute_with(|| {
+        let weight = QuantumComputeMempool::on_initialize(1);
+        assert!(weight.proof_size() > 0);
+    });
+}
+
+#[test]
+fn on_initialize_expires_order_at_hard_deadline_without_a_touching_extrinsic() {
+    new_test_ext().execute_with(|| {
+        let order_id = propose_single_best(1, 2, 5);
+
+        run_to_block(2);
+        assert_eq!(
+            JobOrders::<Test>::get(order_id).unwrap().status,
+            OrderStatus::Opened
+        );
+        assert!(OpenOrders::<Test>::contains_key(order_id));
+
+        run_to_block(3);
+        assert_eq!(
+            JobOrders::<Test>::get(order_id).unwrap().status,
+            OrderStatus::Expired
+        );
+        assert!(!OpenOrders::<Test>::contains_key(order_id));
+        assert_eq!(bucket_ids(3), Vec::<u64>::new());
+        assert_eq!(NextExpiryBucket::<Test>::get(), 4);
+        let expired = System::events().into_iter().any(|record| {
+            matches!(
+                record.event,
+                RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::OrderExpired {
+                    order_id: emitted
+                }) if emitted == order_id
+            )
+        });
+        assert!(expired);
+    });
+}
+
+#[test]
+fn on_initialize_expires_order_after_block_wait() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let order_id = propose_single_best(1, 10, 1);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            order_id,
+            sample_solution(),
+        ));
+
+        run_to_block(2);
+        assert_eq!(
+            JobOrders::<Test>::get(order_id).unwrap().status,
+            OrderStatus::Expired
+        );
+    });
+}
+
+/// Nine orders expiring in one block with a cap of eight.
+fn propose_nine_orders_expiring_at_block_2() -> Vec<u64> {
+    let mut ids = Vec::new();
+    // MaxOrdersPerProposer is 8 in the mock, so split across two proposers.
+    for _ in 0..8 {
+        ids.push(propose_single_best(1, 1, 1));
+    }
+    ids.push(propose_single_best(2, 1, 1));
+    ids
+}
+
+fn status_count(ids: &[u64], status: OrderStatus) -> usize {
+    ids.iter()
+        .filter(|id| JobOrders::<Test>::get(**id).unwrap().status == status)
+        .count()
+}
+
+#[test]
+fn on_initialize_finalises_at_most_the_per_block_cap_and_carries_overflow() {
+    new_test_ext().execute_with(|| {
+        let ids = propose_nine_orders_expiring_at_block_2();
+        assert_eq!(bucket_ids(2).len(), 9);
+
+        run_to_block(2);
+        assert_eq!(status_count(&ids, OrderStatus::Expired), 8);
+        assert_eq!(status_count(&ids, OrderStatus::Opened), 1);
+        assert_eq!(bucket_ids(2).len(), 1);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 2);
+
+        run_to_block(3);
+        assert_eq!(status_count(&ids, OrderStatus::Expired), 9);
+        assert_eq!(bucket_ids(2), Vec::<u64>::new());
+        assert_eq!(NextExpiryBucket::<Test>::get(), 4);
+    });
+}
+
+#[test]
+fn on_initialize_visits_at_most_eight_buckets_per_block_and_resumes() {
+    new_test_ext().execute_with(|| {
+        let order_id = propose_single_best(1, 20, 20);
+        assert_eq!(bucket_ids(21), vec![order_id]);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 0);
+        System::set_block_number(21);
+
+        QuantumComputeMempool::on_initialize(21);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 8);
+        assert_eq!(
+            JobOrders::<Test>::get(order_id).unwrap().status,
+            OrderStatus::Opened
+        );
+
+        QuantumComputeMempool::on_initialize(21);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 16);
+        assert_eq!(
+            JobOrders::<Test>::get(order_id).unwrap().status,
+            OrderStatus::Opened
+        );
+
+        QuantumComputeMempool::on_initialize(21);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 22);
+        assert_eq!(
+            JobOrders::<Test>::get(order_id).unwrap().status,
+            OrderStatus::Expired
+        );
+    });
+}
+
+#[test]
+fn reclaim_order_waits_for_finalisation_under_backlog() {
+    new_test_ext().execute_with(|| {
+        let ids = propose_nine_orders_expiring_at_block_2();
+        run_to_block(2);
+        let lagging = *ids
+            .iter()
+            .find(|id| JobOrders::<Test>::get(**id).unwrap().status == OrderStatus::Opened)
+            .unwrap();
+        let proposer = JobOrders::<Test>::get(lagging).unwrap().proposer;
+
+        assert_noop!(
+            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(proposer), lagging),
+            crate::Error::<Test>::OrderNotExpired
+        );
+
+        run_to_block(3);
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(proposer),
+            lagging
+        ));
+    });
+}
+
+#[test]
+fn submit_solution_is_rejected_at_expiry_even_when_finalisation_lags() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(3),
+            MinerType::Cpu
+        ));
+        let ids = propose_nine_orders_expiring_at_block_2();
+        run_to_block(2);
+        let lagging = *ids
+            .iter()
+            .find(|id| JobOrders::<Test>::get(**id).unwrap().status == OrderStatus::Opened)
+            .unwrap();
+
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(3),
+                lagging,
+                sample_solution()
+            ),
+            crate::Error::<Test>::OrderNotOpen
+        );
+    });
+}
+
+#[test]
+fn claim_reward_pays_without_emitting_result_ready() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/callback".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::Callback { endpoint },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+        run_to_block(2);
+        System::reset_events();
+
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        let events: Vec<_> = System::events()
+            .into_iter()
+            .map(|record| record.event)
+            .collect();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::ResultReady { .. })
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::RewardClaimed {
+                order_id: 0,
+                solver: 2,
+                amount: 100,
+            })
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::OrderClosed {
+                order_id: 0,
+                successful: true,
+            })
+        )));
+        assert_eq!(Balances::free_balance(2), 1_000_100);
+    });
+}
+
+#[test]
+fn expiry_without_solutions_emits_no_result_ready() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/poll".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2])),
+                miner_types: None,
+            },
+            RewardResolution::SingleBest,
+            1,
+            1,
+            ResultDelivery::CallbackWithPoll { endpoint },
+        ));
+
+        run_to_block(2);
+
+        assert_eq!(
+            JobOrders::<Test>::get(0).unwrap().status,
+            OrderStatus::Expired
+        );
+        assert!(QuantumComputeMempool::result_for_order(0).is_none());
+        assert!(!System::events().into_iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::ResultReady { .. })
+        )));
+    });
+}
+
+#[test]
+fn network_upgrade_v2_to_v3_indexes_open_orders() {
+    new_test_ext_with_default_ising_spec(true).execute_with(|| {
+        // Two v2-style open orders at block 1: one expiring at block 2, one
+        // at block 6. v2 had no expiry index, so clear what propose_job wrote.
+        let past = propose_single_best(1, 1, 1);
+        let future = propose_single_best(1, 5, 1);
+        let _ = OrdersExpiringAt::<Test>::clear(u32::MAX, None);
+        NextExpiryBucket::<Test>::kill();
+        StorageVersion::new(2).put::<QuantumComputeMempool>();
+        System::set_block_number(3);
+
+        QuantumComputeMempool::on_runtime_upgrade();
+
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(3)
+        );
+        assert_eq!(NextOrderId::<Test>::get(), 2, "v2 orders are kept");
+        assert_eq!(
+            bucket_ids(4),
+            vec![past],
+            "past expiry lands in the next block"
+        );
+        assert_eq!(bucket_ids(6), vec![future]);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 4);
+        assert_eq!(
+            JobOrders::<Test>::get(past).unwrap().status,
+            OrderStatus::Opened
+        );
+
+        run_to_block(4);
+        assert_eq!(
+            JobOrders::<Test>::get(past).unwrap().status,
+            OrderStatus::Expired
+        );
+        assert_eq!(
+            JobOrders::<Test>::get(future).unwrap().status,
+            OrderStatus::Opened
+        );
+    });
+}
+
+#[cfg(feature = "try-runtime")]
+#[test]
+fn post_upgrade_rejects_an_open_order_missing_from_its_bucket() {
+    new_test_ext_with_default_ising_spec(true).execute_with(|| {
+        StorageVersion::new(2).put::<QuantumComputeMempool>();
+        let order_id = propose_single_best(1, 1, 1);
+        let _ = OrdersExpiringAt::<Test>::clear(u32::MAX, None);
+        NextExpiryBucket::<Test>::kill();
+        System::set_block_number(3);
+        let state = QuantumComputeMempool::pre_upgrade().unwrap();
+
+        QuantumComputeMempool::on_runtime_upgrade();
+        assert!(OrdersExpiringAt::<Test>::contains_key(4, order_id));
+        OrdersExpiringAt::<Test>::remove(4, order_id);
+
+        assert!(QuantumComputeMempool::post_upgrade(state).is_err());
     });
 }
