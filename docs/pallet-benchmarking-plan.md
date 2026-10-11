@@ -376,3 +376,21 @@ execution cost changes. The retained `submit_solution` measurements are a
 baseline, not regeneration of this path. Remeasure both first submissions and
 maximal accepted replacements before merge; rejected submissions must also fit
 the charged maximum. Quantum-PoW selection is unchanged.
+
+### Follow-up B closure access and proof correction
+
+The current claim model is **69 reads / 69 writes**: the earlier 68/68 plus one
+bounded `ProposerOrders` read/write. Refund is **2 reads / 3 writes** under its
+caller-account whitelist, up from 1/2. These are source-based corrections to the
+retained generated baseline, not fresh measurements. Both closure benchmarks
+scan a full proposer index and refund now includes maximum topology. Missing
+reserve failure also needs coverage in reference measurement. Reference timing
+for both closure paths must be regenerated before merge.
+
+The production claim envelope adds one `ProposerOrders` key (max_size 305 plus
+4950 trie bytes) to 996800, giving **1002055**. The refund envelope is
+`640946 + 305 + 128 + 24 + 16 + 5 * 4950 = 666169` for JobOrders,
+ProposerOrders, System Account, OpenOrders and TotalIssuance. Both use a maintained
+**1 MiB** floor and runtime integrity checks against the actual storage metadata
+and Normal dispatch limits. Claim/refund do not read stored solutions, poll
+results or payees. The same documented trie-model assumptions apply.

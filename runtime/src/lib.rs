@@ -906,7 +906,11 @@ mod tests {
             claim_reward_proof_envelope, CLAIM_REWARD_PROOF_FLOOR,
         };
         <QuantumComputeMempool as Hooks<BlockNumber>>::integrity_test();
-        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 996_800);
+        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 1_002_055);
+        assert_eq!(
+            pallet_quantum_compute_mempool::weights::reclaim_order_proof_envelope::<Runtime>(),
+            666_169
+        );
         let call: RuntimeCall =
             pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
         let info = call.get_dispatch_info();
@@ -914,6 +918,75 @@ mod tests {
         let limits = <Runtime as frame_system::Config>::BlockWeights::get();
         let normal = limits.get(frame_support::dispatch::DispatchClass::Normal);
         assert!(info.call_weight.all_lte(normal.max_extrinsic.unwrap()));
+    }
+
+    #[test]
+    fn production_proposer_limit_counts_outstanding_orders() {
+        use frame_support::{
+            assert_noop, assert_ok,
+            traits::{Currency, Hooks},
+        };
+        use pallet_quantum_compute_mempool::{types::*, JobSpecs, ProposerOrders};
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            let proposer = AccountId::new([1; 32]);
+            assert!(ProposerOrders::<Runtime>::get(&proposer).is_empty());
+            assert_eq!(
+                <Runtime as pallet_quantum_compute_mempool::Config>::MaxOrdersPerProposer::get(),
+                32
+            );
+            <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 100 * UNIT);
+            assert_ok!(QuantumComputeMempool::register_job_spec(
+                RuntimeOrigin::root(),
+                proposer.clone(),
+                b"cap-test".to_vec().try_into().unwrap(),
+                Formulation::Ising,
+                None,
+                None
+            ));
+            let spec = JobSpecs::<Runtime>::iter_keys().next().unwrap();
+            let propose = || {
+                QuantumComputeMempool::propose_job(
+                    RuntimeOrigin::signed(proposer.clone()),
+                    spec,
+                    IsingParams {
+                        nodes: vec![0, 1].try_into().unwrap(),
+                        edges: vec![(0, 1)].try_into().unwrap(),
+                        h_values: vec![0, 0].try_into().unwrap(),
+                        j_values: vec![-1000].try_into().unwrap(),
+                        max_energy_milli: None,
+                        min_diversity_milli: None,
+                        min_solutions: None,
+                    },
+                    UNIT,
+                    JobMode::Open,
+                    RewardResolution::SingleBest,
+                    1,
+                    1,
+                    ResultDelivery::OnChainOnly,
+                )
+            };
+            for _ in 0..32 {
+                assert_ok!(propose());
+            }
+            assert_noop!(
+                propose(),
+                pallet_quantum_compute_mempool::Error::<Runtime>::OrderLimitReached
+            );
+            for block in 2..=6 {
+                System::set_block_number(block);
+                QuantumComputeMempool::on_initialize(block);
+            }
+            assert_eq!(ProposerOrders::<Runtime>::get(&proposer).len(), 32);
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(proposer.clone()),
+                0
+            ));
+            assert_ok!(propose());
+            assert_eq!(ProposerOrders::<Runtime>::get(&proposer).len(), 32);
+        });
     }
 
     #[test]

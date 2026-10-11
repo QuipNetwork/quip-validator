@@ -441,6 +441,8 @@ pub mod pallet {
         InvalidDiversityConfig,
         /// A solver may replace its accepted payload only with a lower energy.
         SolutionNotImproved,
+        /// Reserved funds are insufficient; retain the order and retry after recovery.
+        RewardReserveMissing,
     }
 
     #[pallet::call]
@@ -878,7 +880,7 @@ pub mod pallet {
             )?;
 
             let unreserved = T::Currency::unreserve(&order.proposer, order.reward);
-            debug_assert!(unreserved.is_zero());
+            ensure!(unreserved.is_zero(), Error::<T>::RewardReserveMissing);
 
             for (winner, payout_u128, _) in &payouts {
                 let payout: BalanceOf<T> = (*payout_u128).saturated_into();
@@ -901,6 +903,7 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
+            ProposerOrders::<T>::mutate(&order.proposer, |ids| ids.retain(|id| *id != order_id));
             JobSpecs::<T>::mutate(order.spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
                     spec.successful_orders = spec.successful_orders.saturating_add(1);
@@ -931,11 +934,12 @@ pub mod pallet {
             ensure!(order.solution_count == 0, Error::<T>::NoSolutionsAccepted);
 
             let unreserved = T::Currency::unreserve(&caller, order.reward);
-            debug_assert!(unreserved.is_zero());
+            ensure!(unreserved.is_zero(), Error::<T>::RewardReserveMissing);
 
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
+            ProposerOrders::<T>::mutate(&order.proposer, |ids| ids.retain(|id| *id != order_id));
 
             Self::deposit_event(Event::RewardReclaimed {
                 order_id,

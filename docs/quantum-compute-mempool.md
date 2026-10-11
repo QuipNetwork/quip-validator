@@ -311,3 +311,20 @@ substrate.query(
 For finalized-only processing, subscribe to finalized or imported block
 headers in the adapter process, then call `get_events(block_hash=...)` for each
 block hash before acting on the events.
+
+## Outstanding proposer capacity (runtime 119 reset)
+
+`ProposerOrders` enumerates non-Closed orders, including expired but unpaid orders.
+The production limit is 32 outstanding orders, not 32 lifetime proposals. Successful
+`claim_reward` or `reclaim_order` removes only that ID, atomically with closure;
+historical `JobOrders`, solutions, results and payee evidence are retained.
+Expiry alone does not free a slot. History requires events or historical order
+queries rather than this bounded capacity index.
+
+An impossible payout retains the slot and reserved funds. The lock/freeze owner
+must resolve the restriction before a signed caller retries. An incomplete reserve
+returns `RewardReserveMissing` and rolls back partial unreserving; restore the
+missing reserve through an authorised recovery before retrying. No cleanup,
+forced-close or solved-order refund mechanism is provided, and eventual closure
+is not guaranteed. Runtime 119 starts with empty indexes at fresh genesis; no
+pre-reset cleanup/import/migration is included.

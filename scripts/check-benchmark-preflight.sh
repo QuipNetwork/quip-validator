@@ -122,7 +122,11 @@ check_quantum_compute_mempool_wrapper() {
     'fnwith_claim_reward_proof_floor(' \
     'weight.max(Weight::from_parts(0,CLAIM_REWARD_PROOF_FLOOR))' \
     'with_claim_reward_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::claim_reward())' \
-    'with_claim_reward_proof_floor(<()asBenchmarkWeightInfo>::claim_reward())'; do
+    'with_claim_reward_proof_floor(<()asBenchmarkWeightInfo>::claim_reward())' \
+    'pubconstRECLAIM_ORDER_PROOF_FLOOR:u64=1024*1024;' \
+    'weight.max(Weight::from_parts(0,RECLAIM_ORDER_PROOF_FLOOR))' \
+    'with_reclaim_order_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::reclaim_order())' \
+    'with_reclaim_order_proof_floor(<()asBenchmarkWeightInfo>::reclaim_order())'; do
     if [[ "$normalized" != *"$required"* ]]; then
       echo "ERROR: Quantum Compute Mempool public wrapper lost invariant '$required'" >&2
       return 1

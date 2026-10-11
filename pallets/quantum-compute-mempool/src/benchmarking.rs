@@ -200,6 +200,15 @@ fn propose_order_for<T: Config>(
     order_id
 }
 
+// The bounded closure scan must see a full index with the closing id last.
+fn fill_proposer_index<T: Config>(proposer: &T::AccountId, order_id: u64) {
+    let mut ids: Vec<u64> = (1..T::MaxOrdersPerProposer::get())
+        .map(|i| order_id + u64::from(i))
+        .collect();
+    ids.push(order_id);
+    ProposerOrders::<T>::insert(proposer, bounded::<_, T::MaxOrdersPerProposer>(ids));
+}
+
 // Shared maximal settlement setup; lifecycle variants are measured separately.
 fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::AccountId>, u64) {
     let caller: T::AccountId = whitelisted_caller();
@@ -272,6 +281,7 @@ fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::Accoun
     assert!(OrderResults::<T>::contains_key(order_id));
     assert!(!Solvers::<T>::contains_key(&caller));
 
+    fill_proposer_index::<T>(&proposer, order_id);
     (caller, proposer, winners, order_id)
 }
 
@@ -279,6 +289,7 @@ fn verify_claim_reward<T: Config>(order_id: u64, winners: &[T::AccountId]) {
     let winner_count = types::MAX_REWARD_WINNERS;
     let order = JobOrders::<T>::get(order_id).expect("order exists");
     assert_eq!(order.status, types::OrderStatus::Closed);
+    assert!(!ProposerOrders::<T>::get(&order.proposer).contains(&order_id));
     assert!(!OpenOrders::<T>::contains_key(order_id));
     for winner in winners {
         assert!(Solvers::<T>::get(winner).unwrap().rewards_earned > 0u32.into());
@@ -466,14 +477,21 @@ mod benchmarks {
         );
         JobOrders::<T>::mutate(order_id, |maybe_order| {
             let order = maybe_order.as_mut().expect("benchmark order exists");
-            order.status = types::OrderStatus::Expired;
+            order.ising_params =
+                params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None);
         });
+
+        fill_proposer_index::<T>(&proposer, order_id);
+        let now = frame_system::Pallet::<T>::block_number().saturating_add(1u32.into());
+        frame_system::Pallet::<T>::set_block_number(now);
+        QuantumComputeMempool::<T>::on_initialize(now);
 
         #[extrinsic_call]
         QuantumComputeMempool::reclaim_order(RawOrigin::Signed(proposer.clone()), order_id);
 
         let order = JobOrders::<T>::get(order_id).expect("order exists");
         assert_eq!(order.status, types::OrderStatus::Closed);
+        assert!(!ProposerOrders::<T>::get(&proposer).contains(&order_id));
     }
 
     #[benchmark]

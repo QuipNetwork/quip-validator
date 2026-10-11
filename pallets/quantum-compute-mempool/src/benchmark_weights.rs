@@ -168,7 +168,9 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn claim_reward() -> Weight {
+		// Added bounded proposer-index read/write; timing is pending regeneration.
 		// Proposer is no longer whitelisted: add its account read/write.
 		// Access-model correction, not regeneration; reference timing for
 		// maximal permissionless settlement and dust remains a release gate.
@@ -177,21 +179,23 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		//  Estimated: `644411`
 		// Minimum execution time: 1_681_556_000 picoseconds.
 		Weight::from_parts(1_705_641_000, 644411)
-			.saturating_add(T::DbWeight::get().reads(68_u64))
-			.saturating_add(T::DbWeight::get().writes(68_u64))
+			.saturating_add(T::DbWeight::get().reads(69_u64))
+			.saturating_add(T::DbWeight::get().writes(69_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn reclaim_order() -> Weight {
+		// Added bounded proposer-index read/write; timing is pending regeneration.
 		// Proof Size summary in bytes:
 		//  Measured:  `356`
 		//  Estimated: `644411`
 		// Minimum execution time: 39_064_000 picoseconds.
 		Weight::from_parts(40_236_000, 644411)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
-			.saturating_add(T::DbWeight::get().writes(2_u64))
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
 	/// Storage: `QuantumComputeMempool::OrderResults` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::OrderResults` (`max_values`: None, `max_size`: Some(2084), added: 4559, mode: `MaxEncodedLen`)
@@ -337,7 +341,9 @@ impl WeightInfo for () {
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn claim_reward() -> Weight {
+		// Added bounded proposer-index read/write; timing is pending regeneration.
 		// Proposer is no longer whitelisted: add its account read/write.
 		// Access-model correction, not regeneration; reference timing for
 		// maximal permissionless settlement and dust remains a release gate.
@@ -346,21 +352,23 @@ impl WeightInfo for () {
 		//  Estimated: `644411`
 		// Minimum execution time: 1_681_556_000 picoseconds.
 		Weight::from_parts(1_705_641_000, 644411)
-			.saturating_add(RocksDbWeight::get().reads(68_u64))
-			.saturating_add(RocksDbWeight::get().writes(68_u64))
+			.saturating_add(RocksDbWeight::get().reads(69_u64))
+			.saturating_add(RocksDbWeight::get().writes(69_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumComputeMempool::ProposerOrders` (r:1 w:1)
 	fn reclaim_order() -> Weight {
+		// Added bounded proposer-index read/write; timing is pending regeneration.
 		// Proof Size summary in bytes:
 		//  Measured:  `356`
 		//  Estimated: `644411`
 		// Minimum execution time: 39_064_000 picoseconds.
 		Weight::from_parts(40_236_000, 644411)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
-			.saturating_add(RocksDbWeight::get().writes(2_u64))
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
 	/// Storage: `QuantumComputeMempool::OrderResults` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::OrderResults` (`max_values`: None, `max_size`: Some(2084), added: 4559, mode: `MaxEncodedLen`)
