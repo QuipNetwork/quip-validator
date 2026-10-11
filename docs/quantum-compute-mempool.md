@@ -100,6 +100,36 @@ Because this storage item is exposed through runtime metadata, SDKs can query
 it through the standard Substrate storage RPC. No custom RPC is needed unless a
 client cannot perform or decode metadata-backed `DoubleMap` prefix queries.
 
+### Replacements and retained vectors (runtime 119 reset)
+
+A solver's first valid submission is accepted. A replacement must have a
+**strictly lower** validated minimum energy than that solver's accepted payload,
+even when the solver has fallen outside the top-N ranking. Equal or worse
+submissions fail with `SolutionNotImproved`; payload, ranking, counters, tie
+priority and events remain unchanged. Better submissions still must pass every
+energy, diversity and eligibility rule. Atomic dispatch updates the accepted
+payload and ranking together. Existing ranking rules keep the incumbent on a
+single-best tie and stable ordering in top-N ties.
+
+The stored subset always starts with the first vector attaining the minimum
+validated energy, after VM transformation and ceiling filtering. It then greedily
+adds the vector with the greatest minimum symmetric Hamming distance to those
+already selected, breaking ties by input order. Diversity thresholds apply to
+this actual subset. `min_solutions = None` retains all valid vectors; zero or one
+retains exactly the best vector; larger values require that many valid vectors.
+Positive diversity with an explicit count below two remains invalid.
+
+SDK/coordinator error handling: decode the pallet error by metadata name.
+`SolutionNotImproved` is a terminal rejection for that unchanged submission:
+stop retrying that payload, retain the accepted submission locally, and retry only
+with a genuinely better solution while the order is open. A signed failed call
+still consumes its nonce and fee. Reconcile inclusion/nonce before sending again.
+A missed `SolutionAccepted` event is not permission to resubmit blindly; query
+`OrderSolutions` at a finalised block. This repository contains API documentation,
+not the external Python coordinator; its deployed regression (QUI-1676,
+`leader_energy_matches_chain=True`) must run after deployment on fresh reset
+orders and has not been claimed as a local validation.
+
 ### Query with substrate-interface
 
 Install the Python client:

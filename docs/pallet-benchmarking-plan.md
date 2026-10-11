@@ -367,3 +367,12 @@ Check that the resulting dispatch weight still fits normal limits; run tests,
 strict Clippy, formatting and wrapper guards. Merge and release acceptance remain deferred
 until that evidence exists. Local diagnostic builds may skip unrelated Revive
 fixtures when `solc` is absent; that is not a substitute for reference provenance.
+
+### Follow-up A timing gate
+
+Strict-improvement submission now decodes the previous bounded `OrderSolutions`
+value and uses best-anchored selection. No new storage key is introduced, but
+execution cost changes. The retained `submit_solution` measurements are a
+baseline, not regeneration of this path. Remeasure both first submissions and
+maximal accepted replacements before merge; rejected submissions must also fit
+the charged maximum. Quantum-PoW selection is unchanged.

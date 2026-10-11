@@ -8,6 +8,7 @@ pub mod benchmark_weights;
 mod delivery;
 mod lifecycle;
 pub mod rewards;
+mod selection;
 pub mod types;
 pub mod weights;
 pub mod xqvm;
@@ -169,8 +170,7 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, energy_of_solution_indexed, select_diverse, TopologyIndex,
-        ValidationError,
+        calculate_diversity, energy_of_solution_indexed, TopologyIndex, ValidationError,
     };
     use sp_runtime::traits::{Hash as _, One, SaturatedConversion, Saturating, Zero};
 
@@ -439,6 +439,8 @@ pub mod pallet {
         /// solution minimum below two. `None` remains valid because it
         /// selects every valid submitted solution.
         InvalidDiversityConfig,
+        /// A solver may replace its accepted payload only with a lower energy.
+        SolutionNotImproved,
     }
 
     #[pallet::call]
@@ -634,6 +636,8 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Submit a first solution or a strictly lower-energy replacement.
+        /// Equal/worse submissions leave the accepted payload and ranking unchanged.
         #[pallet::call_index(4)]
         #[pallet::weight(
             // The stored topology and VM-transformed output dimensions are not
@@ -705,6 +709,7 @@ pub mod pallet {
 
             let mut valid_solutions: Vec<Vec<i8>> = Vec::new();
             let mut best_energy = i64::MAX;
+            let mut best_index = 0;
 
             for solution in &transformed_solutions {
                 let energy = energy_of_solution_indexed(
@@ -721,16 +726,28 @@ pub mod pallet {
                     }
                 }
 
-                best_energy = best_energy.min(energy);
+                if energy < best_energy {
+                    best_energy = energy;
+                    best_index = valid_solutions.len();
+                }
                 valid_solutions.push(solution.as_slice().to_vec());
             }
 
             ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
 
+            let previous = OrderSolutions::<T>::get(order_id, &solver);
+            ensure!(
+                previous
+                    .as_ref()
+                    .is_none_or(|accepted| best_energy < accepted.best_energy_milli),
+                Error::<T>::SolutionNotImproved
+            );
+
             let target_count = order
                 .ising_params
                 .min_solutions
                 .unwrap_or(valid_solutions.len() as u32)
+                .max(1)
                 .min(valid_solutions.len() as u32) as usize;
 
             ensure!(
@@ -738,8 +755,9 @@ pub mod pallet {
                 Error::<T>::InsufficientSolutions
             );
 
-            let selected_indices = select_diverse(&valid_solutions, target_count)
-                .map_err(Self::map_validation_error)?;
+            let selected_indices =
+                crate::selection::select_from_best(&valid_solutions, best_index, target_count)
+                    .map_err(Self::map_validation_error)?;
             let selected_solutions: Vec<Vec<i8>> = selected_indices
                 .into_iter()
                 .map(|index| valid_solutions[index].clone())
@@ -771,7 +789,7 @@ pub mod pallet {
                 .try_into()
                 .expect("selected subset cannot exceed MaxSolutions");
 
-            let is_new_solver = !OrderSolutions::<T>::contains_key(order_id, &solver);
+            let is_new_solver = previous.is_none();
             OrderSolutions::<T>::insert(
                 order_id,
                 &solver,

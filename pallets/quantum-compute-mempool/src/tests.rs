@@ -2034,3 +2034,201 @@ fn settlement_wrapper_preserves_reference_time_and_floors_both_weight_providers(
     assert!(composed.proof_size() >= weights::CLAIM_REWARD_PROOF_FLOOR);
     assert!(weights::claim_reward_proof_envelope::<Test>() <= weights::CLAIM_REWARD_PROOF_FLOOR);
 }
+
+#[test]
+fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
+    for resolution in [
+        RewardResolution::SingleBest,
+        RewardResolution::TopNEqual { n: 2 },
+        RewardResolution::TopNWeighted { n: 2 },
+    ] {
+        new_test_ext().execute_with(|| {
+            let spec = register_spec();
+            for solver in [2, 3] {
+                assert_ok!(QuantumComputeMempool::register_solver(
+                    RuntimeOrigin::signed(solver),
+                    MinerType::Cpu
+                ));
+            }
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                weighted_params(),
+                100,
+                JobMode::Open,
+                resolution,
+                10,
+                5,
+                ResultDelivery::OnChainOnly
+            ));
+            // Initial +500, then strictly better -1500. A third vector has +1500.
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                0,
+                alternate_solution()
+            ));
+            for spins in [vec![1, -1], vec![-1, 1]] {
+                assert_noop!(
+                    QuantumComputeMempool::submit_solution(
+                        RuntimeOrigin::signed(2),
+                        0,
+                        bounded(vec![bounded(spins)])
+                    ),
+                    crate::Error::<Test>::SolutionNotImproved
+                );
+            }
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                0,
+                sample_solution()
+            ));
+            let accepted = OrderSolutions::<Test>::get(0, 2).unwrap();
+            assert_eq!(accepted.best_energy_milli, -1500);
+            assert_eq!(accepted.solutions, sample_solution());
+            assert_eq!(JobOrders::<Test>::get(0).unwrap().solution_count, 1);
+            assert_eq!(Solvers::<Test>::get(2).unwrap().solutions_submitted, 2);
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    alternate_solution()
+                ),
+                crate::Error::<Test>::SolutionNotImproved
+            );
+            // Equal energy from a different solver does not displace the incumbent.
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(3),
+                0,
+                sample_solution()
+            ));
+            match resolution {
+                RewardResolution::SingleBest => {
+                    assert_eq!(OrderFrontRunner::<Test>::get(0).unwrap().solver, 2)
+                }
+                _ => assert_eq!(
+                    crate::OrderTopSolvers::<Test>::get(0)
+                        .iter()
+                        .map(|s| s.solver)
+                        .collect::<Vec<_>>(),
+                    vec![2, 3]
+                ),
+            }
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(3),
+                    0,
+                    sample_solution()
+                ),
+                crate::Error::<Test>::SolutionNotImproved
+            );
+        });
+    }
+}
+
+#[test]
+fn stored_subset_always_contains_its_ranked_energy_vector() {
+    for count in [None, Some(0), Some(1), Some(2), Some(3)] {
+        new_test_ext().execute_with(|| {
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
+            let mut params = weighted_params();
+            params.min_solutions = count;
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                params,
+                100,
+                JobMode::Open,
+                RewardResolution::SingleBest,
+                10,
+                5,
+                ResultDelivery::OnChainOnly
+            ));
+            let inputs = bounded(vec![
+                bounded(vec![1, -1]),
+                bounded(vec![1, 1]),
+                bounded(vec![-1, 1]),
+            ]);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                0,
+                inputs
+            ));
+            let stored = OrderSolutions::<Test>::get(0, 2).unwrap();
+            assert_eq!(stored.solutions[0].as_slice(), &[1, 1]);
+            assert_eq!(stored.solutions.len(), count.unwrap_or(3).max(1) as usize);
+            let order = JobOrders::<Test>::get(0).unwrap();
+            let p = order.ising_params;
+            let minimum = stored
+                .solutions
+                .iter()
+                .map(|v| {
+                    quantum_validation::energy_of_solution(
+                        v.as_slice(),
+                        p.h_values.as_slice(),
+                        p.edges.as_slice(),
+                        p.j_values.as_slice(),
+                        p.nodes.as_slice(),
+                    )
+                    .unwrap()
+                })
+                .min()
+                .unwrap();
+            assert_eq!(minimum, stored.best_energy_milli);
+            assert_eq!(
+                minimum,
+                OrderFrontRunner::<Test>::get(0).unwrap().energy_milli
+            );
+            // Deterministic distance tie chooses the earlier input after the best.
+            if stored.solutions.len() > 1 {
+                assert_eq!(stored.solutions[1].as_slice(), &[1, -1]);
+            }
+        });
+    }
+}
+
+#[test]
+fn best_anchoring_does_not_waive_diversity_or_count_requirements() {
+    for (count, diversity, expected) in [
+        (
+            Some(2),
+            Some(500),
+            crate::Error::<Test>::InsufficientDiversity,
+        ),
+        (Some(3), None, crate::Error::<Test>::InsufficientSolutions),
+    ] {
+        new_test_ext().execute_with(|| {
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
+            let mut params = weighted_params();
+            params.min_solutions = count;
+            params.min_diversity_milli = diversity;
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                params,
+                100,
+                JobMode::Open,
+                RewardResolution::SingleBest,
+                10,
+                5,
+                ResultDelivery::OnChainOnly
+            ));
+            // Global inverses have zero symmetric diversity; best is not first.
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    bounded(vec![bounded(vec![-1, -1]), bounded(vec![1, 1])])
+                ),
+                expected
+            );
+        });
+    }
+}
