@@ -255,6 +255,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // regenerated on the reference machine for 0.4.0.
     // `store_program` and `execute` keep their call indices and arguments, so
     // `transaction_version` stays at 7.
+    // 119 includes the fused faucet and fixed-schedule subnet emission controller.
+    // QuantumPow decay starts after 100 blocks, and each win hardens
+    // by a bounded step toward its achieved energy from the live threshold.
     // 119 carries three QuantumComputeMempool changes. `IsingParams` renames
     // `min_energy_milli` to `max_energy_milli` (same SCALE position and type).
     // `TopNWeighted` splits by rank instead of energy magnitude.
