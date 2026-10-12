@@ -367,7 +367,16 @@ bash scripts/run-benchmarks.sh --verify-regenerated-mempool pallets/quantum-comp
 ```
 
 The final command intentionally fails until provisional bootstrap aliases are
-replaced by actual reference output. Preflight generates into temporary files,
-checks the same coverage gate and never modifies tracked weights. Native mock
+replaced by actual reference output. The automatic MR `benchmark-preflight` CI
+job runs this command against the **committed** file before its expensive build,
+so temporary successful preflight output cannot hide committed aliases. An
+initial red job is expected until the reference bot's complete output lands.
+The manual `benchmark-weights` job has `needs: []` and remains independently
+runnable; the advisory `weights-staleness-check` remains unchanged. The older
+4b70 file passes only the old appended-call guard, not the expanded all-extra
+guard. Both missing cases and bootstrap aliases must be eliminated.
+
+Preflight generates into temporary files, checks the same coverage gate and
+never modifies tracked weights. Native mock
 tests, production Wasm preflight, reference measurements, and deployment/SDK
 validation are distinct checks; report each at its actual provenance and SHA.
