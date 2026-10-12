@@ -125,8 +125,11 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 
 ## Runtime 119 mempool changes
 
-Runtime 119 has not shipped. The next tag that carries it includes these
-`QuantumComputeMempool` changes:
+Runtime 119 has not shipped. Its 0.4.0 release targets a **network reset with
+fresh genesis**, not an in-place upgrade of existing mempool state. Keep runtime
+spec 119 and transaction version 7. Start fresh orders, rankings, proposer indexes,
+payee maps and observation cursors; do not import pre-reset compute state.
+The release includes these `QuantumComputeMempool` changes:
 
 - `IsingParams.min_energy_milli` is renamed to `max_energy_milli`. The SCALE
   position and type are unchanged, so positional decoders keep working.
@@ -141,11 +144,39 @@ Runtime 119 has not shipped. The next tag that carries it includes these
   in the next block. `OrderExpired` fires there for every order. `ResultReady`
   and `OrderResults` move from `claim_reward` to expiry. `claim_reward` only pays
   and emits `RewardClaimed` and `OrderClosed`.
-- Pallet storage version moves 2 to 3. The migration indexes existing open
-  orders. Orders already past expiry are finalised from the upgrade block
-  onwards, eight per block. The migration runs inside one block and reads every
-  open order, so check the `OpenOrders` count on the live chain before scheduling
-  the upgrade.
+- Any signed caller can settle all selected winners for one expired order;
+  there is no caller bounty or global order sweep. Successful settlement/refund
+  atomically releases its proposer slot. Expired unpaid orders retain their
+  slots and funds; the cap bounds outstanding orders rather than lifetime usage.
+- Replacements must strictly improve the solver's accepted energy. Stored
+  vectors retain the actual best vector, and rejected submissions preserve the
+  accepted payload, ranking, destination and events.
+- Appended calls 8 and 9 provide an immutable destination-chain requirement and
+  signed winner-payee metadata. Accepted additions, changes and clearing emit
+  `SolutionPayeeSet`; unchanged metadata is silent. These APIs preserve native
+  funding and settlement and do not activate EVM payments or royalties.
+- Fresh genesis uses **pallet storage version 4**, including sparse requirement
+  and payee maps. No pre-reset payee backfill or state-repair migration is part
+  of this release.
+
+Before merge/release, complete the
+[reference weight gate](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate),
+including extra lifecycle cases and removal of provisional weight aliases.
+Deployment must follow the [reset and cutover protocol](quip-evm-compute-interaction.md#runtime-119-reset-and-deployment-cutover):
+local Quip EVM state resets, while external contracts and Trustee obligations
+need explicit reconciliation. Run the fresh-network SDK regression after launch.
+
+### Retained historical migration paths
+
+The migration code retains support for older storage versions; this is not the
+runtime-119 reset deployment procedure. Below storage version 2, it clears the
+pallet prefix and reseeds the default spec. The version-2-to-3 step indexes
+existing open orders (none remain after that older wipe). Past-expiry orders can then be finalised from the upgrade
+block onward, eight per block. That indexing reads every open order in one
+upgrade block, so any future in-place use requires a state-size and weight audit.
+The version-3-to-4 path advances the version marker without rescanning expiry
+indexes or inferring payees. Tests of these compatibility paths do not substitute
+for fresh-genesis/reset validation.
 
 ## What v0.2.0 ships
 
