@@ -2012,7 +2012,7 @@ fn post_upgrade_rejects_an_open_order_missing_from_its_bucket() {
 }
 
 #[test]
-fn settlement_wrapper_preserves_reference_time_and_floors_both_weight_providers() {
+fn settlement_wrapper_maximizes_complete_weights_and_floors_both_providers() {
     use crate::{benchmark_weights, weights};
     use frame_support::{traits::Get, weights::constants::RocksDbWeight};
     use weights::WeightInfo;
@@ -2031,11 +2031,15 @@ fn settlement_wrapper_preserves_reference_time_and_floors_both_weight_providers(
     );
     assert_eq!(
         <() as WeightInfo>::claim_reward().ref_time(),
-        generated.ref_time()
+        generated
+            .max(<() as benchmark_weights::WeightInfo>::claim_reward_dust())
+            .ref_time()
     );
     assert!(<() as WeightInfo>::claim_reward().proof_size() >= weights::CLAIM_REWARD_PROOF_FLOOR);
     let composed = <weights::SubstrateWeight<Test> as WeightInfo>::claim_reward();
-    assert_eq!(composed.ref_time(), generic.ref_time());
+    assert_eq!(composed, generic
+        .max(<benchmark_weights::SubstrateWeight<Test> as benchmark_weights::WeightInfo>::claim_reward_dust())
+        .max(frame_support::weights::Weight::from_parts(0, weights::CLAIM_REWARD_PROOF_FLOOR)));
     assert!(composed.proof_size() >= weights::CLAIM_REWARD_PROOF_FLOOR);
     assert!(weights::claim_reward_proof_envelope::<Test>() <= weights::CLAIM_REWARD_PROOF_FLOOR);
 }
@@ -2837,4 +2841,27 @@ fn accepted_payee_events_report_only_metadata_transitions() {
             previous = destination;
         }
     });
+}
+
+#[test]
+fn submission_wrapper_covers_every_full_measured_case_without_double_charging_db() {
+    use crate::{benchmark_weights::WeightInfo as Measured, weights::WeightInfo as Public};
+    use frame_support::weights::Weight;
+    fn check<W: Measured, P: Public>() {
+        for (n, e, s) in [(2, 1, 1), (5_000, 50_000, 20)] {
+            let expected = W::submit_solution(n, e, s)
+                .max(W::submit_solution_with_payee(n, e, s))
+                .max(W::submit_solution_replacement(n, e, s))
+                .max(W::submit_solution_clear_payee(n, e, s))
+                .max(Weight::from_parts(
+                    0,
+                    crate::weights::SUBMIT_SOLUTION_PROOF_FLOOR,
+                ));
+            assert_eq!(P::submit_solution(n, e, s), expected);
+            assert_eq!(P::submit_solution_with_payee(n, e, s), expected);
+        }
+    }
+    check::<(), ()>();
+    check::<crate::benchmark_weights::SubstrateWeight<Test>, crate::weights::SubstrateWeight<Test>>(
+    );
 }

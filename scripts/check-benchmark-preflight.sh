@@ -121,8 +121,9 @@ check_quantum_compute_mempool_wrapper() {
     'pubconstCLAIM_REWARD_PROOF_FLOOR:u64=1024*1024;' \
     'fnwith_claim_reward_proof_floor(' \
     'weight.max(Weight::from_parts(0,CLAIM_REWARD_PROOF_FLOOR))' \
-    'with_claim_reward_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::claim_reward())' \
-    'with_claim_reward_proof_floor(<()asBenchmarkWeightInfo>::claim_reward())' \
+    'claim_reward_weight::<benchmark_weights::SubstrateWeight<T>>()' \
+    'claim_reward_weight::<()>()' \
+    'with_claim_reward_proof_floor(W::claim_reward().max(W::claim_reward_dust()))' \
     'pubconstRECLAIM_ORDER_PROOF_FLOOR:u64=1024*1024;' \
     'weight.max(Weight::from_parts(0,RECLAIM_ORDER_PROOF_FLOOR))' \
     'with_reclaim_order_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::reclaim_order())' \
@@ -135,10 +136,11 @@ check_quantum_compute_mempool_wrapper() {
     'with_propose_job_proof_floor(<()asBenchmarkWeightInfo>::propose_job_with_payee_requirement(' \
     'pubconstSUBMIT_SOLUTION_PROOF_FLOOR:u64=1024*1024;' \
     'weight.max(Weight::from_parts(0,SUBMIT_SOLUTION_PROOF_FLOOR))' \
-    'with_submit_solution_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::submit_solution(' \
-    'with_submit_solution_proof_floor(<()asBenchmarkWeightInfo>::submit_solution(' \
-    'with_submit_solution_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::submit_solution_with_payee(' \
-    'with_submit_solution_proof_floor(<()asBenchmarkWeightInfo>::submit_solution_with_payee('; do
+    'with_submit_solution_proof_floor(W::submit_solution(n,e,s).max(W::submit_solution_with_payee(n,e,s)).max(W::submit_solution_replacement(n,e,s)).max(W::submit_solution_clear_payee(n,e,s)))' \
+    'fnsubmit_solution(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<benchmark_weights::SubstrateWeight<T>>(n,e,s)}' \
+    'fnsubmit_solution_with_payee(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<benchmark_weights::SubstrateWeight<T>>(n,e,s)}' \
+    'fnsubmit_solution(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<()>(n,e,s)}' \
+    'fnsubmit_solution_with_payee(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<()>(n,e,s)}'; do
     if [[ "$normalized" != *"$required"* ]]; then
       echo "ERROR: Quantum Compute Mempool public wrapper lost invariant '$required'" >&2
       return 1
@@ -172,6 +174,15 @@ check_wrapper_guard() {
     echo "ERROR: generated mempool weights passed the public wrapper guard" >&2
     return 1
   fi
+
+  local case_name
+  for case_name in claim_reward_dust submit_solution_replacement submit_solution_clear_payee; do
+    sed "s/$case_name/unused_case/g" pallets/quantum-compute-mempool/src/weights.rs > "$plain_generated"
+    if check_quantum_compute_mempool_wrapper "$plain_generated" >/dev/null 2>&1; then
+      echo "ERROR: unconsumed $case_name passed the wrapper guard" >&2
+      return 1
+    fi
+  done
 
   echo "Quantum PoW and Quantum Compute Mempool public wrapper guard checks passed."
 }
@@ -225,15 +236,23 @@ echo "== Discovered $benchmark_count benchmarks across ${#pallets[@]} pallets ==
 
 for pallet in "${pallets[@]}"; do
   output="$OUTPUT_DIR/$pallet.rs"
+  extra_args=()
+  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
+    extra_args=(--extra)
+  fi
   echo "-- $pallet"
   "$BIN" benchmark pallet \
     --pallet "$pallet" \
-    --extrinsic '*' \
+    --extrinsic '*' "${extra_args[@]}" \
     --steps "$STEPS" \
     --repeat "$REPEAT" \
     --min-duration 0 \
     --template .maintain/frame-weight-template.hbs \
     --output "$output"
+
+  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
+    bash scripts/run-benchmarks.sh --verify-regenerated-mempool "$output"
+  fi
 
   pallet_dir="pallets/$(echo "${pallet#pallet_}" | tr '_' '-')"
   tracked_weights="$pallet_dir/src/weights.rs"

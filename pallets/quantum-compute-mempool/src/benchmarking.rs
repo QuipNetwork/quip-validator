@@ -303,6 +303,52 @@ fn verify_claim_reward<T: Config>(order_id: u64, winners: &[T::AccountId]) {
     );
 }
 
+// Seed a real accepted maximal payload and a full ranking outside measurement.
+fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountId, u64, i64) {
+    let proposer: T::AccountId = whitelisted_caller();
+    let solver: T::AccountId = account("solver", 0, 0);
+    register_solver_for::<T>(&solver);
+    let mut params = params_with_dimensions::<T>(n, e, Some(s));
+    // An isolated local field makes all-minus strictly worse than all-plus
+    // at every dimension, without relying on a fabricated stored score.
+    params.h_values[0] = -1_000;
+    let order_id = propose_order_for::<T>(
+        &proposer,
+        params,
+        benchmark_reward::<T>(),
+        types::JobMode::Open,
+        types::RewardResolution::TopNEqual {
+            n: types::MAX_REWARD_WINNERS,
+        },
+        types::ResultDelivery::OnChainOnly,
+    );
+    let payee = types::WinnerPayee::V1 {
+        chain_id: 20033,
+        address: sp_core::H160::repeat_byte(1),
+    };
+    assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
+        RawOrigin::Signed(solver.clone()).into(),
+        order_id,
+        bounded(vec![bounded(vec![-1; n as usize]); s as usize]),
+        payee,
+    )
+    .is_ok());
+    let old_energy = OrderSolutions::<T>::get(order_id, &solver)
+        .unwrap()
+        .best_energy_milli;
+    let ranked: TopSolversOf<T> = bounded(
+        (0..types::MAX_REWARD_WINNERS)
+            .map(|index| types::RankedSolver {
+                solver: account("ranked-solver", index, 0),
+                energy_milli: old_energy + i64::from(index),
+            })
+            .collect(),
+    );
+    OrderTopSolvers::<T>::insert(order_id, ranked);
+
+    (solver, order_id, old_energy)
+}
+
 #[benchmarks]
 mod benchmarks {
     use super::*;
@@ -524,47 +570,12 @@ mod benchmarks {
         e: Linear<1, { T::MaxEdges::get() }>,
         s: Linear<1, { T::MaxSolutions::get() }>,
     ) {
-        let proposer: T::AccountId = whitelisted_caller();
-        let solver: T::AccountId = account("solver", 0, 0);
-        register_solver_for::<T>(&solver);
-        let mut params = params_with_dimensions::<T>(n, e, Some(s));
-        // An isolated local field makes all-minus strictly worse than all-plus
-        // at every dimension, without relying on a fabricated stored score.
-        params.h_values[0] = -1_000;
-        let order_id = propose_order_for::<T>(
-            &proposer,
-            params,
-            benchmark_reward::<T>(),
-            types::JobMode::Open,
-            types::RewardResolution::TopNEqual {
-                n: types::MAX_REWARD_WINNERS,
-            },
-            types::ResultDelivery::OnChainOnly,
-        );
+        let (solver, order_id, old_energy) = setup_solution_replacement::<T>(n, e, s);
+        OrderPayeeRequirements::<T>::insert(order_id, 20033);
         let payee = types::WinnerPayee::V1 {
             chain_id: 20033,
-            address: sp_core::H160::repeat_byte(1),
+            address: sp_core::H160::repeat_byte(2),
         };
-        OrderPayeeRequirements::<T>::insert(order_id, 20033);
-        assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
-            RawOrigin::Signed(solver.clone()).into(),
-            order_id,
-            bounded(vec![bounded(vec![-1; n as usize]); s as usize]),
-            payee,
-        )
-        .is_ok());
-        let old_energy = OrderSolutions::<T>::get(order_id, &solver)
-            .unwrap()
-            .best_energy_milli;
-        let ranked: TopSolversOf<T> = bounded(
-            (0..types::MAX_REWARD_WINNERS)
-                .map(|index| types::RankedSolver {
-                    solver: account("ranked-solver", index, 0),
-                    energy_milli: old_energy + i64::from(index),
-                })
-                .collect(),
-        );
-        OrderTopSolvers::<T>::insert(order_id, ranked);
 
         #[extrinsic_call]
         QuantumComputeMempool::submit_solution_with_payee(
@@ -583,6 +594,41 @@ mod benchmarks {
         assert_eq!(OrderPayees::<T>::get(order_id, &solver), Some(payee));
     }
 
+    // Legacy call clears an optional destination while replacing the full payload.
+    #[benchmark(extra)]
+    fn submit_solution_clear_payee(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let (solver, order_id, old_energy) = setup_solution_replacement::<T>(n, e, s);
+        assert!(OrderPayees::<T>::contains_key(order_id, &solver));
+
+        #[extrinsic_call]
+        QuantumComputeMempool::submit_solution(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            bounded(vec![bounded(vec![1; n as usize]); s as usize]),
+        );
+
+        assert!(
+            OrderSolutions::<T>::get(order_id, &solver)
+                .unwrap()
+                .best_energy_milli
+                < old_energy
+        );
+        assert!(!OrderPayees::<T>::contains_key(order_id, &solver));
+        assert!(frame_system::Pallet::<T>::events()
+            .iter()
+            .any(|record| record.event
+                == Event::<T>::SolutionPayeeSet {
+                    order_id,
+                    solver: solver.clone(),
+                    payee: None
+                }
+                .into()));
+    }
+
     #[benchmark]
     fn claim_reward() {
         let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
@@ -594,8 +640,7 @@ mod benchmarks {
         assert!(T::Currency::free_balance(&proposer) >= T::Currency::minimum_balance());
     }
 
-    // Diagnostic/reference lifecycle case, not a new dispatchable or an
-    // independently consumed weight. Measure both cases before selecting ref_time.
+    // The public claim weight takes the maximum of both measured lifecycle cases.
     #[benchmark(extra)]
     fn claim_reward_dust() {
         let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();

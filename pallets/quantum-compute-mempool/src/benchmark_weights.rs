@@ -52,6 +52,9 @@ use core::marker::PhantomData;
 
 /// Weight functions needed for `pallet_quantum_compute_mempool`.
 pub trait WeightInfo {
+	fn claim_reward_dust() -> Weight;
+	fn submit_solution_replacement(n: u32, e: u32, s: u32) -> Weight;
+	fn submit_solution_clear_payee(n: u32, e: u32, s: u32) -> Weight;
 	fn register_solver() -> Weight;
 	fn deregister_solver() -> Weight;
 	fn register_job_spec() -> Weight;
@@ -68,6 +71,17 @@ pub trait WeightInfo {
 /// Weights for `pallet_quantum_compute_mempool` using the Substrate node and recommended hardware.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+	// PROVISIONAL bootstrap aliases only, NOT measurements or release-safe bounds.
+	// The reference job must replace these after measuring --extra. Its guard
+	// rejects this file until all cases are generated; no local timings are used.
+	fn claim_reward_dust() -> Weight { <Self as WeightInfo>::claim_reward() }
+	fn submit_solution_replacement(n: u32, e: u32, s: u32) -> Weight {
+		<Self as WeightInfo>::submit_solution_with_payee(n, e, s)
+	}
+	fn submit_solution_clear_payee(n: u32, e: u32, s: u32) -> Weight {
+		<Self as WeightInfo>::submit_solution(n, e, s)
+	}
+
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	fn register_solver() -> Weight {
@@ -305,6 +319,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 // For backwards compatibility and tests.
 impl WeightInfo for () {
+	// PROVISIONAL bootstrap aliases only, NOT measurements or release-safe bounds.
+	// The reference job must replace these after measuring --extra. Its guard
+	// rejects this file until all cases are generated; no local timings are used.
+	fn claim_reward_dust() -> Weight { <Self as WeightInfo>::claim_reward() }
+	fn submit_solution_replacement(n: u32, e: u32, s: u32) -> Weight {
+		<Self as WeightInfo>::submit_solution_with_payee(n, e, s)
+	}
+	fn submit_solution_clear_payee(n: u32, e: u32, s: u32) -> Weight {
+		<Self as WeightInfo>::submit_solution(n, e, s)
+	}
+
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
 	fn register_solver() -> Weight {

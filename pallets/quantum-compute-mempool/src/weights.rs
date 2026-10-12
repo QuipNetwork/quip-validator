@@ -203,6 +203,21 @@ fn with_submit_solution_proof_floor(weight: Weight) -> Weight {
     weight.max(Weight::from_parts(0, SUBMIT_SOLUTION_PROOF_FLOOR))
 }
 
+// Each generated value already includes its provider's DB costs. Take the
+// componentwise maximum first, then the maintained simultaneous-proof floor.
+fn claim_reward_weight<W: BenchmarkWeightInfo>() -> Weight {
+    with_claim_reward_proof_floor(W::claim_reward().max(W::claim_reward_dust()))
+}
+
+fn submit_solution_weight<W: BenchmarkWeightInfo>(n: u32, e: u32, s: u32) -> Weight {
+    with_submit_solution_proof_floor(
+        W::submit_solution(n, e, s)
+            .max(W::submit_solution_with_payee(n, e, s))
+            .max(W::submit_solution_replacement(n, e, s))
+            .max(W::submit_solution_clear_payee(n, e, s)),
+    )
+}
+
 pub trait WeightInfo {
     fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight;
     fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight;
@@ -223,7 +238,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         with_propose_job_proof_floor(<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::propose_job_with_payee_requirement(n, e, b, t))
     }
     fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
-        with_submit_solution_proof_floor(<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_solution_with_payee(n, e, s))
+        submit_solution_weight::<benchmark_weights::SubstrateWeight<T>>(n, e, s)
     }
 
     fn register_solver() -> Weight {
@@ -241,16 +256,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         )
     }
     fn submit_solution(n: u32, e: u32, s: u32) -> Weight {
-        with_submit_solution_proof_floor(
-            <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_solution(
-                n, e, s,
-            ),
-        )
+        submit_solution_weight::<benchmark_weights::SubstrateWeight<T>>(n, e, s)
     }
     fn claim_reward() -> Weight {
-        with_claim_reward_proof_floor(
-            <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::claim_reward(),
-        )
+        claim_reward_weight::<benchmark_weights::SubstrateWeight<T>>()
     }
     fn reclaim_order() -> Weight {
         with_reclaim_order_proof_floor(
@@ -271,9 +280,7 @@ impl WeightInfo for () {
         )
     }
     fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight {
-        with_submit_solution_proof_floor(<() as BenchmarkWeightInfo>::submit_solution_with_payee(
-            n, e, s,
-        ))
+        submit_solution_weight::<()>(n, e, s)
     }
 
     fn register_solver() -> Weight {
@@ -289,10 +296,10 @@ impl WeightInfo for () {
         with_propose_job_proof_floor(<() as BenchmarkWeightInfo>::propose_job(n, e, b, t))
     }
     fn submit_solution(n: u32, e: u32, s: u32) -> Weight {
-        with_submit_solution_proof_floor(<() as BenchmarkWeightInfo>::submit_solution(n, e, s))
+        submit_solution_weight::<()>(n, e, s)
     }
     fn claim_reward() -> Weight {
-        with_claim_reward_proof_floor(<() as BenchmarkWeightInfo>::claim_reward())
+        claim_reward_weight::<()>()
     }
     fn reclaim_order() -> Weight {
         with_reclaim_order_proof_floor(<() as BenchmarkWeightInfo>::reclaim_order())

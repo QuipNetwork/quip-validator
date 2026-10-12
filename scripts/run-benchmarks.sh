@@ -92,14 +92,14 @@ verify_regenerated_mempool_weights() {
   fi
   # The repository template emits one trait declaration and two implementations.
   # Catch incomplete/stale regeneration even if an old composition still compiles.
-  for name in propose_job_with_payee_requirement submit_solution_with_payee; do
+  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust; do
     count="$(awk -v name="$name" '$0 ~ "fn[[:space:]]+" name "[[:space:]]*\\(" {n++} END {print n+0}' "$file")"
     if [ "$count" -ne 3 ]; then
       echo "ERROR: regenerated $name must have a trait declaration and both implementations" >&2
       return 1
     fi
   done
-  if grep -Eiq 'provisional|pending regeneration|NOT new measured timings|as[[:space:]]+WeightInfo>::(propose_job|submit_solution)\(' "$file"; then
+  if grep -Eiq 'provisional|pending regeneration|NOT new measured timings|as[[:space:]]+WeightInfo>::' "$file"; then
     echo "ERROR: regenerated mempool weights retain provisional compositions or markers" >&2
     return 1
   fi
@@ -116,22 +116,12 @@ check_regenerated_mempool_guard() {
   valid="$temp_dir/generated.rs"
   invalid="$temp_dir/incomplete.rs"
   # Synthetic syntax fixture only; these are not benchmark measurements.
-  cat > "$valid" <<'EOF'
-pub trait WeightInfo {
-    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight;
-    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight;
-}
-impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight { Weight::from_parts(0, 0) }
-    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight { Weight::from_parts(0, 0) }
-}
-impl WeightInfo for () {
-    fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight { Weight::from_parts(0, 0) }
-    fn submit_solution_with_payee(n: u32, e: u32, s: u32) -> Weight { Weight::from_parts(0, 0) }
-}
-EOF
+  : > "$valid"
+  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust; do
+    printf 'fn %s() -> Weight;\nfn %s() -> Weight {}\nfn %s() -> Weight {}\n' "$name" "$name" "$name" >> "$valid"
+  done
   verify_regenerated_mempool_weights "$valid"
-  for name in propose_job_with_payee_requirement submit_solution_with_payee; do
+  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust; do
     awk -v name="$name" '$0 ~ "fn " name && !removed {removed=1; next} {print}' "$valid" > "$invalid"
     if verify_regenerated_mempool_weights "$invalid" >/dev/null 2>&1; then
       echo "ERROR: incomplete $name passed regeneration guard" >&2
@@ -217,6 +207,11 @@ for pallet in "${pallets[@]}"; do
   # wrapper-only composition such as quantum-pow's nonlinear submit_proof.
   output="$(resolve_weight_output "$dir")"
 
+  extra_args=()
+  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
+    # Wildcard alone excludes lifecycle cases that the maintained wrapper consumes.
+    extra_args=(--extra)
+  fi
   echo "== Benchmarking $pallet -> $output =="
   # --template is required: the CLI's built-in template emits the
   # runtime-style file (pub struct WeightInfo implementing
@@ -225,7 +220,7 @@ for pallet in "${pallets[@]}"; do
   # (pub trait WeightInfo + SubstrateWeight<T> + () impls) this repo uses.
   "$BIN" benchmark pallet \
     --pallet "$pallet" \
-    --extrinsic '*' \
+    --extrinsic '*' "${extra_args[@]}" \
     --steps "$STEPS" \
     --repeat "$REPEAT" \
     --template .maintain/frame-weight-template.hbs \
@@ -233,6 +228,7 @@ for pallet in "${pallets[@]}"; do
 
   if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
     verify_regenerated_mempool_weights "$output"
+    bash scripts/check-benchmark-preflight.sh --check-wrapper-guard
   fi
 done
 
