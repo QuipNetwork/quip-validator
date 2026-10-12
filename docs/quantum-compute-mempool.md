@@ -410,7 +410,9 @@ Reserve-isolation follow-up: the current currency uses unnamed, aggregate reserv
 per proposer, not a separate escrow identifier per order. `RewardReserveMissing`
 protects closure when aggregate reserves cannot supply the order amount; other
 reservations can mask an individual order's missing backing. Per-order reserve
-isolation and its recovery policy are future work, not implemented in this change.
+isolation and its recovery policy are tracked in
+[QUI-1822](https://linear.app/quip-network/issue/QUI-1822/isolate-compute-order-reward-backing-from-aggregate-proposer-reserves)
+and remain future work, not implemented in this change.
 
 ## Implementation tracking
 
@@ -419,5 +421,10 @@ direction, with [QUI-1816](https://linear.app/quip-network/issue/QUI-1816) for
 settlement, [QUI-1818](https://linear.app/quip-network/issue/QUI-1818) for proposer
 capacity and [QUI-1819](https://linear.app/quip-network/issue/QUI-1819) for payee
 direction. These links do not imply payment activation or completed deployment.
-Per-order reserve isolation and royalties remain explicit deferred work even
-while dedicated issue links are unavailable.
+Deferred work is tracked in
+[QUI-1820](https://linear.app/quip-network/issue/QUI-1820/decide-evm-compute-payment-scope-and-implement-the-consuming)
+for EVM scope/rewards and consuming integration,
+[QUI-1821](https://linear.app/quip-network/issue/QUI-1821/specify-solver-and-program-royalties-for-compute-jobs)
+for royalties, and QUI-1822 for per-order reserve isolation and recovery.
+The [interaction protocol](quip-evm-compute-interaction.md#deferred-integration-and-verification-work)
+preserves their admission, evidence, cutover and validation requirements.

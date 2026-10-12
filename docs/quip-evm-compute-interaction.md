@@ -295,6 +295,14 @@ post-deployment SDK and consumer cross-language tests remain separate gates.
 
 ## Deferred integration and verification work
 
+[QUI-1820](https://linear.app/quip-network/issue/QUI-1820/decide-evm-compute-payment-scope-and-implement-the-consuming)
+tracks the scope/reward decisions and consuming integration below.
+[QUI-1821](https://linear.app/quip-network/issue/QUI-1821/specify-solver-and-program-royalties-for-compute-jobs)
+tracks royalties, and
+[QUI-1822](https://linear.app/quip-network/issue/QUI-1822/isolate-compute-order-reward-backing-from-aggregate-proposer-reserves)
+tracks per-order backing and recovery. These are follow-ups under QUI-1512;
+creating tracking does not activate payment or complete the requirements.
+
 The unresolved local/external EVM scope and native/EVM reward relationship are
 product decisions, not implicit defaults to infer while implementing native APIs.
 Payment activation, admission/deployment registry policy, consumer contracts,
@@ -319,7 +327,6 @@ after reset, audit actual post-reset state and specify only the repair/exclusion
 it requires before attestation; never import pre-reset evidence into the new domain.
 
 The native pallet still uses unnamed aggregate reserves. Per-order reserve
-isolation and recovery policy remain deferred; see the
-[mempool contract](quantum-compute-mempool.md). The remaining tracker inventory is
-preserved in [the QUI-1512 handoff](qui-1512-follow-up-plan.md) until dedicated
-issue links are recorded.
+isolation and recovery policy remain deferred under QUI-1822; see the
+[mempool contract](quantum-compute-mempool.md). The
+[QUI-1512 handoff](qui-1512-follow-up-plan.md) indexes implemented and deferred work.

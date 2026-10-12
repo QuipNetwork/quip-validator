@@ -40,9 +40,9 @@ are rewritten.
 
 Runtime spec **119**, transaction **7**, and mempool storage **4** are unchanged.
 Package versioning does not imply deployment. Runtime 119 targets fresh reset
-genesis. Before merge/release, regenerate the changed mempool weights on the
-reference runner, including the extra lifecycle cases, then check the generated
-output and Normal dispatch limits as described in
+genesis. Reference job 17104770617 produced commit `46ab082` with the extra
+mempool lifecycle cases and runtime overhead measurements. Review the generated
+output, Normal dispatch limits and final-head CI before merge/release, as described in
 [pallet benchmarking](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate).
 
 
@@ -159,9 +159,9 @@ The release includes these `QuantumComputeMempool` changes:
   and payee maps. No pre-reset payee backfill or state-repair migration is part
   of this release.
 
-Before merge/release, complete the
-[reference weight gate](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate),
-including extra lifecycle cases and removal of provisional weight aliases.
+The [reference weight run](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate)
+is complete at `46ab082`, including extra lifecycle cases and removal of
+provisional aliases. Final-head review and CI remain required before merge/release.
 Deployment must follow the [reset and cutover protocol](quip-evm-compute-interaction.md#runtime-119-reset-and-deployment-cutover):
 local Quip EVM state resets, while external contracts and Trustee obligations
 need explicit reconciliation. Run the fresh-network SDK regression after launch.

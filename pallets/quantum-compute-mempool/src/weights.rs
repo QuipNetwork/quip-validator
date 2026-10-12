@@ -1,7 +1,7 @@
 //! Public weight composition. Generated measurements live in `benchmark_weights`.
 //!
-//! Settlement reference timing is still a release gate; see the settlement
-//! section in `docs/pallet-benchmarking-plan.md`. The proof envelope below is
+//! Reference measurements include ordinary/dust settlement and first/replacement
+//! submissions; see `docs/pallet-benchmarking-plan.md`. The proof envelope below is
 //! maintained independently because the pinned SDK takes a maximum across
 //! storage prefixes instead of adding their simultaneous proof contributions.
 

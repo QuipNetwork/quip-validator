@@ -28,9 +28,10 @@ work.
 `pallet_faucet_ops` and `pallet_emission_controller` now have benchmark modules,
 `runtime-benchmarks` features, and runtime registrations. Phase 1 adds authority,
 fuse, budget, and scheduled issuance storage access, so the previous reused
-Balances weight is no longer sufficient. Run the reference-machine job for their
-`mint`, `disable`, `accrue`, and `reward` paths before release; initial estimates
-are provisional. See `validator-onboarding-phase-1.md`.
+Balances weight is no longer sufficient. Reference commit `46ab082` includes
+generated weights for their `mint`, `disable`, `accrue`, and `reward` paths,
+replacing the initial provisional estimates. See `validator-onboarding-phase-1.md`
+for the original rollout requirements and historical validation.
 
 `pallet_xqvm` is intentionally out of scope because it is not actively used.
 Its execution and per-step weights should be reviewed before the pallet becomes
@@ -221,8 +222,8 @@ The work is complete when:
 ## Validator onboarding Phase 2
 
 The runtime now registers admission, Foundation collective/membership and classic
-staking benchmarks. `pallets/validator-admission/src/weights.rs` is provisional;
-run the reference-machine job before release. The admission snapshot adapter in
+staking benchmarks. `pallets/validator-admission/src/weights.rs` was regenerated
+on the reference machine in `46ab082`. The admission snapshot adapter in
 `runtime/src/configs/validator_onboarding.rs` additionally reserves a conservative
 bounded read/CPU/proof budget for at most 32 accounts; calibrate it against the
 maximum approved set with keys and staking ledgers. Upstream governance/staking
@@ -233,15 +234,47 @@ remains Some(0).
 
 ## Permissionless settlement: reference coverage and release gate
 
-Reference output in `4b70e3fec36034ffb429fb64efdb83c8ae774c63` measures the
-ordinary dispatch benchmarks, including calls 8 and 9. Its ordinary claim base
-is **2_367_341_000 ps**, plus 69 reads and 69 writes; the generated claim proof
-estimate is 644,411 bytes. Refund measures 2 reads / 3 writes under the caller
-whitelist. These are measured baselines, not the earlier modeled corrections.
-The old new-call completeness guard passes on that commit. However, its wildcard
-run excluded `#[benchmark(extra)]` cases: it did not measure dust settlement or
-replacement submissions. It also predates conditional payee writes/events.
-**Fresh reference regeneration is still a merge and release gate.**
+Reference job [17104770617](https://gitlab.com/quip.network/quip-validator/-/jobs/17104770617)
+completed successfully on input `0e0d05e497da7ec1355fbc546b0a03aa76f4a342`,
+producing bot commit `46ab082adb5e99f572005de1ce6093b954225a05`. Its generated
+header records 2026-10-12, compiled Wasm, CLI 54.0.0, 50 steps / 20 repeats,
+`--extra`, and AMD Ryzen 7 3700X reference hardware. All 14 mempool cases have
+trait, generic and unit implementations; no provisional aliases remain. The
+committed-output completeness and public-wrapper consumption guards pass.
+Reference regeneration is complete; final review and CI of the resulting head
+remain separate acceptance checks.
+
+The following values are from that generated output. Base time excludes DB and
+component terms; complete maximum time includes production RocksDB costs
+(25,000,000 ps/read and 100,000,000 ps/write) at 5,000 nodes, 50,000 edges,
+20 solutions, 16 bid miners and eight miner types, where applicable.
+
+| Measured case | Base ref_time (ps) | Reads / writes | Complete maximum ref_time (ps) | Generated proof (bytes) |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary claim | 2,432,194,000 | 69 / 69 | 11,057,194,000 | 644,411 |
+| Dust claim | 2,441,902,000 | 69 / 69 | 11,066,902,000 | 644,411 |
+| First legacy submission | 4,222,448,000 | 7 / 6 | 88,544,786,920 | 644,411 |
+| First payee submission | 4,212,776,000 | 7 / 7 | 88,718,060,440 | 644,411 |
+| Replacement with changed payee | 4,290,355,000 | 7 / 5 | 88,298,195,900 | 644,411 |
+| Legacy replacement clearing payee | 4,277,734,000 | 7 / 5 | 88,559,599,880 | 644,411 |
+| Refund | 710,218,000 | 2 / 3 | 1,060,218,000 | 644,411 |
+| Proposal | 517,487,000 | 3 / 6 | 6,488,947,000 | 3,770 |
+| Required-payee proposal | 519,572,000 | 3 / 7 | 6,609,437,000 | 3,770 |
+
+Every submission case now records an `OrderPayees` read. First legacy submission
+has no payee write; first payee, changed-payee and legacy-clear cases each have
+one. Claim/refund retain metadata and do not access the payee maps.
+The public claim weight is 11,066,902,000 ps and both public submission weights
+at production maxima are 88,718,060,440 ps, each with the maintained 1 MiB proof
+floor. Proposal and refund also use that floor. The regenerated extrinsic base
+is 320,028,000 ps, so the Normal max_extrinsic ref_time is
+`1,500,000,000,000 - 200,000,000,000 - 320,028,000 = 1,299,679,972,000` ps;
+Normal max_total is 1,500,000,000,000 ps. Runtime integrity checks validate both
+time and proof dimensions against the configured limits.
+
+Historical baseline `4b70e3f` measured ordinary claim at 2,367,341,000 ps before
+DB costs, but omitted extra cases and predates conditional payee writes/events.
+It is superseded by `46ab082`; it does not pass the expanded all-extra guard.
 
 The public `weights.rs` consumes complete generated `Weight` values, including
 each provider's DB costs, using componentwise maxima:
@@ -255,10 +288,9 @@ The maintained proof floor is applied after those maxima, preserving a larger
 measured proof. There is no extra DB surcharge in the wrapper. The same
 composition applies to the runtime generic and unit/RocksDB providers.
 Regeneration writes `benchmark_weights.rs`, preserving the maintained wrapper.
-Until the reference run, three explicitly marked provisional aliases let the
-runner compile against the old generated file. They are **not measured bounds**;
-the post-regeneration guard rejects them. Local diagnostic timings are never
-copied into tracked weights, and no invented margin substitutes for measurement.
+The reference bot replaced the earlier three bootstrap aliases with measured
+implementations. Local diagnostic timings are never copied into tracked weights,
+and no invented margin substitutes for measurement.
 
 ### Proof envelope and integrity checks
 
@@ -366,15 +398,13 @@ bash scripts/check-benchmark-preflight.sh --check-wrapper-guard
 bash scripts/run-benchmarks.sh --verify-regenerated-mempool pallets/quantum-compute-mempool/src/benchmark_weights.rs
 ```
 
-The final command intentionally fails until provisional bootstrap aliases are
-replaced by actual reference output. The automatic MR `benchmark-preflight` CI
-job runs this command against the **committed** file before its expensive build,
-so temporary successful preflight output cannot hide committed aliases. An
-initial red job is expected until the reference bot's complete output lands.
-The manual `benchmark-weights` job has `needs: []` and remains independently
-runnable; the advisory `weights-staleness-check` remains unchanged. The older
-4b70 file passes only the old appended-call guard, not the expanded all-extra
-guard. Both missing cases and bootstrap aliases must be eliminated.
+All commands above pass on reference bot output `46ab082`. The automatic MR
+`benchmark-preflight` CI job verifies the **committed** file before its expensive
+build, so successful temporary output cannot hide incomplete committed weights.
+The earlier pre-reference failure was intentional and is resolved by the bot
+output. Future missing cases or provisional aliases fail this check. The manual
+`benchmark-weights` job has `needs: []` and remains independently runnable; the
+advisory `weights-staleness-check` remains unchanged.
 
 Preflight generates into temporary files, checks the same coverage gate and
 never modifies tracked weights. Native mock
