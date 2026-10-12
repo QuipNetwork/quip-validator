@@ -22,6 +22,8 @@ Source decisions: [QUI-1512 findings](https://linear.app/quip-network/issue/QUI-
 [settlement decision](https://linear.app/quip-network/issue/QUI-1512/create-spec-for-evm-compute-and-interaction-with-qvm#comment-e2464260)
 and [response](https://linear.app/quip-network/issue/QUI-1512/create-spec-for-evm-compute-and-interaction-with-qvm#comment-40530a42).
 QUI-1512 being Done describes evaluation, not deployment of the full integration.
+The implementation direction is tracked by
+[QUI-1815](https://linear.app/quip-network/issue/QUI-1815).
 
 ## Remaining tracker inventory
 
@@ -30,11 +32,12 @@ Consolidating the implementation plan does not cancel deferred work.
 
 | Work | Tracking / remaining requirement |
 | --- | --- |
+| Permissionless one-order settlement | [QUI-1816](https://linear.app/quip-network/issue/QUI-1816); implemented, reference weight and deployment gates remain |
 | A: ranking/payload consistency and best vector | [QUI-1408](https://linear.app/quip-network/issue/QUI-1408), [QUI-1675](https://linear.app/quip-network/issue/QUI-1675); implemented, deployment still required |
 | SDK fresh-network verification | [QUI-1676](https://linear.app/quip-network/issue/QUI-1676); run after deployment |
-| B: outstanding proposer capacity | Implemented; dedicated issue link pending |
-| C: observation/correlation protocol (points 4/6/8) | Specification delivered; dedicated issue and consuming implementation links pending |
-| D: signed winner destination (point 7) | Independent metadata implemented; dedicated issue link pending |
+| B: outstanding proposer capacity | [QUI-1818](https://linear.app/quip-network/issue/QUI-1818); implemented |
+| C: observation/correlation protocol (points 4/6/8) | Specification delivered; [QUI-1817](https://linear.app/quip-network/issue/QUI-1817) tracks finality; consuming correlation/application implementation remains deferred |
+| D: signed winner destination (point 7) | [QUI-1819](https://linear.app/quip-network/issue/QUI-1819) tracks payee direction; independent metadata implemented, payment activation remains deferred |
 | Local Quip EVM / external EVM / both | Deferred decision; dedicated issue link pending; do not assume external-only |
 | Native-only / EVM-only / both reward model | Deferred funding, execution and closure decision; no suppression, offsets or exemptions inferred |
 | EVM activation and full Trustee/consumer application | Deferred admission/deployment policy, network/contracts, source finality, escrow deadlines/refunds, signer trust/rotation, replay protection; issue links pending |

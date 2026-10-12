@@ -411,3 +411,13 @@ per proposer, not a separate escrow identifier per order. `RewardReserveMissing`
 protects closure when aggregate reserves cannot supply the order amount; other
 reservations can mask an individual order's missing backing. Per-order reserve
 isolation and its recovery policy are future work, not implemented in this change.
+
+## Implementation tracking
+
+[QUI-1815](https://linear.app/quip-network/issue/QUI-1815) tracks the overall
+direction, with [QUI-1816](https://linear.app/quip-network/issue/QUI-1816) for
+settlement, [QUI-1818](https://linear.app/quip-network/issue/QUI-1818) for proposer
+capacity and [QUI-1819](https://linear.app/quip-network/issue/QUI-1819) for payee
+direction. These links do not imply payment activation or completed deployment.
+Per-order reserve isolation and royalties remain explicit deferred work even
+while dedicated issue links are unavailable.

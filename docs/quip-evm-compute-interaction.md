@@ -3,6 +3,11 @@
 This is the chain-agnostic specification for QUI-1512 C, with the independent
 payee API for D. It defines observation, correlation and evidence requirements;
 it is not a deployed Trustee, bridge, EVM contract or payment system.
+The overall direction is tracked in
+[QUI-1815](https://linear.app/quip-network/issue/QUI-1815), finality in
+[QUI-1817](https://linear.app/quip-network/issue/QUI-1817), and payee direction in
+[QUI-1819](https://linear.app/quip-network/issue/QUI-1819). Consuming application
+implementation and the deferred decisions below remain separate work.
 
 ## Scope and admission gate
 
