@@ -21,7 +21,7 @@ Durable guidance is maintained in:
 Source decisions: [QUI-1512 findings](https://linear.app/quip-network/issue/QUI-1512/create-spec-for-evm-compute-and-interaction-with-qvm#comment-36bacce1),
 [settlement decision](https://linear.app/quip-network/issue/QUI-1512/create-spec-for-evm-compute-and-interaction-with-qvm#comment-e2464260)
 and [response](https://linear.app/quip-network/issue/QUI-1512/create-spec-for-evm-compute-and-interaction-with-qvm#comment-40530a42).
-QUI-1512 being Done describes evaluation, not deployment of the full integration.
+Completing the specification does not imply deployment of the full integration.
 The implementation direction is tracked by
 [QUI-1815](https://linear.app/quip-network/issue/QUI-1815).
 
@@ -36,7 +36,7 @@ Consolidating the implementation plan does not cancel deferred work.
 | A: ranking/payload consistency and best vector | [QUI-1408](https://linear.app/quip-network/issue/QUI-1408), [QUI-1675](https://linear.app/quip-network/issue/QUI-1675); implemented, deployment still required |
 | SDK fresh-network verification | [QUI-1676](https://linear.app/quip-network/issue/QUI-1676); run after deployment |
 | B: outstanding proposer capacity | [QUI-1818](https://linear.app/quip-network/issue/QUI-1818); implemented |
-| C: observation/correlation protocol (points 4/6/8) | Specification delivered; [QUI-1817](https://linear.app/quip-network/issue/QUI-1817) tracks finality; consuming correlation/application implementation remains deferred |
+| C: observation/correlation protocol (points 4/6/8) | Specification delivered under [QUI-1512](https://linear.app/quip-network/issue/QUI-1512); [QUI-1817](https://linear.app/quip-network/issue/QUI-1817) tracks finality; consuming correlation/application implementation remains deferred |
 | D: signed winner destination (point 7) | [QUI-1819](https://linear.app/quip-network/issue/QUI-1819) tracks payee direction; independent metadata implemented, payment activation remains deferred |
 | Local Quip EVM / external EVM / both | Deferred decision; dedicated issue link pending; do not assume external-only |
 | Native-only / EVM-only / both reward model | Deferred funding, execution and closure decision; no suppression, offsets or exemptions inferred |
