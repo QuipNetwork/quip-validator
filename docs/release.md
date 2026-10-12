@@ -1,5 +1,50 @@
 # Release Checklist
 
+## 0.4.0 package inventory (MR !100)
+
+The 0.3.2 release line moves to **0.4.0** in all 13 inheriting workspace
+packages and the excluded Python binding (14 packages total):
+
+| Package | Version source |
+| --- | --- |
+| `quip-network-node` | workspace |
+| `quip-protocol-runtime` | workspace |
+| `quantum-validation` | workspace |
+| `quip-transaction-crypto` | workspace |
+| `pallet-emission-controller` | workspace |
+| `pallet-evm-chain-id` | workspace |
+| `pallet-faucet-ops` | workspace |
+| `pallet-miner-registry` | workspace |
+| `pallet-quantum-compute-mempool` | workspace |
+| `pallet-quantum-pow` | workspace |
+| `pallet-template` | workspace |
+| `pallet-validator-admission` | workspace |
+| `pallet-xqvm` | workspace |
+| `quip-transaction-crypto-py` / PyPI `quip-signer` | excluded crate's own Cargo manifest |
+
+Both root and Python `Cargo.lock` files track these versions. Python's
+`pyproject.toml` uses `dynamic = ["version"]`; maturin reads the excluded
+crate's version, so no second version field is added. Its release documentation
+allows an independent wheel version; this release explicitly aligns it to 0.4.0.
+
+The independently versioned `quip-transaction-crypto-core` and
+`quip-transaction-crypto-wasm` crates retain **0.1.0**. They explicitly opt out
+of workspace version inheritance, and their path dependencies have no 0.3.2
+constraint. The generated `js/quip-transaction-crypto-wasm/package.json` stays at
+0.1.0 to match its Rust source through wasm-pack. The separate TypeScript
+`@quip-network/quip-signer` package and its package-lock root entries also retain
+0.1.0; the browser CI builds/tests it but does not couple its npm release version
+to the node tag. No third-party package versions or historical release notes
+are rewritten.
+
+Runtime spec **119**, transaction **7**, and mempool storage **4** are unchanged.
+Package versioning does not imply deployment. Runtime 119 targets fresh reset
+genesis. Before merge/release, regenerate the changed mempool weights on the
+reference runner, including the extra lifecycle cases, then check the generated
+output and Normal dispatch limits as described in
+[pallet benchmarking](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate).
+
+
 ## Pre-tag verification
 
 - [ ] All target-version commits merged to `main` via MR
