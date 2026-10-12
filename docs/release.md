@@ -169,10 +169,11 @@ need explicit reconciliation. Run the fresh-network SDK regression after launch.
 ### Retained historical migration paths
 
 The migration code retains support for older storage versions; this is not the
-runtime-119 reset deployment procedure. Below storage version 2, it clears the
-pallet prefix and reseeds the default spec. The version-2-to-3 step indexes
-existing open orders (none remain after that older wipe). Past-expiry orders can then be finalised from the upgrade
-block onward, eight per block. That indexing reads every open order in one
+runtime-119 reset deployment procedure. Starting below storage version 2 clears
+the pallet prefix and reseeds the default spec, leaving no orders to index.
+Starting at version 2 does **not** wipe state: it indexes every existing open
+order. Past-expiry orders can then be finalised from the upgrade block onward,
+eight per block. That indexing reads every open order in one
 upgrade block, so any future in-place use requires a state-size and weight audit.
 The version-3-to-4 path advances the version marker without rescanning expiry
 indexes or inferring payees. Tests of these compatibility paths do not substitute
