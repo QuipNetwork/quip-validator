@@ -22,7 +22,8 @@ packages and the excluded Python binding (14 packages total):
 | `pallet-xqvm` | workspace |
 | `quip-transaction-crypto-py` / PyPI `quip-signer` | excluded crate's own Cargo manifest |
 
-Both root and Python `Cargo.lock` files track these versions. Python's
+Both root and Python `Cargo.lock` files track these versions. The excluded
+Python lock had a stale 0.2.2 entry; Cargo refreshed it to match 0.4.0. Python's
 `pyproject.toml` uses `dynamic = ["version"]`; maturin reads the excluded
 crate's version, so no second version field is added. Its release documentation
 allows an independent wheel version; this release explicitly aligns it to 0.4.0.

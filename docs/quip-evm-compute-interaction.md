@@ -49,7 +49,10 @@ payee-edit call exists. Clients should display chain ID and address before signi
 Native orders without a requirement accept the original submission API. The
 new API may attach optional metadata; a later accepted legacy submission on such
 an order clears its optional payee rather than attributing old metadata to a new
-payload. A rejected submission leaves all prior evidence unchanged. Accepted
+payload. `SolutionPayeeSet` is emitted only for an accepted metadata change:
+addition, changed destination or clearing. None-to-None and identical-payee
+replacements are silent for this event. A rejected submission leaves all prior
+evidence and accepted-submission events unchanged. Accepted
 payees remain queryable after native closure. A future retention policy must
 specify archival/late-observer recovery before pruning evidence.
 
@@ -284,3 +287,34 @@ requires an explicit cutover decision proving no duplicate outcome.
 The above integration scenarios are requirements, not claims of locally executed
 Trustee/EVM tests. Native pallet/runtime tests cover the on-chain invariants;
 post-deployment SDK and consumer cross-language tests remain separate gates.
+
+## Deferred integration and verification work
+
+The unresolved local/external EVM scope and native/EVM reward relationship are
+product decisions, not implicit defaults to infer while implementing native APIs.
+Payment activation, admission/deployment registry policy, consumer contracts,
+funding/closure semantics, source finality, escrow deadlines/refunds, Trustee trust
+and signer rotation, domain administration and reset/archive cutover must be
+specified and validated before EVM-facing admission. The full Trustee/bridge
+application and cross-language codec/hash fixtures belong to the consuming
+integration. Winner destination metadata does not specify solver/program royalty
+recipients, rates or payment; royalties remain separate future work.
+
+The Quip-chain precompile (QUI-999), XQVM execution (QUI-1475), ZK proofs
+(QUI-1134) and hardware attestation are separate workstreams. Current NoOpVM
+validation and self-declared miner types cannot establish those claims.
+
+After deployment, run [QUI-1676](https://linear.app/quip-network/issue/QUI-1676)
+against fresh runtime-119 orders and confirm `leader_energy_matches_chain=True`.
+[QUI-1408](https://linear.app/quip-network/issue/QUI-1408) and
+[QUI-1675](https://linear.app/quip-network/issue/QUI-1675) track the chain invariant;
+[QUI-1606](https://linear.app/quip-network/issue/QUI-1606) covers SDK payout-rule
+classes and does not replace this destination protocol. If a future change lands
+after reset, audit actual post-reset state and specify only the repair/exclusion
+it requires before attestation; never import pre-reset evidence into the new domain.
+
+The native pallet still uses unnamed aggregate reserves. Per-order reserve
+isolation and recovery policy remain deferred; see the
+[mempool contract](quantum-compute-mempool.md). The remaining tracker inventory is
+preserved in [the QUI-1512 handoff](qui-1512-follow-up-plan.md) until dedicated
+issue links are recorded.

@@ -315,6 +315,21 @@ For finalized-only processing, subscribe to finalized or imported block
 headers in the adapter process, then call `get_events(block_hash=...)` for each
 block hash before acting on the events.
 
+## Permissionless settlement
+
+`claim_reward(order_id)` lets any signed caller pay the transaction fee to settle
+**all selected winners for one expired order**, using the configured SingleBest,
+TopNEqual or TopNWeighted allocation. It is not a caller-specific winner claim
+or a sweep across orders; there is no caller bounty. The bounded expiry hook must
+have finalised the order first. Result discovery/allocation and native payment
+are separate: use finalised `OrderExpired` evidence for the former, not payment
+events or wall-clock expiry alone.
+
+A failed payout rolls back all winner transfers, counters, closure and proposer
+slot removal; a successfully included failed extrinsic still pays its fee and
+consumes its nonce. An unsolved expired order can be reclaimed by its proposer.
+Neither path changes native reward amounts or executes EVM payments.
+
 ## Outstanding proposer capacity (runtime 119 reset)
 
 `ProposerOrders` enumerates non-Closed orders, including expired but unpaid orders.
@@ -363,7 +378,11 @@ accepted payload, ranking, counters and events. Strict improvement, VM validatio
 diversity and eligibility rules apply identically to both APIs. Optional payees
 on ordinary native orders are cleared by a later accepted legacy submission.
 Rejected submissions do not update or clear payees. `PayeeRequirementSet` and
-`SolutionPayeeSet` are appended events; the latter also reports optional clearing.
+`SolutionPayeeSet` are appended events. `SolutionPayeeSet` reports only accepted
+metadata transitions: adding, changing or clearing a destination. None-to-None
+and identical-payee replacements emit no payee event and skip the metadata write.
+They can still emit normal solution/ranking events. Rejected calls emit neither
+accepted-solution nor payee events.
 Existing call, error and stored order/solution encodings remain stable.
 
 Clients MUST show the chain ID and full address before signing and confirm the
