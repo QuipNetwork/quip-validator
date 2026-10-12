@@ -1370,15 +1370,17 @@ pub mod pallet {
             }
 
             Self::update_ranking(order_id, &order.resolution, &solver, best_energy)?;
-            match payee {
-                Some(destination) => OrderPayees::<T>::insert(order_id, &solver, destination),
-                None => OrderPayees::<T>::remove(order_id, &solver),
+            if OrderPayees::<T>::get(order_id, &solver) != payee {
+                match payee {
+                    Some(destination) => OrderPayees::<T>::insert(order_id, &solver, destination),
+                    None => OrderPayees::<T>::remove(order_id, &solver),
+                }
+                Self::deposit_event(Event::SolutionPayeeSet {
+                    order_id,
+                    solver: solver.clone(),
+                    payee,
+                });
             }
-            Self::deposit_event(Event::SolutionPayeeSet {
-                order_id,
-                solver: solver.clone(),
-                payee,
-            });
             solver_info.solutions_submitted = solver_info.solutions_submitted.saturating_add(1);
             Solvers::<T>::insert(&solver, solver_info);
             JobOrders::<T>::insert(order_id, order);

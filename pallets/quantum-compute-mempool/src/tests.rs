@@ -2738,3 +2738,103 @@ fn closure_preserves_other_slots_and_deletes_only_the_last_index_key() {
         });
     }
 }
+
+#[test]
+fn accepted_payee_events_report_only_metadata_transitions() {
+    new_test_ext().execute_with(|| {
+        let spec = register_spec();
+        let params = crate::types::IsingParams {
+            nodes: bounded(vec![0, 1, 2]),
+            edges: bounded(vec![(0, 1)]),
+            h_values: bounded(vec![1_000, 2_000, 4_000]),
+            j_values: bounded(vec![0]),
+            max_energy_milli: None,
+            min_diversity_milli: None,
+            min_solutions: None,
+        };
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec,
+            params,
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly
+        ));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let mut previous = None;
+        for (step, destination) in [
+            None,
+            None,
+            Some(payee(20033, 2)),
+            Some(payee(20033, 2)),
+            Some(payee(20033, 3)),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Binary-weighted local fields give a strictly decreasing energy each step.
+            let solutions = bounded(vec![bounded(
+                (0..3)
+                    .map(|bit| if step & (1 << bit) == 0 { 1 } else { -1 })
+                    .collect(),
+            )]);
+            let start = System::events().len();
+            if let Some(payee) = destination {
+                assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    solutions,
+                    payee
+                ));
+            } else {
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    solutions
+                ));
+            }
+            let events = System::events();
+            let emitted: Vec<_> = events[start..]
+                .iter()
+                .filter_map(|record| match record.event {
+                    RuntimeEvent::QuantumComputeMempool(
+                        QuantumComputeMempoolEvent::SolutionPayeeSet {
+                            order_id,
+                            solver,
+                            payee,
+                        },
+                    ) => Some((order_id, solver, payee)),
+                    _ => None,
+                })
+                .collect();
+            if previous == destination {
+                assert!(emitted.is_empty());
+            } else {
+                assert_eq!(emitted, vec![(0, 2, destination)]);
+            }
+            assert_eq!(crate::OrderPayees::<Test>::get(0, 2), destination);
+            assert_eq!(
+                crate::OrderPayees::<Test>::contains_key(0, 2),
+                destination.is_some()
+            );
+            let accepted = OrderSolutions::<Test>::get(0, 2).unwrap();
+            assert_noop!(
+                QuantumComputeMempool::submit_solution_with_payee(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    accepted.solutions,
+                    payee(20033, 9)
+                ),
+                crate::Error::<Test>::SolutionNotImproved
+            );
+            previous = destination;
+        }
+    });
+}
