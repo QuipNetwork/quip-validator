@@ -1,0 +1,161 @@
+diff --git a/crates/server/src/handlers/blocks/processing/extrinsics.rs b/crates/server/src/handlers/blocks/processing/extrinsics.rs
+index 05dc791..cdcf547 100644
+--- a/crates/server/src/handlers/blocks/processing/extrinsics.rs
++++ b/crates/server/src/handlers/blocks/processing/extrinsics.rs
+@@ -226,7 +226,7 @@ async fn extract_extrinsics_impl(
+         // Extract signature and signer (if signed)
+         let (signature_info, era_from_bytes) = if extrinsic.is_signed() {
+             let sig_bytes = extrinsic
+-                .signature_bytes()
++                .signature_response_bytes()
+                 .ok_or(GetBlockError::MissingSignatureBytes)?;
+             let addr_bytes = extrinsic
+                 .address_bytes()
+@@ -252,16 +252,9 @@ async fn extract_extrinsics_impl(
+             let signer_ss58 = utils::decode_address_to_ss58(&signer_hex, ss58_prefix)
+                 .unwrap_or_else(|| signer_hex.clone());
+
+-            // Strip the signature type prefix byte (0x00=Ed25519, 0x01=Sr25519, 0x02=Ecdsa)
+-            let signature_without_type_prefix = if sig_bytes.len() > 1 {
+-                &sig_bytes[1..]
+-            } else {
+-                sig_bytes
+-            };
+-
+             (
+                 Some(SignatureInfo {
+-                    signature: format!("0x{}", hex::encode(signature_without_type_prefix)),
++                    signature: format!("0x{}", hex::encode(sig_bytes)),
+                     signer: SignerId { id: signer_ss58 },
+                 }),
+                 era_info,
+diff --git a/crates/server/src/utils/extrinsic_decode.rs b/crates/server/src/utils/extrinsic_decode.rs
+index ef820e6..adcd51b 100644
+--- a/crates/server/src/utils/extrinsic_decode.rs
++++ b/crates/server/src/utils/extrinsic_decode.rs
+@@ -20,7 +20,7 @@
+ use frame_decode::extrinsics::{
+     ExtrinsicDecodeError, ExtrinsicExtensions, ExtrinsicOwned, decode_extrinsic,
+ };
+-use scale_info::PortableRegistry;
++use scale_info::{PortableRegistry, TypeDef};
+ use subxt::Metadata;
+ use subxt_metadata::ArcMetadata;
+
+@@ -144,6 +144,19 @@ impl DecodedExtrinsic {
+             .map(|s| &self.bytes[s.signature_range()])
+     }
+
++    /// Signature payload for the REST response. Enum signatures omit their SCALE
++    /// discriminant for compatibility with MultiSignature responses; composite
++    /// signatures have no discriminant and must retain every byte.
++    pub fn signature_response_bytes(&self) -> Option<&[u8]> {
++        self.info.signature_payload().map(|signature| {
++            signature_response_bytes(
++                &self.bytes[signature.signature_range()],
++                *signature.signature_type(),
++                self.metadata.types(),
++            )
++        })
++    }
++
+     /// The scale encoded `extra` bytes of every transaction extension, in order.
+     ///
+     /// For V5 `General` extrinsics this excludes the extension version byte.
+@@ -174,6 +187,40 @@ impl DecodedExtrinsic {
+     }
+ }
+
++/// Follow transparent wrappers only. Bound traversal so malformed recursive
++/// registries cannot loop; unknown shapes conservatively retain the full bytes.
++fn signature_response_bytes<'a>(
++    bytes: &'a [u8],
++    mut ty: u32,
++    types: &PortableRegistry,
++) -> &'a [u8] {
++    for _ in 0..types.types.len() {
++        let Some(resolved) = types.resolve(ty) else {
++            break;
++        };
++        match &resolved.type_def {
++            TypeDef::Variant(variants) => {
++                return if bytes.first().is_some_and(|index| {
++                    variants
++                        .variants
++                        .iter()
++                        .any(|variant| variant.index == *index)
++                }) {
++                    &bytes[1..]
++                } else {
++                    bytes
++                };
++            }
++            TypeDef::Composite(composite) if composite.fields.len() == 1 => {
++                ty = composite.fields[0].ty.id;
++            }
++            TypeDef::Tuple(tuple) if tuple.fields.len() == 1 => ty = tuple.fields[0].id,
++            _ => break,
++        }
++    }
++    bytes
++}
++
+ /// The transaction extensions of a [`DecodedExtrinsic`].
+ pub struct TransactionExtensions<'a> {
+     bytes: &'a [u8],
+@@ -459,4 +506,55 @@ mod tests {
+             .collect();
+         assert_eq!(fields, vec!["dest", "value"]);
+     }
++    #[test]
++    fn response_signature_preserves_composites_and_standard_enum_payloads() {
++        use parity_scale_codec::Encode;
++        use scale_info::{Registry, TypeInfo, meta_type};
++
++        #[derive(Encode, TypeInfo)]
++        struct CompositeSignature {
++            public: [u8; 3],
++            signature: [u8; 5],
++        }
++        #[derive(Encode, TypeInfo)]
++        enum StandardSignature {
++            Ed25519([u8; 64]),
++            Sr25519([u8; 64]),
++            Ecdsa([u8; 65]),
++        }
++        #[derive(Encode, TypeInfo)]
++        struct Wrapped(StandardSignature);
++
++        fn response<T: Encode + TypeInfo + 'static>(value: T) -> Vec<u8> {
++            let mut registry = Registry::new();
++            let ty = registry.register_type(&meta_type::<T>()).id;
++            signature_response_bytes(&value.encode(), ty, &registry.into()).to_vec()
++        }
++
++        // A leading 0, 1 or 2 in a composite is data, not a variant index.
++        for first in 0..=2 {
++            let value = CompositeSignature {
++                public: [first, 3, 4],
++                signature: [5; 5],
++            };
++            let expected = value.encode();
++            assert_eq!(response(value), expected);
++        }
++        assert_eq!(response(StandardSignature::Ed25519([3; 64])), vec![3; 64]);
++        assert_eq!(response(StandardSignature::Sr25519([4; 64])), vec![4; 64]);
++        assert_eq!(response(StandardSignature::Ecdsa([5; 65])), vec![5; 65]);
++        assert_eq!(
++            response(Wrapped(StandardSignature::Sr25519([6; 64]))),
++            vec![6; 64]
++        );
++        assert_eq!(response([0_u8; 64]), vec![0; 64]);
++
++        let metadata = std::sync::Arc::new(metadata());
++        let extrinsic =
++            DecodedExtrinsic::decode(2, bytes(V4_TRANSFER_ALLOW_DEATH), metadata).unwrap();
++        assert_eq!(
++            extrinsic.signature_response_bytes().unwrap(),
++            &extrinsic.signature_bytes().unwrap()[1..]
++        );
++    }
+ }

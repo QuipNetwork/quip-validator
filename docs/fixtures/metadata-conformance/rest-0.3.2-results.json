@@ -1,0 +1,71 @@
+{
+  "upstream": {
+    "repository": "https://github.com/paritytech/polkadot-rest-api",
+    "tag": "v0.3.2",
+    "commit": "283555b8e8e9cf488b11e9dbc1ba5f12344f5319"
+  },
+  "patch": {
+    "file": "scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch",
+    "sha256": "b9339d15d808a5c49abadddb5fb6a6debcec780d3402a5c4d1c8b5c6d2e71f31"
+  },
+  "validation": {
+    "strictStockExitCode": 1,
+    "strictStockFailure": "REST must retain the complete signature envelope: 1659 !== 1660",
+    "rustExtrinsicDecodeTests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "stockReproductionAgainstPatchedExitCode": 1,
+    "clippy": "cargo clippy --locked -p polkadot-rest-api --lib -- -D warnings: PASS"
+  },
+  "stock": {
+    "configuration": "stock 0.3.2: known signature truncation reproduced (NOT CONFORMANT)",
+    "oracle": {
+      "types": "16.5.6",
+      "crypto": "14.0.3"
+    },
+    "manifestSha256": "488af9b9bde7c2771d8c3627cc79c60c3c3faf9ca84a484f62db5a23c5a704de",
+    "sourceCommit": "a15e0244f136b9e9650897f899d702439c2c73c4",
+    "runtimeCodeSha256": "d1126490ef240f287b4b691a1117216495b157d846b667712b6afc105f5aeaa8",
+    "blockHash": "0x477445645e1d75978e9858c124bb297f0b166f1b043761450e99b28fc003fe40",
+    "blocks": 1,
+    "bare": 1,
+    "signed": 1,
+    "events": 14,
+    "signatureBytes": 1659,
+    "knownTruncations": 1,
+    "responseHashes": {
+      "version": "6276491fe8dcb244e6ef6a9a1c9d9a0c5cbd361d4208a0e07bbe5840117795fe",
+      "block": "85a00aae308742b3b150e29010c9fef5670c79882491232af79c32f7a777ac81",
+      "raw": "5a29cfd3063bb7ffedbf0c54e7135a450ddee4f350012434806813a1108081da",
+      "events": "b7830ee909b25b2a528af5d5ce3ea3e5c15f901ac3c0347cf11abc8f704b6ada",
+      "extrinsic-0": "2368e6e011216fc757fccc79f9371c807c571220990e02d4e5df25bac26e8943",
+      "extrinsic-1": "4ec94139a4b9af6ea95e304e34d784a496837169897e6507bf92ac7fc369e62a"
+    }
+  },
+  "patched": {
+    "configuration": "REST 0.3.2 HTTP conformance: PASS",
+    "oracle": {
+      "types": "16.5.6",
+      "crypto": "14.0.3"
+    },
+    "manifestSha256": "488af9b9bde7c2771d8c3627cc79c60c3c3faf9ca84a484f62db5a23c5a704de",
+    "sourceCommit": "a15e0244f136b9e9650897f899d702439c2c73c4",
+    "runtimeCodeSha256": "d1126490ef240f287b4b691a1117216495b157d846b667712b6afc105f5aeaa8",
+    "blockHash": "0x477445645e1d75978e9858c124bb297f0b166f1b043761450e99b28fc003fe40",
+    "blocks": 1,
+    "bare": 1,
+    "signed": 1,
+    "events": 14,
+    "signatureBytes": 1660,
+    "knownTruncations": 0,
+    "responseHashes": {
+      "version": "6276491fe8dcb244e6ef6a9a1c9d9a0c5cbd361d4208a0e07bbe5840117795fe",
+      "block": "1f9c2985cc57cab8a50410bd0fb7d60658edc531fb0363ab41b13b3ce8790daa",
+      "raw": "5a29cfd3063bb7ffedbf0c54e7135a450ddee4f350012434806813a1108081da",
+      "events": "b7830ee909b25b2a528af5d5ce3ea3e5c15f901ac3c0347cf11abc8f704b6ada",
+      "extrinsic-0": "2368e6e011216fc757fccc79f9371c807c571220990e02d4e5df25bac26e8943",
+      "extrinsic-1": "cfbfb50b42cc14a0f5c075d55415cac2f69349c49717de4bcb3b50afec239b9b"
+    }
+  }
+}
