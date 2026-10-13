@@ -1,8 +1,8 @@
-import type { SignerPayloadRaw } from '@polkadot/types/types';
+import type { SignerPayloadJSON, SignerPayloadRaw } from '@polkadot/types/types';
 
 import { readFileSync } from 'node:fs';
 
-import { GenericExtrinsicSignatureV4 } from '@polkadot/types';
+import { GenericExtrinsicSignatureV4, TypeRegistry } from '@polkadot/types';
 import { hexToU8a, u8aToHex } from '@polkadot/util';
 import { blake2AsU8a, encodeAddress } from '@polkadot/util-crypto';
 
@@ -55,6 +55,7 @@ interface SigningFixture {
   rawSigningPayloadHex: string;
   signatureEnvelopeHex: string;
   signedExtrinsicHex: string;
+  signerPayload: SignerPayloadJSON;
   ss58Address: string;
 }
 
@@ -64,6 +65,17 @@ const fixture = JSON.parse(readFileSync(
 )) as SigningFixture;
 
 assert(fixture.envelopeLength === QUIP_ENVELOPE_LEN, 'Rust/TypeScript envelope sizes differ');
+// Independently encode the exported JSON fields with polkadot-js. Comparing
+// only the raw payload and its digest misses drift in genesis/block hashes.
+const payloadRegistry = new TypeRegistry();
+
+payloadRegistry.setSignedExtensions(fixture.signerPayload.signedExtensions);
+assert(
+  u8aToHex(payloadRegistry.createType('ExtrinsicPayload', fixture.signerPayload, {
+    version: fixture.signerPayload.version
+  }).toU8a({ method: true })) === fixture.rawSigningPayloadHex,
+  'signer JSON does not encode to the Rust signing payload'
+);
 assert(
   messageToSign(fixture.rawSigningPayloadHex) === fixture.actualMessageToSignHex,
   'representative Rust signing message differs from TypeScript'

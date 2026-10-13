@@ -47,6 +47,9 @@ pub fn generate_fixture() -> Value {
 
     ext.execute_with(|| {
         System::set_block_number(1);
+        // FRAME's test genesis hash is not zero. Export the same hash that
+        // CheckGenesis and the immortal CheckMortality include in the payload.
+        let genesis_hash = frame_system::BlockHash::<quip_protocol_runtime::Runtime>::get(0);
 
         let pair = HybridPair::from_seed_slice(&FIXTURE_SEED).expect("fixture seed is valid");
         let public = pair.public();
@@ -106,10 +109,12 @@ pub fn generate_fixture() -> Value {
             "envelopeLength": ENVELOPE_LEN,
             "signerPayload": {
                 "address": account_address(&account_id),
-                "blockHash": hex([0u8; 32]),
+                "blockHash": hex(genesis_hash),
                 "blockNumber": "0x00000000",
                 "era": "0x00",
-                "genesisHash": hex([0u8; 32]),
+                "genesisHash": hex(genesis_hash),
+                "mode": 0,
+                "metadataHash": null,
                 "method": hex(call.encode()),
                 "nonce": "0x00000000",
                 "signedExtensions": [

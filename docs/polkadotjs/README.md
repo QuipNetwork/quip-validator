@@ -60,6 +60,11 @@ cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture
 Then re-run the signing-fixture tests and `npm test --prefix js/quip-signer`,
 which both consume the fixture.
 
+This is a synthetic FRAME test fixture, not an on-chain transaction: its
+genesis/block hash comes from the test state (`0x45` repeated 32 times).
+The signer JSON is checked to encode to exactly the exported raw signing
+payload, including the disabled metadata-hash extension.
+
 ## Metadata Compatibility
 
 Quip exposes the hybrid BABE and GRANDPA types through metadata-safe wrapper
