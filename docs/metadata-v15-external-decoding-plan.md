@@ -1,271 +1,181 @@
 # Metadata V16 External Decoding Plan
 
-> Retargeted from V15 to V16 (see Decisions). The file name and
-> the QUI-901 ticket title still reference V15 for historical continuity.
+Finalized scope: 2026-10-13, after review by **rr** and **reviewer** and the user's consumer/scope decisions.
 
-Related ticket: [QUI-901](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid)
+Related ticket: [QUI-901](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid).
+The filename and ticket title retain V15 for historical continuity; this plan targets **V16**.
 
-## Goal
+## Goal and agreed scope
 
-Make Quip's runtime metadata self-describing so stock metadata-driven tools can
-decode hybrid extrinsics without hand-written Rust types or Quip-specific
-decoder configuration.
+Demonstrate that Quip's published metadata describes its hybrid extrinsics sufficiently for the required consumers, with reproducible decoding tests and documentation.
 
-The first phase publishes and tests Metadata V16. A separate `@quip/types`
-package is introduced only if supported consumers still require explicit type
-registration after the V16 rollout.
+Required consumers:
 
-## Current State
+1. **Stock subxt**, without handwritten Quip Rust types.
+2. **Quip Apps / polkadot-js**, without Quip-specific type registration, while retaining and explicitly testing the existing signedness patch.
+3. **Polkadot REST API**, using metadata-native decoding.
 
-The runtime already advertises Metadata V14, V15, and V16 through the versioned
-metadata runtime API, and negotiating clients already receive V16 today (stock
-subxt 0.44 tries `Metadata_metadata_at_version` in the order `[16, 15, 14]`). A
-local conformance probe established that:
+**Go/Subscan fixes are deferred to a separate follow-up.** Known Go decoding failures do not block QUI-901, and closing QUI-901 must not imply that Go/Subscan is fixed. The indexer is not currently running, so deployed-image inspection, existing-database investigation and historical repair are not part of this plan.
 
-- `HybridTxSignature` is a concrete metadata composite with `public` and
-  `signature` fields;
-- the H4 public key resolves to `[u8; 929]`;
-- the H4 signature resolves to `[u8; 512]` followed by `[u8; 219]`, for a total
-  of 731 bytes;
-- stock `subxt-core 0.44.3` accepts the metadata with no custom types;
-- stock subxt decodes a mixed block containing a V5 bare `Timestamp::set` and
-  a V4 signed `Balances::transfer_allow_death`.
+A published `@quip/types` package remains conditional: create it only if a required consumer demonstrably needs explicit type registration. A decoder implementation bug is not evidence that a type bundle is needed.
 
-The remaining publication gap is the legacy metadata runtime API used by
-`state_getMetadata`. The current implementation wraps `Runtime::metadata()`,
-which intentionally returns Metadata V14.
+No new network reset, runtime-version bump, signature-format change or account-format change is planned for this compatibility work.
 
-The Apps Yarn patch is a separate concern. It fixes polkadot-js inferring
-signedness from whether a custom signature value looks empty. Metadata V16 does
-not remove the need for that fix.
+## Verified baseline
 
-## Decisions
+Source reviewed: quip-validator `48908450f0b911d79c358b04effbf0f97d3757fb`, runtime **119**, transaction version **7**.
 
-1. Publish Metadata V16 from Quip's legacy `metadata()` runtime API.
-   V16 is chosen over V15 because:
-   - V16's extrinsic section lists all supported extrinsic format versions
-     (`versions: [4, 5]`), which describes Quip's mixed V5-bare/V4-signed
-     blocks. V15 carries a single version, and the SDK conversion emits only
-     the minimum (`4`).
-   - Both in-tree consumers are V16-native: subxt 0.44 converts V16 directly
-     and already negotiates it today; polkadot-js 16.x treats V16 as its
-     internal "latest" format.
-   - polkadot-js's V15→V16 up-conversion is lossy: it squashes `versions` to
-     the single V15 entry and, in `@polkadot/types` 16.5.6, mis-keys
-     `implicit` as `implict`, silently dropping the additional-signed type id.
-2. Keep this as a Quip runtime override; do not change the SDK-wide
-   `Runtime::metadata()` generator.
-3. Publish this metadata change as part of the Runtime 116 H2/H4 chain-wipe
-   relaunch. Set `transaction_version` to 7 because the H4 signed-extrinsic
-   wire format is incompatible with H3.
-4. Keep the Apps decoder patch until the equivalent fix ships upstream.
-5. Treat `@quip/types` as a conditional second phase, not a prerequisite for
-   the Metadata V16 rollout.
+The runtime metadata implementation is already present:
 
-## Phase 1: Runtime Metadata V16
+- `runtime/src/apis.rs` publishes V16 through the legacy metadata runtime API used by `state_getMetadata`.
+- The versioned API continues to offer V14, V15 and V16.
+- `runtime/tests/metadata_v16.rs` contains five conformance tests, including the legacy Wasm API path, extrinsic versions `[4, 5]`, the twelve transaction-extension identifiers and their order, and the non-opaque hybrid signature type graph.
+- The metadata describes a 929-byte H4 public key and a signature field represented as `[u8; 512]` followed by `[u8; 219]` (731 encoded bytes). The complete encoded `HybridTxSignature` envelope is **1,660 bytes**. Do not label that full envelope as a bare cryptographic signature.
+- Stock `subxt-core 0.44.3` decodes a generated mixed V5-bare/V4-signed set using metadata only. Current assertions cover count, signedness and pallet/call names; stronger field and event assertions remain to be added.
+- The Apps patch addresses signedness detection, independently of metadata type discovery. Publishing V16 does not remove that requirement.
 
-### 1. Add conformance tests
+rr separately probed the live **aglais runtime 118 / transaction version 7** and local runtime-119 Wasm. The local artifact was subsequently identified as a **runtime-benchmarks build** (it exposes `Benchmark@2`), so it provides layout evidence, not production-artifact validation. Keep those evidence sets distinct; the source revision is not proof of the currently deployed runtime version. The live endpoint used was `https://bootnode-2.aglais.quip.network:20049/rpc`; the previously documented `bootnode-*.testnet.quip.network` hostnames failed DNS during this investigation.
 
-Add a focused runtime integration test, for example:
+The old tasks to switch legacy metadata from V14 and bump runtime 115 to 116 are complete/obsolete, not new implementation steps. Acceptance below concerns remaining downstream evidence, not repeating that rollout.
 
-```text
-runtime/tests/metadata_v16.rs
-```
+## Consumer matrix
 
-Add `frame-metadata` and `subxt-core` as runtime dev dependencies through the
-workspace dependency table. Pin `frame-metadata` to the version the SDK fork's
-`frame-support` already resolves transitively (currently 23.0.1) to avoid a
-duplicate in the tree, and pin `subxt-core` to 0.44.3 to match the probe above.
+| Consumer | Starting version / implementation | Required result | Scope |
+|---|---|---|---|
+| Stock subxt | `subxt-core 0.44.3`, matching existing tests; pin the online client too | Decode mixed blocks, signed transfer fields, extensions and events without custom Quip types | Required |
+| Quip Apps / polkadot-js | Pin the exact Apps revision and dependency versions during implementation; identify the existing signedness patch | Correct signed/bare classification and calls, accounts, arguments and events without Quip-specific registration | Required |
+| Polkadot REST API | `v0.3.2`, the published release checked on 2026-10-13 | Decode and serve block/extrinsic/event data for the same runtime and fixture semantics | Required |
+| Go / Subscan | `scale.go v1.11.2` parses V16; stock signed-hybrid decoding still fails | Record known limitation and link the deferred decoder follow-up | Informational; not a QUI-901 gate |
+| Other indexers / exchange tools | No additional consumer selected | Do not claim compatibility without versioned evidence | Outside this acceptance matrix |
 
-The test must:
+Record exact versions in results. Test stock polkadot-js separately from patched Apps where practical, so the supported configuration is explicit. A known stock signedness failure does not invalidate patched Apps acceptance, but must remain visible in the matrix and documentation.
 
-- request and decode `Runtime::metadata_at_version(16)`;
-- assert the returned metadata is V16;
-- assert the extrinsic section lists `versions == [4, 5]` and that the
-  transaction-extension map covers the runtime's extensions;
-- inspect the extrinsic address, call, signature, and transaction extension
-  types;
-- assert that `HybridTxSignature` is not represented as `Vec<u8>` or another
-  opaque sequence;
-- pin the H4 public-key length at 929 bytes;
-- pin the H4 signature layout at 512 plus 219 bytes;
-- generate a V5 bare timestamp inherent and a V4 signed balance transfer;
-- decode both with stock subxt using metadata only;
-- assert signedness, pallet name, and call name for both extrinsics.
+## Implementation sequence
 
-### 2. Publish V16 from `state_getMetadata`
+Each step should be a separate reviewable commit; use separate repository PRs where Apps or integration infrastructure changes are needed.
 
-Change the runtime API implementation in `runtime/src/apis.rs` from the V14
-inherent metadata path to:
+### 1. Establish a shared fixture set and provenance
 
-```rust
-Runtime::metadata_at_version(16)
-    .expect("Metadata V16 is supported")
-```
+- Reuse the checked-in H4 signing fixture and its generator in `docs/polkadotjs/fixtures/hybrid-signing.json`; do not maintain independently invented signature bytes.
+- Capture metadata, a signed balance transfer, a V5 bare inherent, their containing block and relevant events. Include representative transaction extensions.
+- Store a manifest recording source commit or runtime artifact hash, genesis hash, block hash/number where applicable, spec version, transaction version, metadata version and expected outputs.
+- Keep archived live-spec-118 fixtures separate from locally produced spec-119 fixtures. Record build features, and generate production-build metadata for the target-runtime acceptance tests rather than treating the scratch benchmark build as production. rr's observed range was blocks 591849–591948 and included two signed balance transfers; promote useful scratch artifacts into reproducible fixtures with their full hashes rather than relying on temporary paths.
+- Use one fixture source for Rust, Apps and REST API validation. REST API online tests may replay equivalent transactions on a disposable node, with outputs checked against the same expectations.
+- Pair each block with the metadata appropriate to its execution. Add an upgrade-boundary case with explicit provenance rather than decoding historical blocks using current-head metadata.
 
-Do not change
-`polkadot-sdk/substrate/frame/support/procedural/src/construct_runtime/expand/metadata.rs`.
-Changing the SDK generator would alter the legacy metadata behavior of every
-runtime using the fork.
+Acceptance: fixtures regenerate or can be independently verified, and consumers agree on expected count, order, extrinsic indices, calls, accounts and values.
 
-### 3. Version the runtime
+### 2. Strengthen stock subxt conformance
 
-- Bump `spec_version` from `115` to `116`.
-- Set `transaction_version` to `7` for the incompatible H4 signed-extrinsic
-  encoding.
-- Add a version comment explaining that Runtime 116 is the H2/H4 chain-wipe
-  relaunch and publishes Metadata V16 through the legacy runtime API.
+Extend `runtime/tests/metadata_v16.rs` to assert:
 
-### 4. Regenerate the polkadot-js signing fixture
+- Decoded signer/address matches the fixture account.
+- Public key, encoded signature field and complete signature envelope match the fixture bytes and lengths: 929, 731 and 1,660 respectively.
+- The 512/219 metadata representation is encoding-equivalent to the fixed encoded signature field, not merely a matching type shape.
+- Transfer destination and amount are correct.
+- Transaction extensions, including those after the signature boundary, decode with the correct values and order.
+- Events decode against the appropriate metadata and retain their extrinsic association.
+- The V5 bare inherent remains bare and the V4 signed transaction remains signed.
 
-The checked-in fixture embeds `spec_version`/`transaction_version`
-(`docs/polkadotjs/fixtures/hybrid-signing.json`), and
-`runtime/tests/signing_fixture.rs` fails when it drifts from the generator.
-Regenerate and commit it together with the version bump:
+Add a stock online subxt smoke test against a disposable node built from the target revision: observe a finalized block containing the signed transfer and decode it without custom Rust types. Existing signing helpers may construct the transaction; this ticket tests decoding, not a new signer.
 
-```text
-cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture -- --write
-```
+Acceptance: field-level and online tests pass using stock subxt, with no Quip-specific decoder types or hidden type registrations.
 
-### 5. Run a live-node smoke test
+### 3. Validate Apps and Polkadot REST API
 
-Start a temporary dev chain and verify:
+Apps:
 
-- `state_getMetadata` returns a V16 metadata blob;
-- `Metadata_metadata_at_version(16)` returns the expected V16 graph;
-- a stock online subxt client submits or observes a signed transfer;
-- subxt decodes the containing block's V5 bare and V4 signed extrinsics;
-- events and transaction extensions decode without custom types.
+- Pin the tested Apps revision, runtime revision and polkadot-js package versions.
+- Load V16 without Quip-specific `chainTypes` or `typesBundle` registration.
+- Exercise the shared mixed-block cases and verify signedness, calls, accounts, argument values, events and transaction extensions.
+- Retain the signedness patch until an equivalent upstream release passes the regression test. Report stock and patched behavior separately.
 
-Note that the `browser-signer-test` CI job already runs a stock polkadot-js
-`ApiPromise` (no `chainTypes`) against a live node via
-`js/quip-signer/test/local-node.mjs`; that path fetches `state_getMetadata` and
-acts as the standing regression gate for this change. Consider extending it to
-assert the returned metadata version so CI catches an accidental revert.
+Polkadot REST API:
 
-## Polkadot SDK Scope
+- Pin `v0.3.2` initially and connect it to the disposable target node.
+- Query its block/extrinsic/event endpoints for the finalized fixture transactions.
+- Assert no extrinsics disappear and that decoded fields, indices and event associations match the fixture expectations.
+- If the service fails despite successful stock-subxt decoding, isolate the service's serializer or chain assumptions. Do not assume missing type registration or advertise compatibility based solely on subxt library tests.
 
-No production SDK change is required for Phase 1. The fork already contains the
-large-array `TypeInfo` support needed for the H4 public key and signature.
+Acceptance: all three required consumers pass the matrix. No Subscan DB/Redis environment is needed for this work.
 
-One known incompleteness in the fork's V16 path: `metadata-ir` converts the
-extrinsic IR to V16 with a hardcoded `transaction_extensions_by_version` map
-keyed `0` ("assume version 0 for all extensions"). This is correct today —
-extension version 0 is the only one, V4 signed extrinsics fall back to the
-maximum map key, and V5 bare extrinsics carry no extensions — but the
-conformance test pins the map shape so a future extension-version change cannot
-silently emit wrong metadata. Track replacing the placeholder with real
-per-version extension data as a fork follow-up.
+### 4. Record the type-bundle decision and refresh documentation
 
-An optional SDK hardening change can add unit tests that pin:
+- Document `AccountId = blake2_256("quip-account-v1" || public_key)` and the mixed V5-bare/V4-signed block format.
+- Replace stale envelope sizes with the current encoded H4 layout; distinguish public key, signature field and full envelope.
+- Publish the exact supported consumer matrix, reproduction commands, known Apps patch and deferred Go limitation.
+- Remove the old Sidecar/`SAS_SUBSTRATE_TYPES_BUNDLE` requirement from the proposed ticket acceptance. Polkadot REST API uses metadata-native decoding and does not support those legacy configuration variables.
+- If all required consumers work without explicit registration, record **no `@quip/types` package required** and close that decision explicitly.
+- If a required consumer needs registration, document the exact missing types first, then implement the smallest versioned bundle and CI that compares it to runtime metadata. Do not duplicate metadata definitions unnecessarily.
+- Correct stale RPC hostname references encountered in the relevant compatibility documentation, while labeling archived fixture provenance separately from current endpoint availability.
 
-- public-key metadata as `[u8; 929]`;
-- signature metadata as the 512/219 split;
-- the SCALE signature length at exactly 731 bytes;
-- encoding equivalence between the runtime type and its metadata-only shape.
+### 5. Review and close with evidence
 
-These tests protect the existing workaround but do not need to block the
-runtime change.
+- Run the focused runtime tests, the online subxt smoke and the Apps/REST API integration tests affected by the work.
+- Have reviewer and rr review the implementation and versioned results.
+- Update QUI-901 with the final consumer matrix, fixture provenance, bundle decision and link to the separately owned Go/Subscan follow-up.
+- Do not claim universal external-tool compatibility; acceptance is limited to the tested versions and configurations.
 
-## Apps Validation
+This finalized planning document does not itself publish a package, modify the Linear ticket, implement the changes or deploy a service.
 
-After the runtime change lands:
+## Acceptance checklist
 
-1. Update the Apps `quip-validator` submodule.
-2. Confirm the Apps deployment runs a V16-capable polkadot-js (16.x line);
-   V16 is its native "latest" format, while the V15 up-conversion is lossy
-   (see Decisions).
-3. Load the V16 metadata without Quip-specific `chainTypes`.
-4. Decode a fixture containing a V5 bare inherent and a V4 signed hybrid
-   transaction.
-5. Confirm calls, accounts, events, and transaction extensions render
-   correctly.
-6. Keep the existing `@polkadot/types` Yarn patch until its signedness fix is
-   available in an upstream release.
+Already implemented and reviewed in the source baseline:
 
-Metadata V16 solves type discovery. The Apps patch solves signedness detection;
-the two changes are complementary.
+- [x] Legacy metadata API publishes V16; versioned metadata remains available.
+- [x] The registry describes `HybridTxSignature` as a concrete composite.
+- [x] Extrinsic metadata advertises `[4, 5]` and the expected extension layout.
+- [x] Stock subxt has a basic mixed V5-bare/V4-signed decoding test.
 
-## Phase 2: Conditional `@quip/types`
+Required before QUI-901 closure:
 
-Create a public `quip/types` repository and publish `@quip/types` only if a
-supported consumer cannot use the published Metadata V16 directly.
+- [ ] Shared fixtures include complete provenance and expected field values.
+- [ ] Stock subxt field-level decoding and finalized-block smoke pass.
+- [ ] Apps regression tests pass without Quip-specific type registration; any signedness patch is documented.
+- [ ] Polkadot REST API block/extrinsic/event tests pass for the pinned version.
+- [ ] Counts, order, indices, decoded values and event associations agree across required consumers.
+- [ ] Historical/upgrade-boundary metadata selection has explicit test coverage.
+- [ ] Account derivation, encoded H4 layout and mixed formats are documented.
+- [ ] The conditional `@quip/types` decision is recorded, with a tested/published package only if required.
+- [ ] The ticket's stale V15, runtime-116 and Sidecar acceptance wording is refreshed.
+- [ ] Reviewer and rr have reviewed the implementation evidence.
+- [ ] The deferred Go/Subscan limitation and follow-up ownership are explicit.
 
-Before starting this phase, test current versions of:
+## Deferred Go/Subscan follow-up
 
-- polkadot-js;
-- polkadot-rest-api;
-- Subsquid or SubQuery, depending on the selected indexer;
-- any exchange integration tooling in scope.
+This section preserves the research and proposed follow-up without adding it to QUI-901's implementation gates.
 
-The deprecated Substrate API Sidecar and
-`SAS_SUBSTRATE_TYPES_BUNDLE` are not sufficient reasons to create the package.
+Verified release findings:
 
-If required, `@quip/types` should provide:
+- Go module `github.com/itering/scale.go` **v1.11.2**, published September 11, 2026, includes the V16 view-function ID correction from 8 to 32 bytes and versioned extension handling. It parses Quip's live-spec-118 and local-spec-119 V16 metadata. The module requires Go 1.24 or later.
+- Stock v1.11.2 still panics when treating nested hybrid signature fields as strings. In rr's 100-block sample, 100 bare inherents decoded but all 387 signed extrinsics failed with the stock decoder.
+- The Subscan repository's existing tolerant patch avoids the panic but chooses the flat signature value through Go map iteration; that can produce inconsistent values, including the public key.
+- rr's separate scratch raw-span patch decoded all 487 sample extrinsics. All 387 signed envelopes were 1,660 bytes, equal to an independently extracted byte span, and stable over five repeated decodes. The local-spec-119 signing fixture matched too. Stock and patched upstream tests passed all nine packages.
+- Those scratch results prove the tested decoder behavior, not the untested complete indexer pipeline. No production change was made.
 
-- polkadot-js `typesBundle` and `chainTypes`;
-- hybrid public-key, signature, and envelope definitions;
-- signed-extension registration;
-- runtime spec-version ranges;
-- documentation for
-  `AccountId = blake2_256("quip-account-v1" || public_key)`;
-- documentation for mixed V5-bare/V4-signed blocks;
-- CI that decodes the same fixtures as the Rust conformance test and detects
-  drift from runtime metadata.
+When the Go/Subscan work is scheduled:
 
-## Acceptance Criteria
+1. Upgrade the actual consumer to v1.11.2 or a newer version proven against the fixtures, and replace the map-iteration patch with deterministic, lossless signature-envelope handling. Preserve structured `SignatureRaw` and standard signature behavior; document the downstream field contract.
+2. Classify current V4-signed/V5-bare extrinsics from their format, not signature string emptiness. Do not generalize this to authorized V5-general transactions; add format-specific fixtures when supporting them.
+3. Propagate per-extrinsic failures and reject incomplete block ingestion. Test counts/order/indices and prove an injected decode failure cannot partially commit a block.
+4. Validate the complete consumer using a clean disposable DB/Redis setup. Existing production-database inspection or repair is unnecessary because the indexer is inactive.
+5. Retire the consumer's V15 negotiation shim only after the full consumer passes. Retain the runtime's versioned metadata API.
+6. Track the separate upstream V14 decoder omission: it leaves the final `RuntimeMetadataV14.ty` compact type ID unread. In the captured fixtures this is 274 for spec 118 and 291 for spec 119, both resolving to the runtime type. Consume or assert that exact field; never allow arbitrary trailing bytes. V15/V16 fully consume the tested metadata.
+7. Consider proposing the generic decoder fixes upstream. Track this work under the Go/explorer ownership and link it from QUI-901 without making it a closure dependency.
 
-- [ ] `state_getMetadata` publishes Metadata V16.
-- [ ] The V16 registry fully describes the hybrid signature envelope.
-- [ ] The V16 extrinsic section advertises `versions == [4, 5]`.
-- [ ] Stock subxt decodes a signed balance transfer with no custom Rust types.
-- [ ] Stock subxt decodes a mixed V5-bare/V4-signed block.
-- [ ] Apps decodes and renders the same block without Quip-specific type
-      registration.
-- [ ] The existing Apps signedness patch remains covered by a regression test.
-- [ ] The polkadot-js signing fixture is regenerated and matches the Rust
-      generator.
-- [ ] The runtime is released with `spec_version = 116` and
-      `transaction_version = 7`.
-- [ ] A decision on `@quip/types` is recorded after downstream compatibility
-      testing.
+## Boundaries and remaining technical risks
 
-## Rollout Order
+- No signing/fee-estimation redesign, wire-format change, canonical-signer work or merkleized-metadata/offline-signing activation.
+- No new spec-version or transaction-version bump solely for consumer tests or documentation. Reassess only if implementation uncovers a genuine runtime defect requiring a production change.
+- The SDK's V16 extension map currently assumes extension version 0. Existing conformance tests pin the current layout; a future extension-version change needs a separate SDK correction.
+- `CheckMetadataHash` mode is disabled in the existing signing path. Enabling it requires separate verification of metadata hashing and signing compatibility.
+- Metadata self-description does not guarantee every consumer can process arbitrary composite signatures or mixed extrinsic formats. Required consumers need empirical results; unselected tools remain unverified.
 
-1. Add protocol conformance tests.
-2. Switch the legacy runtime metadata response to V16.
-3. Bump the runtime spec version, regenerate the signing fixture, and run Rust
-   CI.
-4. Run the live-node subxt smoke test.
-5. Validate Apps and update its protocol submodule.
-6. Test other downstream consumers.
-7. Introduce `@quip/types` only if the compatibility evidence requires it.
+## References
 
-## Risks
-
-- **Legacy metadata compatibility:** consumers that can only parse Metadata V15
-  or older will break when `state_getMetadata` starts returning V16. The
-  versioned metadata API keeps serving 14, 15, and 16, so only legacy-blob
-  consumers are affected. Before release, build an explicit consumer matrix —
-  polkadot-js/Apps version, polkadot-rest-api, the selected indexer, exchange
-  tooling — and run smoke tests for each supported entry.
-- **Metadata/wire drift:** the signature's metadata-only split must remain
-  encoding-equivalent to the 731-byte wire signature. Pin both in tests.
-- **Extension-version placeholder:** the SDK fork's V16 conversion assumes
-  extension version 0 for every transaction extension. Correct today; pinned by
-  the conformance test and tracked as a fork follow-up.
-- **`CheckMetadataHash` interaction:** the extension ships in `TxExtension`
-  with mode disabled. Switching the published metadata to V16 changes the
-  hash a mode-1 consumer would compute. No impact while the mode stays off,
-  but re-check the merkleized-metadata version interaction before enabling it.
-- **Cross-repository ordering:** Apps validation must use the exact protocol
-  revision containing the runtime change.
-- **Duplicate sources of truth:** if `@quip/types` is introduced, validate it
-  against runtime metadata in CI rather than maintaining definitions by hand.
-
-## Out of Scope
-
-- Changing the hybrid signature or account-id wire formats.
-- Changing signing, fee estimation, or canonical signer behavior.
-- Merkleized metadata and offline-signing flows.
-- Removing the Apps Yarn patch before the upstream decoder fix is available.
+- [scale.go v1.10.9 to v1.11.2 changes](https://github.com/subscan-explorer/scale.go/compare/v1.10.9...v1.11.2)
+- [scale.go v1.11.2 extrinsic decoder](https://github.com/subscan-explorer/scale.go/blob/v1.11.2/extrinsic.go)
+- [Polkadot REST API v0.3.2 migration guide](https://github.com/paritytech/polkadot-rest-api/blob/v0.3.2/docs/guides/MIGRATION.md)
+- [Runtime metadata APIs](../runtime/src/apis.rs)
+- [Metadata conformance tests](../runtime/tests/metadata_v16.rs)
+- [Signing fixture](polkadotjs/fixtures/hybrid-signing.json)
