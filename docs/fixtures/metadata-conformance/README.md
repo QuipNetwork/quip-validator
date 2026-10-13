@@ -106,7 +106,7 @@ events. It uses the existing WASM/`QuipSigner` implementation. Its V4 assembly i
 producer code only; the consumer tests must not use handwritten Quip types.
 
 ```sh
-QUIP_WS_URL=ws://127.0.0.1:19944 node js/quip-signer/test/capture-conformance.mjs
+QUIP_WS_URL=ws://127.0.0.1:19944 node js/quip-signer/test/produce-conformance-transfer.mjs
 # Substitute the finalized block number printed by the producer:
 python3 scripts/metadata-conformance/fixtures.py capture /tmp/quip-local-fixtures \
   --rpc http://127.0.0.1:19944 --blocks BLOCK_NUMBER --kind local-non-benchmark \
