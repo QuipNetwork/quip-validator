@@ -108,6 +108,8 @@ hex = { version = "0.4.3", default-features = false }
 # tests; versions match what the SDK fork resolves transitively.
 frame-metadata = { version = "23.0.1", default-features = false, features = ["std", "current"] }
 subxt-core = { version = "0.44.3", default-features = false, features = ["std"] }
+subxt = { version = "=0.44.3", default-features = false, features = ["jsonrpsee", "native"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
 frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }

@@ -83,6 +83,8 @@ sc-executor = { workspace = true, default-features = true }
 sc-executor-common = { workspace = true, default-features = true }
 sp-io.workspace = true
 subxt-core.workspace = true
+subxt.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 substrate-wasm-builder = { optional = true, workspace = true, default-features = true }

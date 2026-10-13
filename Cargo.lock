@@ -9334,7 +9334,9 @@ dependencies = [
  "sp-version",
  "sp-weights",
  "substrate-wasm-builder",
+ "subxt",
  "subxt-core",
+ "tokio",
 ]
 
 [[package]]
@@ -13272,6 +13274,7 @@ dependencies = [
  "frame-metadata",
  "futures",
  "hex",
+ "jsonrpsee",
  "parity-scale-codec",
  "primitive-types 0.13.1",
  "scale-bits",
@@ -13292,6 +13295,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "wasm-bindgen-futures",
  "web-time",
 ]
 
@@ -13410,6 +13414,7 @@ dependencies = [
  "subxt-core",
  "subxt-lightclient",
  "thiserror 2.0.18",
+ "tokio-util",
  "tracing",
  "url",
 ]

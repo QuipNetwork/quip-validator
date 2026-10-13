@@ -77,7 +77,7 @@ all twelve extensions, and per-extrinsic outcomes. The archived failed
 `ExtrinsicFailed` events. Three transfers must have matching `Balances.Transfer`
 events at their own extrinsic index. Synthetic calls added in 118 exercise the
 negative historical-metadata case. This is offline consumer coverage; the
-online stock-subxt smoke and Apps/REST acceptance are separate checks.
+online stock-subxt smoke below and Apps/REST acceptance are separate checks.
 
 ## Capture again
 
@@ -117,3 +117,41 @@ python3 scripts/metadata-conformance/fixtures.py capture /tmp/quip-local-fixture
 Stop the disposable node after capture. Do not submit fixture transactions to
 the archived live chain. The producer's transfer amount covers creation of the
 destination account; repeat runs may use higher account nonces.
+
+## Online stock-subxt smoke
+
+With the disposable node above still running, save a fresh producer result and
+pass it to the read-only consumer example:
+
+```sh
+QUIP_WS_URL=ws://127.0.0.1:19944 node js/quip-signer/test/produce-conformance-transfer.mjs > /tmp/quip-transfer.json
+QUIP_WS_URL=ws://127.0.0.1:19944 SKIP_PALLET_REVIVE_FIXTURES=1 \
+  cargo run --offline -p quip-protocol-runtime --example metadata_online -- \
+  /tmp/quip-transfer.json target/debug/wbuild/quip-protocol-runtime/quip_protocol_runtime.wasm
+```
+
+The example pins stock `subxt 0.44.3` and uses
+`OnlineClient<SubstrateConfig>` with default metadata negotiation, high-level
+block/extrinsic access, and both block and per-extrinsic event access. No Quip
+decoder types or metadata overrides are registered. It requires a numeric
+loopback WebSocket address, a Development chain, runtime 119/tx 7, V16 metadata
+without the Benchmark API, and exact equality between the supplied Wasm and
+the executing `:code`. A 60-second deadline bounds RPC work. The jsonrpsee
+transport response limit is raised from 10 MiB to 32 MiB for the debug Wasm's
+approximately 15 MB hex-encoded `:code` response; metadata decoding stays stock.
+
+It verifies finality and canonical block/header hashes, raw body byte parity
+and order, the V5 bare timestamp followed by the V4 signed fixture transfer,
+dynamic call fields, signer and H4 envelope, all twelve transaction extensions,
+and exactly one success outcome per extrinsic. The transfer event must match
+the sender, destination and amount at index 1; every event must dynamically
+decode and reproduce the complete storage bytes in order. Output records the
+block, genesis, parent metadata state, runtime/metadata hashes and checked counts.
+
+This deliberately isolated smoke rejects other transactions in the target block.
+Subxt 0.44.3's high-level block API uses client-cached metadata, so the example
+also requires parent/post-state metadata and code to match and checks the
+negotiated metadata against the parent registry. It does not claim that this
+API automatically selects historical metadata across an upgrade. The offline
+tests above cover that case explicitly. Apps and actual REST-service acceptance
+remain independent gates.
