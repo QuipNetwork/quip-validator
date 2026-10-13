@@ -44,3 +44,10 @@ __pycache__
 .beads-*/
 .beads-credential-key
 .dolt/
+
+# frame-benchmarking-cli scratch output. weights.rs is hand-written (custom formula plus
+# provenance), so `benchmark pallet --output .../weights.rs` would destroy it. Benchmark
+# here and hand-transfer the numbers instead.
+scratch_weights.rs
+*.db
+.beads/proxieddb/

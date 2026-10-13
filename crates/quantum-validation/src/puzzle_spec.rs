@@ -41,6 +41,66 @@ impl<Set> AllowedValueSpec<Set>
 where
     Set: AsRef<[MilliValue]>,
 {
+    /// Smallest non-zero magnitude this spec can draw, in MILLI, or `0` when
+    /// it can draw zero at all.
+    ///
+    /// THE SCALE ASYMMETRY IS REAL AND CORRECT. `IntegerRange` declares
+    /// whole-integer bounds scaled by [`MILLI_SCALE`] when sampled, so its
+    /// bounds must be multiplied; `ContinuousRange` already declares milli, so
+    /// its must not. Lives HERE, beside the enum doc that states that — the
+    /// query used to live in `hardness.rs`, a module away from it.
+    pub fn min_abs_milli(&self) -> u64 {
+        match self.as_slice() {
+            AllowedValueSpec::Set(values) => values
+                .iter()
+                .map(|v| u64::from(v.unsigned_abs()))
+                .min()
+                .unwrap_or(0),
+            AllowedValueSpec::IntegerRange { min, max } => {
+                if min <= 0 && max >= 0 {
+                    0
+                } else {
+                    // Integer bounds -> milli.
+                    u64::from(min.unsigned_abs()).min(u64::from(max.unsigned_abs()))
+                        * MILLI_SCALE as u64
+                }
+            }
+            AllowedValueSpec::ContinuousRange { min, max } => {
+                if min <= 0 && max >= 0 {
+                    0
+                } else {
+                    // Already milli.
+                    u64::from(min.unsigned_abs()).min(u64::from(max.unsigned_abs()))
+                }
+            }
+        }
+    }
+
+    /// Whether every value this spec can draw is exactly zero.
+    ///
+    /// Scale-free, so no asymmetry: zero is zero at either scale.
+    pub fn samples_only_zero(&self) -> bool {
+        match self.as_slice() {
+            AllowedValueSpec::Set(values) => !values.is_empty() && values.iter().all(|&v| v == 0),
+            AllowedValueSpec::IntegerRange { min, max }
+            | AllowedValueSpec::ContinuousRange { min, max } => min == 0 && max == 0,
+        }
+    }
+
+    /// Whether the spec is symmetric under sign flip, so each fundamental
+    /// cycle is an independent fair coin.
+    ///
+    /// Also scale-free: symmetry is a property of the sign pattern.
+    pub fn is_sign_symmetric(&self) -> bool {
+        match self.as_slice() {
+            AllowedValueSpec::Set(values) => {
+                !values.is_empty() && values.iter().all(|v| values.contains(&-v))
+            }
+            AllowedValueSpec::IntegerRange { min, max }
+            | AllowedValueSpec::ContinuousRange { min, max } => min == -max,
+        }
+    }
+
     /// View this spec with the inner set borrowed as a slice. Lets math code
     /// be generic over `BoundedVec` / `Vec` / `&[MilliValue]` storage.
     pub fn as_slice(&self) -> AllowedValueSpec<&[MilliValue]> {
@@ -244,6 +304,62 @@ fn check_indexed_bits(bits: u8) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `min_abs_milli` scales `IntegerRange` by `MILLI_SCALE` and does NOT
+    /// scale `ContinuousRange`.
+    ///
+    /// The asymmetry is correct (see the enum's own doc) but was enforced by
+    /// nothing while the query lived a module away from that sentence: a spec
+    /// query picking the wrong arm had a coin-flip chance of being wrong.
+    #[test]
+    fn min_abs_milli_scales_integer_bounds_and_not_milli_bounds() {
+        let integer: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::IntegerRange { min: 2, max: 5 };
+        assert_eq!(
+            integer.min_abs_milli(),
+            2 * MILLI_SCALE as u64,
+            "integer bounds are unit-scaled and must be multiplied"
+        );
+
+        let continuous: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::ContinuousRange { min: 2, max: 5 };
+        assert_eq!(
+            continuous.min_abs_milli(),
+            2,
+            "milli bounds are already milli and must NOT be multiplied"
+        );
+
+        // A range straddling zero can draw zero, at either scale.
+        let straddles: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::IntegerRange { min: -1, max: 3 };
+        assert_eq!(straddles.min_abs_milli(), 0);
+
+        // A Set is always already in milli.
+        let set_vals: [MilliValue; 3] = [-3000, 1000, 2000];
+        let set = AllowedValueSpec::Set(&set_vals[..]);
+        assert_eq!(set.min_abs_milli(), 1000);
+    }
+
+    #[test]
+    fn the_scale_free_queries_agree_across_both_range_flavours() {
+        for spec in [
+            AllowedValueSpec::<&[MilliValue]>::IntegerRange { min: 0, max: 0 },
+            AllowedValueSpec::<&[MilliValue]>::ContinuousRange { min: 0, max: 0 },
+        ] {
+            assert!(spec.samples_only_zero());
+            assert!(spec.is_sign_symmetric(), "0 == -0");
+        }
+        for spec in [
+            AllowedValueSpec::<&[MilliValue]>::IntegerRange { min: -4, max: 4 },
+            AllowedValueSpec::<&[MilliValue]>::ContinuousRange { min: -4, max: 4 },
+        ] {
+            assert!(!spec.samples_only_zero());
+            assert!(spec.is_sign_symmetric());
+        }
+        let lopsided: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::IntegerRange { min: -4, max: 5 };
+        assert!(!lopsided.is_sign_symmetric());
+    }
     use super::*;
 
     fn set_spec(values: &[MilliValue]) -> AllowedValueSpec<&[MilliValue]> {

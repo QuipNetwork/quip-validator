@@ -1,0 +1,5 @@
+host	commit_sha	point	nodes	edges	samples	min_ns	max_ns
+Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	minimum	317	321	80	167000	358000
+Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	nodes	5000	5004	80	1862000	2751000
+Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	edges	317	50000	80	9027000	16201000
+Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	worst_case	5000	50000	80	8816000	14419000

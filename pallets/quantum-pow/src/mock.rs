@@ -67,13 +67,19 @@ impl pallet_balances::Config for Test {
 parameter_types! {
     pub const MaxNodes: u32 = 16;
     pub const MaxEdges: u32 = 32;
-    pub const MaxSolutions: u32 = 8;
     pub const MinNodes: u32 = 2;
     pub const EpochLength: u64 = 20;
     pub const MinerDeposit: Balance = 100;
     pub const BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
+    // `static` so a test can lower the ceiling below a graph's true width.
+    pub static ExactSolveCeilingOverride: u32 = 20;
+    // `pub static`, NOT `pub const`: a `parameter_types!` const has no setter,
+    // so nothing can sweep it. As consts, reverting either call site to the
+    // `DEFAULT_*` constant left the whole suite green.
+    pub static HandicapPerSigmaPermille: i64 =
+        crate::difficulty::DEFAULT_HANDICAP_PER_SIGMA_PERMILLE;
 }
 
 frame_support::parameter_types! {
@@ -100,7 +106,6 @@ impl pallet_quantum_pow::Config for Test {
     type Currency = Balances;
     type MaxNodes = MaxNodes;
     type MaxEdges = MaxEdges;
-    type MaxSolutions = MaxSolutions;
     type MinNodes = MinNodes;
     type EpochLength = EpochLength;
     type MinerDeposit = MinerDeposit;
@@ -110,6 +115,8 @@ impl pallet_quantum_pow::Config for Test {
     type CurveCEasyMilli = ConstU32<700>;
     type CurveCKneeMilli = ConstU32<725>;
     type CurveCHardMilli = ConstU32<750>;
+    type ExactSolveCeiling = ExactSolveCeilingOverride;
+    type HandicapPerSigmaPermille = HandicapPerSigmaPermille;
     type WeightInfo = ();
 }
 
@@ -121,12 +128,16 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     pallet_balances::GenesisConfig::<Test> {
         // Account 3 is funded so tests can use a miner whose puzzle ground
         // state sits below the energy curve (accounts 1 and 2 happen to map to
-        // puzzles easier than the curve's easy cap).
+        // puzzles easier than the curve's easy cap). Account 7's triangle
+        // instance is frustrated, putting its optimum strictly between the
+        // absolute floor and the easy cap — the only shape a decay
+        // discriminator can be built from.
         balances: vec![
             (1, 1_000_000),
             (2, 1_000_000),
             (3, 1_000_000),
             (EmissionController::pot(0), 1_000_000_000),
+            (7, 1_000_000),
         ],
         dev_accounts: None,
     }

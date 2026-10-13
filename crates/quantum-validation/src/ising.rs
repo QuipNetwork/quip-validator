@@ -9,8 +9,9 @@ use sp_core::U256;
 
 use crate::errors::ValidationError;
 use crate::fixed::MilliValue;
+use crate::hardness::{frustration_index_with_index, NodeIndex};
 use crate::puzzle_spec::AllowedValueSpec;
-use crate::validation::TopologyIndex;
+use crate::validation::ensure_valid_topology_with_index;
 
 /// Derive the deterministic puzzle nonce for a `submit_proof` call.
 ///
@@ -51,23 +52,69 @@ pub fn generate_ising_model(
     allowed_h: &AllowedValueSpec<&[MilliValue]>,
     allowed_j: &AllowedValueSpec<&[MilliValue]>,
 ) -> Result<(Vec<MilliValue>, Vec<MilliValue>), ValidationError> {
-    let topology = TopologyIndex::new(nodes, edges)?;
-    generate_ising_model_indexed(nonce, nodes, edges, allowed_h, allowed_j, &topology)
+    generate_ising_model_with_index(
+        &NodeIndex::new(nodes),
+        nonce,
+        nodes,
+        edges,
+        allowed_h,
+        allowed_j,
+    )
 }
 
-/// Generate an Ising model while reusing a topology index validated by the
-/// caller.
+/// Generate the model and price the instance it produced, building the node
+/// index exactly once.
 ///
-/// Proof validation builds the index once and then reuses it for both model
-/// generation and energy scoring. This avoids rebuilding the node-id map for
-/// every submitted solution.
-pub fn generate_ising_model_indexed(
+/// `submit_proof` needs both back to back over the same immutable
+/// `topology.nodes`; called separately, [`generate_ising_model`] and
+/// [`crate::hardness::frustration_index`] each build and discard their own —
+/// two extra `O(n)` scans, or two `Vec`s plus `O(n log n)` sorts on the table
+/// path.
+///
+/// Otherwise untouched: same validation, same errors in the same ORDER, same
+/// `(milli, cycles)` pair. Nodes are validated before any sampling, so the
+/// frustration pass never sees an endpoint outside `nodes`.
+pub fn generate_ising_model_and_frustration(
     nonce: U256,
     nodes: &[u32],
     edges: &[(u32, u32)],
     allowed_h: &AllowedValueSpec<&[MilliValue]>,
     allowed_j: &AllowedValueSpec<&[MilliValue]>,
-    topology: &TopologyIndex,
+) -> Result<IsingInstance, ValidationError> {
+    let index = NodeIndex::new(nodes);
+    let (h, j) =
+        generate_ising_model_with_index(&index, nonce, nodes, edges, allowed_h, allowed_j)?;
+    let (frustration_milli, frustration_cycles) = frustration_index_with_index(&index, edges, &j);
+    Ok(IsingInstance {
+        h,
+        j,
+        frustration_milli,
+        frustration_cycles,
+    })
+}
+
+/// One realized puzzle instance: the sampled model plus its gauge-invariant
+/// hardness measure. Named rather than a four-tuple so the `submit_proof` call
+/// site destructures into the bindings it used when these were two calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IsingInstance {
+    /// Per-node local fields, aligned with `nodes`.
+    pub h: Vec<MilliValue>,
+    /// Per-edge couplings, aligned with `edges`.
+    pub j: Vec<MilliValue>,
+    /// [`crate::hardness::frustration_index_milli`] of this draw.
+    pub frustration_milli: u32,
+    /// How many fundamental cycles that fraction averaged over.
+    pub frustration_cycles: u64,
+}
+
+fn generate_ising_model_with_index(
+    index: &NodeIndex<'_>,
+    nonce: U256,
+    nodes: &[u32],
+    edges: &[(u32, u32)],
+    allowed_h: &AllowedValueSpec<&[MilliValue]>,
+    allowed_j: &AllowedValueSpec<&[MilliValue]>,
 ) -> Result<(Vec<MilliValue>, Vec<MilliValue>), ValidationError> {
     if nodes.is_empty() {
         return Err(ValidationError::EmptyNodes);
@@ -82,12 +129,11 @@ pub fn generate_ising_model_indexed(
     }
     let _ = allowed_j.bits_per_value()?;
 
-    if topology.len() != nodes.len() {
-        return Err(ValidationError::FieldLengthMismatch {
-            expected: nodes.len(),
-            actual: topology.len(),
-        });
-    }
+    // NOT removed, though `register_topology` already validated these exact
+    // stored slices. Dropping it would turn a refusal into an acceptance if that
+    // stored invariant were ever violated — a consensus-behaviour change. The
+    // invariant is re-proved, just without rebuilding the index to do it.
+    ensure_valid_topology_with_index(index, nodes, edges)?;
 
     let seed: [u8; 32] = nonce.to_big_endian();
     let mut rng = ChaCha8Rng::from_seed(seed);
@@ -107,9 +153,8 @@ pub fn generate_ising_model_indexed(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_nonce, generate_ising_model, generate_ising_model_indexed};
+    use super::{derive_nonce, generate_ising_model};
     use crate::puzzle_spec::AllowedValueSpec;
-    use crate::validation::TopologyIndex;
 
     const ALICE_BYTES: [u8; 32] = [0xA1; 32];
     const BOB_BYTES: [u8; 32] = [0xB0; 32];
@@ -150,6 +195,20 @@ mod tests {
 
         assert_eq!(h.len(), nodes.len());
         assert_eq!(j.len(), edges.len());
+        // Sharing one `NodeIndex` must change nothing observable.
+        let instance = super::generate_ising_model_and_frustration(
+            nonce,
+            &nodes,
+            &edges,
+            &AllowedValueSpec::Set(allowed_h),
+            &AllowedValueSpec::Set(allowed_j),
+        )
+        .unwrap();
+        assert_eq!((&instance.h, &instance.j), (&h, &j));
+        assert_eq!(
+            (instance.frustration_milli, instance.frustration_cycles),
+            crate::hardness::frustration_index(&nodes, &edges, &instance.j)
+        );
         // Every sampled h is drawn from the allowed set.
         for value in h {
             assert!(allowed_h.contains(&value));
@@ -157,21 +216,5 @@ mod tests {
         for value in j {
             assert!(allowed_j.contains(&value));
         }
-    }
-
-    #[test]
-    fn indexed_generation_matches_standalone_generation() {
-        let nodes = [10, 20, 30];
-        let edges = [(10, 20), (20, 30)];
-        let allowed_h = AllowedValueSpec::Set(&[-1_000, 0, 1_000][..]);
-        let allowed_j = AllowedValueSpec::Set(&[-1_000, 1_000][..]);
-        let nonce = derive_nonce(&[3; 32], &ALICE_BYTES, &SALT_A);
-        let topology = TopologyIndex::new(&nodes, &edges).unwrap();
-
-        assert_eq!(
-            generate_ising_model(nonce, &nodes, &edges, &allowed_h, &allowed_j).unwrap(),
-            generate_ising_model_indexed(nonce, &nodes, &edges, &allowed_h, &allowed_j, &topology)
-                .unwrap()
-        );
     }
 }

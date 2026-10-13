@@ -137,20 +137,18 @@ inputs, but `sample` indexes into the stored slice. Without canonicalization,
 registering `[a, b, c]` and `[b, a, c]` would hash to the same value and yet
 produce different deterministic puzzles from the same nonce.
 
-The graph is not. `nodes` and `edges` are stored in the order the caller
-supplied (`lib.rs:768-778`), and generation draws `h` in stored node order and
-`j` in stored edge order (see [Puzzle generation](#puzzle-generation)). Two
-registrations of the same graph in different node or edge order share a hash
-and would generate different coefficients from the same nonce. Only one of
-them can land: the second fails with `TopologyAlreadyRegistered`. Whichever
-order is registered first becomes the concrete puzzle for that hash.
+The graph is canonicalized too (runtime 119, QuantumPow storage v7).
+`register_topology` stores `canonical_graph(nodes, edges)`: nodes sorted
+ascending, each edge oriented `(min, max)`, then edges sorted as pairs. That is
+the same form the hash is taken over, so two registrations of the same graph in
+different node or edge order share a hash and also generate the same puzzle.
+The v7 migration rewrote topologies registered before 119 into this order;
+their hashes did not change, but the same nonce generates different `h` and `j`
+than it did against the old stored order.
 
-On a live chain this is consensus-safe, because every node reads the one
-stored form from shared state. It does constrain a second implementation. To
-reproduce a puzzle from a topology hash, build it from the `nodes` and `edges`
-stored under that hash in `RegisteredTopologies`, in stored order. Do not
-rebuild them from the graph in any canonical order of your own, including the
-sorted order the hash uses.
+To reproduce a puzzle from a topology hash, build it from the `nodes` and
+`edges` stored under that hash in `RegisteredTopologies`, in stored order. For
+a topology registered on 119 or later, that is the canonical order.
 
 ### The same working graph does not hash the same everywhere
 
@@ -166,21 +164,21 @@ puzzle definitions, never a hardware model.
 ## Puzzle generation
 
 `submit_proof` rebuilds the puzzle from the nonce and the stored topology with
-`generate_ising_model_indexed`
-(`crates/quantum-validation/src/ising.rs:64-106`). A second implementation
+`generate_ising_model_and_frustration`
+(`crates/quantum-validation/src/ising.rs`). A second implementation
 has to match every step:
 
 1. Seed a `rand_chacha` `ChaCha8Rng` with `from_seed`, passing the nonce as
-   its 32 big-endian bytes (`ising.rs:92-93`).
+   its 32 big-endian bytes.
 2. Draw every `h` first: one `sample` of `allowed_h_values` per node, in
    stored node order. Then draw every `j`: one `sample` of `allowed_j_values`
-   per edge, in stored edge order (`:95-103`). The two passes share one RNG
+   per edge, in stored edge order. The two passes share one RNG
    stream, and each `sample` consumes exactly one `next_u32()`.
 3. `h[i]` belongs to `nodes[i]` and `j[k]` to `edges[k]`, the positional
    mapping in [Labels and positions](#labels-and-positions).
 
-Spins are not drawn. The miner submits them, one packed byte vector per
-solution, and the pallet decodes them:
+Spins are not drawn. The miner submits them as one packed byte vector (a
+proof carries exactly one configuration), and the pallet decodes them:
 
 - `unpack_solution` (`crates/quantum-validation/src/packed.rs:31-107`) reads
   one value per node, in node order. For the indexed variants, value `i`
@@ -208,8 +206,8 @@ vector: topology inputs to their canonical hash and its SCALE preimage, a
 nonce to its `h` and `j` sequence, and two packed solutions to their decoded
 spins, signs and energy. The hash is taken over `Set` specs given out of
 order and matches the hash of the sorted specs that registration stores.
-Generation and decoding use the stored specs, since those are the only form a
-chain holds. The graph has five nodes, below the runtime's `MinNodes`, so it
+Generation and decoding use the stored specs and the stored (canonical)
+graph, since those are the only form a chain holds. The graph has five nodes, below the runtime's `MinNodes`, so it
 cannot be registered on chain; none of the pinned functions check that bound.
 The crate code generates the fixture, and a test regenerates it and fails on
 any difference:
@@ -275,7 +273,6 @@ The bounds are `#[pallet::constant]` associated types on `Config`
 | --- | --- | --- |
 | `MaxNodes` | `QuantumPowMaxNodes` | 5,000 |
 | `MaxEdges` | `QuantumPowMaxEdges` | 50,000 |
-| `MaxSolutions` | `QuantumPowMaxSolutions` | 32 |
 | `MinNodes` | `QuantumPowMinNodes` | 16 |
 | `MaxAllowedValues` | `QuantumPowMaxAllowedValues` | 32 |
 
@@ -369,7 +366,7 @@ exist.
 > are no `proof.nodes`/`proof.edges` to cross-check.
 
 Downstream of that lookup the pallet rebuilds the puzzle deterministically
-from the nonce and the registered spec via `generate_ising_model_indexed`
+from the nonce and the registered spec via `generate_ising_model_and_frustration`
 (`:978-989`). The miner supplies a nonce, a salt and spins; every coefficient
 comes from state.
 

@@ -1,0 +1,18 @@
+# Pin the FORMATTING style to match the crates' Rust edition.
+#
+# Every crate here is `edition = "2021"`, and CI gates on
+# `cargo fmt --all -- --check`. But rustfmt's style rules are versioned
+# separately from the language edition, and an editor or agent hook invoking
+# `rustfmt --edition 2024` gets 2024 style — most visibly a different import
+# sort order (`BoundedVec, assert_noop` and `ConstU32, ConstU64, ConstU128`
+# instead of the 2021 ordering).
+#
+# The result was files being silently reformatted into a style the CI gate
+# rejects, and the churn spreading to untouched files in the same crate: one
+# branch picked up 136 lines of pure formatting diff in a benchmarking file
+# nobody had edited. `style_edition` is independent of `--edition`, so setting
+# it here makes the repo the authority no matter how rustfmt is invoked.
+#
+# Moving the crates to edition 2024 means changing this line in the same
+# commit that reformats the tree — deliberately, and once.
+style_edition = "2021"

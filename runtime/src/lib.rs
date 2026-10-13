@@ -266,10 +266,41 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // with an index-building migration, and `ResultReady` plus `OrderResults`
     // move from `claim_reward` to expiry. Call encodings are unchanged, so
     // `transaction_version` stays at 7.
+    // 119 also carries single-dial PoUW difficulty (!71), rebased onto the
+    // !87 controller: `adjust_on_proof` and the continuous `apply_decay` stay
+    // the only difficulty writers (see
+    // docs/quantum-pow-difficulty-controller-decisions.md). 119 has not
+    // shipped, so this folds into it rather than minting 120.
+    // - `DifficultyConfig` sheds `min_solutions` and `min_diversity_milli`;
+    //   `QuantumProof::solutions` is one `PackedSpinBytes` (was a
+    //   `BoundedVec<_, MaxSolutions>`), so the energy bar alone decides.
+    // - Instance pricing: the live threshold is the curve bar; each draw's
+    //   bar is `max(curve_bar, -(Σ|h|+Σ|J|))` nudged by a σ-scaled frustration
+    //   handicap (`HandicapPerSigmaPermille`). Draws past ±3σ
+    //   (`InstanceOutsideFrustrationBand`) or with no frustrated cycle on a
+    //   cyclic coupling graph (`InstanceIsGaugeTrivial`) are refused. Block
+    //   selection ranks by `proof_quality`. A win hardens the live threshold
+    //   by the proof's depth below its own instance bar.
+    // - New calls: root `set_topology_hardness` (9); permissionless
+    //   `prove_topology_exact` (10) and `prove_topology_planar` (11).
+    //   `prove_topology_planar` can retire the live default topology and halt
+    //   qblock production until governance repoints (accepted trade-off:
+    //   paying for polynomial-time work is worse than pausing).
+    // - Events `TopologyHardnessSet`/`TopologyProvenExact`/
+    //   `TopologyProvenPlanar` are appended; `ProofAccepted` gains two fields.
+    // - `QuantumPowApi` moves to api_version 3 (`DifficultyConfig` and `QBlock`
+    //   changed shape).
+    // - QuantumPow storage 6 -> 7: re-encodes `Difficulties` and `QBlocks`
+    //   (backfilling `instance_bar_milli`), canonicalizes stored graphs, and
+    //   backfills `TopologyDims`. Miners must refresh topology adjacency and
+    //   drop in-flight proofs.
+    // `register_topology` gains a trailing `TopologyHardness`, and
+    // `submit_proof`/`set_difficulty` arguments change shape, so
+    // `transaction_version` moves to 8.
     spec_version: 119,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 7,
+    transaction_version: 8,
     system_version: 1,
 };
 

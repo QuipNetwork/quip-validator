@@ -7488,6 +7488,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "libm",
+ "log",
  "pallet-balances",
  "pallet-emission-controller",
  "parity-scale-codec",

@@ -573,7 +573,6 @@ parameter_types! {
     pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
     pub const QuantumPowMaxNodes: u32 = 5_000;
     pub const QuantumPowMaxEdges: u32 = 50_000;
-    pub const QuantumPowMaxSolutions: u32 = 32;
     pub const QuantumPowMinNodes: u32 = 16;
     /// Decay rate unit. The threshold stays fixed for the first 100 chain
     /// blocks after a qblock, then eases continuously at 4.9375% of the
@@ -581,6 +580,11 @@ parameter_types! {
     /// the one-energy-unit floor per epoch). The gate is set separately by
     /// `TARGET_PROOF_BLOCKS` in pallet-quantum-pow; retune both together.
     pub const QuantumPowEpochLength: BlockNumber = 100;
+    /// Handicap slope, per-mille of the curve bar per sigma of frustration.
+    /// Tunable by upgrade: riff-morph's calibration puts it between 4 and 29
+    /// with correlations under 0.3, and 6 is the low end of that scatter.
+    pub const QuantumPowHandicapPerSigmaPermille: i64 =
+        pallet_quantum_pow::difficulty::DEFAULT_HANDICAP_PER_SIGMA_PERMILLE;
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
@@ -599,6 +603,10 @@ parameter_types! {
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
     pub const QuantumPowCurveCKneeMilli: u32 = 725;
     pub const QuantumPowCurveCHardMilli: u32 = 750;
+    /// Induced width at or below which a topology's core is exactly solvable.
+    /// Matches the riff toolkit's `EXACT_CEILING`; raising it re-classifies
+    /// every registered topology at once as classical solvers improve.
+    pub const QuantumPowExactSolveCeiling: u32 = 20;
 
     pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
     pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
@@ -665,7 +673,6 @@ impl pallet_quantum_pow::Config for Runtime {
     type Currency = Balances;
     type MaxNodes = QuantumPowMaxNodes;
     type MaxEdges = QuantumPowMaxEdges;
-    type MaxSolutions = QuantumPowMaxSolutions;
     type MinNodes = QuantumPowMinNodes;
     type EpochLength = QuantumPowEpochLength;
     type MinerDeposit = QuantumPowMinerDeposit;
@@ -679,6 +686,8 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
+    type ExactSolveCeiling = QuantumPowExactSolveCeiling;
+    type HandicapPerSigmaPermille = QuantumPowHandicapPerSigmaPermille;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

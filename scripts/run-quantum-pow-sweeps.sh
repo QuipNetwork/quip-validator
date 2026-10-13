@@ -1,33 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Targeted fixed-point sweeps for quantum-pow's nonlinear submit_proof model.
+# Targeted fixed-point sweeps for quantum-pow's linear submit_proof model.
 # Run this on the same reference host used for weight generation. Each JSON
-# file retains the raw samples needed to validate the n/e/s cross terms;
-# summary.tsv provides a deterministic compact view for CI and local review,
-# and metadata.json records the run context needed for reproduction.
+# file retains the raw samples needed to validate the n/e terms; summary.tsv
+# provides a deterministic compact view for CI and local review, and
+# metadata.json records the run context needed for reproduction.
 #
-# The public weight combines a generated base/proof/DB charge with a custom
-# nonlinear model:
+# A proof carries exactly one configuration (see `QuantumProof::solutions`),
+# so the public weight is a hand-derived linear model over the topology:
 #
-#   k1*n + k2*e + k3*s*n + k4*s*e + k5*s^2*n + k6*n*e
+#   BASE + Kn*n + Ke*e
 #
 # Use these artifacts to:
 # - compare observed maxima with the committed charge and catch undercharging;
 # - track median/max/spread against a baseline from the same reference host;
-# - localize regressions to node, edge, solution, or interaction-heavy work;
+# - localize regressions to node-, edge-, or interaction-heavy work;
 # - support release reviews and deliberate, conservatively margined recalibration.
 #
-# Do not derive and commit weights from summary.tsv alone. The six points
-# validate the charged envelope, but do not independently identify every model
-# coefficient: only two solution counts are sampled, so separating all three
-# node terms requires another solution level (for example n=5000,e=1,s=16), a
-# targeted microbenchmark, or a coefficient constrained by code analysis.
-# Sweeps also do not replace FRAME generation of base time, proof size, or DB
-# accounting. The safe workflow is: measure on the reference host, compare raw
-# samples and current coverage, derive any change from measurements plus code
-# analysis, regenerate the FRAME base separately, then rerun these points as
-# holdout validation before committing.
+# Do not derive and commit weights from summary.tsv alone. The four points
+# validate the charged envelope only. Sweeps do not replace FRAME generation
+# of base time, proof size, or DB accounting. The safe workflow is: measure on
+# the reference host, compare raw samples and current coverage, derive any
+# change from measurements plus code analysis, regenerate the FRAME base
+# separately, then rerun these points as holdout validation before committing.
+#
+# The benchmark floors the edge count at `n + 4` (five fundamental cycles, so
+# a gauge-trivial draw is a 2^-5 event, not a coin flip) and floors the node
+# count where a simple graph can carry `MaxEdges`, keeping the two components
+# independent. Every point below respects both floors; see
+# `pallets/quantum-pow/src/benchmarking.rs` for the derivations.
 
 REPEAT="${REPEAT:-20}"
 BIN="${BIN:-${CARGO_TARGET_DIR:-target}/release/quip-network-node}"
@@ -76,26 +78,25 @@ METADATA_FILE="$OUTPUT_DIR/metadata.json"
 rm -f "$METADATA_FILE"
 
 points=(
-  # Practical floor: generated base, minimum dimensions, and DB overhead.
-  "minimum:16,1,1"
-  # Large-node slope with one solution.
-  "nodes:5000,1,1"
-  # Large-edge slope with one solution.
-  "edges:16,50000,1"
-  # Solution×node and solution²×node work with edges minimized.
-  "solution_nodes:5000,1,32"
-  # Solution×edge work with nodes minimized.
-  "solution_edges:16,50000,32"
+  # Practical floor: the node floor keeping `e` independent of `n`
+  # (`n(n-1)/2 >= MaxEdges` first holds at 317) and its path-plus-five-cycles
+  # edge floor.
+  "minimum:317,321"
+  # Large-node slope with edges floored at `n + 4`.
+  "nodes:5000,5004"
+  # Large-edge slope with nodes floored: 317 nodes carry 50_086 simple edges,
+  # so `MaxEdges` clears the simple-graph cap.
+  "edges:317,50000"
   # Aggregate maximum; catches interaction costs missed by isolated axes.
-  "worst_case:5000,50000,32"
+  "worst_case:5000,50000"
 )
 
-printf 'point\tnodes\tedges\tsolutions\tsamples\tmin_ns\tmedian_ns\tmax_ns\n' > "$SUMMARY_FILE"
+printf 'point\tnodes\tedges\tsamples\tmin_ns\tmedian_ns\tmax_ns\n' > "$SUMMARY_FILE"
 
 for entry in "${points[@]}"; do
   name="${entry%%:*}"
   dimensions="${entry#*:}"
-  IFS=',' read -r nodes edges solutions <<< "$dimensions"
+  IFS=',' read -r nodes edges <<< "$dimensions"
   output="$OUTPUT_DIR/$name.json"
   rm -f "$output"
 
@@ -121,7 +122,6 @@ for entry in "${points[@]}"; do
     "$JQ" -er \
       --argjson nodes "$nodes" \
       --argjson edges "$edges" \
-      --argjson solutions "$solutions" \
       --argjson minimum_samples "$REPEAT" '
         if type != "array" or length != 1 then
           error("expected exactly one benchmark result")
@@ -140,7 +140,7 @@ for entry in "${points[@]}"; do
             [.components[] | {key: .[0], value: .[1]}]
             | from_entries
           )
-            != {"n": $nodes, "e": $edges, "s": $solutions}) then
+            != {"n": $nodes, "e": $edges}) then
           error("sample dimensions do not match the requested fixed point")
         else
           [.[0].time_results[].extrinsic_time] | sort
@@ -159,8 +159,8 @@ for entry in "${points[@]}"; do
     exit 1
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$name" "$nodes" "$edges" "$solutions" "$stats" >> "$SUMMARY_FILE"
+  printf '%s\t%s\t%s\t%s\n' \
+    "$name" "$nodes" "$edges" "$stats" >> "$SUMMARY_FILE"
   printf '%s\n' "$stats" \
     | awk -F '\t' '{printf "samples=%s min_ns=%s median_ns=%s max_ns=%s\n", $1, $2, $3, $4}'
 done
@@ -183,8 +183,7 @@ points_json="$(
                 name: .[0],
                 nodes: (.[1] | tonumber),
                 edges: (.[2] | tonumber),
-                solutions: (.[3] | tonumber),
-                sample_count: (.[4] | tonumber)
+                sample_count: (.[3] | tonumber)
               }
           )
       '
@@ -311,14 +310,13 @@ if ! "$JQ" -e '
     and .sweep.steps == 2
     and (.sweep.repeat | type == "number" and . > 0)
     and .sweep.min_duration == 0
-    and .sweep.point_count == 6
-    and (.sweep.points | type == "array" and length == 6)
-    and ([.sweep.points[].name] | unique | length == 6)
+    and .sweep.point_count == 4
+    and (.sweep.points | type == "array" and length == 4)
+    and ([.sweep.points[].name] | unique | length == 4)
     and all(.sweep.points[];
       (.name | type) == "string"
       and (.nodes | type) == "number"
       and (.edges | type) == "number"
-      and (.solutions | type) == "number"
       and (.sample_count | type) == "number"
       and .sample_count > 0)
 ' "$METADATA_TMP" >/dev/null; then
@@ -339,7 +337,7 @@ if [ -n "${CI:-}" ]; then
   fi
 fi
 
-while IFS=$'\t' read -r name _nodes _edges _solutions samples _rest; do
+while IFS=$'\t' read -r name _nodes _edges samples _rest; do
   if [ "$name" = "point" ]; then
     continue
   fi

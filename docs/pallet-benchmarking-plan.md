@@ -49,7 +49,7 @@ overhead`, and the runtime wires those values into its block-weight limits.
 | Pallet | Gap |
 | --- | --- |
 | `quantum-compute-mempool` | Five benchmarks fail under production runtime constants because setup uses reward `100`, below the configured minimum of `UNIT`. Its flat weight methods also do not represent topology, solution, ranking, and payout complexity. |
-| `quantum-pow` | The pallet is skip-listed. Its benchmark topology has two nodes while production requires at least sixteen. `register_topology` has variable work but a flat weight, and `submit_proof` contains nonlinear `solutions × nodes`, `solutions × edges`, and `solutions² × nodes` work that the normal additive template cannot model directly. |
+| `quantum-pow` | The pallet is skip-listed. Its benchmark topology has two nodes while production requires at least sixteen. `register_topology` has variable work but a flat weight, and `submit_proof` contains nonlinear `solutions × nodes`, `solutions × edges`, and `solutions² × nodes` work that the normal additive template cannot model directly. *(Since spec 117 a proof carries one configuration: `register_topology` is dimensioned over `(n, e, a)`, `submit_proof` is the hand-derived linear `BASE + Kn·n + Ke·e` validated by the four-point sweep, and the witness extrinsics carry their own measured models.)* |
 | `miner-registry` | Missing from the benchmark registry and has no benchmark feature/module. All dispatchable weights are placeholders, while descriptor processing is variable-sized. |
 | CI preflight | Mock benchmark tests do not exercise production constants. The reference-machine job can therefore discover setup failures only after a costly release build. |
 

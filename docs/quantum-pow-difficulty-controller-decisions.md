@@ -96,3 +96,25 @@ Winner identity cannot make a win ease the threshold.
 This consensus change requires `spec_version = 119`, since 118 is live.
 The storage layout, call encoding, and transaction version remain unchanged.
 The signing fixture must match runtime 119.
+
+## 5. !71 rebases onto the !87 controller and folds into 119
+
+119 has not shipped, so !71's consensus changes join it instead of minting 120.
+Section 4's note that 119 keeps the storage layout, call encoding and
+transaction version no longer holds once !71 lands.
+
+!71 keeps `adjust_on_proof` and the continuous `apply_decay` as the only
+difficulty writers. Its epoch retarget, stepwise decay and the removal of
+`adjust_on_proof` are dropped.
+
+What !71 adds on top:
+
+- `DifficultyConfig` keeps only `max_energy_milli`. A proof carries one
+  configuration.
+- The live threshold is the curve bar. Each draw's bar is
+  `max(curve_bar, -(Σ|h|+Σ|J|))`, nudged by a σ-scaled frustration handicap.
+- A win hardens the live threshold toward
+  `active - (instance_bar - energy)`. That is the proof's depth below its own
+  bar, so a looser handicapped bar cannot dodge hardening.
+- QuantumPow storage moves 6 → 7. `transaction_version` moves 7 → 8.
+  `QuantumPowApi` moves to version 3.
