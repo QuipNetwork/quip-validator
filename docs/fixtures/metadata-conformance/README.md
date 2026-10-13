@@ -64,6 +64,21 @@ Verification fails on missing files, changed hashes, wrong genesis, metadata
 state selection, runtime versions, extrinsic expectations or RPC differences.
 Local fixtures remain verifiable offline after the disposable node stops.
 
+The stock `subxt-core 0.44.3` consumer assertions run with:
+
+```sh
+SKIP_PALLET_REVIVE_FIXTURES=1 cargo test --offline -p quip-protocol-runtime --test metadata_v16
+```
+
+They reconstruct and hash each header, decode all 25 extrinsics and every event
+using the paired metadata, and check signer/public/signature bytes, call fields,
+all twelve extensions, and per-extrinsic outcomes. The archived failed
+`MinerRegistry.participate` calls remain in the blocks and must retain their
+`ExtrinsicFailed` events. Three transfers must have matching `Balances.Transfer`
+events at their own extrinsic index. Synthetic calls added in 118 exercise the
+negative historical-metadata case. This is offline consumer coverage; the
+online stock-subxt smoke and Apps/REST acceptance are separate checks.
+
 ## Capture again
 
 Capture requires a new output directory and refuses non-finalized blocks.

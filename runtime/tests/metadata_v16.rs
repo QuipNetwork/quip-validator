@@ -1,9 +1,11 @@
 // Metadata V16 conformance tests (QUI-901 Phase 1, see
 // `docs/metadata-v15-external-decoding-plan.md`).
 //
-// Hermetic: all metadata comes from `Runtime::metadata_at_version(16)` and
-// all decoding is done in-process by stock `subxt-core` with metadata only —
-// no node, no network.
+// Hermetic: metadata comes from the runtime or the shared, provenance-pinned
+// fixtures. Decoding uses stock subxt-core with metadata only — no node/network.
+
+#[path = "support/metadata_fixtures.rs"]
+mod metadata_fixtures;
 
 use codec::{Decode, Encode};
 use frame_metadata::{v16::RuntimeMetadataV16, RuntimeMetadata, RuntimeMetadataPrefixed};
@@ -331,4 +333,14 @@ fn stock_subxt_decodes_mixed_v5_bare_and_v4_signed_extrinsics() {
     assert!(transfer.is_signed(), "balance transfer must be signed");
     assert_eq!(transfer.pallet_name().unwrap(), "Balances");
     assert_eq!(transfer.variant_name().unwrap(), "transfer_allow_death");
+}
+
+#[test]
+fn stock_subxt_decodes_shared_fields_signatures_extensions_and_events() {
+    metadata_fixtures::assert_all_fixtures(&EXPECTED_EXTENSION_IDENTIFIERS);
+}
+
+#[test]
+fn historical_metadata_selection_rejects_a_call_added_after_the_upgrade() {
+    metadata_fixtures::assert_upgrade_boundary();
 }
