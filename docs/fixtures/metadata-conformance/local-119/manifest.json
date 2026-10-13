@@ -1,0 +1,118 @@
+{
+  "blocks": [
+    {
+      "blockFile": "block-107.json",
+      "eventsFile": "events-107.scale",
+      "executionCodeSha256": "d1126490ef240f287b4b691a1117216495b157d846b667712b6afc105f5aeaa8",
+      "executionCodeStorageHash": "0x3d373884aeeadb68e9bc6e156458a0202713ccc3d9fd310aafe6251a10bc3af9",
+      "executionSpecVersion": 119,
+      "extrinsics": [
+        {
+          "call": "set",
+          "callIndexHex": "0x0100",
+          "callSha256": "04f5206a3b5e8177ec8bf6339887f88f80305e046bf70f29752bc656fef6a12d",
+          "hash": "0x73b90bd0eeb26fb25dd9944259bba37cae775a178f85e10e87ca05080da9d3a2",
+          "index": 0,
+          "now": "1791901230006",
+          "pallet": "Timestamp",
+          "signed": false,
+          "version": 5
+        },
+        {
+          "accountId": "0x808af44598815693be4133f83fee7662b14e4ade7ca81fb91b3932d4845e1a42",
+          "amount": "10000000000000",
+          "call": "transfer_keep_alive",
+          "callIndexHex": "0x0403",
+          "callSha256": "c4c8f852b622190164a07fcab69b95e858a24a85ae4e47d121e493e84109e01f",
+          "destination": "0x191fcc560fd0e49d07721e37c58b68a122bf76ff4bc12fc47cb5d973fcb1329a",
+          "envelopeSha256": "0251dfd7a6445ed932141898a24c6ef266172ac54028d31fe01245cff03c7c6b",
+          "eraHex": "0x00",
+          "extensionHex": "0x00080000",
+          "hash": "0x383d97f9c6857912d35a3a602c40a3ef67d74e8548efde64e5eb0f8734fc0a77",
+          "index": 1,
+          "metadataHashMode": 0,
+          "nonce": "2",
+          "pallet": "Balances",
+          "publicKeySha256": "d3d5fdfd0649be18cd51d2da62d16246f44f43f57b1ff189a5a38708a5f86313",
+          "signatureFieldSha256": "74056a3e50133a4a159553fbbc1d3a31ad20f25542e329baa8d14d926051748a",
+          "signed": true,
+          "tip": "0",
+          "version": 132
+        }
+      ],
+      "hash": "0x9fc7b9db93a96ea3769769ab276342fa0a932be0ac368bfbc6cdfb7488301681",
+      "metadataFile": "metadata-107.scale",
+      "metadataStateHash": "0x3650f0f868acc2c201fc7331c8786b55ad8aa6ab4a949ac687f1433fc3735238",
+      "metadataVersion": 16,
+      "number": 107,
+      "parentHash": "0x3650f0f868acc2c201fc7331c8786b55ad8aa6ab4a949ac687f1433fc3735238",
+      "postStateSpecVersion": 119,
+      "transactionVersion": 7
+    }
+  ],
+  "buildArtifact": {
+    "name": "quip_protocol_runtime.wasm",
+    "sha256": "d1126490ef240f287b4b691a1117216495b157d846b667712b6afc105f5aeaa8"
+  },
+  "buildFeatures": [
+    "std"
+  ],
+  "capturedAt": "2026-10-13T14:21:39.649398+00:00",
+  "files": {
+    "block-107.json": {
+      "bytes": 5521,
+      "encoding": "json",
+      "method": "chain_getBlock",
+      "params": [
+        "0x9fc7b9db93a96ea3769769ab276342fa0a932be0ac368bfbc6cdfb7488301681"
+      ],
+      "sha256": "5e55ca2ef6a9251c6d84e0aa443d1bb6dd4b247c84b0d9d383213dfa3ef837e9"
+    },
+    "events-107.scale": {
+      "bytes": 465,
+      "encoding": "scale",
+      "method": "state_getStorage",
+      "params": [
+        "0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7",
+        "0x9fc7b9db93a96ea3769769ab276342fa0a932be0ac368bfbc6cdfb7488301681"
+      ],
+      "sha256": "0aa3cd95c1a2c4819616aa216aca0e350dfb95a72d0dc999443168c23ea5a5a5"
+    },
+    "metadata-107.scale": {
+      "bytes": 236373,
+      "encoding": "scale",
+      "method": "state_getMetadata",
+      "params": [
+        "0x3650f0f868acc2c201fc7331c8786b55ad8aa6ab4a949ac687f1433fc3735238"
+      ],
+      "sha256": "c37bbc6fd08ed2974dc1fb5ce7ae5bd28758e96df3bdef43c5da44ebcd2bc774"
+    },
+    "runtime-parent-107.json": {
+      "bytes": 1033,
+      "encoding": "json",
+      "method": "state_getRuntimeVersion",
+      "params": [
+        "0x3650f0f868acc2c201fc7331c8786b55ad8aa6ab4a949ac687f1433fc3735238"
+      ],
+      "sha256": "9da3d8560aab75a9add11cd913bb0081bddfb442af4027b7729f5ceabec9f2a5"
+    },
+    "runtime-post-107.json": {
+      "bytes": 1033,
+      "encoding": "json",
+      "method": "state_getRuntimeVersion",
+      "params": [
+        "0x9fc7b9db93a96ea3769769ab276342fa0a932be0ac368bfbc6cdfb7488301681"
+      ],
+      "sha256": "9da3d8560aab75a9add11cd913bb0081bddfb442af4027b7729f5ceabec9f2a5"
+    }
+  },
+  "finalizedAtCapture": {
+    "hash": "0xa601d3e68c9b7c86ff47ab5f4b6ebd4f4055df9c30a3629a6c509f1bf255bc06",
+    "number": 115
+  },
+  "genesisHash": "0x274008bb70ea4875e8dee64b1268c3c35b350f6f2eda4d69828100dca53d3ccd",
+  "kind": "local-non-benchmark",
+  "rpc": "http://127.0.0.1:19944",
+  "schemaVersion": 1,
+  "sourceCommit": "e5de2ddcb347565d15b75df823a116b67f5b602d"
+}

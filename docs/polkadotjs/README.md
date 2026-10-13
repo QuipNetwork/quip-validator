@@ -64,6 +64,9 @@ This is a synthetic FRAME test fixture, not an on-chain transaction: its
 genesis/block hash comes from the test state (`0x45` repeated 32 times).
 The signer JSON is checked to encode to exactly the exported raw signing
 payload, including the disabled metadata-hash extension.
+`signerPayload` is the `SignerPayloadJSON` extension shape, suitable for
+`ExtrinsicPayload` or `signPayload`. The internal `SignerPayload` codec instead
+takes the version fields inside `runtimeVersion`.
 
 ## Metadata Compatibility
 

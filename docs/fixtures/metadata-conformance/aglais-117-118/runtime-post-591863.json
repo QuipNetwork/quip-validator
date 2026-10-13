@@ -1,0 +1,80 @@
+{
+  "apis": [
+    [
+      "0x8c403e5c4a9fd442",
+      1
+    ],
+    [
+      "0xab3c0572291feb8b",
+      2
+    ],
+    [
+      "0x3107b6d741d617f6",
+      1
+    ],
+    [
+      "0x37e397fc7c91f5e4",
+      2
+    ],
+    [
+      "0x37c8bb1350a9a2a8",
+      4
+    ],
+    [
+      "0xd2bc9897eed08f15",
+      3
+    ],
+    [
+      "0xed99c5acb25eedf5",
+      3
+    ],
+    [
+      "0xfbc577b9d747efd6",
+      1
+    ],
+    [
+      "0xf3ff14d5ab527059",
+      3
+    ],
+    [
+      "0x40fe3ad401f8959a",
+      6
+    ],
+    [
+      "0xbc9d89904f5b923f",
+      1
+    ],
+    [
+      "0x3ab6f66093fb3e09",
+      1
+    ],
+    [
+      "0xccd9de6396c899ca",
+      1
+    ],
+    [
+      "0xf78b278be53f454c",
+      2
+    ],
+    [
+      "0xcbca25e39f142387",
+      2
+    ],
+    [
+      "0x17f0e16273cf5f3b",
+      2
+    ],
+    [
+      "0xdf6acb689907609b",
+      5
+    ]
+  ],
+  "authoringVersion": 1,
+  "implName": "quip",
+  "implVersion": 1,
+  "specName": "quip",
+  "specVersion": 118,
+  "stateVersion": 1,
+  "systemVersion": 1,
+  "transactionVersion": 7
+}
