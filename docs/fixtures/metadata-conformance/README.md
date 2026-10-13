@@ -1,7 +1,8 @@
 # Metadata consumer fixtures
 
 These are shared inputs for QUI-901's Rust, Apps and REST conformance tests.
-They are fixture evidence, not a claim that every consumer already passes.
+See the [reviewed consumer matrix](../../metadata-consumer-compatibility.md) for
+passing configurations and explicit stock failures.
 
 | Directory | Execution runtime | Cases |
 | --- | --- | --- |
@@ -139,6 +140,8 @@ without the Benchmark API, and exact equality between the supplied Wasm and
 the executing `:code`. A 60-second deadline bounds RPC work. The jsonrpsee
 transport response limit is raised from 10 MiB to 32 MiB for the debug Wasm's
 approximately 15 MB hex-encoded `:code` response; metadata decoding stays stock.
+This cap is specific to the provenance check, not a requirement for ordinary
+block decoding.
 
 It verifies finality and canonical block/header hashes, raw body byte parity
 and order, the V5 bare timestamp followed by the V4 signed fixture transfer,
@@ -164,7 +167,8 @@ first signature byte in the HTTP serializer. The H4 envelope becomes 1,659
 bytes instead of 1,660. This is a consumer serializer defect, not a missing
 Quip type registration. No runtime or signing-format change is required.
 
-The local supported configuration is that exact upstream commit plus
+The local supported configuration for the tested block/event routes is that
+exact upstream commit plus
 [`polkadot-rest-api-0.3.2-signature.patch`](../../../scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch).
 The patch uses the decoded signature's metadata type: enum signatures retain
 the established REST contract of omitting the discriminant; composite/array
@@ -243,3 +247,11 @@ V5 General support, or exposure of extensions absent from the REST JSON schema.
 The broader historical and failure-event fixtures are covered by the separate
 subxt and Apps tests. No types bundle was needed for this supported configuration.
 Stop both disposable processes after testing/review.
+
+Known gaps outside these tested routes remain in the patched service:
+`POST /v1/transaction/parse` still unconditionally strips the first signature
+byte, and `/v1/node/transaction-pool` fee handling (also the `rc/node` variant)
+uses a hand parser assuming 64/65-byte standard signature payloads. These paths
+are not covered by this patch and are unsupported for Quip until fixed/tested.
+This source-review finding is not an HTTP test result. The tested transfers
+have tip zero. See the [final matrix and follow-up scope](../../metadata-consumer-compatibility.md#rest-endpoint-limits-and-remaining-work).

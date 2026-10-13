@@ -5,6 +5,12 @@ Finalized scope: 2026-10-13, after review by **rr** and **reviewer** and the use
 Related ticket: [QUI-901](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid).
 The filename and ticket title retain V15 for historical continuity; this plan targets **V16**.
 
+Implementation results (2026-10-13): [supported consumer matrix, wire layout,
+bundle decision and limits](metadata-consumer-compatibility.md). Implementation
+gates through validator `147fca4` and Apps `2046697423` are approved by reviewer
+and rr. The baseline and sequence below preserve the original plan; final docs
+review and planner-owned ticket handoff remain separate completion steps.
+
 ## Goal and agreed scope
 
 Demonstrate that Quip's published metadata describes its hybrid extrinsics sufficiently for the required consumers, with reproducible decoding tests and documentation.
@@ -38,7 +44,7 @@ rr separately probed the live **aglais runtime 118 / transaction version 7** and
 
 The old tasks to switch legacy metadata from V14 and bump runtime 115 to 116 are complete/obsolete, not new implementation steps. Acceptance below concerns remaining downstream evidence, not repeating that rollout.
 
-## Consumer matrix
+## Planned consumer matrix (see results above)
 
 | Consumer | Starting version / implementation | Required result | Scope |
 |---|---|---|---|
@@ -116,7 +122,7 @@ Acceptance: all three required consumers pass the matrix. No Subscan DB/Redis en
 - Update QUI-901 with the final consumer matrix, fixture provenance, bundle decision and link to the separately owned Go/Subscan follow-up.
 - Do not claim universal external-tool compatibility; acceptance is limited to the tested versions and configurations.
 
-This finalized planning document does not itself publish a package, modify the Linear ticket, implement the changes or deploy a service.
+Implementation evidence is linked above. Repository changes do not themselves publish a package, modify the Linear ticket or deploy a service.
 
 ## Acceptance checklist
 
@@ -129,17 +135,18 @@ Already implemented and reviewed in the source baseline:
 
 Required before QUI-901 closure:
 
-- [ ] Shared fixtures include complete provenance and expected field values.
-- [ ] Stock subxt field-level decoding and finalized-block smoke pass.
-- [ ] Apps regression tests pass without Quip-specific type registration; any signedness patch is documented.
-- [ ] Polkadot REST API block/extrinsic/event tests pass for the pinned version.
-- [ ] Counts, order, indices, decoded values and event associations agree across required consumers.
-- [ ] Historical/upgrade-boundary metadata selection has explicit test coverage.
-- [ ] Account derivation, encoded H4 layout and mixed formats are documented.
-- [ ] The conditional `@quip/types` decision is recorded, with a tested/published package only if required.
-- [ ] The ticket's stale V15, runtime-116 and Sidecar acceptance wording is refreshed.
-- [ ] Reviewer and rr have reviewed the implementation evidence.
-- [ ] The deferred Go/Subscan limitation and follow-up ownership are explicit.
+- [x] Shared fixtures include complete provenance and expected field values.
+- [x] Stock subxt field-level decoding and finalized-block smoke pass.
+- [x] Apps regression tests pass without Quip-specific type registration; any signedness patch is documented.
+- [x] Polkadot REST API tested block/extrinsic/event routes pass on pinned v0.3.2 plus the local metadata-aware signature patch; stock failure and parse/pool gaps remain explicit.
+- [x] Counts, order, indices, decoded values and event associations agree across required consumers.
+- [x] Historical/upgrade-boundary metadata selection has explicit test coverage.
+- [x] Account derivation, encoded H4 layout and mixed formats are documented.
+- [x] The conditional `@quip/types` decision is recorded, with a tested/published package only if required.
+- [ ] Planner confirms the external ticket wording/closure and links the separate follow-ups. Repository handoff text replaces stale V15, runtime-116, mandatory bundle and Sidecar acceptance.
+- [x] Reviewer and rr have reviewed the implementation evidence.
+- [x] The deferred Go/Subscan limitation and follow-up ownership are explicit.
+- [ ] Reviewer and rr approve the final documentation commit.
 
 ## Deferred Go/Subscan follow-up
 

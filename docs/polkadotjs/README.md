@@ -70,9 +70,15 @@ takes the version fields inside `runtimeVersion`.
 
 ## Metadata Compatibility
 
-Quip exposes the hybrid BABE and GRANDPA types through metadata-safe wrapper
-shapes, so current Polkadot.js Apps builds should not require any manual custom
-types just to connect and decode the runtime metadata.
+Quip publishes V16 metadata, including concrete hybrid transaction and consensus
+key/signature shapes. The [tested consumer matrix](../metadata-consumer-compatibility.md)
+pins Apps revision `2046697423e7f5f285caa8bb0d3195b73e85b5d1` with polkadot-js
+16.5.6 and the existing signedness patch. That configuration decodes the shared
+mixed V5-bare/V4-signed fixtures without Quip type overrides. Stock 16.5.6 still
+rejects bare inherents; metadata publication alone does not fix that heuristic.
+No `@quip/types` package is required for the tested configurations. See the
+matrix for account derivation, the 929 + 731 = 1,660-byte H4 envelope, exact
+consumer versions, reproduction commands and REST endpoint limits.
 
 This matters because the hybrid BABE and GRANDPA signatures are larger than the
 classical Substrate defaults, and older metadata representations using a single
