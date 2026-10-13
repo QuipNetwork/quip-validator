@@ -1,0 +1,121 @@
+diff --git a/crates/server/src/utils/extrinsic_decode.rs b/crates/server/src/utils/extrinsic_decode.rs
+--- a/crates/server/src/utils/extrinsic_decode.rs
++++ b/crates/server/src/utils/extrinsic_decode.rs
+@@ -189,7 +189,7 @@
+
+ /// Follow transparent wrappers only. Bound traversal so malformed recursive
+ /// registries cannot loop; unknown shapes conservatively retain the full bytes.
+-fn signature_response_bytes<'a>(
++pub(crate) fn signature_response_bytes<'a>(
+     bytes: &'a [u8],
+     mut ty: u32,
+     types: &PortableRegistry,
+diff --git a/crates/server/src/handlers/transaction/parse.rs b/crates/server/src/handlers/transaction/parse.rs
+--- a/crates/server/src/handlers/transaction/parse.rs
++++ b/crates/server/src/handlers/transaction/parse.rs
+@@ -393,7 +393,7 @@
+ fn extract_signed_info(
+     tx_bytes: &[u8],
+     extrinsic: &frame_decode::extrinsics::Extrinsic<'_, u32>,
+-    _metadata: &Metadata,
++    metadata: &Metadata,
+     ss58_prefix: u16,
+     tx: &str,
+ ) -> Result<SignedInfoResult, ParseErrorKind> {
+@@ -419,14 +419,15 @@
+         }
+     });
+
+-    // Get signature bytes
+-    let sig_bytes = &tx_bytes[sig_payload.signature_range()];
+-    // Strip signature type prefix if present
+-    let signature_hex = if sig_bytes.len() > 1 {
+-        format!("0x{}", hex::encode(&sig_bytes[1..]))
+-    } else {
+-        format!("0x{}", hex::encode(sig_bytes))
+-    };
++    // Share the metadata-aware response contract with the block endpoints.
++    let signature_hex = format!(
++        "0x{}",
++        hex::encode(utils::extrinsic_decode::signature_response_bytes(
++            &tx_bytes[sig_payload.signature_range()],
++            *sig_payload.signature_type(),
++            metadata.types(),
++        ))
++    );
+
+     let signature_info = Some(SignatureInfo {
+         signer: SignerId { id: signer_ss58 },
+@@ -638,4 +639,71 @@
+         );
+         assert_eq!(era.immortal_era, None);
+     }
+-}
++    #[tokio::test]
++    async fn test_parse_standard_signature_variants_preserve_payloads() {
++        use crate::test_fixtures::mock_rpc_client_builder;
++        use parity_scale_codec::{Compact, Encode};
++        use subxt_rpcs::client::RpcClient;
++
++        let rpc = RpcClient::new(mock_rpc_client_builder().build());
++        let client = OnlineClient::<SubstrateConfig>::from_rpc_client(rpc)
++            .await
++            .unwrap();
++        let metadata = client.at_current_block().await.unwrap().metadata().clone();
++        // Real Asset Hub body. Replace only its signature variant/payload; these
++        // synthetic signatures test parsing, not cryptographic verification.
++        let raw = hex::decode("bd01840072284f32719a49037a79da881b91b44bf642395ecba92b241619e21fb1c8a57a01b250abd5b7715a993a111d0db2f6742a8b108fd5a700b5c9e443f9fb14f79938d668ba315e48121b2bd2584b104014e6ede84fe35b77adcc9ff8030de5daef8ab4003e7b0100000000000000").unwrap();
++        let decoded = utils::decode_extrinsic_info(&raw, &metadata).unwrap();
++        let range = decoded.signature_payload().unwrap().signature_range();
++        let mut body = raw.as_slice();
++        Compact::<u32>::decode(&mut body).unwrap();
++        let prefix_len = raw.len() - body.len();
++        let original = parse_internal(
++            &client,
++            0,
++            ParseRequest {
++                tx: Some(hex::encode(&raw)),
++            },
++        )
++        .await
++        .unwrap()
++        .0;
++        assert_eq!(
++            original.signature.as_ref().unwrap().signature,
++            format!("0x{}", hex::encode(&raw[range.start + 1..range.end]))
++        );
++
++        for (variant, length) in [(0_u8, 64_usize), (1, 64), (2, 65)] {
++            let expected = vec![variant + 7; length];
++            let mut body = raw[prefix_len..range.start].to_vec();
++            body.push(variant);
++            body.extend_from_slice(&expected);
++            body.extend_from_slice(&raw[range.end..]);
++            let mut encoded = Compact(u32::try_from(body.len()).unwrap()).encode();
++            encoded.extend(body);
++            let response = parse_internal(
++                &client,
++                0,
++                ParseRequest {
++                    tx: Some(hex::encode(&encoded)),
++                },
++            )
++            .await
++            .unwrap()
++            .0;
++            assert!(response.is_signed);
++            let signature = response.signature.unwrap();
++            assert_eq!(signature.signature, format!("0x{}", hex::encode(expected)));
++            assert_eq!(
++                signature.signer.id,
++                original.signature.as_ref().unwrap().signer.id
++            );
++            assert_eq!(response.method.pallet, original.method.pallet);
++            assert_eq!(response.method.method, original.method.method);
++            assert_eq!(response.args, original.args);
++            assert_eq!(response.nonce, original.nonce);
++            assert_eq!(response.tip, original.tip);
++            assert_eq!(response.era.mortal_era, original.era.mortal_era);
++        }
++    }
++}

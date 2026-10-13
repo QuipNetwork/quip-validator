@@ -21,8 +21,8 @@ Source revision 119 is not a claim that the public network runs 119.
 | Stock subxt, online | `subxt 0.44.3`; validator `a15e0244f136b9e9650897f899d702439c2c73c4` | PASS: finalized local transfer block through `OnlineClient<SubstrateConfig>`, raw body parity, dynamic fields, signature, extensions and events; no Quip types or metadata overrides |
 | Quip Apps | Apps `2046697423e7f5f285caa8bb0d3195b73e85b5d1`, dependency baseline `ca23a8a67ac3b9c16fdc6beac7bdcc5a644d2714`; `api`/`types`/`types-codec` **16.5.6**, `util`/`util-crypto` **14.0.3**, existing signedness patch retained | PASS: same 5 blocks / 25 extrinsics / 107 events / 11 failures / 3 transfers; metadata-only registry, no `chainTypes` or `typesBundle`. This is a decoding regression, not browser UI validation |
 | Stock polkadot-js comparison | Unpatched **16.5.6**, same fixtures | NOT CONFORMANT: all 5 V5 bare inherents rejected by the signature-emptiness heuristic. All 20 signed items and 107 events still decode. The explicit stock mode reproduces this failure; its zero exit code is not a conformance pass |
-| Polkadot REST API block routes | **v0.3.2**, upstream `283555b8e8e9cf488b11e9dbc1ba5f12344f5319`, plus the [local signature patch](../scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch) committed in validator `147fca4a974c6f7d5f957f2570fe64db401e7119`; upstream uses subxt **0.51.1** | PASS: actual HTTP service, local finalized mixed block with 2 extrinsics and 14 events; count/order/index, fields, raw bytes, complete 1,660-byte envelope and event phases. Only the routes listed below are covered |
-| Stock Polkadot REST API | Same **v0.3.2**, without the patch | NOT CONFORMANT: block and per-extrinsic responses drop the first envelope byte, returning 1,659 bytes. Default strict test fails; explicit stock mode proves exact `envelope[1:]` truncation |
+| Polkadot REST API block/event/parse routes | **v0.3.2**, upstream `283555b8e8e9cf488b11e9dbc1ba5f12344f5319`, plus the [local signature patch](../scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch) committed in validator `147fca4a974c6f7d5f957f2570fe64db401e7119`, then the [parse follow-on patch](../scripts/metadata-conformance/polkadot-rest-api-0.3.2-transaction-parse.patch); upstream uses subxt **0.51.1** | PASS: actual HTTP service, local finalized mixed block with 2 extrinsics and 14 events; count/order/index, fields, raw bytes, complete 1,660-byte envelope and event phases. Parse also retains exact envelope/signer/call parity for both items. Only the routes listed below are covered |
+| Stock Polkadot REST API | Same **v0.3.2**, without the patch | NOT CONFORMANT: block, per-extrinsic and parse responses drop the first envelope byte, returning 1,659 bytes. Default strict test fails; explicit stock mode proves exact `envelope[1:]` truncation |
 | Go / Subscan | `scale.go v1.11.2` evidence | DEFERRED: V16 metadata parses, but stock hybrid-signed extrinsic decoding fails. Scratch decoder fixes are not complete-indexer acceptance; no production deployment, DB/Redis audit or historical repair is claimed |
 
 The Apps patch is
@@ -107,33 +107,44 @@ built from validator `a15e0244f136b9e9650897f899d702439c2c73c4`. Reproduction us
 fresh disposable node/capture, so generated hashes and block numbers can change.
 Both reviewers independently reran the patched HTTP test and the six Rust
 extrinsic tests. The patch also passed strict library clippy. The temporary
-services were stopped after review; no upstream patch publication or service
+services from that run were stopped after review; no upstream patch publication or service
 deployment was performed.
+
+The [parse follow-on results](fixtures/metadata-conformance/rest-0.3.2-parse-results.json)
+record a fresh block **11**, the same ordinary `a15e024` runtime artifact and both
+patches in application order. Before the second patch, block signature bytes
+are correct while parse still truncates; strict HTTP mode fails. With both
+patches, both bare and signed parse responses match the block fields, including
+the full raw signature envelope. Known-failure mode rejects the corrected
+service. Five parse and six extrinsic unit tests pass; the full parse path
+covers standard Ed25519/Sr25519/ECDSA payloads, while actual HTTP checks cover
+Quip's composite. Strict library/test clippy passes. This is additional evidence,
+not a revision to the original block-only run.
 
 ## REST endpoint limits and remaining work
 
 The REST acceptance covers these **`/v1` routes only**, with block fee processing
-enabled by default:
+enabled by default; transaction parsing uses current metadata:
 
 - `GET /blocks/{hash}`
 - `GET /blocks/{hash}/extrinsics/{index}` for both bare and signed indices
 - `GET /blocks/{hash}/extrinsics-raw`
 - `GET /pallets/system/storage/events?at={hash}`
+- `POST /transaction/parse` with each raw bare/signed extrinsic; parsing does not submit it
 
-Two known assumptions survive outside this patch and must remain visible to
-wallet/exchange integrators:
+The known remaining signature-length assumption is **`GET
+/node/transaction-pool` with fees**, including the `rc/node` variant. It uses
+`handlers/node/common.rs::extract_tip_from_extrinsic_bytes`, which assumes
+standard 64/65-byte `MultiSignature` payloads. It can fail or misparse hybrid
+transaction extensions and affect fee/priority handling. Treat it as unsupported
+for hybrid envelopes pending a metadata-driven fix and endpoint regression;
+fee-estimation redesign is outside QUI-901.
 
-- **`POST /transaction/parse`** still unconditionally strips the first signature
-  byte in `handlers/transaction/parse.rs`, so composite signatures are truncated.
-- **`GET /node/transaction-pool` with fees**, including the `rc/node` variant,
-  uses `handlers/node/common.rs::extract_tip_from_extrinsic_bytes`, which assumes
-  standard 64/65-byte `MultiSignature` payloads. It can fail or misparse hybrid
-  transaction extensions. Treat this path as unsupported for Quip pending a
-  metadata-driven fix and endpoint regression.
-
-These residual findings were confirmed by source review; those HTTP paths were
-not acceptance-tested. The current patch must not be advertised as complete
-REST API compatibility. Planner owns the REST follow-up and ticket reporting.
+This pool risk is source-identified, not live-reproduced. The former
+`POST /transaction/parse` truncation is corrected by the second patch and covered
+by actual HTTP regression. Its relay-chain variant shares the helper but is not
+claimed as HTTP-tested. The supported configuration must not be advertised as
+complete REST API compatibility. Planner owns the REST follow-up and reporting.
 
 The local online tests use **tip zero** and disabled metadata-hash mode. They do
 not establish nonzero-tip handling, merkleized/offline signing, arbitrary event
@@ -151,11 +162,20 @@ indexer does not require an old-database audit for QUI-901.
 
 ## Review and ticket handoff
 
-Reviewer and rr approved each implementation gate through validator `147fca4`
-and Apps `2046697423`. The final documentation commit needs its own review.
+Reviewer and rr approved implementation through validator `147fca4`, the
+documentation snapshot `cd799fa`, and Apps `2046697423`. The parse follow-on
+implementation and accompanying documentation need their own commit review.
 Planner owns the external [QUI-901](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid)
-update/closure and follow-up links; this repository does not assert those
-external actions are complete.
+update/closure. Planner confirmed that the ticket title, description and
+acceptance wording remain unchanged; only follow-up comments have been posted:
+
+- [Deferred Go/Subscan work](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid#comment-03b6af11)
+- [Potential upstream fixes](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid#comment-72e8e457)
+- [REST signature serializer fix](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid#comment-e5b4489e)
+- [REST parse/pool scope addendum](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid#comment-f3bbf329)
+
+These are comments on QUI-901, not separately created issues. This repository
+does not assert that the external ticket wording or closure is complete.
 
 The ticket acceptance should describe V16 and the tested configurations above,
 retain stock failures and REST route limits, record **no bundle required**, and

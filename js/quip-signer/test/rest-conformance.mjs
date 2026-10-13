@@ -11,9 +11,11 @@ import { blake2AsHex, decodeAddress } from '@polkadot/util-crypto';
 assert.equal(typesPackage.version, '16.5.6');
 assert.equal(cryptoPackage.version, '14.0.3');
 const [directory, ...flags] = process.argv.slice(2);
-assert(directory && flags.every((flag) => flag === '--expect-stock-truncation'),
-  'usage: node test/rest-conformance.mjs CAPTURE_DIRECTORY [--expect-stock-truncation]');
+assert(directory && flags.every((flag) => ['--expect-stock-truncation', '--expect-parse-truncation'].includes(flag)),
+  'usage: node test/rest-conformance.mjs CAPTURE_DIRECTORY [--expect-stock-truncation | --expect-parse-truncation]');
 const stock = flags.includes('--expect-stock-truncation');
+const parseOnly = flags.includes('--expect-parse-truncation');
+assert(!(stock && parseOnly), 'choose one known-failure configuration');
 const base = new URL(process.env.QUIP_REST_URL || 'http://127.0.0.1:18015');
 assert.equal(base.protocol, 'http:');
 assert(['127.0.0.1', '[::1]'].includes(base.hostname), 'disposable localhost service only');
@@ -66,8 +68,12 @@ assert.equal(rpc.block.extrinsics.length, 2);
 assert.equal(block.extrinsics.length, 2);
 assert.deepEqual(block.extrinsics.map((e) => [e.index, e.version, e.signed]), [[0, 5, false], [1, 132, true]]);
 const responseHashes = {};
-async function get(path, name) {
-  const response = await fetch(new URL('/v1' + path, base), { signal: AbortSignal.timeout(30000), redirect: 'error' });
+async function request(path, name, tx) {
+  const options = { signal: AbortSignal.timeout(30000), redirect: 'error' };
+  if (tx !== undefined) Object.assign(options, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tx })
+  });
+  const response = await fetch(new URL('/v1' + path, base), options);
   assert.equal(response.status, 200, path);
   const body = await response.text();
   responseHashes[name] = sha(body);
@@ -89,19 +95,19 @@ function storageData(value) {
   return value;
 }
 const expectedEvent = ({ event }) => ({ method: { pallet: event.section, method: event.method }, data: decimal(event.data.toPrimitive()) });
-const version = await get('/version', 'version');
+const version = await request('/version', 'version');
 assert.equal(version.version, '0.3.2');
-const result = await get(`/blocks/${block.hash}`, 'block'); // Default fee processing enabled.
+const result = await request(`/blocks/${block.hash}`, 'block'); // Default fee processing enabled.
 assert(!result.partial && !result.decodeError, 'partial blocks are not conformance');
 for (const key of ['hash', 'parentHash']) assert.equal(result[key], block[key]);
 for (const key of ['stateRoot', 'extrinsicsRoot']) assert.equal(result[key], rpc.block.header[key]);
 assert.equal(result.number, String(block.number));
 assert.equal(result.finalized, true);
 assert.equal(result.extrinsics.length, block.extrinsics.length);
-const raw = await get(`/blocks/${block.hash}/extrinsics-raw`, 'raw');
+const raw = await request(`/blocks/${block.hash}/extrinsics-raw`, 'raw');
 assert.equal(BigInt(raw.number), BigInt(block.number));
 assert.deepEqual(raw.extrinsics, rpc.block.extrinsics);
-const events = await get(`/pallets/system/storage/events?at=${block.hash}`, 'events');
+const events = await request(`/pallets/system/storage/events?at=${block.hash}`, 'events');
 assert.deepEqual(events.at, { hash: block.hash, height: String(block.number) });
 assert.equal(events.pallet, 'system');
 assert.equal(events.storageItem, 'events');
@@ -117,15 +123,23 @@ assert.deepEqual(result.onInitialize.events, records.filter((r) => r.phase.isIni
 assert.deepEqual(result.onFinalize.events, records.filter((r) => r.phase.isFinalization).map(expectedEvent));
 let truncations = 0;
 let signatureBytes = 0;
+let parseSignatureBytes = 0;
+let parseTruncations = 0;
 for (const expected of block.extrinsics) {
   const item = result.extrinsics[expected.index];
   assert(!item.decodeError);
   assert.equal(item.hash, expected.hash);
   assert.equal(blake2AsHex(rpc.block.extrinsics[expected.index]), expected.hash);
   assert.deepEqual(item.method, { pallet: camel(expected.pallet), method: camel(expected.call) });
-  const perIndex = await get(`/blocks/${block.hash}/extrinsics/${expected.index}`, `extrinsic-${expected.index}`);
+  const perIndex = await request(`/blocks/${block.hash}/extrinsics/${expected.index}`, `extrinsic-${expected.index}`);
   assert.deepEqual(perIndex.at, { hash: block.hash, height: String(block.number) });
   assert.deepEqual(perIndex.extrinsics, item, 'per-index route retains all fields');
+  // This route only decodes; it never submits or executes the transaction.
+  const parsed = await request('/transaction/parse', `parse-${expected.index}`, rpc.block.extrinsics[expected.index]);
+  assert.equal(parsed.isSigned, expected.signed);
+  for (const key of ['method', 'args', 'hash', 'era']) assert.deepEqual(parsed[key], item[key], `parse/block ${key}`);
+  for (const key of ['nonce', 'tip']) assert.equal(parsed[key] ?? null, item[key], `parse/block ${key}`);
+
   const scoped = records.filter((r) => r.phase.isApplyExtrinsic && r.phase.asApplyExtrinsic.toNumber() === expected.index);
   assert.deepEqual(item.events, scoped.map(expectedEvent), 'all phase-associated event fields');
   const outcomes = scoped.filter((r) => r.event.section === 'system' && ['ExtrinsicSuccess', 'ExtrinsicFailed'].includes(r.event.method));
@@ -135,6 +149,7 @@ for (const expected of block.extrinsics) {
   assert.deepEqual(item.era, { immortalEra: '0x00' });
   if (!expected.signed) {
     assert.equal(item.signature, null);
+    for (const key of ['signature', 'nonce', 'tip']) assert(!Object.hasOwn(parsed, key), `bare parse must omit ${key}`);
     assert.equal(item.nonce, null);
     assert.equal(item.tip, null);
     assert.equal(item.paysFee, false);
@@ -144,6 +159,19 @@ for (const expected of block.extrinsics) {
     const signature = extrinsic.signature.toU8a();
     assert.equal(signature.length, 1660);
     assert.equal(sha(signature), expected.envelopeSha256);
+    assert.deepEqual(Object.keys(parsed.signature).sort(), ['signature', 'signer']);
+    assert.deepEqual(parsed.signature.signer, item.signature.signer);
+    parseSignatureBytes = (parsed.signature.signature.length - 2) / 2;
+    if (stock || parseOnly) {
+      assert.equal(parseSignatureBytes, 1659, 'known parse truncation length');
+      assert.equal(parsed.signature.signature, hex(signature.subarray(1)), 'exact parse one-byte truncation must reproduce');
+      parseTruncations++;
+    } else {
+      assert.equal(parseSignatureBytes, 1660, 'parse must retain the complete signature envelope');
+      assert.equal(parsed.signature.signature, hex(signature), 'parse raw-envelope byte equality');
+      assert.deepEqual(parsed.signature, item.signature, 'parse/block signature and signer equality');
+    }
+
     assert.equal(hex(decodeAddress(item.signature.signer.id)), expected.accountId);
     assert.equal(hex(decodeAddress(item.args.dest.id)), expected.destination);
     assert.deepEqual(Object.keys(item.args).sort(), ['dest', 'value']);
@@ -170,6 +198,18 @@ for (const expected of block.extrinsics) {
   }
 }
 assert.equal(truncations, stock ? 1 : 0);
-const report = { configuration: stock ? 'stock 0.3.2: known signature truncation reproduced (NOT CONFORMANT)' : 'REST 0.3.2 HTTP conformance: PASS', oracle: { types: typesPackage.version, crypto: cryptoPackage.version }, manifestSha256: sha(manifestBytes), sourceCommit: manifest.sourceCommit, runtimeCodeSha256: manifest.buildArtifact.sha256, blockHash: block.hash, blocks: 1, bare: 1, signed: 1, events: records.length, signatureBytes, knownTruncations: truncations, responseHashes };
+assert.equal(parseTruncations, stock || parseOnly ? 1 : 0);
+const configuration = stock
+  ? 'stock 0.3.2: known signature truncation reproduced (NOT CONFORMANT)'
+  : parseOnly
+    ? 'REST 0.3.2 with block patch only: known parse truncation reproduced (NOT CONFORMANT for parse)'
+    : 'REST 0.3.2 tested block/event/parse routes: PASS';
+const report = {
+  configuration, oracle: { types: typesPackage.version, crypto: cryptoPackage.version },
+  manifestSha256: sha(manifestBytes), sourceCommit: manifest.sourceCommit,
+  runtimeCodeSha256: manifest.buildArtifact.sha256, blockHash: block.hash,
+  blocks: 1, bare: 1, signed: 1, events: records.length, signatureBytes, parseSignatureBytes,
+  knownTruncations: truncations, knownParseTruncations: parseTruncations, responseHashes
+};
 if (evidence) writeFileSync(join(evidence, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 console.log(JSON.stringify(report, null, 2));

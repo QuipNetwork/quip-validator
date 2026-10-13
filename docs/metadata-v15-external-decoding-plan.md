@@ -8,8 +8,10 @@ The filename and ticket title retain V15 for historical continuity; this plan ta
 Implementation results (2026-10-13): [supported consumer matrix, wire layout,
 bundle decision and limits](metadata-consumer-compatibility.md). Implementation
 gates through validator `147fca4` and Apps `2046697423` are approved by reviewer
-and rr. The baseline and sequence below preserve the original plan; final docs
-review and planner-owned ticket handoff remain separate completion steps.
+and rr, as is documentation snapshot `cd799fa`. The requested transaction-parse
+follow-on has separate tests/evidence and awaits its own review. The baseline
+and sequence below preserve the original plan; planner owns external ticket
+wording/closure and follow-up linkage.
 
 ## Goal and agreed scope
 
@@ -138,7 +140,7 @@ Required before QUI-901 closure:
 - [x] Shared fixtures include complete provenance and expected field values.
 - [x] Stock subxt field-level decoding and finalized-block smoke pass.
 - [x] Apps regression tests pass without Quip-specific type registration; any signedness patch is documented.
-- [x] Polkadot REST API tested block/extrinsic/event routes pass on pinned v0.3.2 plus the local metadata-aware signature patch; stock failure and parse/pool gaps remain explicit.
+- [x] Polkadot REST API tested block/extrinsic/event/parse routes pass on pinned v0.3.2 plus both local metadata-aware signature patches; stock failure and deferred pool fee/priority limitation remain explicit.
 - [x] Counts, order, indices, decoded values and event associations agree across required consumers.
 - [x] Historical/upgrade-boundary metadata selection has explicit test coverage.
 - [x] Account derivation, encoded H4 layout and mixed formats are documented.
@@ -146,11 +148,13 @@ Required before QUI-901 closure:
 - [ ] Planner confirms the external ticket wording/closure and links the separate follow-ups. Repository handoff text replaces stale V15, runtime-116, mandatory bundle and Sidecar acceptance.
 - [x] Reviewer and rr have reviewed the implementation evidence.
 - [x] The deferred Go/Subscan limitation and follow-up ownership are explicit.
-- [ ] Reviewer and rr approve the final documentation commit.
+- [x] Reviewer and rr approved documentation snapshot `cd799fa`.
+- [ ] Reviewer and rr approve the requested transaction-parse follow-on and updated endpoint documentation.
 
 ## Deferred Go/Subscan follow-up
 
 This section preserves the research and proposed follow-up without adding it to QUI-901's implementation gates.
+Planner recorded it in the [Go/Subscan follow-up comment](https://linear.app/quip-network/issue/QUI-901/metadata-v15-published-type-bundle-so-external-tools-decode-hybrid#comment-03b6af11); no separate issue has been created. Go/explorer owns implementation, with planner coordinating scheduling/linkage.
 
 Verified release findings:
 

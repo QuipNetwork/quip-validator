@@ -167,16 +167,24 @@ first signature byte in the HTTP serializer. The H4 envelope becomes 1,659
 bytes instead of 1,660. This is a consumer serializer defect, not a missing
 Quip type registration. No runtime or signing-format change is required.
 
-The local supported configuration for the tested block/event routes is that
-exact upstream commit plus
-[`polkadot-rest-api-0.3.2-signature.patch`](../../../scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch).
+The local supported configuration for the tested block/event/parse routes is
+that exact upstream commit plus these patches, applied in order:
+
+1. [`polkadot-rest-api-0.3.2-signature.patch`](../../../scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch)
+2. [`polkadot-rest-api-0.3.2-transaction-parse.patch`](../../../scripts/metadata-conformance/polkadot-rest-api-0.3.2-transaction-parse.patch)
+
+The second patch reuses the same metadata-aware helper for transaction parsing;
+it does not submit transactions or change signing/fee estimation. Its full
+parse-path regression checks a real Asset Hub signature and all three standard
+signature variants (synthetic payloads test decoding, not signature validity).
+
 The patch uses the decoded signature's metadata type: enum signatures retain
 the established REST contract of omitting the discriminant; composite/array
 signatures retain all bytes. Transparent wrappers are followed with a bounded
 traversal. It contains regressions for composite first bytes 0/1/2, arrays,
 Ed25519/Sr25519/ECDSA enum payloads, a wrapped enum, and the existing real Asset
-Hub signed fixture. It adds no Quip-specific types or branches. The patch is a
-local reproducible artifact, not an upstream release or deployment.
+Hub signed fixture. Neither patch adds Quip-specific types or branches. They
+are local reproducible artifacts, not an upstream release or deployment.
 
 Start the disposable non-benchmark node and produce/capture a fresh transfer
 as above, retaining the node while testing. Use a new capture directory, for
@@ -195,19 +203,22 @@ SAS_SUBSTRATE_URL=ws://127.0.0.1:19944 SAS_EXPRESS_BIND_HOST=127.0.0.1 \
 From the validator root in another terminal, test the **running HTTP service**:
 
 ```sh
-# Must fail on stock: REST must retain the complete signature envelope.
+# Must fail on stock: parse/block must retain the complete signature envelope.
 node js/quip-signer/test/rest-conformance.mjs /tmp/quip-rest-fixture
 # Exit zero here means the exact known bug was reproduced, NOT conformance.
 QUIP_REST_EVIDENCE=/tmp/quip-rest-stock \
   node js/quip-signer/test/rest-conformance.mjs /tmp/quip-rest-fixture --expect-stock-truncation
 ```
 
-Stop the stock service. In its checkout, apply the patch and rebuild:
+Stop the stock service. In its checkout, apply both patches in order and rebuild:
 
 ```sh
 git apply --check "$QUIP_VALIDATOR_ROOT/scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch"
 git apply "$QUIP_VALIDATOR_ROOT/scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch"
+git apply --check "$QUIP_VALIDATOR_ROOT/scripts/metadata-conformance/polkadot-rest-api-0.3.2-transaction-parse.patch"
+git apply "$QUIP_VALIDATOR_ROOT/scripts/metadata-conformance/polkadot-rest-api-0.3.2-transaction-parse.patch"
 cargo test --locked -p polkadot-rest-api --lib utils::extrinsic_decode::tests
+cargo test --locked -p polkadot-rest-api --lib handlers::transaction::parse::tests
 cargo build --locked --bin polkadot-rest-api
 SAS_SUBSTRATE_URL=ws://127.0.0.1:19944 SAS_EXPRESS_BIND_HOST=127.0.0.1 \
   SAS_EXPRESS_PORT=18015 target/debug/polkadot-rest-api
@@ -227,11 +238,15 @@ routes, timestamp and transfer arguments, signer, nonce/tip/era, the complete
 signature bytes, fee/outcome fields and **every event field and phase**. HTTP
 routes are `/v1/blocks/{hash}` with default fees enabled, each
 `/v1/blocks/{hash}/extrinsics/{index}`, `/v1/blocks/{hash}/extrinsics-raw`, and
-`/v1/pallets/system/storage/events?at={hash}`. Missing/partial decoding fails.
+`/v1/pallets/system/storage/events?at={hash}`. It also POSTs each raw extrinsic as
+`{"tx":"0x..."}` to `/v1/transaction/parse` and checks the entire envelope, signer,
+call/arguments, hash, signedness, era, nonce and tip against the block response
+and raw oracle. Bare parse responses must omit signature/nonce/tip. This endpoint
+only decodes and does not execute or submit the input. Missing/partial decoding fails.
 `QUIP_REST_URL` permits a numeric localhost HTTP service (default port 18015);
 `QUIP_REST_EVIDENCE` optionally saves raw responses and a hashed report.
 
-The captured run is recorded in
+The original block-only gate run is recorded in
 [`rest-0.3.2-results.json`](rest-0.3.2-results.json): one V5 bare timestamp, one
 V4 signed transfer, and 14 events, on the same finalized block before/after the
 patch. Strict stock execution failed; explicit stock-reproduction mode passed;
@@ -241,6 +256,16 @@ The results identify upstream commit, patch hash, runtime build and response
 hashes; localhost addresses and generated block hashes are run-specific. Reproduce
 with a fresh producer/capture, rather than expecting this temporary chain to persist.
 
+The follow-on [parse results](rest-0.3.2-parse-results.json) pin both patch hashes
+and a new block-11 run (same ordinary runtime artifact and source `a15e024`). With
+only the first patch, blocks return 1,660 bytes but parse returns 1,659. Strict
+mode fails; `--expect-parse-truncation` proves exactly that residual bug and
+reports NOT CONFORMANT for parse. With both patches, strict mode passes all
+block/event/parse assertions, and that known-failure mode fails. Five parse
+unit tests (including all three standard signature variants), six extrinsic
+unit tests and strict library/test clippy pass. This follow-on does not rewrite
+the historical block-only results.
+
 This is an actual local HTTP-service gate, not a deployed-service audit. It does
 not claim REST historical upgrade-state selection, arbitrary event variants,
 V5 General support, or exposure of extensions absent from the REST JSON schema.
@@ -248,10 +273,10 @@ The broader historical and failure-event fixtures are covered by the separate
 subxt and Apps tests. No types bundle was needed for this supported configuration.
 Stop both disposable processes after testing/review.
 
-Known gaps outside these tested routes remain in the patched service:
-`POST /v1/transaction/parse` still unconditionally strips the first signature
-byte, and `/v1/node/transaction-pool` fee handling (also the `rc/node` variant)
-uses a hand parser assuming 64/65-byte standard signature payloads. These paths
-are not covered by this patch and are unsupported for Quip until fixed/tested.
-This source-review finding is not an HTTP test result. The tested transfers
-have tip zero. See the [final matrix and follow-up scope](../../metadata-consumer-compatibility.md#rest-endpoint-limits-and-remaining-work).
+The known gap outside these tested routes is `/v1/node/transaction-pool` fee and
+priority handling (also the `rc/node` variant): its hand parser assumes 64/65-byte
+standard signature payloads. This path is unsupported for hybrid envelopes until
+fixed/tested; its risk is source-identified, not live-reproduced. Transaction
+parsing uses current metadata only; the relay-chain parse variant shares the
+helper but was not HTTP-tested. The tested transfers have tip zero. See the
+[final matrix and follow-up scope](../../metadata-consumer-compatibility.md#rest-endpoint-limits-and-remaining-work).

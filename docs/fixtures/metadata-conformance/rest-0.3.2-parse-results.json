@@ -1,0 +1,90 @@
+{
+  "upstream": {
+    "repository": "https://github.com/paritytech/polkadot-rest-api",
+    "tag": "v0.3.2",
+    "commit": "283555b8e8e9cf488b11e9dbc1ba5f12344f5319"
+  },
+  "patchesInOrder": [
+    {
+      "file": "scripts/metadata-conformance/polkadot-rest-api-0.3.2-signature.patch",
+      "sha256": "b9339d15d808a5c49abadddb5fb6a6debcec780d3402a5c4d1c8b5c6d2e71f31"
+    },
+    {
+      "file": "scripts/metadata-conformance/polkadot-rest-api-0.3.2-transaction-parse.patch",
+      "sha256": "667b9c58a6df6b3c89764c1887c6678ac6f03e090b5ae64f5bdb42abc129b04b"
+    }
+  ],
+  "validation": {
+    "strictBlockPatchOnlyExitCode": 1,
+    "strictFailure": "parse must retain the complete signature envelope: 1659 !== 1660",
+    "knownParseModeAgainstBothPatchesExitCode": 1,
+    "rustParseTests": {
+      "passed": 5,
+      "failed": 0
+    },
+    "rustExtrinsicDecodeTests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "clippy": "cargo clippy --locked -p polkadot-rest-api --lib --tests -- -D warnings: PASS",
+    "applyCheck": "Both patches apply in order to upstream and reproduce tested source exactly"
+  },
+  "blockPatchOnly": {
+    "configuration": "REST 0.3.2 with block patch only: known parse truncation reproduced (NOT CONFORMANT for parse)",
+    "oracle": {
+      "types": "16.5.6",
+      "crypto": "14.0.3"
+    },
+    "manifestSha256": "e09f1a4c9247a3e30b16b1e81f1c3b97184d8fd264c58205dc4c489b9d8f7294",
+    "sourceCommit": "a15e0244f136b9e9650897f899d702439c2c73c4",
+    "runtimeCodeSha256": "d1126490ef240f287b4b691a1117216495b157d846b667712b6afc105f5aeaa8",
+    "blockHash": "0xaaba317ba417f8d683cc3e54aa7c9d61c1677659c33624dda3caf4ff31aef5d3",
+    "blocks": 1,
+    "bare": 1,
+    "signed": 1,
+    "events": 14,
+    "signatureBytes": 1660,
+    "parseSignatureBytes": 1659,
+    "knownTruncations": 0,
+    "knownParseTruncations": 1,
+    "responseHashes": {
+      "version": "6276491fe8dcb244e6ef6a9a1c9d9a0c5cbd361d4208a0e07bbe5840117795fe",
+      "block": "c4b41cc87ac5c50e79cbdfea4f643d34fd0a849b118a54dc4bb9ecf7f2ca5d58",
+      "raw": "d4b9d6af91e7947e739f51dd9af0098785c2a5acb7c3fb7643cbc73de82f3204",
+      "events": "b85aae0dc5dd822f6c6c1aa2270d82daa4585d0bf19ac601f3905393704b0a13",
+      "extrinsic-0": "95e7084d9e3237e8918d213d91ea9451a767d25986de981dbd5a5dfba233722d",
+      "parse-0": "1dd06ef9179095459cabaa284018d25fa622035ddada9100cca631e1fd7f456c",
+      "extrinsic-1": "819cb25a6b70509df55a82c49e5f9f466280ed8218c385bed176e2409fcf9c96",
+      "parse-1": "dee490c1fdb21198e19d4489da002be9da9bbb90f12b683b72482445e2a06c4e"
+    }
+  },
+  "bothPatches": {
+    "configuration": "REST 0.3.2 tested block/event/parse routes: PASS",
+    "oracle": {
+      "types": "16.5.6",
+      "crypto": "14.0.3"
+    },
+    "manifestSha256": "e09f1a4c9247a3e30b16b1e81f1c3b97184d8fd264c58205dc4c489b9d8f7294",
+    "sourceCommit": "a15e0244f136b9e9650897f899d702439c2c73c4",
+    "runtimeCodeSha256": "d1126490ef240f287b4b691a1117216495b157d846b667712b6afc105f5aeaa8",
+    "blockHash": "0xaaba317ba417f8d683cc3e54aa7c9d61c1677659c33624dda3caf4ff31aef5d3",
+    "blocks": 1,
+    "bare": 1,
+    "signed": 1,
+    "events": 14,
+    "signatureBytes": 1660,
+    "parseSignatureBytes": 1660,
+    "knownTruncations": 0,
+    "knownParseTruncations": 0,
+    "responseHashes": {
+      "version": "6276491fe8dcb244e6ef6a9a1c9d9a0c5cbd361d4208a0e07bbe5840117795fe",
+      "block": "c4b41cc87ac5c50e79cbdfea4f643d34fd0a849b118a54dc4bb9ecf7f2ca5d58",
+      "raw": "d4b9d6af91e7947e739f51dd9af0098785c2a5acb7c3fb7643cbc73de82f3204",
+      "events": "b85aae0dc5dd822f6c6c1aa2270d82daa4585d0bf19ac601f3905393704b0a13",
+      "extrinsic-0": "95e7084d9e3237e8918d213d91ea9451a767d25986de981dbd5a5dfba233722d",
+      "parse-0": "1dd06ef9179095459cabaa284018d25fa622035ddada9100cca631e1fd7f456c",
+      "extrinsic-1": "819cb25a6b70509df55a82c49e5f9f466280ed8218c385bed176e2409fcf9c96",
+      "parse-1": "407886b3a16a979eb101202a7dda1bf9ebbaed4ba40478ae3fb6105039a98551"
+    }
+  }
+}
