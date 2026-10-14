@@ -100,6 +100,39 @@ Because this storage item is exposed through runtime metadata, SDKs can query
 it through the standard Substrate storage RPC. No custom RPC is needed unless a
 client cannot perform or decode metadata-backed `DoubleMap` prefix queries.
 
+### Replacements and retained vectors (runtime 119 reset)
+
+A solver's first valid submission is accepted. A replacement must have a
+**strictly lower** validated minimum energy than that solver's accepted payload,
+even when the solver has fallen outside the top-N ranking. Equal or worse
+submissions fail with `SolutionNotImproved`; payload, ranking, counters, tie
+priority and events remain unchanged. Better submissions still must pass every
+energy, diversity and eligibility rule. Atomic dispatch updates the accepted
+payload and ranking together. Existing ranking rules keep the incumbent on a
+single-best tie and stable ordering in top-N ties.
+
+The stored subset always starts with the first vector attaining the minimum
+validated energy, after VM transformation and ceiling filtering. It then greedily
+adds the vector with the greatest minimum symmetric Hamming distance to those
+already selected, breaking ties by input order. Diversity thresholds apply to
+this actual subset. `min_solutions = None` retains all valid vectors; zero or one
+retains exactly the best vector; larger values require that many valid vectors.
+Positive diversity with an explicit count below two remains invalid. Anchoring
+selection on the actual best vector can yield a different, less diverse subset
+than the old selector: a set accepted previously may now fail `InsufficientDiversity`.
+The threshold is unchanged; clients must supply a qualifying best-anchored set.
+
+SDK/coordinator error handling: decode the pallet error by metadata name.
+`SolutionNotImproved` is a terminal rejection for that unchanged submission:
+stop retrying that payload, retain the accepted submission locally, and retry only
+with a genuinely better solution while the order is open. A signed failed call
+still consumes its nonce and fee. Reconcile inclusion/nonce before sending again.
+A missed `SolutionAccepted` event is not permission to resubmit blindly; query
+`OrderSolutions` at a finalised block. This repository contains API documentation,
+not the external Python coordinator; its deployed regression (QUI-1676,
+`leader_energy_matches_chain=True`) must run after deployment on fresh reset
+orders and has not been claimed as a local validation.
+
 ### Query with substrate-interface
 
 Install the Python client:
@@ -281,3 +314,117 @@ substrate.query(
 For finalized-only processing, subscribe to finalized or imported block
 headers in the adapter process, then call `get_events(block_hash=...)` for each
 block hash before acting on the events.
+
+## Permissionless settlement
+
+`claim_reward(order_id)` lets any signed caller pay the transaction fee to settle
+**all selected winners for one expired order**, using the configured SingleBest,
+TopNEqual or TopNWeighted allocation. It is not a caller-specific winner claim
+or a sweep across orders; there is no caller bounty. The bounded expiry hook must
+have finalised the order first. Result discovery/allocation and native payment
+are separate: use finalised `OrderExpired` evidence for the former, not payment
+events or wall-clock expiry alone.
+
+A failed payout rolls back all winner transfers, counters, closure and proposer
+slot removal; a successfully included failed extrinsic still pays its fee and
+consumes its nonce. An unsolved expired order can be reclaimed by its proposer.
+Neither path changes native reward amounts or executes EVM payments.
+
+## Outstanding proposer capacity (runtime 119 reset)
+
+`ProposerOrders` enumerates non-Closed orders, including expired but unpaid orders.
+The production limit is 32 outstanding orders, not 32 lifetime proposals. Successful
+`claim_reward` or `reclaim_order` removes only that ID, atomically with closure;
+historical `JobOrders`, solutions, results and payee evidence are retained.
+Expiry alone does not free a slot. History requires events or historical order
+queries rather than this bounded capacity index.
+
+An impossible payout retains the slot and reserved funds. The lock/freeze owner
+must resolve the restriction before a signed caller retries. An incomplete reserve
+returns `RewardReserveMissing` and rolls back partial unreserving; restore the
+missing reserve through an authorised recovery before retrying. No cleanup,
+forced-close or solved-order refund mechanism is provided, and eventual closure
+is not guaranteed. Runtime 119 starts with empty indexes at fresh genesis; no
+pre-reset cleanup/import/migration is included.
+
+The [Quip compute interaction protocol](quip-evm-compute-interaction.md) defines
+finalised evidence, remark correlation, retry/reset rules and the independent
+recipient-metadata contract. It does not activate EVM rewards.
+
+## Signed destination metadata (runtime 119 reset)
+
+Call 8, `propose_job_with_payee_requirement`, accepts the original proposal
+arguments followed by `required_chain_id: u64`. It reserves the same native
+reward, applies the same proposer cap and validations, and records an immutable
+`OrderPayeeRequirements[order_id]`. Chain ID zero fails with `InvalidPayeeChain`.
+The original proposal call (3) creates an order without this requirement.
+
+Call 9, `submit_solution_with_payee(order_id, solutions, payee)`, accepts
+`WinnerPayee::V1 { chain_id: u64, address: H160 }`. Its SCALE variant index is 0
+and encoded length is 29 bytes. The destination is bound to the signed solver,
+never a supplied solver account. `InvalidPayee` rejects a zero chain ID or zero
+address. Nonzero u64 chain IDs are syntactically supported; this is not network
+activation or evidence of address ownership. On required orders, the original
+submission call (4) rejects with `PayeeRequired`, and a mismatching call 9 rejects
+with `PayeeChainMismatch`. Having previously stored a matching payee does not
+allow a later call 4 to bypass the requirement. For a registered solver, nonempty
+input and an existing open order/spec, call 4 checks the requirement before
+eligibility, VM/energy validation and strict improvement: it returns `PayeeRequired`
+even if that payload would also fail `SolutionNotImproved`. Origin, registration,
+empty-input, missing order/spec and expiry checks can still fail earlier.
+
+An accepted submission writes `OrderPayees[order_id, solver]` atomically with the
+accepted payload, ranking, counters and events. Strict improvement, VM validation,
+diversity and eligibility rules apply identically to both APIs. Optional payees
+on ordinary native orders are cleared by a later accepted legacy submission.
+Rejected submissions do not update or clear payees. `PayeeRequirementSet` and
+`SolutionPayeeSet` are appended events. `SolutionPayeeSet` reports only accepted
+metadata transitions: adding, changing or clearing a destination. None-to-None
+and identical-payee replacements emit no payee event and skip the metadata write.
+They can still emit normal solution/ranking events. Rejected calls emit neither
+accepted-solution nor payee events.
+Existing call, error and stored order/solution encodings remain stable.
+
+Clients MUST show the chain ID and full address before signing and confirm the
+accepted destination at the finalised submission block. These metadata errors
+and `SolutionNotImproved` require input reconciliation, not blind retries; rejected
+included transactions can still consume nonce and fees. A changed destination
+requires a strictly improving solution before effective expiry. There is no
+payee-only edit API. After expiry, even before a delayed hook runs, destinations
+freeze; native claim/refund and polling-result purge retain them and the solution
+evidence. This supports a finalised-state snapshot without adding closure work.
+
+Storage version 4 adds sparse maps without changing existing values. Deployment
+uses fresh runtime 119 genesis, with empty order/payee indexes; no pre-reset
+payees are imported or inferred. The historical v3-to-v4 version-marker path
+does not rescan expiry indexes or backfill metadata.
+
+Destination metadata neither executes nor promises EVM payment. Native funding,
+rank-based payouts and closure are unchanged, with no royalties. Local Quip EVM
+versus external EVM scope, and the relationship between native and EVM rewards,
+remain deferred. See the [interaction specification](quip-evm-compute-interaction.md)
+for finality, correlation, evidence and deployment requirements.
+
+
+Reserve-isolation follow-up: the current currency uses unnamed, aggregate reserves
+per proposer, not a separate escrow identifier per order. `RewardReserveMissing`
+protects closure when aggregate reserves cannot supply the order amount; other
+reservations can mask an individual order's missing backing. Per-order reserve
+isolation and its recovery policy are tracked in
+[QUI-1822](https://linear.app/quip-network/issue/QUI-1822/isolate-compute-order-reward-backing-from-aggregate-proposer-reserves)
+and remain future work, not implemented in this change.
+
+## Implementation tracking
+
+[QUI-1815](https://linear.app/quip-network/issue/QUI-1815) tracks the overall
+direction, with [QUI-1816](https://linear.app/quip-network/issue/QUI-1816) for
+settlement, [QUI-1818](https://linear.app/quip-network/issue/QUI-1818) for proposer
+capacity and [QUI-1819](https://linear.app/quip-network/issue/QUI-1819) for payee
+direction. These links do not imply payment activation or completed deployment.
+Deferred work is tracked in
+[QUI-1820](https://linear.app/quip-network/issue/QUI-1820/decide-evm-compute-payment-scope-and-implement-the-consuming)
+for EVM scope/rewards and consuming integration,
+[QUI-1821](https://linear.app/quip-network/issue/QUI-1821/specify-solver-and-program-royalties-for-compute-jobs)
+for royalties, and QUI-1822 for per-order reserve isolation and recovery.
+The [interaction protocol](quip-evm-compute-interaction.md#deferred-integration-and-verification-work)
+preserves their admission, evidence, cutover and validation requirements.

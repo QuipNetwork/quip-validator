@@ -24,10 +24,10 @@ pallet-balances.workspace = true
 quantum-validation.workspace = true
 scale-info = { features = ["derive"], workspace = true }
 sp-api.workspace = true
+sp-core.workspace = true
 sp-runtime.workspace = true
 
 [dev-dependencies]
-sp-core = { default-features = true, workspace = true }
 sp-io = { default-features = true, workspace = true }
 sp-runtime = { default-features = true, workspace = true }
 
@@ -42,6 +42,7 @@ std = [
   "quantum-validation/std",
   "scale-info/std",
   "sp-api/std",
+  "sp-core/std",
   "sp-runtime/std",
 ]
 runtime-benchmarks = [

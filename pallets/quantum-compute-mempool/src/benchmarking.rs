@@ -200,6 +200,155 @@ fn propose_order_for<T: Config>(
     order_id
 }
 
+// The bounded closure scan must see a full index with the closing id last.
+fn fill_proposer_index<T: Config>(proposer: &T::AccountId, order_id: u64) {
+    let mut ids: Vec<u64> = (1..T::MaxOrdersPerProposer::get())
+        .map(|i| order_id + u64::from(i))
+        .collect();
+    ids.push(order_id);
+    ProposerOrders::<T>::insert(proposer, bounded::<_, T::MaxOrdersPerProposer>(ids));
+}
+
+// Shared maximal settlement setup; lifecycle variants are measured separately.
+fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::AccountId>, u64) {
+    let caller: T::AccountId = whitelisted_caller();
+    let proposer: T::AccountId = account("proposer", 0, 0);
+    fund_account::<T>(&caller, benchmark_funding::<T>());
+    let winner_count = types::MAX_REWARD_WINNERS;
+    // Keep every weighted payout above the existential deposit, so all
+    // 32 transfers and solver-counter writes execute even in the mock.
+    let payout_floor = benchmark_reward::<T>().max(T::Currency::minimum_balance());
+    let reward = payout_floor.saturating_mul((winner_count * winner_count).saturated_into());
+    let winners: Vec<T::AccountId> = (0..winner_count)
+        .map(|index| account("winner", index, 0))
+        .collect();
+    for winner in &winners {
+        register_solver_for::<T>(winner);
+    }
+    let order_id = propose_order_for::<T>(
+        &proposer,
+        params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None),
+        reward,
+        types::JobMode::Bid {
+            miners: Some(bounded(
+                winners
+                    .iter()
+                    .take(T::MaxBidMiners::get() as usize)
+                    .cloned()
+                    .collect(),
+            )),
+            miner_types: None,
+        },
+        types::RewardResolution::TopNWeighted { n: winner_count },
+        types::ResultDelivery::CallbackWithPoll {
+            endpoint: bounded(vec![b'x'; 256]),
+        },
+    );
+    let ranked: TopSolversOf<T> = bounded(
+        winners
+            .iter()
+            .enumerate()
+            .map(|(index, winner)| types::RankedSolver {
+                solver: winner.clone(),
+                energy_milli: -i64::from(winner_count) + index as i64,
+            })
+            .collect(),
+    );
+    OrderTopSolvers::<T>::insert(order_id, ranked);
+    JobOrders::<T>::mutate(order_id, |maybe_order| {
+        let order = maybe_order.as_mut().expect("benchmark order exists");
+        order.solution_count = winner_count;
+        order.first_solution_at = Some(order.created_at);
+        assert_eq!(order.status, types::OrderStatus::Opened);
+    });
+
+    // Mirror the first-solution reschedule after seeding the maximal ranking.
+    let created_at = JobOrders::<T>::get(order_id).unwrap().created_at;
+    OrdersExpiringAt::<T>::remove(created_at.saturating_add(10u32.into()), order_id);
+    OrdersExpiringAt::<T>::insert(created_at.saturating_add(5u32.into()), order_id, ());
+    // Expiry/result publication is hook work, outside the measured settlement.
+    // Advance every block: the hook intentionally bounds empty-bucket scanning.
+    for offset in 1u32..=5 {
+        let now = created_at.saturating_add(offset.into());
+        frame_system::Pallet::<T>::set_block_number(now);
+        QuantumComputeMempool::<T>::on_initialize(now);
+    }
+    assert_eq!(
+        JobOrders::<T>::get(order_id).unwrap().status,
+        types::OrderStatus::Expired
+    );
+    assert!(!OpenOrders::<T>::contains_key(order_id));
+    assert!(OrderResults::<T>::contains_key(order_id));
+    assert!(!Solvers::<T>::contains_key(&caller));
+
+    fill_proposer_index::<T>(&proposer, order_id);
+    (caller, proposer, winners, order_id)
+}
+
+fn verify_claim_reward<T: Config>(order_id: u64, winners: &[T::AccountId]) {
+    let winner_count = types::MAX_REWARD_WINNERS;
+    let order = JobOrders::<T>::get(order_id).expect("order exists");
+    assert_eq!(order.status, types::OrderStatus::Closed);
+    assert!(!ProposerOrders::<T>::get(&order.proposer).contains(&order_id));
+    assert!(!OpenOrders::<T>::contains_key(order_id));
+    for winner in winners {
+        assert!(Solvers::<T>::get(winner).unwrap().rewards_earned > 0u32.into());
+    }
+    assert_eq!(
+        OrderResults::<T>::get(order_id)
+            .expect("poll result is stored")
+            .winners
+            .len(),
+        winner_count as usize
+    );
+}
+
+// Seed a real accepted maximal payload and a full ranking outside measurement.
+fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountId, u64, i64) {
+    let proposer: T::AccountId = whitelisted_caller();
+    let solver: T::AccountId = account("solver", 0, 0);
+    register_solver_for::<T>(&solver);
+    let mut params = params_with_dimensions::<T>(n, e, Some(s));
+    // An isolated local field makes all-minus strictly worse than all-plus
+    // at every dimension, without relying on a fabricated stored score.
+    params.h_values[0] = -1_000;
+    let order_id = propose_order_for::<T>(
+        &proposer,
+        params,
+        benchmark_reward::<T>(),
+        types::JobMode::Open,
+        types::RewardResolution::TopNEqual {
+            n: types::MAX_REWARD_WINNERS,
+        },
+        types::ResultDelivery::OnChainOnly,
+    );
+    let payee = types::WinnerPayee::V1 {
+        chain_id: 20033,
+        address: sp_core::H160::repeat_byte(1),
+    };
+    assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
+        RawOrigin::Signed(solver.clone()).into(),
+        order_id,
+        bounded(vec![bounded(vec![-1; n as usize]); s as usize]),
+        payee,
+    )
+    .is_ok());
+    let old_energy = OrderSolutions::<T>::get(order_id, &solver)
+        .unwrap()
+        .best_energy_milli;
+    let ranked: TopSolversOf<T> = bounded(
+        (0..types::MAX_REWARD_WINNERS)
+            .map(|index| types::RankedSolver {
+                solver: account("ranked-solver", index, 0),
+                energy_milli: old_energy + i64::from(index),
+            })
+            .collect(),
+    );
+    OrderTopSolvers::<T>::insert(order_id, ranked);
+
+    (solver, order_id, old_energy)
+}
+
 #[benchmarks]
 mod benchmarks {
     use super::*;
@@ -253,7 +402,7 @@ mod benchmarks {
         n: Linear<2, { T::MaxNodes::get() }>,
         e: Linear<1, { T::MaxEdges::get() }>,
         b: Linear<1, { T::MaxBidMiners::get() }>,
-        t: Linear<0, 8>,
+        t: Linear<0, { MinerTypesOf::bound() as u32 }>,
     ) {
         let caller: T::AccountId = whitelisted_caller();
         fund_account::<T>(&caller, benchmark_funding::<T>());
@@ -326,52 +475,193 @@ mod benchmarks {
     }
 
     #[benchmark]
-    fn claim_reward() {
-        let proposer: T::AccountId = whitelisted_caller();
-        let winner_count = types::MAX_REWARD_WINNERS;
-        let reward = benchmark_reward::<T>().saturating_mul(winner_count.saturated_into());
-        let winners: Vec<T::AccountId> = (0..winner_count)
-            .map(|index| account("winner", index, 0))
-            .collect();
-        for winner in &winners {
-            register_solver_for::<T>(winner);
-        }
-        let caller = winners.first().expect("winner set is nonempty").clone();
-        let order_id = propose_order_for::<T>(
-            &proposer,
-            sample_params::<T>(),
+    fn propose_job_with_payee_requirement(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        b: Linear<1, { T::MaxBidMiners::get() }>,
+        t: Linear<0, { MinerTypesOf::bound() as u32 }>,
+    ) {
+        let caller: T::AccountId = whitelisted_caller();
+        fund_account::<T>(&caller, benchmark_funding::<T>());
+        let spec_id = register_spec_for::<T>(&caller);
+        let reward = benchmark_reward::<T>();
+        let miners = bounded((0..b).map(|index| account("bid-miner", index, 0)).collect());
+        let miner_types = if t == 0 {
+            None
+        } else {
+            Some(bounded(vec![types::MinerType::Cpu; t as usize]))
+        };
+
+        #[extrinsic_call]
+        QuantumComputeMempool::propose_job_with_payee_requirement(
+            RawOrigin::Signed(caller.clone()),
+            spec_id,
+            params_with_dimensions::<T>(n, e, None),
             reward,
             types::JobMode::Bid {
-                miners: Some(bounded(vec![caller.clone()])),
-                miner_types: None,
+                miners: Some(miners),
+                miner_types,
             },
-            types::RewardResolution::TopNEqual { n: winner_count },
-            types::ResultDelivery::CallbackWithPoll {
-                endpoint: bounded(b"https://solver.example/result".to_vec()),
+            types::RewardResolution::SingleBest,
+            10u32.into(),
+            5u32.into(),
+            types::ResultDelivery::OnChainOnly,
+            20033,
+        );
+
+        assert!(JobOrders::<T>::contains_key(0));
+        assert_eq!(OrderPayeeRequirements::<T>::get(0), Some(20033));
+    }
+
+    #[benchmark]
+    fn submit_solution_with_payee(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let proposer: T::AccountId = whitelisted_caller();
+        let solver: T::AccountId = account("solver", 0, 0);
+        register_solver_for::<T>(&solver);
+        let min_solutions = if s > 1 { s - 1 } else { 1 };
+        let order_id = propose_order_for::<T>(
+            &proposer,
+            params_with_dimensions::<T>(n, e, Some(min_solutions)),
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::TopNEqual {
+                n: types::MAX_REWARD_WINNERS,
             },
+            types::ResultDelivery::OnChainOnly,
         );
         let ranked: TopSolversOf<T> = bounded(
-            winners
-                .iter()
-                .enumerate()
-                .map(|(index, winner)| types::RankedSolver {
-                    solver: winner.clone(),
-                    energy_milli: -(index as i64) - 1,
+            (0..types::MAX_REWARD_WINNERS)
+                .map(|index| types::RankedSolver {
+                    solver: account("ranked-solver", index, 0),
+                    energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
                 })
                 .collect(),
         );
         OrderTopSolvers::<T>::insert(order_id, ranked);
-        JobOrders::<T>::mutate(order_id, |maybe_order| {
-            let order = maybe_order.as_mut().expect("benchmark order exists");
-            order.solution_count = winner_count;
-            order.status = types::OrderStatus::Expired;
-        });
+
+        OrderPayeeRequirements::<T>::insert(order_id, 20033);
+        let payee = types::WinnerPayee::V1 {
+            chain_id: 20033,
+            address: sp_core::H160::repeat_byte(1),
+        };
+
+        #[extrinsic_call]
+        QuantumComputeMempool::submit_solution_with_payee(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            solutions_with_dimensions::<T>(n, s),
+            payee,
+        );
+
+        assert!(OrderSolutions::<T>::contains_key(order_id, &solver));
+        assert_eq!(OrderPayees::<T>::get(order_id, &solver), Some(payee));
+    }
+
+    // Reading/replacing the largest previously accepted payload is a separate
+    // timing case. Compare this with first-submission rescheduling before
+    // generating the public submission weights.
+    #[benchmark(extra)]
+    fn submit_solution_replacement(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let (solver, order_id, old_energy) = setup_solution_replacement::<T>(n, e, s);
+        OrderPayeeRequirements::<T>::insert(order_id, 20033);
+        let payee = types::WinnerPayee::V1 {
+            chain_id: 20033,
+            address: sp_core::H160::repeat_byte(2),
+        };
+
+        #[extrinsic_call]
+        QuantumComputeMempool::submit_solution_with_payee(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            bounded(vec![bounded(vec![1; n as usize]); s as usize]),
+            payee,
+        );
+
+        assert!(
+            OrderSolutions::<T>::get(order_id, &solver)
+                .unwrap()
+                .best_energy_milli
+                < old_energy
+        );
+        assert_eq!(OrderPayees::<T>::get(order_id, &solver), Some(payee));
+    }
+
+    // Legacy call clears an optional destination while replacing the full payload.
+    #[benchmark(extra)]
+    fn submit_solution_clear_payee(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let (solver, order_id, old_energy) = setup_solution_replacement::<T>(n, e, s);
+        assert!(OrderPayees::<T>::contains_key(order_id, &solver));
+
+        #[extrinsic_call]
+        QuantumComputeMempool::submit_solution(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            bounded(vec![bounded(vec![1; n as usize]); s as usize]),
+        );
+
+        assert!(
+            OrderSolutions::<T>::get(order_id, &solver)
+                .unwrap()
+                .best_energy_milli
+                < old_energy
+        );
+        assert!(!OrderPayees::<T>::contains_key(order_id, &solver));
+        assert!(frame_system::Pallet::<T>::events()
+            .iter()
+            .any(|record| record.event
+                == Event::<T>::SolutionPayeeSet {
+                    order_id,
+                    solver: solver.clone(),
+                    payee: None
+                }
+                .into()));
+    }
+
+    #[benchmark]
+    fn claim_reward() {
+        let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
 
         #[extrinsic_call]
         QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
 
-        let order = JobOrders::<T>::get(order_id).expect("order exists");
-        assert_eq!(order.status, types::OrderStatus::Closed);
+        verify_claim_reward::<T>(order_id, &winners);
+        assert!(T::Currency::free_balance(&proposer) >= T::Currency::minimum_balance());
+    }
+
+    // The public claim weight takes the maximum of both measured lifecycle cases.
+    #[benchmark(extra)]
+    fn claim_reward_dust() {
+        let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
+        let dust = T::Currency::minimum_balance().saturating_sub(1u32.into());
+        // A reserve is a consumer: an independent provider is needed before
+        // free balance can fall below ED. Settlement burns the dust and drops
+        // the balance provider; the independent provider keeps System alive.
+        // Mock ED=1 covers provider removal; production ED>1 also burns dust.
+        frame_system::Pallet::<T>::inc_providers(&proposer);
+        fund_account::<T>(&proposer, dust);
+        assert_eq!(T::Currency::free_balance(&proposer), dust);
+        let issuance = T::Currency::total_issuance();
+
+        #[extrinsic_call]
+        QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
+
+        verify_claim_reward::<T>(order_id, &winners);
+        assert_eq!(T::Currency::total_balance(&proposer), 0u32.into());
+        assert_eq!(frame_system::Pallet::<T>::providers(&proposer), 1);
+        assert_eq!(frame_system::Pallet::<T>::consumers(&proposer), 0);
+        assert_eq!(T::Currency::total_issuance(), issuance.saturating_sub(dust));
     }
 
     #[benchmark]
@@ -387,14 +677,21 @@ mod benchmarks {
         );
         JobOrders::<T>::mutate(order_id, |maybe_order| {
             let order = maybe_order.as_mut().expect("benchmark order exists");
-            order.status = types::OrderStatus::Expired;
+            order.ising_params =
+                params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None);
         });
+
+        fill_proposer_index::<T>(&proposer, order_id);
+        let now = frame_system::Pallet::<T>::block_number().saturating_add(1u32.into());
+        frame_system::Pallet::<T>::set_block_number(now);
+        QuantumComputeMempool::<T>::on_initialize(now);
 
         #[extrinsic_call]
         QuantumComputeMempool::reclaim_order(RawOrigin::Signed(proposer.clone()), order_id);
 
         let order = JobOrders::<T>::get(order_id).expect("order exists");
         assert_eq!(order.status, types::OrderStatus::Closed);
+        assert!(!ProposerOrders::<T>::get(&proposer).contains(&order_id));
     }
 
     #[benchmark]

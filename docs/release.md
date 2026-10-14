@@ -1,5 +1,51 @@
 # Release Checklist
 
+## 0.4.0 package inventory (MR !100)
+
+The 0.3.2 release line moves to **0.4.0** in all 13 inheriting workspace
+packages and the excluded Python binding (14 packages total):
+
+| Package | Version source |
+| --- | --- |
+| `quip-network-node` | workspace |
+| `quip-protocol-runtime` | workspace |
+| `quantum-validation` | workspace |
+| `quip-transaction-crypto` | workspace |
+| `pallet-emission-controller` | workspace |
+| `pallet-evm-chain-id` | workspace |
+| `pallet-faucet-ops` | workspace |
+| `pallet-miner-registry` | workspace |
+| `pallet-quantum-compute-mempool` | workspace |
+| `pallet-quantum-pow` | workspace |
+| `pallet-template` | workspace |
+| `pallet-validator-admission` | workspace |
+| `pallet-xqvm` | workspace |
+| `quip-transaction-crypto-py` / PyPI `quip-signer` | excluded crate's own Cargo manifest |
+
+Both root and Python `Cargo.lock` files track these versions. The excluded
+Python lock had a stale 0.2.2 entry; Cargo refreshed it to match 0.4.0. Python's
+`pyproject.toml` uses `dynamic = ["version"]`; maturin reads the excluded
+crate's version, so no second version field is added. Its release documentation
+allows an independent wheel version; this release explicitly aligns it to 0.4.0.
+
+The independently versioned `quip-transaction-crypto-core` and
+`quip-transaction-crypto-wasm` crates retain **0.1.0**. They explicitly opt out
+of workspace version inheritance, and their path dependencies have no 0.3.2
+constraint. The generated `js/quip-transaction-crypto-wasm/package.json` stays at
+0.1.0 to match its Rust source through wasm-pack. The separate TypeScript
+`@quip-network/quip-signer` package and its package-lock root entries also retain
+0.1.0; the browser CI builds/tests it but does not couple its npm release version
+to the node tag. No third-party package versions or historical release notes
+are rewritten.
+
+Runtime spec **119**, transaction **7**, and mempool storage **4** are unchanged.
+Package versioning does not imply deployment. Runtime 119 targets fresh reset
+genesis. Reference job 17104770617 produced commit `46ab082` with the extra
+mempool lifecycle cases and runtime overhead measurements. Review the generated
+output, Normal dispatch limits and final-head CI before merge/release, as described in
+[pallet benchmarking](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate).
+
+
 ## Pre-tag verification
 
 - [ ] All target-version commits merged to `main` via MR
@@ -79,8 +125,11 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 
 ## Runtime 119 mempool changes
 
-Runtime 119 has not shipped. The next tag that carries it includes these
-`QuantumComputeMempool` changes:
+Runtime 119 has not shipped. Its 0.4.0 release targets a **network reset with
+fresh genesis**, not an in-place upgrade of existing mempool state. Keep runtime
+spec 119 and transaction version 7. Start fresh orders, rankings, proposer indexes,
+payee maps and observation cursors; do not import pre-reset compute state.
+The release includes these `QuantumComputeMempool` changes:
 
 - `IsingParams.min_energy_milli` is renamed to `max_energy_milli`. The SCALE
   position and type are unchanged, so positional decoders keep working.
@@ -95,11 +144,40 @@ Runtime 119 has not shipped. The next tag that carries it includes these
   in the next block. `OrderExpired` fires there for every order. `ResultReady`
   and `OrderResults` move from `claim_reward` to expiry. `claim_reward` only pays
   and emits `RewardClaimed` and `OrderClosed`.
-- Pallet storage version moves 2 to 3. The migration indexes existing open
-  orders. Orders already past expiry are finalised from the upgrade block
-  onwards, eight per block. The migration runs inside one block and reads every
-  open order, so check the `OpenOrders` count on the live chain before scheduling
-  the upgrade.
+- Any signed caller can settle all selected winners for one expired order;
+  there is no caller bounty or global order sweep. Successful settlement/refund
+  atomically releases its proposer slot. Expired unpaid orders retain their
+  slots and funds; the cap bounds outstanding orders rather than lifetime usage.
+- Replacements must strictly improve the solver's accepted energy. Stored
+  vectors retain the actual best vector, and rejected submissions preserve the
+  accepted payload, ranking, destination and events.
+- Appended calls 8 and 9 provide an immutable destination-chain requirement and
+  signed winner-payee metadata. Accepted additions, changes and clearing emit
+  `SolutionPayeeSet`; unchanged metadata is silent. These APIs preserve native
+  funding and settlement and do not activate EVM payments or royalties.
+- Fresh genesis uses **pallet storage version 4**, including sparse requirement
+  and payee maps. No pre-reset payee backfill or state-repair migration is part
+  of this release.
+
+The [reference weight run](pallet-benchmarking-plan.md#permissionless-settlement-reference-coverage-and-release-gate)
+is complete at `46ab082`, including extra lifecycle cases and removal of
+provisional aliases. Final-head review and CI remain required before merge/release.
+Deployment must follow the [reset and cutover protocol](quip-evm-compute-interaction.md#runtime-119-reset-and-deployment-cutover):
+local Quip EVM state resets, while external contracts and Trustee obligations
+need explicit reconciliation. Run the fresh-network SDK regression after launch.
+
+### Retained historical migration paths
+
+The migration code retains support for older storage versions; this is not the
+runtime-119 reset deployment procedure. Starting below storage version 2 clears
+the pallet prefix and reseeds the default spec, leaving no orders to index.
+Starting at version 2 does **not** wipe state: it indexes every existing open
+order. Past-expiry orders can then be finalised from the upgrade block onward,
+eight per block. That indexing reads every open order in one
+upgrade block, so any future in-place use requires a state-size and weight audit.
+The version-3-to-4 path advances the version marker without rescanning expiry
+indexes or inferring payees. Tests of these compatibility paths do not substitute
+for fresh-genesis/reset validation.
 
 ## What v0.2.0 ships
 
