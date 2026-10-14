@@ -118,3 +118,13 @@ What !71 adds on top:
   bar, so a looser handicapped bar cannot dodge hardening.
 - QuantumPow storage moves 6 → 7. `transaction_version` moves 7 → 8.
   `QuantumPowApi` moves to version 3.
+
+## 6. Decay anchor and starting difficulty (narrow fix, 119)
+
+Decay counts from the later of the last win and the last root
+`set_difficulty`. A governance bar therefore gets the full 100-block gate
+instead of being eased the moment it lands after a long round.
+`LastProofBlock` stays the nonce seed and round clock. The anchor stays global;
+per-topology anchors wait for concurrent multi-topology mining (qv-s30.4).
+
+A topology with no stored baseline still starts at its curve's knee.

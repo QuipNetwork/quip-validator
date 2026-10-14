@@ -44,7 +44,7 @@ pub use crate::energy::{
 pub use crate::errors::ValidationError;
 pub use crate::fixed::{MilliDiversity, MilliEnergy, MilliValue, MILLI_SCALE};
 #[cfg(any(feature = "std", feature = "runtime-benchmarks"))]
-pub use crate::hardness::caterpillar_of_cliques;
+pub use crate::hardness::{banded_grid, caterpillar_of_cliques};
 pub use crate::hardness::{
     canonical_graph, cycle_rank, energy_bound_milli, expected_frustration_for, frustration_index,
     frustration_index_milli, frustration_sigmas, induced_width_at_most, loosest_energy_bound_milli,

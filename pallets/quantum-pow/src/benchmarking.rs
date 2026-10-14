@@ -54,19 +54,6 @@ fn allowed_j_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
     AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, SCALE]))
 }
 
-/// A coupling spec that is NOT sign-symmetric. Deliberate.
-///
-/// `register_topology` DERIVES `expected_frustration_milli` for a sign-symmetric
-/// spec, overwriting the declared `0` with `500` and putting `submit_proof`
-/// behind the +/-3 sigma band. Sigma shrinks as cycles grow, so on a large swept
-/// fixture the band is a few milli wide and whether a given `n` lands inside it
-/// depends on the draw — the benchmark would fail at some sweep points only. An
-/// asymmetric spec pins nothing: the declared `0` stands and
-/// `frustration_sigmas` returns `0` unconditionally.
-fn asymmetric_j_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
-    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, 2 * SCALE]))
-}
-
 /// An `n`-node graph carrying `e` edges: a spanning path `0-1-...-(n-1)`
 /// plus chords, so `e - (n - 1)` edges close a fundamental cycle.
 ///
@@ -100,7 +87,7 @@ fn cyclic_topology<T: Config>(n: u32, e: u32) -> (NodesOf<T>, EdgesOf<T>, sp_cor
         &nodes,
         &edges,
         &allowed_h_set::<T>().as_slice(),
-        &asymmetric_j_set::<T>().as_slice(),
+        &allowed_j_set::<T>().as_slice(),
         &allowed_spin_set::<T>().as_slice(),
     );
     (nodes, edges, topology_hash)
@@ -116,17 +103,27 @@ fn register_cyclic_topology_for<T: Config>(
         nodes.clone(),
         edges.clone(),
         allowed_h_set::<T>(),
-        asymmetric_j_set::<T>(),
+        allowed_j_set::<T>(),
         allowed_spin_set::<T>(),
         types::TopologyHardness {
             residual_difficulty: 64,
             core_width: 64,
-            // Declared zero and NOT overwritten, because the spec is not
-            // sign-symmetric. See `asymmetric_j_set`.
             expected_frustration_milli: 0,
         },
     )
     .is_ok());
+    // Registration derives 500 for the sign-symmetric spec, which puts
+    // `submit_proof` behind the ±3σ band. σ shrinks as cycles grow, so on a
+    // large swept fixture whether a draw lands inside depends on `n`, and the
+    // benchmark would fail at some sweep points only. Clearing the
+    // expectation turns the band off (`frustration_sigmas` is 0 without one)
+    // while every per-edge pass still runs. The gauge gate still applies, and
+    // these graphs have enough cycles that a draw is frustrated.
+    TopologyHardnessOf::<T>::mutate(topology_hash, |hardness| {
+        if let Some(hardness) = hardness {
+            hardness.expected_frustration_milli = 0;
+        }
+    });
     (nodes, edges, topology_hash)
 }
 
@@ -220,8 +217,8 @@ fn min_swept_edges<T: Config>() -> u32 {
 
 /// Lower end of `prove_topology_exact`'s node sweep, `ExactSolveCeiling + 1`.
 ///
-/// The caterpillar needs a window of `ceiling + 1` mutually-adjacent vertices to
-/// saturate a bag, so the body floors `node_count` there. Anything lower is a
+/// The banded grid needs `ceiling + 1` vertices before a bag can reach the
+/// ceiling, so the body floors `node_count` there. Anything lower is a
 /// flat prefix, biasing the fitted node slope DOWN on an extrinsic quadratic in
 /// the ceiling.
 ///
@@ -262,7 +259,8 @@ fn allowed_sets_with_total<T: Config>(
     AllowedValueSpec<AllowedValueSetOf<T>>,
 ) {
     let max = T::MaxAllowedValues::get();
-    assert!(total >= 3);
+    // Four, not three: a sign-symmetric J set without zero needs two values.
+    assert!(total >= 4);
     assert!(total <= max.saturating_mul(3));
 
     let mut lengths = [1_u32; 3];
@@ -280,12 +278,35 @@ fn allowed_sets_with_total<T: Config>(
         }
     }
 
+    // Registration requires a sign-symmetric J set without zero, so its
+    // length must be even. Move one value between J and h/spin to make it so,
+    // keeping the total.
+    if lengths[1] % 2 == 1 {
+        let other = if lengths[0] >= lengths[2] { 0 } else { 2 };
+        if lengths[1] == 1 {
+            lengths[other] -= 1;
+            lengths[1] += 1;
+        } else {
+            lengths[1] -= 1;
+            lengths[if lengths[0] < max { 0 } else { 2 }] += 1;
+        }
+    }
+
     // Offsets keep the swept specs valid under registration's refusals:
     // magnitudes stay near SCALE so the curve calibration holds, and the J
-    // set never contains zero, so no all-zero instance is reachable.
+    // set is `±(SCALE + i)`: sign-symmetric and never zero.
+    let half = lengths[1] / 2;
+    let j = AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(
+        (0..half)
+            .flat_map(|i| {
+                let v = SCALE + i as MilliValue;
+                [-v, v]
+            })
+            .collect(),
+    ));
     (
         allowed_set_with_len::<T>(lengths[0], -SCALE),
-        allowed_set_with_len::<T>(lengths[1], SCALE),
+        j,
         allowed_set_with_len::<T>(lengths[2], -SCALE),
     )
 }
@@ -437,7 +458,7 @@ mod benchmarks {
     fn register_topology(
         n: Linear<{ T::MinNodes::get() }, { T::MaxNodes::get() }>,
         e: Linear<1, { T::MaxEdges::get() }>,
-        a: Linear<3, { T::MaxAllowedValues::get().saturating_mul(3) }>,
+        a: Linear<4, { T::MaxAllowedValues::get().saturating_mul(3) }>,
     ) {
         let (allowed_h, allowed_j, allowed_spin) = allowed_sets_with_total::<T>(a);
         // Floor the edge count at a path graph. Registration refuses a curve
@@ -488,7 +509,12 @@ mod benchmarks {
     #[benchmark]
     fn set_difficulty() {
         let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
-        let difficulty = easy_difficulty();
+        // On the curve: `set_difficulty` refuses bars outside it.
+        let difficulty = types::DifficultyConfig {
+            max_energy_milli: QuantumPow::<T>::energy_curve_for(topology_hash)
+                .expect("registered topology has a curve")
+                .knee_milli,
+        };
 
         #[extrinsic_call]
         QuantumPow::set_difficulty(RawOrigin::Root, topology_hash, difficulty);
@@ -606,24 +632,21 @@ mod benchmarks {
     fn prove_topology_exact(n: Linear<{ min_exact_nodes::<T>() }, { T::MaxNodes::get() }>) {
         let caller: T::AccountId = whitelisted_caller();
         let ceiling = T::ExactSolveCeiling::get() as usize;
-        // A caterpillar of overlapping cliques: consecutive windows of
-        // `ceiling + 1` mutually-adjacent vertices saturate every bag without
-        // ever exceeding the ceiling.
+        // A grid `ceiling` columns wide, eliminated row-major: fill-in makes a
+        // full `ceiling`-sized bag at every step on ~2 edges per vertex. The
+        // caterpillar of cliques this replaced needed `ceiling` edges per
+        // vertex, so at production bounds the edge budget capped it at width
+        // 10 of the priced 20. Shared with
+        // `verifier_cost::elimination_witness_cost_on_a_banded_grid`.
         let node_count = (n as usize)
             .max(ceiling + 1)
             .min(T::MaxNodes::get() as usize);
         let nodes: Vec<u32> = (0..node_count as u32).collect();
-        // Window width chosen so the whole caterpillar fits the edge budget.
-        // Emitting `ceiling` edges per vertex in vertex order exhausts
-        // `MaxEdges` partway along and leaves every later vertex ISOLATED: the
-        // replay does no bag work for the tail and the node slope comes out too
-        // shallow. Narrow the window so every vertex carries its share.
-        let max_edges = T::MaxEdges::get() as usize;
-        let window = ceiling.min(max_edges / node_count.max(1)).max(1);
-        // Shared with `verifier_cost::elimination_witness_cost`, which is
-        // where PROVE_EXACT_K1_NODE is measured. Two copies of this shape had
-        // already drifted on the window.
-        let edge_list = quantum_validation::caterpillar_of_cliques(node_count, window, max_edges);
+        // Two full rows are needed before the row-0 tail's bag reaches the
+        // column count, so a small mock caps the width at half the nodes.
+        let width = ceiling.min(node_count / 2).max(1);
+        let edge_list = quantum_validation::banded_grid(node_count, width);
+        assert!(edge_list.len() <= T::MaxEdges::get() as usize);
         let nodes_bv = bounded::<_, T::MaxNodes>(nodes.clone());
         let edges_bv = bounded::<_, T::MaxEdges>(edge_list);
         let topology_hash = crate::topology::hash_topology(
@@ -663,15 +686,9 @@ mod benchmarks {
         // eliminating at width 1. Equality means the caterpillar really did
         // saturate every bag — the `nodes * ceiling^2` shape being priced.
         //
-        // Compared against what the graph can REACH, not the ceiling outright:
-        // a caterpillar of `node_count` vertices cannot exceed `node_count - 1`,
-        // so a config with `MaxNodes < ExactSolveCeiling + 1` would fail an
-        // equality against the ceiling for a non-degeneracy reason. Bounded by
-        // three real things: the replay's abort ceiling, the vertices available
-        // to form a bag, and the window the edge budget allowed.
-        let attainable = T::ExactSolveCeiling::get()
-            .min(node_count.saturating_sub(1) as u32)
-            .min(window as u32);
+        // Compared against what the graph can REACH: the grid's width, which is
+        // the ceiling at production bounds and half the nodes in a small mock.
+        let attainable = width as u32;
         assert_eq!(
             TopologyHardnessOf::<T>::get(topology_hash)
                 .expect("record registered")

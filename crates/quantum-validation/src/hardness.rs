@@ -144,6 +144,30 @@ pub fn caterpillar_of_cliques(n: usize, window: usize, max_edges: usize) -> Vec<
     edges
 }
 
+/// A grid `width` columns wide, `n` vertices in row-major order —
+/// TEST/BENCHMARK FIXTURE, gated out of the runtime blob.
+///
+/// The worst case [`induced_width_at_most`] can be made to replay within a
+/// production edge budget. A caterpillar needs `window` edges per vertex, so
+/// at `MaxNodes = 5_000`, `MaxEdges = 50_000` it saturates only width 10. The
+/// grid carries ~2 edges per vertex and still fills a `width`-sized bag at
+/// every step of a row-major elimination, because the fill-in, not the input
+/// graph, makes the bag.
+#[cfg(any(feature = "std", feature = "runtime-benchmarks"))]
+pub fn banded_grid(n: usize, width: usize) -> Vec<(u32, u32)> {
+    let width = width.max(1);
+    let mut edges = Vec::new();
+    for v in 0..n {
+        if (v + 1) % width != 0 && v + 1 < n {
+            edges.push((v as u32, (v + 1) as u32));
+        }
+        if v + width < n {
+            edges.push((v as u32, (v + width) as u32));
+        }
+    }
+    edges
+}
+
 /// Why a tractability witness was refused.
 ///
 /// These are permissionless, fee-paying calls whose entire product is a

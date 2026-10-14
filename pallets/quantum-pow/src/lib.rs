@@ -45,6 +45,7 @@ type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type StoredQBlockOf<T> = types::StoredQBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 /// One instance as `submit_proof` prices it. See `Pallet::price_instance`.
@@ -440,6 +441,13 @@ pub mod pallet {
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
+    /// Block of the last root `set_difficulty`. Decay is anchored at the
+    /// later of this and `LastProofBlock`: every topology decays off the last
+    /// collected proof of work, and a governance bar gets a full gate. Zero
+    /// (never set) leaves 118 behaviour unchanged, so no migration is needed.
+    #[pallet::storage]
+    pub type DifficultySetAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
     /// Block at which a default proven tractable stops being mineable. Set
     /// by `on_initialize` when the default first reads Exact; cleared when the
     /// default is repointed. See `retire_tractable_default`.
@@ -455,7 +463,8 @@ pub mod pallet {
     /// `last_proof_block_hash` its round used at submission time, so
     /// re-derivation needs no chain-state lookup.
     #[pallet::storage]
-    pub type QBlocks<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, QBlockOf<T>>;
+    pub type QBlocks<T: Config> =
+        StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, StoredQBlockOf<T>>;
 
     /// Number of accepted qblocks. Because qblock ids are 1-based, this is
     /// also the latest assigned qblock id when non-zero.
@@ -719,6 +728,12 @@ pub mod pallet {
         /// nonzero couplings form a forest is linear-time solvable, and with
         /// `allowed_j = Set([0])` every draw is.
         CouplingSpecAdmitsZero,
+        /// The coupling spec is not symmetric under sign flip, so the chain
+        /// cannot derive the expected frustration the ±3σ band is centred on.
+        CouplingSpecNotSignSymmetric,
+        /// `set_difficulty` would put the bar easier than the topology's easy
+        /// cap or tighter than its typical draw's exact optimum.
+        DifficultyOutsideCurve,
     }
 
     #[pallet::hooks]
@@ -950,8 +965,12 @@ pub mod pallet {
             // Every qblock must survive the v5 re-encode and decode under the
             // new layout; a count mismatch means an entry was dropped.
             ensure!(
-                QBlocks::<T>::iter().count() as u64 == qblocks_before,
-                "the v5 re-encode must preserve every QBlocks entry"
+                QBlocks::<T>::iter_keys().count() as u64 == qblocks_before,
+                "the upgrade must preserve every QBlocks entry"
+            );
+            ensure!(
+                QBlocks::<T>::iter_keys().all(|n| Self::qblock_at(n).is_some()),
+                "every QBlocks entry must read in the current or the v6 layout"
             );
             ensure!(
                 RegisteredTopologies::<T>::iter_keys()
@@ -1060,7 +1079,7 @@ pub mod pallet {
 
             QBlocks::<T>::insert(
                 n,
-                types::QBlock {
+                types::StoredQBlock(types::QBlock {
                     miner: record.miner.clone(),
                     salt: record.salt,
                     energy_milli: record.energy_milli,
@@ -1072,7 +1091,7 @@ pub mod pallet {
                     device_access_time_us: record.device_access_time_us,
                     frustration_milli: record.frustration_milli,
                     instance_bar_milli: record.instance_bar_milli,
-                },
+                }),
             );
             QBlockBlockById::<T>::insert(qblock_id, n);
             QBlockIdByBlock::<T>::insert(n, qblock_id);
@@ -1266,7 +1285,7 @@ pub mod pallet {
                 &allowed_h_values.as_slice(),
                 &allowed_j_values.as_slice(),
             )?;
-            Self::ensure_couplings_cannot_draw_zero(&nodes, &edges, &allowed_j_values.as_slice())?;
+            Self::ensure_couplings_are_priceable(&nodes, &edges, &allowed_j_values.as_slice())?;
             Self::ensure_curve_outlasts_the_typical_anchor(
                 &crate::difficulty::EnergyCurve::new(
                     nodes.len() as u32,
@@ -1355,12 +1374,8 @@ pub mod pallet {
                 MineableTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotMineable
             );
-            // NOTE (model A): `LastProofBlock` (global decay anchor) is NOT
-            // reset here. Under single-active-topology mining that is fine —
-            // the new default reads through decay anchored to the previous win,
-            // ~one win old on an actively-mining chain. If concurrent
-            // multi-topology mining (model B) is added, reset hardness/round
-            // state at the switch.
+            // Decay keys off the global last proof of work (`LastProofBlock`),
+            // shared by every topology, so the switch needs no round reset.
             // A default must be one the chain will pay for: classified, and not
             // already proven tractable.
             ensure!(
@@ -1392,11 +1407,11 @@ pub mod pallet {
             difficulty: types::DifficultyConfig,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            ensure!(
-                RegisteredTopologies::<T>::contains_key(topology_hash),
-                Error::<T>::TopologyNotRegistered
-            );
+            let meta = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
+            Self::ensure_difficulty_on_curve(topology_hash, &meta, difficulty)?;
             Difficulties::<T>::insert(topology_hash, difficulty);
+            DifficultySetAt::<T>::put(frame_system::Pallet::<T>::block_number());
             Self::deposit_event(Event::DifficultyUpdated {
                 topology_hash,
                 difficulty,
@@ -1851,6 +1866,15 @@ pub mod pallet {
                 Self::regime_of(topology_hash) == Some(quantum_validation::Regime::Heuristic),
                 Error::<T>::TopologyIsExact
             );
+            // Topologies registered before 119 skipped today's coupling gates;
+            // whitelisting is where they would start paying, so check here.
+            if let Some(meta) = RegisteredTopologies::<T>::get(topology_hash) {
+                Self::ensure_couplings_are_priceable(
+                    &meta.nodes,
+                    &meta.edges,
+                    &meta.allowed_j_values.as_slice(),
+                )?;
+            }
             if !MineableTopologies::<T>::contains_key(topology_hash) {
                 // Model A: at most one non-default mineable topology at a time,
                 // so the global decay anchor stays correct. Caps the whitelist
@@ -1986,6 +2010,51 @@ pub mod pallet {
             ensure!(
                 loosest > 0 || independent_draws >= ZERO_DRAW_SAFE_DRAWS,
                 Error::<T>::InstanceIsGaugeTrivial
+            );
+            Ok(())
+        }
+
+        /// Coupling-spec gates shared by registration and whitelisting: the
+        /// spec must be sign-symmetric, so expected frustration is derived
+        /// rather than declared (a wrong declaration puts every honest draw
+        /// outside the band), and must not admit `0` on a cyclic graph.
+        fn ensure_couplings_are_priceable(
+            nodes: &[u32],
+            edges: &[(u32, u32)],
+            allowed_j: &AllowedValueSpec<&[MilliValue]>,
+        ) -> DispatchResult {
+            ensure!(
+                allowed_j.is_sign_symmetric(),
+                Error::<T>::CouplingSpecNotSignSymmetric
+            );
+            Self::ensure_couplings_cannot_draw_zero(nodes, edges, allowed_j)
+        }
+
+        /// A root-set bar must lie where the controller can work with it: no
+        /// easier than the curve's easy cap (decay never eases past it, so a
+        /// looser bar is free reward until a win walks it back), and no
+        /// tighter than the typical draw's exact optimum `-E[Σ|h| + Σ|J|]`
+        /// (there every instance bar clamps to its optimum and nothing wins
+        /// until decay recovers). Hardening may still walk the bar below the
+        /// curve's hard end; only root input is bounded.
+        fn ensure_difficulty_on_curve(
+            topology_hash: H256,
+            meta: &TopologyMetaOf<T>,
+            difficulty: types::DifficultyConfig,
+        ) -> DispatchResult {
+            let curve = Self::energy_curve_for(topology_hash).ok_or(Error::<T>::InvalidCurve)?;
+            let bound = quantum_validation::expected_bound_milli(
+                meta.nodes.len() as u32,
+                meta.edges.len() as u32,
+                &meta.allowed_h_values.as_slice(),
+                &meta.allowed_j_values.as_slice(),
+            )
+            .ok()
+            .and_then(|bound| i64::try_from(bound).ok())
+            .ok_or(Error::<T>::InvalidCurve)?;
+            ensure!(
+                (bound.saturating_neg()..=curve.max_milli).contains(&difficulty.max_energy_milli),
+                Error::<T>::DifficultyOutsideCurve
             );
             Ok(())
         }
@@ -2427,10 +2496,14 @@ pub mod pallet {
             topology_hash: H256,
             block_number: BlockNumberFor<T>,
         ) -> types::DifficultyConfig {
+            // Every topology decays off the last collected proof of work, or a
+            // later root `set_difficulty`, so a governance bar is not eased the
+            // moment it lands after a long round.
+            let anchor = LastProofBlock::<T>::get().max(DifficultySetAt::<T>::get());
             crate::difficulty::current_difficulty(
                 block_number.saturated_into::<u32>(),
                 Self::baseline_for(topology_hash),
-                LastProofBlock::<T>::get().saturated_into::<u32>(),
+                anchor.saturated_into::<u32>(),
                 T::EpochLength::get().saturated_into::<u32>(),
                 Self::energy_curve_for(topology_hash),
             )
@@ -2532,11 +2605,16 @@ pub mod pallet {
         /// correct even when `block_number` is older than `BlockHashCount`
         /// (no `frame_system::block_hash` lookup is involved).
         pub fn qblock_with_nonce(block_number: BlockNumberFor<T>) -> Option<QBlockWithNonceOf<T>> {
-            let solution = QBlocks::<T>::get(block_number)?;
+            let solution = Self::qblock_at(block_number)?;
             let last_proof_block_hash_bytes = solution.last_proof_block_hash.0;
             let miner_bytes = Self::account_to_bytes(&solution.miner);
             let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
             Some(types::QBlockWithNonce { solution, nonce })
+        }
+
+        /// Read a qblock in either layout (see `types::StoredQBlock`).
+        pub fn qblock_at(block_number: BlockNumberFor<T>) -> Option<QBlockOf<T>> {
+            QBlocks::<T>::get(block_number).map(|stored| stored.0)
         }
 
         pub fn qblock_with_nonce_by_id(qblock_id: u64) -> Option<QBlockWithNonceOf<T>> {
@@ -2779,68 +2857,23 @@ pub(crate) mod migration {
     pub(crate) mod v7 {
         use super::LegacyDifficultyConfig;
         use crate::pallet::{
-            Config, Difficulties, QBlocks, RegisteredTopologies, TopologyDim, TopologyDims,
+            Config, Difficulties, RegisteredTopologies, TopologyDim, TopologyDims,
             TopologyHardnessOf,
         };
-        use crate::{
-            types, AccountIdOf, BalanceOf, BlockNumberOf, EdgesOf, NodesOf, TopologyMetaOf,
-        };
-        use codec::Decode;
+        use crate::{types, EdgesOf, NodesOf, TopologyMetaOf};
         use frame_support::traits::Get;
         use frame_support::weights::Weight;
-        use sp_core::H256;
-
-        /// The v5/v6 `QBlock` layout (v6 changed no value shape): three-field
-        /// `difficulty`, and no record of which instance was solved.
-        #[derive(Decode)]
-        struct V5QBlock<AccountId, Balance, BlockNumber> {
-            miner: AccountId,
-            salt: [u8; 32],
-            energy_milli: i64,
-            reward: Balance,
-            submitted_at: BlockNumber,
-            difficulty: LegacyDifficultyConfig,
-            last_proof_block_hash: H256,
-            topology_hash: H256,
-            device_access_time_us: u64,
-        }
 
         /// 6 → 7: `DifficultyConfig` loses `min_solutions` and
         /// `min_diversity_milli`, and `QBlock` gains the instance the proof
-        /// solved. Both the `Difficulties` map and every `QBlocks` entry
-        /// embed the struct, so both are re-encoded.
-        ///
-        /// Historical blocks predate the per-instance handicap, so their bar
-        /// *was* the topology-level `max_energy_milli`: backfilling
-        /// `instance_bar_milli` with it is exact, not a placeholder.
-        /// `frustration_milli` was never measured then, so it backfills to `0`.
+        /// solved. Only the small `Difficulties` map is re-encoded here;
+        /// `QBlocks` entries are converted on read (`types::StoredQBlock`).
         pub(crate) fn shrink_difficulty<T: Config>() -> Weight {
-            let difficulties = shrink_map::<T>();
-
-            let mut qblocks = 0u64;
-            QBlocks::<T>::translate::<V5QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>, _>(
-                |_block, old| {
-                    qblocks = qblocks.saturating_add(1);
-                    Some(types::QBlock {
-                        miner: old.miner,
-                        salt: old.salt,
-                        energy_milli: old.energy_milli,
-                        reward: old.reward,
-                        submitted_at: old.submitted_at,
-                        instance_bar_milli: old.difficulty.max_energy_milli,
-                        difficulty: old.difficulty.into(),
-                        last_proof_block_hash: old.last_proof_block_hash,
-                        topology_hash: old.topology_hash,
-                        device_access_time_us: old.device_access_time_us,
-                        frustration_milli: 0,
-                    })
-                },
-            );
-
-            // `ProofRecord` gained trailing fields — same reasoning as v3.
-            crate::BlockBestProof::<T>::kill();
-            let touched = difficulties.saturating_add(qblocks);
-            T::DbWeight::get().reads_writes(touched, touched.saturating_add(1))
+            // `QBlocks` is NOT translated: aglais holds >11k entries and the
+            // re-encode alone took 71% of a block at 119's try-runtime, growing
+            // daily. Old entries stay in the v6 layout and
+            // `types::StoredQBlock` converts them on decode.
+            shrink_difficulties_only::<T>()
         }
 
         /// Re-encode `Difficulties` alone. Chains arriving from below v5 have
@@ -3048,7 +3081,7 @@ pub(crate) mod migration {
                 _,
             >(|_block, old| {
                 count = count.saturating_add(1);
-                Some(types::QBlock {
+                Some(types::StoredQBlock(types::QBlock {
                     miner: old.miner,
                     salt: old.salt,
                     energy_milli: old.energy_milli,
@@ -3060,7 +3093,7 @@ pub(crate) mod migration {
                     topology_hash: backfill,
                     device_access_time_us: 0,
                     frustration_milli: 0,
-                })
+                }))
             });
             kill_stale_best_proof::<T>();
             // One read + one write per entry, plus the `DefaultTopology`
@@ -3077,7 +3110,7 @@ pub(crate) mod migration {
             QBlocks::<T>::translate::<V4QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>, _>(
                 |_block, old| {
                     count = count.saturating_add(1);
-                    Some(types::QBlock {
+                    Some(types::StoredQBlock(types::QBlock {
                         miner: old.miner,
                         salt: old.salt,
                         energy_milli: old.energy_milli,
@@ -3089,7 +3122,7 @@ pub(crate) mod migration {
                         topology_hash: old.topology_hash,
                         device_access_time_us: 0,
                         frustration_milli: 0,
-                    })
+                    }))
                 },
             );
             kill_stale_best_proof::<T>();

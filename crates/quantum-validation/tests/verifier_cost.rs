@@ -136,6 +136,25 @@ fn elimination_witness_cost() {
     assert_eq!(width, Ok(CEILING));
 }
 
+/// The same replay over a `CEILING`-wide grid: the shape that saturates the
+/// ceiling at production bounds (the caterpillar cannot, see `banded_grid`).
+/// Its bags come from fill-in, so this also prices the fill insertions.
+#[test]
+#[ignore = "characterization measurement; release-only"]
+fn elimination_witness_cost_on_a_banded_grid() {
+    const CEILING: u32 = 20;
+    let n = N;
+    let nodes: Vec<u32> = (0..n as u32).collect();
+    let edges = quantum_validation::banded_grid(n, CEILING as usize);
+    let t0 = Instant::now();
+    let width = induced_width_at_most(&nodes, &edges, &nodes, CEILING);
+    let us = t0.elapsed().as_secs_f64() * 1e6;
+    println!("\n  prove_topology_exact replay, banded grid");
+    println!("  n = {n}, m = {}, width = {width:?}", edges.len());
+    println!("  {us:.1} us total = {:.3} us/node\n", us / n as f64);
+    assert_eq!(width, Ok(CEILING));
+}
+
 /// Cost of the permissionless `prove_topology_planar` face trace, which its
 /// weight has to charge for. The trace is linear, so the per-edge figure from a
 /// grid transfers to any planar topology.

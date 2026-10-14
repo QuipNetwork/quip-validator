@@ -333,6 +333,73 @@ pub struct QBlockWithNonce<AccountId, Balance, BlockNumber> {
     pub nonce: U256,
 }
 
+/// The `QBlocks` storage value: a [`QBlock`] that also DECODES from the v6
+/// layout, so entries written before 119 need no re-encode.
+///
+/// Re-encoding every entry in the upgrade block took 71% of a block on aglais
+/// at 11k qblocks and grows ~1.6k a day. Instead each value decodes as the
+/// current layout if it is exactly one, else as a v6 entry converted on the
+/// fly. Encodes as the current layout, so a rewritten entry upgrades itself.
+/// Every storage read, iteration and the full-state decode check stay valid.
+/// Off-chain indexers reading raw storage must handle both layouts.
+#[derive(Clone, Debug, Encode, Eq, PartialEq, MaxEncodedLen)]
+pub struct StoredQBlock<AccountId, Balance, BlockNumber>(
+    pub QBlock<AccountId, Balance, BlockNumber>,
+);
+
+impl<AccountId: Decode, Balance: Decode, BlockNumber: Decode> Decode
+    for StoredQBlock<AccountId, Balance, BlockNumber>
+{
+    fn decode<I: codec::Input>(input: &mut I) -> Result<Self, codec::Error> {
+        use codec::DecodeAll;
+        // Storage hands over exactly one value, so the length is known.
+        let len = input
+            .remaining_len()?
+            .ok_or("StoredQBlock needs a length-bounded input")?;
+        let mut raw = alloc::vec![0u8; len];
+        input.read(&mut raw)?;
+        if let Ok(current) = QBlock::decode_all(&mut &raw[..]) {
+            return Ok(Self(current));
+        }
+        v2::QBlock::decode_all(&mut &raw[..]).map(|old| Self(old.into()))
+    }
+}
+
+impl<AccountId, Balance, BlockNumber> TypeInfo for StoredQBlock<AccountId, Balance, BlockNumber>
+where
+    QBlock<AccountId, Balance, BlockNumber>: TypeInfo + 'static,
+{
+    type Identity = QBlock<AccountId, Balance, BlockNumber>;
+    fn type_info() -> scale_info::Type {
+        <QBlock<AccountId, Balance, BlockNumber> as TypeInfo>::type_info()
+    }
+}
+
+impl<AccountId, Balance, BlockNumber> From<v2::QBlock<AccountId, Balance, BlockNumber>>
+    for QBlock<AccountId, Balance, BlockNumber>
+{
+    /// Historical blocks predate the per-instance handicap, so their bar WAS
+    /// the topology-level `max_energy_milli`: backfilling `instance_bar_milli`
+    /// with it is exact. `frustration_milli` was never measured, so it is `0`.
+    fn from(old: v2::QBlock<AccountId, Balance, BlockNumber>) -> Self {
+        Self {
+            miner: old.miner,
+            salt: old.salt,
+            energy_milli: old.energy_milli,
+            reward: old.reward,
+            submitted_at: old.submitted_at,
+            difficulty: DifficultyConfig {
+                max_energy_milli: old.difficulty.max_energy_milli,
+            },
+            last_proof_block_hash: old.last_proof_block_hash,
+            topology_hash: old.topology_hash,
+            device_access_time_us: old.device_access_time_us,
+            frustration_milli: 0,
+            instance_bar_milli: old.difficulty.max_energy_milli,
+        }
+    }
+}
+
 /// What `submit_proof` would make of one draw, before any solving: the
 /// `instance_check` runtime API response. A refused draw comes back as the
 /// dispatch error `submit_proof` would raise, so a miner re-salts instead of

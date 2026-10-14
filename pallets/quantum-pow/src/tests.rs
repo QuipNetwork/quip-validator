@@ -63,11 +63,10 @@ fn default_hash() -> sp_core::H256 {
 
 /// Set the difficulty baseline for the current default topology.
 fn set_difficulty_default(difficulty: DifficultyConfig) {
-    assert_ok!(QuantumPow::set_difficulty(
-        RuntimeOrigin::root(),
-        default_hash(),
-        difficulty
-    ));
+    // Written directly: fixtures need off-curve bars (`i64::MAX` = always
+    // clearable) that `set_difficulty` now refuses. The extrinsic's own
+    // bounds are covered by `set_difficulty_refuses_bars_off_the_curve`.
+    Difficulties::<Test>::insert(default_hash(), difficulty);
 }
 
 /// Read the (raw, pre-decay) difficulty baseline for the default topology.
@@ -627,18 +626,14 @@ fn a_draw_past_the_handicaps_reach_is_refused() {
     );
 }
 
-/// A coupling spec that is NOT sign-symmetric, so `expected_frustration_for`
-/// returns `None` and the DECLARED `expected_frustration_milli` survives
-/// registration instead of being overwritten with the derived 500.
-///
-/// That is the only lever that moves the expectation away from what draws
-/// actually produce, which is what the band test needs.
+/// A coupling spec that is NOT sign-symmetric: refused at registration and
+/// at whitelisting, because the chain cannot derive its expected frustration.
 fn asymmetric_j_spec() -> AllowedValueSpec<AllowedValueSetOf<Test>> {
     AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![-SCALE, 2 * SCALE]))
 }
 
-/// Five nodes, eight edges: `m - n + 1 == 4` fundamental cycles, registered
-/// with a declared expectation the chain will not overwrite.
+/// Five nodes, eight edges: `m - n + 1 == 4` fundamental cycles, with the
+/// recorded expectation forced to `expected_frustration_milli`.
 ///
 /// Four cycles rather than the 4-cycle's one, because sigma is
 /// `sqrt(p(1-p)/cycles)` and one cycle makes it 500 milli — wide enough that no
@@ -668,7 +663,7 @@ fn registered_multicycle_topology(
         &nodes,
         &edges,
         &allowed_h_spec().as_slice(),
-        &asymmetric_j_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
         &allowed_spin_spec().as_slice(),
     );
     assert_ok!(QuantumPow::register_topology(
@@ -676,7 +671,7 @@ fn registered_multicycle_topology(
         nodes.clone(),
         edges.clone(),
         allowed_h_spec(),
-        asymmetric_j_spec(),
+        allowed_j_spec(),
         allowed_spin_spec(),
         TopologyHardness {
             residual_difficulty: 64,
@@ -685,15 +680,15 @@ fn registered_multicycle_topology(
         },
     ));
     MineableTopologies::<Test>::insert(hash, ());
-    assert_eq!(
-        TopologyHardnessOf::<Test>::get(hash)
+    // Registration derives 500 for the sign-symmetric spec and refuses any
+    // other, so the off-distribution expectation the band test needs is
+    // written straight into the record.
+    TopologyHardnessOf::<Test>::mutate(hash, |hardness| {
+        hardness
+            .as_mut()
             .expect("classified")
-            .expected_frustration_milli,
-        expected_frustration_milli,
-        "an asymmetric spec must keep its DECLARED expectation; if this is 500 \
-         the spec became sign-symmetric and every case below is measuring the \
-         derived value instead"
-    );
+            .expected_frustration_milli = expected_frustration_milli;
+    });
     (nodes, edges, hash)
 }
 
@@ -721,7 +716,7 @@ fn drawn_proof_for(
         nodes.as_slice(),
         edges.as_slice(),
         &allowed_h_spec().as_slice(),
-        &asymmetric_j_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
     )
     .unwrap();
     let (frustration_milli, cycles) =
@@ -1289,7 +1284,9 @@ fn set_difficulty_works() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         let difficulty = DifficultyConfig {
-            max_energy_milli: -2_000,
+            max_energy_milli: QuantumPow::energy_curve_for(hash)
+                .expect("curve")
+                .knee_milli,
         };
         assert_ok!(QuantumPow::set_difficulty(
             RuntimeOrigin::root(),
@@ -1297,6 +1294,31 @@ fn set_difficulty_works() {
             difficulty
         ));
         assert_eq!(Difficulties::<Test>::get(hash), Some(difficulty));
+    });
+}
+
+/// Root input must stay where the controller can work with it: no easier than
+/// the easy cap, no tighter than the typical draw's exact optimum.
+#[test]
+fn set_difficulty_refuses_bars_off_the_curve() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        let curve = QuantumPow::energy_curve_for(hash).expect("curve");
+        let set = |max_energy_milli| {
+            QuantumPow::set_difficulty(
+                RuntimeOrigin::root(),
+                hash,
+                DifficultyConfig { max_energy_milli },
+            )
+        };
+        assert_ok!(set(curve.max_milli));
+        assert_ok!(set(curve.knee_milli));
+        assert_noop!(
+            set(curve.max_milli + 1),
+            crate::Error::<Test>::DifficultyOutsideCurve
+        );
+        assert_noop!(set(i64::MAX), crate::Error::<Test>::DifficultyOutsideCurve);
+        assert_noop!(set(i64::MIN), crate::Error::<Test>::DifficultyOutsideCurve);
     });
 }
 
@@ -1831,7 +1853,7 @@ fn migration_pre_v4_backfills_topology_and_device_time() {
             "kill() must remove the raw BlockBestProof bytes, not just decode to None"
         );
 
-        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v5 re-encode");
+        let migrated = QuantumPow::qblock_at(block).expect("qblock survives the v5 re-encode");
         assert_eq!(migrated.miner, 1);
         assert_eq!(migrated.salt, [3u8; 32]);
         assert_eq!(migrated.energy_milli, -42_000);
@@ -1890,7 +1912,7 @@ fn migration_v4_to_v5_appends_device_time_preserving_topology() {
 
         QuantumPow::on_runtime_upgrade();
 
-        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v5 append");
+        let migrated = QuantumPow::qblock_at(block).expect("qblock survives the v5 append");
         assert_eq!(migrated.miner, 2);
         assert_eq!(migrated.energy_milli, -13_000);
         assert_eq!(migrated.reward, 75);
@@ -1948,7 +1970,7 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
         let block = System::block_number();
         QuantumPow::on_finalize(block);
 
-        let stored = QBlocks::<Test>::get(block).expect("qblock persisted");
+        let stored = QuantumPow::qblock_at(block).expect("qblock persisted");
         assert_eq!(stored.miner, 1);
         assert_eq!(stored.salt, original_salt);
         assert_eq!(stored.reward, 50);
@@ -2098,7 +2120,7 @@ fn qblock_records_active_difficulty_threshold() {
         QuantumPow::on_finalize(System::block_number());
 
         let expected_active = difficulty::apply_decay(initial, 44, 20, test_curve());
-        let stored = QBlocks::<Test>::get(45).expect("winner persisted");
+        let stored = QuantumPow::qblock_at(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
             "stored difficulty must be the decayed-but-pre-adjust threshold"
@@ -2467,7 +2489,7 @@ fn qblock_persists_device_access_time() {
         });
         QuantumPow::on_finalize(80);
 
-        let qblock = QBlocks::<Test>::get(80).expect("qblock stored");
+        let qblock = QuantumPow::qblock_at(80).expect("qblock stored");
         assert_eq!(qblock.device_access_time_us, 1_234_567);
     });
 }
@@ -2692,11 +2714,7 @@ fn difficulty_for_api_returns_per_topology() {
             max_energy_milli: -20_000,
         };
         set_difficulty_default(da); // A is the default
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            hash_b,
-            db
-        ));
+        Difficulties::<Test>::insert(hash_b, db);
 
         assert_eq!(QuantumPow::difficulty_for_api(hash_a), Some(da));
         assert_eq!(QuantumPow::difficulty_for_api(hash_b), Some(db));
@@ -2715,11 +2733,7 @@ fn mining_snapshot_some_returns_that_topology_difficulty() {
         let db = DifficultyConfig {
             max_energy_milli: -20_000,
         };
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            hash_b,
-            db
-        ));
+        Difficulties::<Test>::insert(hash_b, db);
 
         let snap = QuantumPow::mining_snapshot(Some(hash_b)).expect("snapshot exists");
         assert_eq!(snap.topology_hash, hash_b);
@@ -2765,6 +2779,37 @@ fn unset_whitelisted_topology_reads_default_hard_difficulty() {
 // ============================================================================
 // Weight Regression Tests (QIP-03: Parameterized Weight Accounting)
 // ============================================================================
+
+/// A root bar is not eased the moment it lands: decay counts from the later of
+/// the last win and the `set_difficulty`, with the full 100-block gate.
+#[test]
+fn set_difficulty_restarts_the_decay_gate() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        let curve = QuantumPow::energy_curve_for(hash).expect("curve");
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(1_000); // a long round
+        let bar = DifficultyConfig {
+            max_energy_milli: curve.knee_milli,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), hash, bar));
+        assert_eq!(crate::DifficultySetAt::<Test>::get(), 1_000);
+
+        assert_eq!(QuantumPow::current_difficulty_for(hash, 1_000), bar);
+        assert_eq!(QuantumPow::current_difficulty_for(hash, 1_100), bar);
+        assert!(
+            QuantumPow::current_difficulty_for(hash, 1_101).max_energy_milli > bar.max_energy_milli,
+            "decay resumes after the gate, counted from the set"
+        );
+
+        // A later win takes the anchor back.
+        LastProofBlock::<Test>::put(1_200);
+        assert_eq!(
+            QuantumPow::current_difficulty_for(hash, 1_250),
+            QuantumPow::current_difficulty_for(hash, 1_200)
+        );
+    });
+}
 
 use crate::weights::WeightInfo;
 
@@ -3050,11 +3095,7 @@ fn submit_proof_uses_parameterized_weight() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let (nodes, edges, topology_hash) = registered_topology();
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            topology_hash,
-            easy_difficulty()
-        ));
+        Difficulties::<Test>::insert(topology_hash, easy_difficulty());
 
         let proof = proof_for(1, &nodes, &edges, topology_hash, 0);
 
@@ -3472,25 +3513,50 @@ fn set_topology_hardness_derives_expected_frustration_for_a_determined_spec() {
     });
 }
 
+/// A coupling spec the chain cannot derive an expectation for is refused at
+/// registration, and a legacy topology carrying one cannot be whitelisted: a
+/// wrong declared expectation would put every honest draw outside the band.
 #[test]
-fn set_topology_hardness_keeps_a_declaration_the_spec_does_not_determine() {
+fn a_non_sign_symmetric_coupling_spec_is_refused() {
     new_test_ext().execute_with(|| {
-        let (_, _, hash) = registered_multicycle_topology(200);
-        assert_ok!(QuantumPow::set_topology_hardness(
-            RuntimeOrigin::root(),
+        registered_topology();
+        let nodes = bounded::<_, MaxNodes>(vec![0, 1, 2, 3]);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1), (1, 2), (2, 3), (0, 3)]);
+        let hardness = TopologyHardness {
+            residual_difficulty: 64,
+            core_width: 64,
+            expected_frustration_milli: 300,
+        };
+        assert_noop!(
+            QuantumPow::register_topology(
+                RuntimeOrigin::root(),
+                nodes.clone(),
+                edges.clone(),
+                allowed_h_spec(),
+                asymmetric_j_spec(),
+                allowed_spin_spec(),
+                hardness,
+            ),
+            crate::Error::<Test>::CouplingSpecNotSignSymmetric
+        );
+
+        // A pre-119 registration that skipped the gate.
+        let hash = sp_core::H256::repeat_byte(0x42);
+        RegisteredTopologies::<Test>::insert(
             hash,
-            TopologyHardness {
-                residual_difficulty: 63,
-                core_width: 63,
-                expected_frustration_milli: 300,
+            crate::types::TopologyMeta {
+                nodes,
+                edges,
+                allowed_h_values: allowed_h_spec(),
+                allowed_j_values: asymmetric_j_spec(),
+                allowed_spin_values: allowed_spin_spec(),
+                registered_at: 0,
             },
-        ));
-        assert_eq!(
-            TopologyHardnessOf::<Test>::get(hash)
-                .expect("classified")
-                .expected_frustration_milli,
-            300,
-            "an asymmetric spec has no derived expectation; the declaration stands"
+        );
+        TopologyHardnessOf::<Test>::insert(hash, hardness);
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), hash),
+            crate::Error::<Test>::CouplingSpecNotSignSymmetric
         );
     });
 }
@@ -4557,7 +4623,7 @@ fn registration_validates_its_record_and_mineability_requires_one() {
 /// was never executed. A translate that dropped entries (failure mode: the
 /// old-shape struct not matching what v5 wrote) passed CI silently.
 #[test]
-fn migration_v5_and_v6_to_v7_reencode_qblocks_without_losing_any() {
+fn migration_v5_and_v6_to_v7_keeps_qblocks_readable_without_reencoding() {
     // v6 (spec 118) changed no value layout, so the deployed v6 chain takes
     // the same re-encode as v5; v5 additionally drops `WinnerStreak`.
     for from in [5u16, 6] {
@@ -4618,9 +4684,24 @@ fn migration_v5_and_v6_to_v7_reencode_qblocks_without_losing_any() {
 
             assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(7));
             // Not one entry may be dropped — that is the failure this covers.
-            assert_eq!(QBlocks::<Test>::iter().count(), 3);
+            // Lazy: the upgrade leaves old entries in the v6 layout (raw bytes
+            // untouched) and `qblock_at` converts them on read.
+            assert_eq!(QBlocks::<Test>::iter_keys().count(), 3);
             for block in [3u64, 11, 29] {
-                let migrated = QBlocks::<Test>::get(block).expect("qblock survives the re-encode");
+                let raw = frame_support::storage::unhashed::get_raw(
+                    &QBlocks::<Test>::hashed_key_for(block),
+                )
+                .expect("entry present");
+                assert!(
+                    <crate::types::QBlock<u64, u128, u64> as codec::DecodeAll>::decode_all(
+                        &mut &raw[..]
+                    )
+                    .is_err(),
+                    "the upgrade must leave v6 entries un-rewritten"
+                );
+            }
+            for block in [3u64, 11, 29] {
+                let migrated = QuantumPow::qblock_at(block).expect("qblock reads in the v6 layout");
                 assert_eq!(migrated.salt, [block as u8; 32]);
                 assert_eq!(migrated.energy_milli, -1_000 * block as i64);
                 assert_eq!(migrated.device_access_time_us, 7);
@@ -4795,7 +4876,7 @@ fn the_qblock_records_the_bar_the_proof_actually_cleared() {
         let stored: Vec<_> = QBlocks::<Test>::iter().collect();
         assert_eq!(stored.len(), 1, "the winning proof must produce a qblock");
         assert_eq!(
-            stored[0].1.difficulty, priced_against,
+            stored[0].1 .0.difficulty, priced_against,
             "the qblock recorded the difficulty live at finalize, not the one \
              the accepted proof was actually priced against"
         );
@@ -5311,7 +5392,7 @@ fn on_finalize_hardening_does_not_overshoot_the_winning_energy() {
             BlockBestProof::<Test>::put(record_at(1, block, topology_hash, winning_energy));
             QuantumPow::on_finalize(block);
             assert_eq!(difficulty_default().max_energy_milli, winning_energy);
-            assert_eq!(QBlocks::<Test>::get(block).unwrap().difficulty, active);
+            assert_eq!(QuantumPow::qblock_at(block).unwrap().difficulty, active);
             assert_eq!(
                 QuantumPow::current_difficulty_for(topology_hash, block + 100),
                 difficulty_default(),

@@ -291,12 +291,22 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // - Events `TopologyHardnessSet`/`TopologyProvenExact`/
     //   `TopologyProvenPlanar`/`DefaultProvenTractable`/`DefaultFailedOver`/
     //   `DefaultRetired` are appended; `ProofAccepted` gains two fields.
+    // - Root input is bounded: `set_difficulty` refuses bars off the curve
+    //   (`DifficultyOutsideCurve`); registration and whitelisting refuse
+    //   coupling specs that are not sign-symmetric or admit 0 on a cyclic
+    //   graph. Error variants are appended.
+    // - Decay is anchored at the later of `LastProofBlock` and the last root
+    //   `set_difficulty` (new `DifficultySetAt`; zero keeps 118 behaviour, so
+    //   no migration). The !87 decay and hardening formulas are unchanged.
     // - `QuantumPowApi` moves to api_version 3 (`DifficultyConfig` and `QBlock`
     //   changed shape).
-    // - QuantumPow storage 6 -> 7: re-encodes `Difficulties` and `QBlocks`
-    //   (backfilling `instance_bar_milli`), canonicalizes stored graphs, and
-    //   backfills `TopologyDims`. Miners must refresh topology adjacency and
-    //   drop in-flight proofs.
+    // - QuantumPow storage 6 -> 7: re-encodes `Difficulties`, canonicalizes
+    //   stored graphs, and backfills `TopologyDims` and hardness records.
+    //   `QBlocks` is NOT re-encoded (that grew past a block's weight on
+    //   aglais): old entries keep the v6 layout and `StoredQBlock` converts
+    //   them on decode, backfilling `instance_bar_milli`. Indexers reading raw
+    //   storage must accept both layouts. Miners must refresh topology
+    //   adjacency and drop in-flight proofs.
     // `register_topology` gains a trailing `TopologyHardness`, and
     // `submit_proof`/`set_difficulty` arguments change shape, so
     // `transaction_version` moves to 8.
