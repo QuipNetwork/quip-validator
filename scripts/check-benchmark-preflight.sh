@@ -106,11 +106,54 @@ check_quantum_pow_wrapper() {
   done
 }
 
+check_quantum_compute_mempool_wrapper() {
+  local file="$1"
+  local normalized
+  local required
+
+  if [ ! -f "$file" ]; then
+    echo "ERROR: Quantum Compute Mempool public weights wrapper not found at $file" >&2
+    return 1
+  fi
+  normalized="$(normalize_signature < "$file")"
+  for required in \
+    'usecrate::benchmark_weights' \
+    'pubconstCLAIM_REWARD_PROOF_FLOOR:u64=1024*1024;' \
+    'fnwith_claim_reward_proof_floor(' \
+    'weight.max(Weight::from_parts(0,CLAIM_REWARD_PROOF_FLOOR))' \
+    'claim_reward_weight::<benchmark_weights::SubstrateWeight<T>>()' \
+    'claim_reward_weight::<()>()' \
+    'with_claim_reward_proof_floor(W::claim_reward().max(W::claim_reward_dust()))' \
+    'pubconstRECLAIM_ORDER_PROOF_FLOOR:u64=1024*1024;' \
+    'weight.max(Weight::from_parts(0,RECLAIM_ORDER_PROOF_FLOOR))' \
+    'with_reclaim_order_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::reclaim_order())' \
+    'with_reclaim_order_proof_floor(<()asBenchmarkWeightInfo>::reclaim_order())' \
+    'pubconstPROPOSE_JOB_PROOF_FLOOR:u64=1024*1024;' \
+    'weight.max(Weight::from_parts(0,PROPOSE_JOB_PROOF_FLOOR))' \
+    'with_propose_job_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::propose_job(' \
+    'with_propose_job_proof_floor(<()asBenchmarkWeightInfo>::propose_job(' \
+    'with_propose_job_proof_floor(<benchmark_weights::SubstrateWeight<T>asBenchmarkWeightInfo>::propose_job_with_payee_requirement(' \
+    'with_propose_job_proof_floor(<()asBenchmarkWeightInfo>::propose_job_with_payee_requirement(' \
+    'pubconstSUBMIT_SOLUTION_PROOF_FLOOR:u64=1024*1024;' \
+    'weight.max(Weight::from_parts(0,SUBMIT_SOLUTION_PROOF_FLOOR))' \
+    'with_submit_solution_proof_floor(W::submit_solution(n,e,s).max(W::submit_solution_with_payee(n,e,s)).max(W::submit_solution_replacement(n,e,s)).max(W::submit_solution_clear_payee(n,e,s)))' \
+    'fnsubmit_solution(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<benchmark_weights::SubstrateWeight<T>>(n,e,s)}' \
+    'fnsubmit_solution_with_payee(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<benchmark_weights::SubstrateWeight<T>>(n,e,s)}' \
+    'fnsubmit_solution(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<()>(n,e,s)}' \
+    'fnsubmit_solution_with_payee(n:u32,e:u32,s:u32)->Weight{submit_solution_weight::<()>(n,e,s)}'; do
+    if [[ "$normalized" != *"$required"* ]]; then
+      echo "ERROR: Quantum Compute Mempool public wrapper lost invariant '$required'" >&2
+      return 1
+    fi
+  done
+}
+
 check_wrapper_guard() {
   local temp_dir
   local plain_generated
 
   check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
+  check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/weights.rs
 
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/quip-wrapper-guard.XXXXXX")"
   trap 'rm -rf "$temp_dir"' RETURN
@@ -127,7 +170,21 @@ check_wrapper_guard() {
     return 1
   fi
 
-  echo "Quantum PoW public wrapper guard checks passed."
+  if check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/benchmark_weights.rs >/dev/null 2>&1; then
+    echo "ERROR: generated mempool weights passed the public wrapper guard" >&2
+    return 1
+  fi
+
+  local case_name
+  for case_name in claim_reward_dust submit_solution_replacement submit_solution_clear_payee; do
+    sed "s/$case_name/unused_case/g" pallets/quantum-compute-mempool/src/weights.rs > "$plain_generated"
+    if check_quantum_compute_mempool_wrapper "$plain_generated" >/dev/null 2>&1; then
+      echo "ERROR: unconsumed $case_name passed the wrapper guard" >&2
+      return 1
+    fi
+  done
+
+  echo "Quantum PoW and Quantum Compute Mempool public wrapper guard checks passed."
 }
 
 case "${1:-}" in
@@ -148,6 +205,7 @@ case "${1:-}" in
 esac
 
 check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
+check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/weights.rs
 
 echo "== Building debug node with runtime-benchmarks =="
 cargo build --features runtime-benchmarks -p quip-network-node
@@ -178,20 +236,28 @@ echo "== Discovered $benchmark_count benchmarks across ${#pallets[@]} pallets ==
 
 for pallet in "${pallets[@]}"; do
   output="$OUTPUT_DIR/$pallet.rs"
+  extra_args=()
+  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
+    extra_args=(--extra)
+  fi
   echo "-- $pallet"
   "$BIN" benchmark pallet \
     --pallet "$pallet" \
-    --extrinsic '*' \
+    --extrinsic '*' "${extra_args[@]}" \
     --steps "$STEPS" \
     --repeat "$REPEAT" \
     --min-duration 0 \
     --template .maintain/frame-weight-template.hbs \
     --output "$output"
 
+  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
+    bash scripts/run-benchmarks.sh --verify-regenerated-mempool "$output"
+  fi
+
   pallet_dir="pallets/$(echo "${pallet#pallet_}" | tr '_' '-')"
   tracked_weights="$pallet_dir/src/weights.rs"
   public_weights="$tracked_weights"
-  if [ "$pallet" = "pallet_quantum_pow" ]; then
+  if [ -f "$pallet_dir/src/benchmark_weights.rs" ]; then
     tracked_weights="$pallet_dir/src/benchmark_weights.rs"
   fi
   if [ ! -f "$tracked_weights" ]; then
@@ -215,12 +281,12 @@ for pallet in "${pallets[@]}"; do
       exit 1
     fi
 
-    if [ "$pallet" = "pallet_quantum_pow" ]; then
+    if [ "$public_weights" != "$tracked_weights" ]; then
       public_signature="$(extract_signature "$extrinsic" "$public_weights")"
       if [ -z "$public_signature" ] || \
         [ "$(printf '%s' "$public_signature" | normalize_signature)" != \
           "$(printf '%s' "$generated_signature" | normalize_signature)" ]; then
-        echo "ERROR: public nonlinear wrapper signature differs for $pallet::$extrinsic" >&2
+        echo "ERROR: public wrapper signature differs for $pallet::$extrinsic" >&2
         echo "  public:    $public_signature" >&2
         echo "  generated: $generated_signature" >&2
         exit 1

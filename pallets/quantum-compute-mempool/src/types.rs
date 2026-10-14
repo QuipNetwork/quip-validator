@@ -268,3 +268,38 @@ pub struct StoredResult<AccountId, Balance, BlockNumber> {
         frame_support::traits::ConstU32<MAX_REWARD_WINNERS>,
     >,
 }
+
+/// Signed destination metadata only; this does not execute or promise payment.
+/// V1 supports syntactically valid nonzero u64 chain IDs and nonzero H160 addresses.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
+pub enum WinnerPayee {
+    #[codec(index = 0)]
+    V1 {
+        chain_id: u64,
+        address: sp_core::H160,
+    },
+}
+
+impl WinnerPayee {
+    pub fn chain_id(&self) -> u64 {
+        match self {
+            Self::V1 { chain_id, .. } => *chain_id,
+        }
+    }
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::V1 { chain_id, address } => *chain_id != 0 && !address.is_zero(),
+        }
+    }
+}
