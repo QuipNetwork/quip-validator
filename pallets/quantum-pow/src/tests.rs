@@ -2854,11 +2854,13 @@ fn weight_prevents_undercharging_for_large_proofs() {
     let small_proof_weight = calculate_weight(2, 1); // Minimal proof
     let large_proof_weight = calculate_weight(5_000, 50_000); // Production worst case
 
-    // Large proof should cost significantly more (at least 10x).
+    // Large proof should cost significantly more. Both carry ~0.7 ms of DB
+    // weight, which bounds the ratio; the reference sweep puts the worst case
+    // at ~40x the minimal proof's execution time.
     let ratio = large_proof_weight.ref_time() / small_proof_weight.ref_time().max(1);
     assert!(
-        ratio >= 10,
-        "Worst-case proof should cost at least 10x more than minimal proof, got {ratio}x"
+        ratio >= 5,
+        "Worst-case proof should cost at least 5x more than minimal proof, got {ratio}x"
     );
 }
 
@@ -2912,112 +2914,37 @@ fn assert_weight_covers_observation(
     );
 }
 
-#[test]
-fn weight_covers_recorded_sweeps_with_ten_percent_floor() {
-    // Gated on the recorded MAXIMUM at the same 10% floor the reference-machine
-    // job (`weight_covers_executed_sweep_with_ten_percent_floor`) applies. That
-    // is strictly stronger than the old 20%-of-minimum gate here, because every
-    // recorded max/min ratio exceeds 1.2 / 1.1.
-    //
-    // shortcut: the fixture was recorded on a dev host at a commit that is not
-    // in history; re-record it from a `benchmark-quantum-pow-sweeps` reference
-    // run at a reachable commit before trusting the margins below.
-    const RECORDED_SWEEPS: &str = include_str!("../testdata/submit-proof-sweeps.tsv");
-    const EXPECTED_HEADER: &str = "host\tcommit_sha\tpoint\tnodes\tedges\tsamples\tmin_ns\tmax_ns";
-    // Anti-overcharge ceiling at the points the per-node/per-edge constants
-    // dominate (QUI-959 kept 1.5x on the six-term model). The two-term model
-    // cannot express the sublinear n-e interaction, so Ke carries ~2x the
-    // fastest steady per-edge cost to cover both corners; 2.0x keeps it from
-    // drifting further. `minimum` is base- and DB-weight dominated and exempt.
-    const COEFFICIENT_DOMINATED_POINTS: [&str; 3] = ["nodes", "edges", "worst_case"];
-    const MAX_OVERCHARGE_PERCENT: u128 = 200;
+/// Check a `run-quantum-pow-sweeps.sh` `summary.tsv` against the charged
+/// weight: every point present once, at its pinned dimensions, with the charge
+/// at least 10% over the recorded MAXIMUM. With `ceiling_percent`, the charge
+/// at the coefficient-dominated points must also stay under that multiple, so
+/// the constants cannot drift into gross overcharge unnoticed. Lines starting
+/// with `#` are provenance and are returned for the caller to check.
+fn check_sweep_summary(source: &str, summary: &str, ceiling_percent: Option<u128>) -> Vec<String> {
+    const EXPECTED_HEADER: &str = "point\tnodes\tedges\tsamples\tmin_ns\tmedian_ns\tmax_ns";
+    // `minimum` and `nodes` are dominated by base and DB weight, not by Kn/Ke.
+    const COEFFICIENT_DOMINATED_POINTS: [&str; 2] = ["edges", "worst_case"];
 
-    let mut lines = RECORDED_SWEEPS.lines();
-    assert_eq!(lines.next(), Some(EXPECTED_HEADER));
+    let (comments, rows): (Vec<_>, Vec<_>) = summary.lines().partition(|l| l.starts_with('#'));
+    let mut rows = rows.into_iter();
+    assert_eq!(
+        rows.next(),
+        Some(EXPECTED_HEADER),
+        "{source}: invalid sweep header"
+    );
     let mut seen = std::collections::BTreeSet::new();
 
-    for line in lines {
+    for line in rows {
         assert!(
             !line.is_empty(),
-            "recorded sweep fixture contains an empty row"
+            "{source}: sweep summary contains an empty row"
         );
         let columns = line.split('\t').collect::<Vec<_>>();
-        assert_eq!(columns.len(), 8, "invalid recorded sweep row: {line}");
-
-        let host = columns[0];
-        let commit_sha = columns[1];
-        let point = columns[2];
-        let nodes = columns[3].parse::<u32>().expect("recorded nodes");
-        let edges = columns[4].parse::<u32>().expect("recorded edges");
-        let samples = columns[5].parse::<u32>().expect("recorded samples");
-        let minimum_ns = columns[6].parse::<u64>().expect("recorded minimum");
-        let maximum_ns = columns[7].parse::<u64>().expect("recorded maximum");
-
-        assert!(!host.is_empty(), "missing host in row: {line}");
-        assert_eq!(commit_sha.len(), 40, "invalid commit SHA in row: {line}");
-        assert!(
-            commit_sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "non-hex commit SHA in row: {line}"
-        );
-        assert!(samples > 0, "recorded sample count must be nonzero");
-        assert!(
-            minimum_ns <= maximum_ns,
-            "recorded timings are not ordered for point {point}"
-        );
         assert_eq!(
-            (nodes, edges),
-            expected_sweep_dimensions(point),
-            "recorded dimensions do not match point {point}"
+            columns.len(),
+            7,
+            "{source}: invalid sweep summary row: {line}"
         );
-        assert!(
-            seen.insert((host.to_owned(), point)),
-            "duplicate recorded sweep row for host {host}, point {point}"
-        );
-
-        assert_weight_covers_observation(
-            &format!("host {host}"),
-            point,
-            nodes,
-            edges,
-            maximum_ns,
-            10,
-        );
-        if COEFFICIENT_DOMINATED_POINTS.contains(&point) {
-            let charged = u128::from(calculate_weight(nodes, edges).ref_time());
-            let observed = u128::from(maximum_ns) * 1_000;
-            assert!(
-                charged * 100 <= observed * MAX_OVERCHARGE_PERCENT,
-                "host {host} {point} charge {charged} ps exceeds {MAX_OVERCHARGE_PERCENT}% \
-                 of the recorded maximum {observed} ps"
-            );
-        }
-    }
-
-    for (point, _, _) in EXPECTED_SWEEP_POINTS {
-        assert!(
-            seen.iter().any(|(_, seen_point)| *seen_point == point),
-            "missing recorded sweep row for point {point}"
-        );
-    }
-}
-
-#[test]
-#[ignore = "requires QUANTUM_POW_SWEEP_SUMMARY from a completed sweep"]
-fn weight_covers_executed_sweep_with_ten_percent_floor() {
-    const EXPECTED_HEADER: &str = "point\tnodes\tedges\tsamples\tmin_ns\tmedian_ns\tmax_ns";
-
-    let summary_path = std::env::var("QUANTUM_POW_SWEEP_SUMMARY")
-        .expect("QUANTUM_POW_SWEEP_SUMMARY must point to the completed summary.tsv");
-    let summary =
-        std::fs::read_to_string(&summary_path).expect("completed sweep summary must be readable");
-    let mut lines = summary.lines();
-    assert_eq!(lines.next(), Some(EXPECTED_HEADER), "invalid sweep header");
-    let mut seen = std::collections::BTreeSet::new();
-
-    for line in lines {
-        assert!(!line.is_empty(), "sweep summary contains an empty row");
-        let columns = line.split('\t').collect::<Vec<_>>();
-        assert_eq!(columns.len(), 7, "invalid sweep summary row: {line}");
 
         let point = columns[0];
         let nodes = columns[1].parse::<u32>().expect("summary nodes");
@@ -3042,13 +2969,62 @@ fn weight_covers_executed_sweep_with_ten_percent_floor() {
             "duplicate sweep summary row for point {point}"
         );
 
-        assert_weight_covers_observation(&summary_path, point, nodes, edges, maximum_ns, 10);
+        assert_weight_covers_observation(source, point, nodes, edges, maximum_ns, 10);
+        if let Some(ceiling) =
+            ceiling_percent.filter(|_| COEFFICIENT_DOMINATED_POINTS.contains(&point))
+        {
+            let charged = u128::from(calculate_weight(nodes, edges).ref_time());
+            let observed = u128::from(maximum_ns) * 1_000;
+            assert!(
+                charged * 100 <= observed * ceiling,
+                "{source} {point} charge {charged} ps exceeds {ceiling}% of the \
+                 recorded maximum {observed} ps"
+            );
+        }
     }
 
     for (point, _, _) in EXPECTED_SWEEP_POINTS {
-        assert!(seen.contains(point), "missing sweep summary point {point}");
+        assert!(
+            seen.contains(point),
+            "{source}: missing sweep row for point {point}"
+        );
     }
-    assert_eq!(seen.len(), 4, "sweep summary must contain all four points");
+    comments.into_iter().map(str::to_owned).collect()
+}
+
+/// The checked-in reference sweep: a `benchmark-quantum-pow-sweeps`
+/// `summary.tsv` copied verbatim under `#` provenance lines naming the job and
+/// a commit reachable from history. Gated on the recorded MAXIMUM at 10%, and
+/// at most 1.5x (QUI-959's anti-overcharge ceiling) where Kn/Ke dominate.
+#[test]
+fn weight_covers_recorded_sweeps_with_ten_percent_floor() {
+    let provenance = check_sweep_summary(
+        "testdata/submit-proof-sweeps.tsv",
+        include_str!("../testdata/submit-proof-sweeps.tsv"),
+        Some(150),
+    );
+    let commit = provenance
+        .iter()
+        .find_map(|line| line.strip_prefix("# commit: "))
+        .expect("the fixture must name the commit it was recorded at");
+    assert!(
+        commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid commit SHA: {commit}"
+    );
+    assert!(
+        provenance.iter().any(|line| line.starts_with("# job: ")),
+        "the fixture must name the reference job that recorded it"
+    );
+}
+
+#[test]
+#[ignore = "requires QUANTUM_POW_SWEEP_SUMMARY from a completed sweep"]
+fn weight_covers_executed_sweep_with_ten_percent_floor() {
+    let summary_path = std::env::var("QUANTUM_POW_SWEEP_SUMMARY")
+        .expect("QUANTUM_POW_SWEEP_SUMMARY must point to the completed summary.tsv");
+    let summary =
+        std::fs::read_to_string(&summary_path).expect("completed sweep summary must be readable");
+    check_sweep_summary(&summary_path, &summary, None);
 }
 
 #[test]
@@ -3061,7 +3037,7 @@ fn weight_cannot_overflow_at_the_input_bounds() {
     // Differenced against the zero-dimension weight so this does not restate the DB costs
     // (`calculate_weight` adds reads/writes on top of the formula).
     let base = calculate_weight(0, 0).ref_time();
-    let expected = base + 6_000 * u32::MAX as u64 + 500_000 * u32::MAX as u64;
+    let expected = base + 6_000 * u32::MAX as u64 + 90_000 * u32::MAX as u64;
     assert_eq!(
         max_weight.ref_time(),
         expected,
@@ -3191,12 +3167,11 @@ fn weight_proportionality_constant_is_reasonable() {
     let per_edge = calculate_weight(0, 1).ref_time() - base;
 
     // Pinned exactly, not bounded: the constants are the whole claim of the two-term
-    // formula. Kₙ is still the collapse k₁ + k₃ + k₅; Kₑ was recalibrated to the sweep
-    // fixture after the collapsed 212_000 measurably undercharged the end-to-end
-    // verifier (see the constants' comment in weights.rs).
-    assert_eq!(per_node, 6_000, "Kₙ is k₁ + k₃ + k₅");
+    // formula. Kₑ is fitted to the node02 reference sweep (see the constants'
+    // comment in weights.rs).
+    assert_eq!(per_node, 6_000, "Kₙ");
     assert_eq!(
-        per_edge, 500_000,
+        per_edge, 90_000,
         "Kₑ is the sweep-recalibrated per-edge charge"
     );
 }
@@ -4326,29 +4301,32 @@ fn neither_width_may_be_widened_after_the_fact() {
 }
 
 #[test]
-fn a_proven_tractable_default_stops_paying_even_though_it_stays_whitelisted() {
+fn a_proven_tractable_default_keeps_paying_through_grace_then_pauses_without_a_standby() {
     new_test_ext().execute_with(|| {
-        // Account 3 is funded in the mock; 9 only ever acts as a prover.
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(3)));
         let (hash, rotation) = planar_zero_field_topology();
+        let standby = default_hash();
         assert_ok!(QuantumPow::set_default_topology(
             RuntimeOrigin::root(),
             hash
         ));
+        // No standby: production must pause when the window closes.
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            standby
+        ));
         set_difficulty_default(easy_difficulty());
 
-        // Left whitelisted on purpose, so a challenge cannot halt the chain.
         assert_ok!(QuantumPow::prove_topology_planar(
             RuntimeOrigin::signed(9),
             hash,
             bounded_rotation(rotation)
         ));
-        assert!(MineableTopologies::<Test>::contains_key(hash));
         assert_eq!(QuantumPow::regime_of(hash), Some(Regime::Exact));
 
-        // But it must stop paying: the puzzle is polynomial now. The regime is
-        // checked before any instance work, so the proof's contents don't matter.
-        let proof = QuantumProof {
+        // A proof whose contents are wrong gets past the regime gate during
+        // grace (it fails later, on the nonce), and is refused after it.
+        let proof = || QuantumProof {
             topology_hash: hash,
             nonce: sp_core::U256::zero(),
             salt: [0u8; 32],
@@ -4356,9 +4334,117 @@ fn a_proven_tractable_default_stops_paying_even_though_it_stays_whitelisted() {
             device_access_time_us: 0,
         };
         assert_noop!(
-            QuantumPow::submit_proof(RuntimeOrigin::signed(3), proof),
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), proof()),
+            crate::Error::<Test>::InvalidNonce
+        );
+
+        System::set_block_number(2);
+        QuantumPow::on_initialize(2);
+        let retires_at = 2 + 10;
+        assert_eq!(crate::DefaultRetiresAt::<Test>::get(), Some(retires_at));
+        System::assert_has_event(
+            crate::Event::<Test>::DefaultProvenTractable {
+                topology_hash: hash,
+                retires_at,
+            }
+            .into(),
+        );
+
+        System::set_block_number(retires_at - 1);
+        QuantumPow::on_initialize(retires_at - 1);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), proof()),
+            crate::Error::<Test>::InvalidNonce
+        );
+
+        System::set_block_number(retires_at);
+        QuantumPow::on_initialize(retires_at);
+        System::assert_has_event(
+            crate::Event::<Test>::DefaultRetired {
+                topology_hash: hash,
+            }
+            .into(),
+        );
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), proof()),
             crate::Error::<Test>::TopologyIsExact
         );
+
+        // Whitelisting a Heuristic topology un-pauses on the next block.
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            standby
+        ));
+        System::set_block_number(retires_at + 1);
+        QuantumPow::on_initialize(retires_at + 1);
+        assert_eq!(DefaultTopology::<Test>::get(), Some(standby));
+    });
+}
+
+#[test]
+fn a_proven_tractable_default_fails_over_to_the_standby_when_grace_closes() {
+    new_test_ext().execute_with(|| {
+        let (hash, rotation) = planar_zero_field_topology();
+        let standby = default_hash();
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            hash
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(standby));
+
+        assert_ok!(QuantumPow::prove_topology_planar(
+            RuntimeOrigin::signed(9),
+            hash,
+            bounded_rotation(rotation)
+        ));
+        System::set_block_number(2);
+        QuantumPow::on_initialize(2);
+        System::set_block_number(12);
+        QuantumPow::on_initialize(12);
+
+        assert_eq!(DefaultTopology::<Test>::get(), Some(standby));
+        assert!(!MineableTopologies::<Test>::contains_key(hash));
+        assert_eq!(crate::DefaultRetiresAt::<Test>::get(), None);
+        System::assert_has_event(
+            crate::Event::<Test>::DefaultFailedOver {
+                from: hash,
+                to: standby,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn governance_repointing_ends_the_grace_window_and_retires_the_old_default() {
+    new_test_ext().execute_with(|| {
+        let (hash, rotation) = planar_zero_field_topology();
+        let standby = default_hash();
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            hash
+        ));
+        assert_ok!(QuantumPow::prove_topology_planar(
+            RuntimeOrigin::signed(9),
+            hash,
+            bounded_rotation(rotation)
+        ));
+        System::set_block_number(2);
+        QuantumPow::on_initialize(2);
+        assert!(crate::DefaultRetiresAt::<Test>::get().is_some());
+
+        // An Exact topology cannot be made the default.
+        assert_noop!(
+            QuantumPow::set_default_topology(RuntimeOrigin::root(), hash),
+            crate::Error::<Test>::TopologyIsExact
+        );
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            standby
+        ));
+        assert_eq!(crate::DefaultRetiresAt::<Test>::get(), None);
+        assert!(!MineableTopologies::<Test>::contains_key(hash));
     });
 }
 
@@ -6009,5 +6095,89 @@ fn a_win_hardens_by_its_depth_below_its_own_instance_bar() {
         QuantumPow::on_finalize(50);
         // The 500-milli depth caps the step below the one-unit floor.
         assert_eq!(difficulty_default().max_energy_milli, -20_500);
+    });
+}
+
+/// Topologies registered before 119 have no structural record. The v7 step
+/// seeds one so the handicap, the band and both witnesses apply to them, and
+/// leaves an existing record alone.
+#[test]
+fn the_v7_migration_seeds_missing_hardness_records() {
+    new_test_ext().execute_with(|| {
+        // Registers the 2-node base topology (the default) and a triangle.
+        let (planar, _) = planar_zero_field_topology();
+        let acyclic = default_hash();
+        let cyclic = registered_zero_field_topology(); // a 4-cycle
+        TopologyHardnessOf::<Test>::remove(acyclic);
+        TopologyHardnessOf::<Test>::remove(cyclic);
+        let kept = TopologyHardness {
+            residual_difficulty: 64,
+            core_width: 64,
+            expected_frustration_milli: 500,
+        };
+        TopologyHardnessOf::<Test>::insert(planar, kept);
+        StorageVersion::new(6).put::<QuantumPow>();
+
+        QuantumPow::on_runtime_upgrade();
+
+        let unmeasured = crate::migration::v7::UNMEASURED_WIDTH;
+        let seeded = |hash| TopologyHardnessOf::<Test>::get(hash).expect("seeded");
+        assert_eq!(seeded(acyclic).residual_difficulty, unmeasured);
+        assert_eq!(seeded(acyclic).expected_frustration_milli, 0);
+        assert_eq!(seeded(cyclic).core_width, unmeasured);
+        assert_eq!(seeded(cyclic).expected_frustration_milli, 500);
+        assert_eq!(seeded(planar), kept);
+        assert_eq!(QuantumPow::regime_of(cyclic), Some(Regime::Heuristic));
+    });
+}
+
+/// `instance_check` must agree with `submit_proof` draw for draw: the same
+/// refusal for a refused draw, the same bar for an admitted one. Otherwise a
+/// miner pre-checking with it solves draws the chain then refuses.
+#[test]
+fn instance_check_agrees_with_submit_proof() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, hash) = registered_cycle_topology();
+        set_difficulty_default(easy_difficulty());
+        Difficulties::<Test>::insert(hash, easy_difficulty());
+
+        let (mut admitted, mut refused) = (0, 0);
+        for salt_byte in 0..32u8 {
+            let mut salt = [0u8; 32];
+            salt[0] = salt_byte;
+            let check = QuantumPow::instance_check(hash, &1, salt);
+            let (proof, _) = cycle_proof_for(1, &nodes, &edges, hash, salt_byte);
+            let result = frame_support::storage::with_transaction(|| {
+                let r = QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof);
+                let bar = BlockBestProof::<Test>::take().map(|b| b.instance_bar_milli);
+                sp_runtime::TransactionOutcome::Rollback(Ok::<_, sp_runtime::DispatchError>((
+                    r, bar,
+                )))
+            })
+            .unwrap();
+            match (check, result) {
+                (Ok(check), (Ok(()), Some(bar))) => {
+                    admitted += 1;
+                    assert_eq!(check.instance_bar_milli, bar, "salt {salt_byte}");
+                }
+                (Err(expected), (Err(got), _)) => {
+                    refused += 1;
+                    assert_eq!(expected, got, "salt {salt_byte}");
+                }
+                (check, (result, _)) => {
+                    panic!("salt {salt_byte}: instance_check {check:?} vs submit_proof {result:?}")
+                }
+            }
+        }
+        assert!(
+            admitted > 0 && refused > 0,
+            "{admitted} admitted, {refused} refused"
+        );
+
+        assert_eq!(
+            QuantumPow::instance_check(sp_core::H256::repeat_byte(1), &1, [0; 32]),
+            Err(crate::Error::<Test>::TopologyNotRegistered.into())
+        );
     });
 }

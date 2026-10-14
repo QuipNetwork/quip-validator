@@ -290,6 +290,14 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
         fn mineable_topologies() -> alloc::vec::Vec<sp_core::H256> {
             QuantumPow::mineable_topologies()
         }
+
+        fn instance_check(
+            topology_hash: sp_core::H256,
+            miner: AccountId,
+            salt: [u8; 32],
+        ) -> Result<pallet_quantum_pow::types::InstanceCheck, sp_runtime::DispatchError> {
+            QuantumPow::instance_check(topology_hash, &miner, salt)
+        }
     }
 
     impl pallet_quantum_compute_mempool::QuantumComputeMempoolApi<

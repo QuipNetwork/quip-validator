@@ -44,47 +44,45 @@ pub trait WeightInfo {
 //
 // W(n, e) = BASE + Kn*n + Ke*e
 //
-// - BASE = 50_000_000 -- extrinsic overhead (charged DB weight is added on top), sized to
-//   the 166 us steady-state floor recorded at the smallest admissible topology
-//   (317 nodes / 321 edges).
+// - BASE = 50_000_000 -- extrinsic overhead (charged DB weight is added on top).
 // - Kn = 6_000   per node: topology traversal, Ising h-term sampling, spin validation.
-// - Ke = 500_000 per edge: topology traversal, Ising J-term sampling, the energy
+// - Ke = 90_000  per edge: topology traversal, Ising J-term sampling, the energy
 //   calculation, and the two per-proof instance passes (`frustration_index`, a parity
 //   union-find over the couplings, and `energy_bound_milli`, one linear sum).
 //
-// Worst case at production bounds (n = 5_000, e = 50_000):
-// 50M + 30M + 25_000M = 25_080M ref_time ~ 25.08 ms (1 ref_time unit = 1 ps), plus ~0.68 ms
-// of charged DB weight (SUBMIT_PROOF_READS + SUBMIT_PROOF_WRITES at RocksDb costs). Eight
-// proofs (MaxProofsPerBlock) ~ 206 ms, about 10% of the 2 s block ref_time budget.
+// Fitted to the reference-machine sweep in `testdata/submit-proof-sweeps.tsv`
+// (`benchmark-quantum-pow-sweeps` on node02, see its provenance lines). Charged weight,
+// DB included, over each recorded MAXIMUM:
+//
+//     point        (n, e)            max       charged   ratio
+//     minimum      (317, 321)        0.10 ms   0.76 ms   7.4x   (base/DB dominated)
+//     nodes        (5_000, 5_004)    0.64 ms   1.21 ms   1.9x   (base/DB dominated)
+//     edges        (317, 50_000)     3.76 ms   5.23 ms   1.39x
+//     worst_case   (5_000, 50_000)   4.06 ms   5.26 ms   1.30x
+//
+// Worst case at production bounds: 50M + 30M + 4_500M = 4.58 ms of ref_time (1 unit = 1
+// ps) plus ~0.68 ms of charged DB weight. Eight proofs (MaxProofsPerBlock) ~ 42 ms, about
+// 2% of the 2 s block ref_time budget.
+//
+// `weight_covers_recorded_sweeps_with_ten_percent_floor` requires >= 1.1x at every point
+// and <= 1.5x where Kn/Ke dominate (edges, worst_case); the CI job re-checks the 10%
+// floor on every reference run. The earlier Ke = 500_000 was sized on a laptop arm64
+// fixture (~0.18 us/edge); the reference machine measures ~0.07 us/edge, so it
+// overcharged ~6x.
 //
 // Provenance. The model was BASE + k1*n + k2*e + k3*s*n + k4*s*e + k5*s^2*n + k6*n*e
 // with up to `MaxSolutions` configurations per proof. A proof now carries exactly one
 // configuration by type (`QuantumProof::solutions`), so the solution-scaled terms price
 // nothing; they also priced a rejected multi-configuration SCALE decode on the unpaid
-// pool-validation path, which the type change removed rather than repriced. The two
-// surviving constants were NOT derived by collapsing the six (k6 is an n*e cross term
-// and cannot fold into a per-edge constant); they are fitted directly to the end-to-end
-// sweep below.
-//
-// Ke and BASE come from `scripts/run-quantum-pow-sweeps.sh` fixed points, recorded in
-// `testdata/submit-proof-sweeps.tsv`. The fastest steady-state per-edge cost there is
-// ~0.176 us/edge at e = 50_000; Ke = 0.5 us/edge charges ~2.8x that. Including charged
-// DB weight, the totals cover the recorded maxima by 1.18x (nodes) to 2.48x (minimum).
-// Two gates hold this: `weight_covers_recorded_sweeps_with_ten_percent_floor` requires a
-// 10% margin over every recorded maximum and at most 2x at the coefficient-dominated
-// points, and the reference-machine CI job (`benchmark-quantum-pow-sweeps`, running
-// `weight_covers_executed_sweep_with_ten_percent_floor`) re-measures.
+// pool-validation path, which the type change removed rather than repriced.
 //
 // Do not transfer a fitted frame-benchmarking intercept here. Sweeping one component
 // pins the others at their maximum and extrapolates the intercept outside the data, and
 // there is a sublinear n-e interaction `BASE + Kn*n + Ke*e` cannot express. Validate by
 // pinning (n, e) at corners and comparing against measured maxima.
-//
-// If multi-configuration submission ever returns, the solution-scaled terms come back
-// together with a sweep that can fit them -- not before.
 const SUBMIT_PROOF_BASE_REF_TIME: u64 = 50_000_000;
 const SUBMIT_PROOF_K_NODE: u64 = 6_000;
-const SUBMIT_PROOF_K_EDGE: u64 = 500_000;
+const SUBMIT_PROOF_K_EDGE: u64 = 90_000;
 
 // Distinct storage items on the submit_proof accept path. Reads:
 // TopologyDims (weight closure), RegisteredTopologies (overlay-cached), Miners,

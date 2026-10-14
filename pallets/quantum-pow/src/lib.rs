@@ -47,6 +47,20 @@ type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, Allowed
 type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
+/// One instance as `submit_proof` prices it. See `Pallet::price_instance`.
+pub struct PricedInstance {
+    pub h: alloc::vec::Vec<quantum_validation::MilliValue>,
+    pub j: alloc::vec::Vec<quantum_validation::MilliValue>,
+    pub frustration_milli: u32,
+    pub frustration_cycles: u64,
+    /// Signed σ of the draw's frustration from the topology's expectation.
+    pub sigmas: i64,
+    pub anchor_milli: i64,
+    pub instance_bar_milli: i64,
+    /// The live topology-level threshold the bar was derived from.
+    pub current: types::DifficultyConfig,
+}
+
 sp_api::decl_runtime_apis! {
     /// Version 2 adds the per-topology `difficulty_for` and the
     /// `mineable_topologies` whitelist query. Clients can feature-detect
@@ -157,6 +171,17 @@ sp_api::decl_runtime_apis! {
 
         /// Hashes of every topology currently on the mineable whitelist.
         fn mineable_topologies() -> alloc::vec::Vec<sp_core::H256>;
+
+        /// Price a draw exactly as `submit_proof` would at this block, without
+        /// a solution: the nonce, frustration, σ and the bar to reach, or the
+        /// refusal (`InstanceIsGaugeTrivial`, `InstanceOutsideFrustrationBand`,
+        /// `TopologyIsExact`, ...). Lets a miner skip refused draws without
+        /// re-implementing consensus maths. New in version 3.
+        fn instance_check(
+            topology_hash: sp_core::H256,
+            miner: AccountId,
+            salt: [u8; 32],
+        ) -> Result<crate::types::InstanceCheck, sp_runtime::DispatchError>;
     }
 }
 
@@ -273,6 +298,12 @@ pub mod pallet {
         /// `quantum-validation`, beside the band predicate.
         #[pallet::constant]
         type HandicapPerSigmaPermille: Get<i64>;
+
+        /// Blocks a default topology proven tractable keeps paying before it
+        /// is retired. Gives governance, or the automatic standby failover,
+        /// time to repoint without a permissionless witness halting rewards.
+        #[pallet::constant]
+        type ExactDefaultGraceBlocks: Get<BlockNumberFor<Self>>;
 
         type WeightInfo: WeightInfo;
     }
@@ -409,6 +440,12 @@ pub mod pallet {
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
+    /// Block at which a default proven tractable stops being mineable. Set
+    /// by `on_initialize` when the default first reads Exact; cleared when the
+    /// default is repointed. See `retire_tractable_default`.
+    #[pallet::storage]
+    pub type DefaultRetiresAt<T: Config> = StorageValue<_, BlockNumberFor<T>, OptionQuery>;
+
     /// Persisted record of each qblock (PoW-won block), written in
     /// `on_finalize` alongside the `BlockWinner` event.
     ///
@@ -510,6 +547,23 @@ pub mod pallet {
         TopologyProvenPlanar {
             topology_hash: H256,
             prover: T::AccountId,
+        },
+        /// The live default reads Exact. It keeps paying until `retires_at`,
+        /// then a whitelisted Heuristic standby takes over.
+        DefaultProvenTractable {
+            topology_hash: H256,
+            retires_at: BlockNumberFor<T>,
+        },
+        /// The grace window closed and the standby became the default.
+        DefaultFailedOver {
+            from: H256,
+            to: H256,
+        },
+        /// The grace window closed with no Heuristic standby whitelisted.
+        /// Production is paused until governance whitelists one; the next
+        /// block then promotes it.
+        DefaultRetired {
+            topology_hash: H256,
         },
     }
 
@@ -758,10 +812,12 @@ pub mod pallet {
             //
             // Charged on EVERY block, including the ones that do not win — the
             // only correct direction for a hook that returns no weight.
-            T::DbWeight::get()
-                .reads_writes(10, 10)
-                .saturating_add(Weight::from_parts(300_000_000, 0))
-                .saturating_add(T::RewardPayment::weight())
+            Self::retire_tractable_default(n).saturating_add(
+                T::DbWeight::get()
+                    .reads_writes(10, 10)
+                    .saturating_add(Weight::from_parts(300_000_000, 0))
+                    .saturating_add(T::RewardPayment::weight()),
+            )
         }
 
         /// Cumulative storage migration to the in-code `STORAGE_VERSION`.
@@ -850,6 +906,12 @@ pub mod pallet {
             // Backfills `TopologyDims` for every already-registered topology.
             // Runs from every prior version and is idempotent.
             weight = weight.saturating_add(crate::migration::v7::backfill_topology_dims::<T>());
+            // Topologies registered before 119 carry no structural record, so
+            // the handicap, the frustration band and both witnesses would be
+            // off for them. Seed one: width unmeasured (`u32::MAX`, ratchets
+            // down via `set_topology_hardness` or a witness), expected
+            // frustration derived from the coupling spec. Idempotent.
+            weight = weight.saturating_add(crate::migration::v7::seed_missing_hardness::<T>());
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -890,6 +952,11 @@ pub mod pallet {
             ensure!(
                 QBlocks::<T>::iter().count() as u64 == qblocks_before,
                 "the v5 re-encode must preserve every QBlocks entry"
+            );
+            ensure!(
+                RegisteredTopologies::<T>::iter_keys()
+                    .all(|hash| TopologyHardnessOf::<T>::contains_key(hash)),
+                "v7 must seed a hardness record for every registered topology"
             );
             // The dims invariant moved to `try_state` — the standard FRAME
             // shape, and see there for why once-per-upgrade was the wrong
@@ -1294,6 +1361,21 @@ pub mod pallet {
             // ~one win old on an actively-mining chain. If concurrent
             // multi-topology mining (model B) is added, reset hardness/round
             // state at the switch.
+            // A default must be one the chain will pay for: classified, and not
+            // already proven tractable.
+            ensure!(
+                Self::regime_of(topology_hash) == Some(quantum_validation::Regime::Heuristic),
+                Error::<T>::TopologyIsExact
+            );
+            if let Some(old) = DefaultTopology::<T>::get() {
+                if old != topology_hash
+                    && Self::regime_of(old) == Some(quantum_validation::Regime::Exact)
+                    && MineableTopologies::<T>::take(old).is_some()
+                {
+                    Self::deposit_event(Event::TopologyMineableRemoved { topology_hash: old });
+                }
+            }
+            DefaultRetiresAt::<T>::kill();
             DefaultTopology::<T>::put(topology_hash);
             Self::deposit_event(Event::DefaultTopologySet { topology_hash });
             Ok(())
@@ -1439,8 +1521,9 @@ pub mod pallet {
         /// `set_topology_hardness` can raise it again.
         ///
         /// A proven-exact topology is dropped from the mineable whitelist
-        /// unless it is the current `DefaultTopology` — removing that would
-        /// halt qblock production, so the event fires and governance repoints.
+        /// unless it is the current `DefaultTopology`. The default keeps paying
+        /// for `ExactDefaultGraceBlocks`, then a Heuristic standby takes over
+        /// (see `retire_tractable_default`).
         #[pallet::call_index(10)]
         #[pallet::weight({
             // `TopologyDims`, NOT `RegisteredTopologies`: this closure runs
@@ -1648,25 +1731,7 @@ pub mod pallet {
             // value sets; `topology_hash` is the proof's only identity claim.
             let topology = RegisteredTopologies::<T>::get(proof.topology_hash)
                 .ok_or(Error::<T>::TopologyNotRegistered)?;
-            ensure!(
-                MineableTopologies::<T>::contains_key(proof.topology_hash),
-                Error::<T>::TopologyNotMineable
-            );
-            // The whitelist alone is not sufficient. A successful
-            // `prove_topology_exact` / `prove_topology_planar` deliberately
-            // leaves the live `DefaultTopology` whitelisted so a challenge
-            // cannot halt the chain outright, so the regime check is the only
-            // thing between a proven-tractable default and full block reward
-            // for polynomial-time work. Paying for non-work is worse than
-            // pausing: governance repoints with `set_default_topology`.
-            ensure!(
-                Self::regime_of(proof.topology_hash) != Some(quantum_validation::Regime::Exact),
-                Error::<T>::TopologyIsExact
-            );
-            ensure!(
-                topology.nodes.len() >= T::MinNodes::get() as usize,
-                Error::<T>::GraphTooSmall
-            );
+            Self::ensure_mineable(proof.topology_hash, &topology)?;
 
             // Nonce is bound to `block_hash(LastProofBlock)`, not to the
             // executing block. That value only changes when a proof wins, so a
@@ -1685,98 +1750,15 @@ pub mod pallet {
             // allocation plus an O(n log n) sort per proof on the sorted-table
             // path, an extra O(n) scan on the contiguous one. Same arithmetic,
             // same error ordering.
-            let quantum_validation::IsingInstance {
+            let PricedInstance {
                 h,
                 j,
                 frustration_milli,
-                frustration_cycles,
-            } = quantum_validation::generate_ising_model_and_frustration(
-                proof.nonce,
-                topology.nodes.as_slice(),
-                topology.edges.as_slice(),
-                &topology.allowed_h_values.as_slice(),
-                &topology.allowed_j_values.as_slice(),
-            )
-            .map_err(|_| Error::<T>::InvalidTopology)?;
-
-            let current = Self::current_difficulty_for(
-                proof.topology_hash,
-                frame_system::Pallet::<T>::block_number(),
-            );
-
-            let expected_frustration_milli = TopologyHardnessOf::<T>::get(proof.topology_hash)
-                .map(|hardness| hardness.expected_frustration_milli)
-                .unwrap_or_default();
-
-            // An unfrustrated draw is not hard, at any width: zero frustrated
-            // cycles means the couplings gauge-transform to all-ferromagnetic,
-            // so the ground state is `-(Sum|h| + Sum|J|)` and gauge propagation
-            // finds it in O(m). The handicap cannot price this away: a zero
-            // draw sits many sigma below expected, saturates the +/-3 sigma
-            // clamp, and buys a bar only 1.8% tighter than typical. The clamp
-            // is denominated in sampling noise and tractability is not noise,
-            // so this must be a validity gate, not a difficulty adjustment.
-            //
-            // `frustration_cycles == 0` alone is NOT a forest exemption:
-            // `frustration_index` skips zero couplings, so a draw whose NONZERO
-            // couplings happen to form a forest also reports `(0, 0)`, and that
-            // instance has treewidth 1 and a linear-time ground state. Only a
-            // topology that declares itself acyclic (`expected_frustration_milli
-            // == 0`) may draw zero cycles; there the regime gate owns the call.
-            // Registration also refuses zero-admitting coupling specs on cyclic
-            // graphs, so this is the second of two locks.
-            ensure!(
-                frustration_milli > 0
-                    || (frustration_cycles == 0 && expected_frustration_milli == 0),
-                Error::<T>::InstanceIsGaugeTrivial
-            );
-
-            // Refuse draws past the handicap's reach instead of capping them.
-            // Past ±3σ the clamp saturates and hands back a bar only 1.8%
-            // tighter than typical, so that is where the mechanism gives up and
-            // where the instance should stop being valid. Costs honest miners
-            // ~1 salt in 1000 and a re-salt; costs a grinder the only part of
-            // the distribution worth grinding for.
-            //
-            // TWO-SIDED. Refusing only the easy tail is wrong once the handicap
-            // is in play: it LOOSENS the bar for a hard draw, so if its slope
-            // over-states frustration's true cost — measured scatter is 4-29
-            // per-mille per σ against a deployed 6, so it might — grinding
-            // toward the hard tail buys a bar looser than justified.
-            //
-            // A residual gradient remains INSIDE the band, worth up to
-            // `HANDICAP_MAX_SIGMA` times the deployed-vs-true slope gap. It is
-            // bounded by the band width and cannot be removed without a slope
-            // measurement `riff-hv9.22` found unobtainable over the natural
-            // draw range.
-            //
-            // ONE `FrustrationDraw`, read by both the gate and the price. As
-            // two separate spellings each computed sigma independently, and
-            // nothing made them agree — the gate only refuses draws past the
-            // handicap's REACH if it measures the same reach. It also removes
-            // the last transposable positional triple from the consensus path:
-            // both `u32` milli in `0..=1000`, adjacent, confusable names, so
-            // transposed it COMPILES, the deviation flips sign (which the
-            // gate's `.abs()` HIDES) and sigma comes from the realized draw
-            // instead of the topology's expectation.
-            let draw = crate::difficulty::FrustrationDraw {
-                realized_milli: frustration_milli,
-                expected_milli: expected_frustration_milli,
-                cycles: frustration_cycles,
-            };
-            ensure!(
-                crate::difficulty::frustration_sigmas_of(draw).abs()
-                    <= crate::difficulty::HANDICAP_MAX_SIGMA,
-                Error::<T>::InstanceOutsideFrustrationBand
-            );
-            let bound_milli = energy_bound_milli(&h, &j);
-            let anchor_milli = crate::difficulty::anchor_milli(bound_milli);
-            let instance_bar_milli = crate::difficulty::instance_bar_milli(
-                current.max_energy_milli,
-                bound_milli,
-                draw,
-                T::HandicapPerSigmaPermille::get(),
-            );
+                anchor_milli,
+                instance_bar_milli,
+                current,
+                ..
+            } = Self::price_instance(proof.topology_hash, &topology, proof.nonce)?;
 
             let validation = Self::validate_proof(&proof, &topology, &h, &j)?;
             // Reaching the bar clears it. The handicap can drive the bar to the
@@ -2065,6 +2047,217 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Generate and price one instance exactly as `submit_proof` does: the
+        /// model, its frustration, the validity gates and the per-draw bar.
+        /// Shared with the `instance_check` runtime API so a miner's pre-check
+        /// cannot drift from consensus.
+        pub fn price_instance(
+            topology_hash: H256,
+            topology: &TopologyMetaOf<T>,
+            nonce: sp_core::U256,
+        ) -> Result<PricedInstance, Error<T>> {
+            let quantum_validation::IsingInstance {
+                h,
+                j,
+                frustration_milli,
+                frustration_cycles,
+            } = quantum_validation::generate_ising_model_and_frustration(
+                nonce,
+                topology.nodes.as_slice(),
+                topology.edges.as_slice(),
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
+            )
+            .map_err(|_| Error::<T>::InvalidTopology)?;
+
+            let current = Self::current_difficulty_for(
+                topology_hash,
+                frame_system::Pallet::<T>::block_number(),
+            );
+
+            let expected_frustration_milli = TopologyHardnessOf::<T>::get(topology_hash)
+                .map(|hardness| hardness.expected_frustration_milli)
+                .unwrap_or_default();
+
+            // An unfrustrated draw is not hard, at any width: zero frustrated
+            // cycles means the couplings gauge-transform to all-ferromagnetic,
+            // so the ground state is `-(Sum|h| + Sum|J|)` and gauge propagation
+            // finds it in O(m). The handicap cannot price this away: a zero
+            // draw sits many sigma below expected, saturates the +/-3 sigma
+            // clamp, and buys a bar only 1.8% tighter than typical. The clamp
+            // is denominated in sampling noise and tractability is not noise,
+            // so this must be a validity gate, not a difficulty adjustment.
+            //
+            // `frustration_cycles == 0` alone is NOT a forest exemption:
+            // `frustration_index` skips zero couplings, so a draw whose NONZERO
+            // couplings happen to form a forest also reports `(0, 0)`, and that
+            // instance has treewidth 1 and a linear-time ground state. Only a
+            // topology that declares itself acyclic (`expected_frustration_milli
+            // == 0`) may draw zero cycles; there the regime gate owns the call.
+            // Registration also refuses zero-admitting coupling specs on cyclic
+            // graphs, so this is the second of two locks.
+            ensure!(
+                frustration_milli > 0
+                    || (frustration_cycles == 0 && expected_frustration_milli == 0),
+                Error::<T>::InstanceIsGaugeTrivial
+            );
+
+            // Refuse draws past the handicap's reach instead of capping them.
+            // Past ±3σ the clamp saturates and hands back a bar only 1.8%
+            // tighter than typical, so that is where the mechanism gives up and
+            // where the instance should stop being valid. Costs honest miners
+            // ~1 salt in 1000 and a re-salt; costs a grinder the only part of
+            // the distribution worth grinding for.
+            //
+            // TWO-SIDED. Refusing only the easy tail is wrong once the handicap
+            // is in play: it LOOSENS the bar for a hard draw, so if its slope
+            // over-states frustration's true cost — measured scatter is 4-29
+            // per-mille per σ against a deployed 6, so it might — grinding
+            // toward the hard tail buys a bar looser than justified.
+            //
+            // A residual gradient remains INSIDE the band, worth up to
+            // `HANDICAP_MAX_SIGMA` times the deployed-vs-true slope gap. It is
+            // bounded by the band width and cannot be removed without a slope
+            // measurement `riff-hv9.22` found unobtainable over the natural
+            // draw range.
+            //
+            // ONE `FrustrationDraw`, read by both the gate and the price. As
+            // two separate spellings each computed sigma independently, and
+            // nothing made them agree — the gate only refuses draws past the
+            // handicap's REACH if it measures the same reach. It also removes
+            // the last transposable positional triple from the consensus path:
+            // both `u32` milli in `0..=1000`, adjacent, confusable names, so
+            // transposed it COMPILES, the deviation flips sign (which the
+            // gate's `.abs()` HIDES) and sigma comes from the realized draw
+            // instead of the topology's expectation.
+            let draw = crate::difficulty::FrustrationDraw {
+                realized_milli: frustration_milli,
+                expected_milli: expected_frustration_milli,
+                cycles: frustration_cycles,
+            };
+            ensure!(
+                crate::difficulty::frustration_sigmas_of(draw).abs()
+                    <= crate::difficulty::HANDICAP_MAX_SIGMA,
+                Error::<T>::InstanceOutsideFrustrationBand
+            );
+            let bound_milli = energy_bound_milli(&h, &j);
+            let anchor_milli = crate::difficulty::anchor_milli(bound_milli);
+            let instance_bar_milli = crate::difficulty::instance_bar_milli(
+                current.max_energy_milli,
+                bound_milli,
+                draw,
+                T::HandicapPerSigmaPermille::get(),
+            );
+
+            Ok(PricedInstance {
+                h,
+                j,
+                frustration_milli,
+                frustration_cycles,
+                sigmas: crate::difficulty::frustration_sigmas_of(draw),
+                anchor_milli,
+                instance_bar_milli,
+                current,
+            })
+        }
+
+        /// Whitelist, regime and size checks a proof's topology must pass.
+        ///
+        /// An Exact (proven tractable) topology is refused, except the live
+        /// default during its retirement grace window: production continues
+        /// while governance or the automatic failover repoints, instead of one
+        /// permissionless witness halting rewards outright.
+        pub fn ensure_mineable(
+            topology_hash: H256,
+            topology: &TopologyMetaOf<T>,
+        ) -> Result<(), Error<T>> {
+            ensure!(
+                MineableTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotMineable
+            );
+            ensure!(
+                Self::regime_of(topology_hash) != Some(quantum_validation::Regime::Exact)
+                    || Self::default_in_grace(topology_hash),
+                Error::<T>::TopologyIsExact
+            );
+            ensure!(
+                topology.nodes.len() >= T::MinNodes::get() as usize,
+                Error::<T>::GraphTooSmall
+            );
+            Ok(())
+        }
+
+        /// True while `topology_hash` is the live default and its retirement
+        /// has not come due. A grace window that has not started yet (the
+        /// witness landed this block) counts as open.
+        fn default_in_grace(topology_hash: H256) -> bool {
+            DefaultTopology::<T>::get() == Some(topology_hash)
+                && DefaultRetiresAt::<T>::get()
+                    .is_none_or(|at| frame_system::Pallet::<T>::block_number() < at)
+        }
+
+        /// Start, or finish, the retirement of a default proven tractable.
+        ///
+        /// Runs from `on_initialize`, so a witness, a ceiling raised by
+        /// upgrade, or a root hardness revision all take the same path. While
+        /// the grace window is open the default keeps paying. When it closes,
+        /// the first whitelisted Heuristic topology becomes the default; with
+        /// none, production pauses until one is whitelisted, after which the
+        /// next block promotes it. Returns the weight it used.
+        fn retire_tractable_default(n: BlockNumberFor<T>) -> Weight {
+            let db = T::DbWeight::get();
+            let Some(default) = DefaultTopology::<T>::get() else {
+                return db.reads(1);
+            };
+            if Self::regime_of(default) != Some(quantum_validation::Regime::Exact) {
+                return db.reads(2);
+            }
+            let Some(retires_at) = DefaultRetiresAt::<T>::get() else {
+                let retires_at = n.saturating_add(T::ExactDefaultGraceBlocks::get());
+                DefaultRetiresAt::<T>::put(retires_at);
+                Self::deposit_event(Event::DefaultProvenTractable {
+                    topology_hash: default,
+                    retires_at,
+                });
+                return db.reads_writes(3, 1);
+            };
+            if n < retires_at {
+                return db.reads(3);
+            }
+            // Model A bounds the whitelist at the default plus one standby.
+            let standby = MineableTopologies::<T>::iter_keys().find(|hash| {
+                *hash != default
+                    && Self::regime_of(*hash) == Some(quantum_validation::Regime::Heuristic)
+            });
+            let scanned = MineableTopologies::<T>::iter_keys().count() as u64;
+            match standby {
+                Some(next) => {
+                    DefaultTopology::<T>::put(next);
+                    DefaultRetiresAt::<T>::kill();
+                    MineableTopologies::<T>::remove(default);
+                    Self::deposit_event(Event::TopologyMineableRemoved {
+                        topology_hash: default,
+                    });
+                    Self::deposit_event(Event::DefaultTopologySet {
+                        topology_hash: next,
+                    });
+                    Self::deposit_event(Event::DefaultFailedOver {
+                        from: default,
+                        to: next,
+                    });
+                    db.reads_writes(3 + 2 * scanned, 3)
+                }
+                None => {
+                    if n == retires_at {
+                        Self::deposit_event(Event::DefaultRetired {
+                            topology_hash: default,
+                        });
+                    }
+                    db.reads(3 + 2 * scanned)
+                }
+            }
+        }
+
         fn retire_unless_default(topology_hash: H256) {
             if DefaultTopology::<T>::get() != Some(topology_hash)
                 && MineableTopologies::<T>::contains_key(topology_hash)
@@ -2151,6 +2344,15 @@ pub mod pallet {
                 Self::topology_dims_consistent(),
                 "RegisteredTopologies and TopologyDims must cover the same hashes"
             );
+            // A retirement in progress belongs to a default that reads Exact;
+            // anything else means a repoint failed to clear it.
+            if DefaultRetiresAt::<T>::get().is_some() {
+                ensure!(
+                    DefaultTopology::<T>::get().and_then(Self::regime_of)
+                        == Some(quantum_validation::Regime::Exact),
+                    "DefaultRetiresAt is set but the default is not Exact"
+                );
+            }
             Ok(())
         }
 
@@ -2283,6 +2485,33 @@ pub mod pallet {
         }
 
         /// Hashes of every topology currently on the mineable whitelist.
+        /// Backs the `instance_check` runtime API: `submit_proof`'s topology
+        /// and instance gates, evaluated for `(miner, salt)` at this block.
+        pub fn instance_check(
+            topology_hash: H256,
+            miner: &T::AccountId,
+            salt: [u8; 32],
+        ) -> Result<types::InstanceCheck, DispatchError> {
+            let topology = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
+            Self::ensure_mineable(topology_hash, &topology)?;
+            let nonce = derive_nonce(
+                &LastProofBlockHash::<T>::get().0,
+                &Self::account_to_bytes(miner),
+                &salt,
+            );
+            let priced = Self::price_instance(topology_hash, &topology, nonce)?;
+            Ok(types::InstanceCheck {
+                nonce,
+                frustration_milli: priced.frustration_milli,
+                frustration_cycles: priced.frustration_cycles,
+                sigmas: priced.sigmas,
+                anchor_milli: priced.anchor_milli,
+                instance_bar_milli: priced.instance_bar_milli,
+                live_bar_milli: priced.current.max_energy_milli,
+            })
+        }
+
         pub fn mineable_topologies() -> Vec<H256> {
             MineableTopologies::<T>::iter_keys().collect()
         }
@@ -2551,6 +2780,7 @@ pub(crate) mod migration {
         use super::LegacyDifficultyConfig;
         use crate::pallet::{
             Config, Difficulties, QBlocks, RegisteredTopologies, TopologyDim, TopologyDims,
+            TopologyHardnessOf,
         };
         use crate::{
             types, AccountIdOf, BalanceOf, BlockNumberOf, EdgesOf, NodesOf, TopologyMetaOf,
@@ -2675,6 +2905,40 @@ pub(crate) mod migration {
             // idempotent re-run after doing all that work — the wrong direction
             // on a consensus-visible weight.
             T::DbWeight::get().reads_writes(visited.saturating_mul(2), touched)
+        }
+
+        /// Width recorded for a topology whose width has never been measured.
+        /// Reads Heuristic at any ceiling and only ratchets down.
+        pub(crate) const UNMEASURED_WIDTH: u32 = u32::MAX;
+
+        /// Give every registered topology without a `TopologyHardnessOf`
+        /// entry one: unmeasured width and the expected frustration its
+        /// coupling spec determines (`0`, i.e. no handicap or band, when the
+        /// spec does not determine it). Leaves existing records untouched.
+        pub(crate) fn seed_missing_hardness<T: Config>() -> Weight {
+            let (mut visited, mut seeded) = (0u64, 0u64);
+            for (hash, meta) in RegisteredTopologies::<T>::iter() {
+                visited = visited.saturating_add(1);
+                if TopologyHardnessOf::<T>::contains_key(hash) {
+                    continue;
+                }
+                seeded = seeded.saturating_add(1);
+                let expected_frustration_milli = quantum_validation::expected_frustration_for(
+                    &meta.allowed_j_values.as_slice(),
+                    &meta.nodes,
+                    &meta.edges,
+                )
+                .unwrap_or(0);
+                TopologyHardnessOf::<T>::insert(
+                    hash,
+                    types::TopologyHardness {
+                        residual_difficulty: UNMEASURED_WIDTH,
+                        core_width: UNMEASURED_WIDTH,
+                        expected_frustration_milli,
+                    },
+                );
+            }
+            T::DbWeight::get().reads_writes(visited.saturating_mul(2), seeded)
         }
 
         /// Canonicalize the stored graph of every registered topology.

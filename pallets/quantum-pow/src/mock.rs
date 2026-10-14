@@ -117,6 +117,7 @@ impl pallet_quantum_pow::Config for Test {
     type CurveCHardMilli = ConstU32<750>;
     type ExactSolveCeiling = ExactSolveCeilingOverride;
     type HandicapPerSigmaPermille = HandicapPerSigmaPermille;
+    type ExactDefaultGraceBlocks = frame_support::traits::ConstU64<10>;
     type WeightInfo = ();
 }
 

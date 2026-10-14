@@ -1,5 +1,7 @@
-host	commit_sha	point	nodes	edges	samples	min_ns	max_ns
-Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	minimum	317	321	80	167000	358000
-Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	nodes	5000	5004	80	1862000	2751000
-Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	edges	317	50000	80	9027000	16201000
-Coltons-MacBook-Pro.local	593cf93a169d7dc7287fd8d4d509d4a6115ff9f3	worst_case	5000	50000	80	8816000	14419000
+# job: benchmark-quantum-pow-sweeps 17155938201 (pipeline 2944639905, Quip bench reference machine node02)
+# commit: 819a633226d6896d2f70b0c832554b46e85ba336
+point	nodes	edges	samples	min_ns	median_ns	max_ns
+minimum	317	321	80	90230	91122	102423
+nodes	5000	5004	80	573861	581345	637010
+edges	317	50000	80	3565506	3591756	3763159
+worst_case	5000	50000	80	3812551	3842057	4057233

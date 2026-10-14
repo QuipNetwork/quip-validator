@@ -283,11 +283,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     //   by the proof's depth below its own instance bar.
     // - New calls: root `set_topology_hardness` (9); permissionless
     //   `prove_topology_exact` (10) and `prove_topology_planar` (11).
-    //   `prove_topology_planar` can retire the live default topology and halt
-    //   qblock production until governance repoints (accepted trade-off:
-    //   paying for polynomial-time work is worse than pausing).
+    //   A witness against the live default does not halt production: the
+    //   default keeps paying for `ExactDefaultGraceBlocks` (one day), then a
+    //   whitelisted Heuristic standby becomes the default. With no standby,
+    //   production pauses until one is whitelisted. New `DefaultRetiresAt`
+    //   storage; `set_default_topology` refuses unclassified/Exact targets.
     // - Events `TopologyHardnessSet`/`TopologyProvenExact`/
-    //   `TopologyProvenPlanar` are appended; `ProofAccepted` gains two fields.
+    //   `TopologyProvenPlanar`/`DefaultProvenTractable`/`DefaultFailedOver`/
+    //   `DefaultRetired` are appended; `ProofAccepted` gains two fields.
     // - `QuantumPowApi` moves to api_version 3 (`DifficultyConfig` and `QBlock`
     //   changed shape).
     // - QuantumPow storage 6 -> 7: re-encodes `Difficulties` and `QBlocks`

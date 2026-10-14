@@ -607,6 +607,9 @@ parameter_types! {
     /// Matches the riff toolkit's `EXACT_CEILING`; raising it re-classifies
     /// every registered topology at once as classical solvers improve.
     pub const QuantumPowExactSolveCeiling: u32 = 20;
+    /// One day of continued rewards after the live default is proven
+    /// tractable, before the standby takes over (or production pauses).
+    pub const QuantumPowExactDefaultGraceBlocks: BlockNumber = crate::DAYS;
 
     pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
     pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
@@ -688,6 +691,7 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
     type ExactSolveCeiling = QuantumPowExactSolveCeiling;
     type HandicapPerSigmaPermille = QuantumPowHandicapPerSigmaPermille;
+    type ExactDefaultGraceBlocks = QuantumPowExactDefaultGraceBlocks;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

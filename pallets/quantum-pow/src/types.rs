@@ -333,6 +333,26 @@ pub struct QBlockWithNonce<AccountId, Balance, BlockNumber> {
     pub nonce: U256,
 }
 
+/// What `submit_proof` would make of one draw, before any solving: the
+/// `instance_check` runtime API response. A refused draw comes back as the
+/// dispatch error `submit_proof` would raise, so a miner re-salts instead of
+/// solving it.
+#[derive(Clone, Debug, Encode, Decode, Eq, PartialEq, TypeInfo)]
+pub struct InstanceCheck {
+    /// `derive_nonce(last_proof_block_hash, miner, salt)` for this round.
+    pub nonce: U256,
+    pub frustration_milli: u32,
+    pub frustration_cycles: u64,
+    /// Signed σ from the topology's expected frustration (positive = easier).
+    pub sigmas: i64,
+    /// The instance's exact optimum bound, `-(Σ|h| + Σ|J|)`.
+    pub anchor_milli: i64,
+    /// The bar a proof of this draw must reach (`energy <= bar`).
+    pub instance_bar_milli: i64,
+    /// The live topology-level threshold the bar was derived from.
+    pub live_bar_milli: i64,
+}
+
 /// `QuantumPowApi` version-2 response shapes (runtimes up to spec 118).
 ///
 /// Version 3 shrank [`DifficultyConfig`] to one field and appended the solved
