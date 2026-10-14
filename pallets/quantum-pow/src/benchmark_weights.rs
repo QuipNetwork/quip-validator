@@ -75,8 +75,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
 		//  Estimated: `3557`
-		// Minimum execution time: 30_518_000 picoseconds.
-		Weight::from_parts(31_559_000, 3557)
+		// Minimum execution time: 30_438_000 picoseconds.
+		Weight::from_parts(31_600_000, 3557)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -86,8 +86,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `125`
 		//  Estimated: `3557`
-		// Minimum execution time: 30_548_000 picoseconds.
-		Weight::from_parts(31_520_000, 3557)
+		// Minimum execution time: 30_498_000 picoseconds.
+		Weight::from_parts(31_610_000, 3557)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -103,17 +103,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::TopologyDims` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
-	/// The range of component `a` is `[3, 96]`.
+	/// The range of component `a` is `[4, 96]`.
 	fn register_topology(n: u32, e: u32, _a: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
 		//  Estimated: `423913`
-		// Minimum execution time: 212_542_000 picoseconds.
-		Weight::from_parts(214_035_000, 423913)
-			// Standard Error: 1_913
-			.saturating_add(Weight::from_parts(64_986, 0).saturating_mul(n.into()))
-			// Standard Error: 191
-			.saturating_add(Weight::from_parts(46_260, 0).saturating_mul(e.into()))
+		// Minimum execution time: 267_441_000 picoseconds.
+		Weight::from_parts(269_204_000, 423913)
+			// Standard Error: 1_905
+			.saturating_add(Weight::from_parts(69_335, 0).saturating_mul(n.into()))
+			// Standard Error: 190
+			.saturating_add(Weight::from_parts(57_276, 0).saturating_mul(e.into()))
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(5_u64))
 	}
@@ -121,29 +121,37 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::MineableTopologies` (r:1 w:0)
 	/// Proof: `QuantumPow::MineableTopologies` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumPow::DefaultTopology` (r:0 w:1)
+	/// Storage: `QuantumPow::TopologyHardnessOf` (r:1 w:0)
+	/// Proof: `QuantumPow::TopologyHardnessOf` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DefaultTopology` (r:1 w:1)
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DefaultRetiresAt` (r:0 w:1)
+	/// Proof: `QuantumPow::DefaultRetiresAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	fn set_default_topology() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `247`
+		//  Measured:  `340`
 		//  Estimated: `423913`
-		// Minimum execution time: 18_284_000 picoseconds.
-		Weight::from_parts(18_996_000, 423913)
-			.saturating_add(T::DbWeight::get().reads(2_u64))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
+		// Minimum execution time: 24_517_000 picoseconds.
+		Weight::from_parts(25_408_000, 423913)
+			.saturating_add(T::DbWeight::get().reads(4_u64))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
 	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::TopologyCurveC` (r:1 w:0)
+	/// Proof: `QuantumPow::TopologyCurveC` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::Difficulties` (r:0 w:1)
 	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DifficultySetAt` (r:0 w:1)
+	/// Proof: `QuantumPow::DifficultySetAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	fn set_difficulty() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `210`
+		//  Measured:  `406`
 		//  Estimated: `423913`
-		// Minimum execution time: 15_870_000 picoseconds.
-		Weight::from_parts(16_542_000, 423913)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
-			.saturating_add(T::DbWeight::get().writes(1_u64))
+		// Minimum execution time: 24_347_000 picoseconds.
+		Weight::from_parts(25_168_000, 423913)
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
 	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
@@ -153,8 +161,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `406`
 		//  Estimated: `423913`
-		// Minimum execution time: 18_535_000 picoseconds.
-		Weight::from_parts(19_206_000, 423913)
+		// Minimum execution time: 18_285_000 picoseconds.
+		Weight::from_parts(19_066_000, 423913)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -170,10 +178,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::TopologyHardnessOf` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::LastProofBlockHash` (r:1 w:0)
 	/// Proof: `QuantumPow::LastProofBlockHash` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumPow::Difficulties` (r:1 w:0)
-	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::LastProofBlock` (r:1 w:0)
 	/// Proof: `QuantumPow::LastProofBlock` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DifficultySetAt` (r:1 w:0)
+	/// Proof: `QuantumPow::DifficultySetAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::Difficulties` (r:1 w:0)
+	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::TopologyCurveC` (r:1 w:0)
 	/// Proof: `QuantumPow::TopologyCurveC` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::BlockBestProof` (r:1 w:1)
@@ -184,11 +194,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `508 + e * (8 ±0) + n * (4 ±0)`
 		//  Estimated: `423913`
-		// Minimum execution time: 580_299_000 picoseconds.
-		Weight::from_parts(580_860_000, 423913)
-			// Standard Error: 133
-			.saturating_add(Weight::from_parts(64_296, 0).saturating_mul(e.into()))
-			.saturating_add(T::DbWeight::get().reads(10_u64))
+		// Minimum execution time: 590_576_000 picoseconds.
+		Weight::from_parts(591_498_000, 423913)
+			// Standard Error: 135
+			.saturating_add(Weight::from_parts(64_855, 0).saturating_mul(e.into()))
+			.saturating_add(T::DbWeight::get().reads(11_u64))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
 	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
@@ -200,12 +210,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[21, 5000]`.
 	fn prove_topology_exact(n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `99990 + n * (80 ±0)`
+		//  Measured:  `164 + n * (19 ±0)`
 		//  Estimated: `423913`
-		// Minimum execution time: 87_466_000 picoseconds.
-		Weight::from_parts(5_751_522_467, 423913)
-			// Standard Error: 97_200
-			.saturating_add(Weight::from_parts(1_711_006, 0).saturating_mul(n.into()))
+		// Minimum execution time: 53_301_000 picoseconds.
+		Weight::from_parts(54_154_000, 423913)
+			// Standard Error: 1_721
+			.saturating_add(Weight::from_parts(6_800_176, 0).saturating_mul(n.into()))
 			.saturating_add(T::DbWeight::get().reads(3_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -217,8 +227,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `455`
 		//  Estimated: `423913`
-		// Minimum execution time: 22_302_000 picoseconds.
-		Weight::from_parts(23_103_000, 423913)
+		// Minimum execution time: 22_373_000 picoseconds.
+		Weight::from_parts(23_185_000, 423913)
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -232,10 +242,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
 	fn add_mineable_topology() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `426`
+		//  Measured:  `621`
 		//  Estimated: `423913`
-		// Minimum execution time: 35_066_000 picoseconds.
-		Weight::from_parts(36_289_000, 423913)
+		// Minimum execution time: 39_425_000 picoseconds.
+		Weight::from_parts(40_597_000, 423913)
 			.saturating_add(T::DbWeight::get().reads(6_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -247,8 +257,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `224`
 		//  Estimated: `3513`
-		// Minimum execution time: 17_843_000 picoseconds.
-		Weight::from_parts(18_635_000, 3513)
+		// Minimum execution time: 17_904_000 picoseconds.
+		Weight::from_parts(18_666_000, 3513)
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -263,10 +273,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `323 + n * (12 ±0)`
 		//  Estimated: `423913`
-		// Minimum execution time: 29_987_000 picoseconds.
-		Weight::from_parts(26_768_550, 423913)
-			// Standard Error: 40
-			.saturating_add(Weight::from_parts(214_014, 0).saturating_mul(n.into()))
+		// Minimum execution time: 30_167_000 picoseconds.
+		Weight::from_parts(26_315_839, 423913)
+			// Standard Error: 24
+			.saturating_add(Weight::from_parts(210_897, 0).saturating_mul(n.into()))
 			.saturating_add(T::DbWeight::get().reads(3_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -280,8 +290,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
 		//  Estimated: `3557`
-		// Minimum execution time: 30_518_000 picoseconds.
-		Weight::from_parts(31_559_000, 3557)
+		// Minimum execution time: 30_438_000 picoseconds.
+		Weight::from_parts(31_600_000, 3557)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -291,8 +301,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `125`
 		//  Estimated: `3557`
-		// Minimum execution time: 30_548_000 picoseconds.
-		Weight::from_parts(31_520_000, 3557)
+		// Minimum execution time: 30_498_000 picoseconds.
+		Weight::from_parts(31_610_000, 3557)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -308,17 +318,17 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::TopologyDims` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
-	/// The range of component `a` is `[3, 96]`.
+	/// The range of component `a` is `[4, 96]`.
 	fn register_topology(n: u32, e: u32, _a: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
 		//  Estimated: `423913`
-		// Minimum execution time: 212_542_000 picoseconds.
-		Weight::from_parts(214_035_000, 423913)
-			// Standard Error: 1_913
-			.saturating_add(Weight::from_parts(64_986, 0).saturating_mul(n.into()))
-			// Standard Error: 191
-			.saturating_add(Weight::from_parts(46_260, 0).saturating_mul(e.into()))
+		// Minimum execution time: 267_441_000 picoseconds.
+		Weight::from_parts(269_204_000, 423913)
+			// Standard Error: 1_905
+			.saturating_add(Weight::from_parts(69_335, 0).saturating_mul(n.into()))
+			// Standard Error: 190
+			.saturating_add(Weight::from_parts(57_276, 0).saturating_mul(e.into()))
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(5_u64))
 	}
@@ -326,29 +336,37 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::MineableTopologies` (r:1 w:0)
 	/// Proof: `QuantumPow::MineableTopologies` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumPow::DefaultTopology` (r:0 w:1)
+	/// Storage: `QuantumPow::TopologyHardnessOf` (r:1 w:0)
+	/// Proof: `QuantumPow::TopologyHardnessOf` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DefaultTopology` (r:1 w:1)
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DefaultRetiresAt` (r:0 w:1)
+	/// Proof: `QuantumPow::DefaultRetiresAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	fn set_default_topology() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `247`
+		//  Measured:  `340`
 		//  Estimated: `423913`
-		// Minimum execution time: 18_284_000 picoseconds.
-		Weight::from_parts(18_996_000, 423913)
-			.saturating_add(RocksDbWeight::get().reads(2_u64))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
+		// Minimum execution time: 24_517_000 picoseconds.
+		Weight::from_parts(25_408_000, 423913)
+			.saturating_add(RocksDbWeight::get().reads(4_u64))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
 	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::TopologyCurveC` (r:1 w:0)
+	/// Proof: `QuantumPow::TopologyCurveC` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::Difficulties` (r:0 w:1)
 	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DifficultySetAt` (r:0 w:1)
+	/// Proof: `QuantumPow::DifficultySetAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
 	fn set_difficulty() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `210`
+		//  Measured:  `406`
 		//  Estimated: `423913`
-		// Minimum execution time: 15_870_000 picoseconds.
-		Weight::from_parts(16_542_000, 423913)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
-			.saturating_add(RocksDbWeight::get().writes(1_u64))
+		// Minimum execution time: 24_347_000 picoseconds.
+		Weight::from_parts(25_168_000, 423913)
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
 	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
@@ -358,8 +376,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `406`
 		//  Estimated: `423913`
-		// Minimum execution time: 18_535_000 picoseconds.
-		Weight::from_parts(19_206_000, 423913)
+		// Minimum execution time: 18_285_000 picoseconds.
+		Weight::from_parts(19_066_000, 423913)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -375,10 +393,12 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::TopologyHardnessOf` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::LastProofBlockHash` (r:1 w:0)
 	/// Proof: `QuantumPow::LastProofBlockHash` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
-	/// Storage: `QuantumPow::Difficulties` (r:1 w:0)
-	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::LastProofBlock` (r:1 w:0)
 	/// Proof: `QuantumPow::LastProofBlock` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::DifficultySetAt` (r:1 w:0)
+	/// Proof: `QuantumPow::DifficultySetAt` (`max_values`: Some(1), `max_size`: Some(4), added: 499, mode: `MaxEncodedLen`)
+	/// Storage: `QuantumPow::Difficulties` (r:1 w:0)
+	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::TopologyCurveC` (r:1 w:0)
 	/// Proof: `QuantumPow::TopologyCurveC` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::BlockBestProof` (r:1 w:1)
@@ -389,11 +409,11 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `508 + e * (8 ±0) + n * (4 ±0)`
 		//  Estimated: `423913`
-		// Minimum execution time: 580_299_000 picoseconds.
-		Weight::from_parts(580_860_000, 423913)
-			// Standard Error: 133
-			.saturating_add(Weight::from_parts(64_296, 0).saturating_mul(e.into()))
-			.saturating_add(RocksDbWeight::get().reads(10_u64))
+		// Minimum execution time: 590_576_000 picoseconds.
+		Weight::from_parts(591_498_000, 423913)
+			// Standard Error: 135
+			.saturating_add(Weight::from_parts(64_855, 0).saturating_mul(e.into()))
+			.saturating_add(RocksDbWeight::get().reads(11_u64))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
 	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
@@ -405,12 +425,12 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[21, 5000]`.
 	fn prove_topology_exact(n: u32, ) -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `99990 + n * (80 ±0)`
+		//  Measured:  `164 + n * (19 ±0)`
 		//  Estimated: `423913`
-		// Minimum execution time: 87_466_000 picoseconds.
-		Weight::from_parts(5_751_522_467, 423913)
-			// Standard Error: 97_200
-			.saturating_add(Weight::from_parts(1_711_006, 0).saturating_mul(n.into()))
+		// Minimum execution time: 53_301_000 picoseconds.
+		Weight::from_parts(54_154_000, 423913)
+			// Standard Error: 1_721
+			.saturating_add(Weight::from_parts(6_800_176, 0).saturating_mul(n.into()))
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -422,8 +442,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `455`
 		//  Estimated: `423913`
-		// Minimum execution time: 22_302_000 picoseconds.
-		Weight::from_parts(23_103_000, 423913)
+		// Minimum execution time: 22_373_000 picoseconds.
+		Weight::from_parts(23_185_000, 423913)
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -437,10 +457,10 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
 	fn add_mineable_topology() -> Weight {
 		// Proof Size summary in bytes:
-		//  Measured:  `426`
+		//  Measured:  `621`
 		//  Estimated: `423913`
-		// Minimum execution time: 35_066_000 picoseconds.
-		Weight::from_parts(36_289_000, 423913)
+		// Minimum execution time: 39_425_000 picoseconds.
+		Weight::from_parts(40_597_000, 423913)
 			.saturating_add(RocksDbWeight::get().reads(6_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -452,8 +472,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `224`
 		//  Estimated: `3513`
-		// Minimum execution time: 17_843_000 picoseconds.
-		Weight::from_parts(18_635_000, 3513)
+		// Minimum execution time: 17_904_000 picoseconds.
+		Weight::from_parts(18_666_000, 3513)
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -468,10 +488,10 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `323 + n * (12 ±0)`
 		//  Estimated: `423913`
-		// Minimum execution time: 29_987_000 picoseconds.
-		Weight::from_parts(26_768_550, 423913)
-			// Standard Error: 40
-			.saturating_add(Weight::from_parts(214_014, 0).saturating_mul(n.into()))
+		// Minimum execution time: 30_167_000 picoseconds.
+		Weight::from_parts(26_315_839, 423913)
+			// Standard Error: 24
+			.saturating_add(Weight::from_parts(210_897, 0).saturating_mul(n.into()))
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
