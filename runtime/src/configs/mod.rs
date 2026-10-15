@@ -692,6 +692,7 @@ impl pallet_quantum_pow::Config for Runtime {
     type ExactSolveCeiling = QuantumPowExactSolveCeiling;
     type HandicapPerSigmaPermille = QuantumPowHandicapPerSigmaPermille;
     type ExactDefaultGraceBlocks = QuantumPowExactDefaultGraceBlocks;
+    type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Runtime, Babe>;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

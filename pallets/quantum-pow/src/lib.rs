@@ -45,6 +45,7 @@ type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type UncleRecordOf<T> = types::UncleRecord<AccountIdOf<T>, BalanceOf<T>>;
 type StoredQBlockOf<T> = types::StoredQBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
@@ -191,6 +192,16 @@ sp_api::decl_runtime_apis! {
 /// a gradient; `0` is accepted separately as "acyclic, no handicap".
 const MIN_EXPECTED_FRUSTRATION_MILLI: u32 = 50;
 
+/// Uncles per qblock, as in Ethereum's ommer rule.
+pub const MAX_UNCLES: u32 = 2;
+/// How many rounds a stale proof may lag and still count as an uncle.
+pub const UNCLE_DEPTH: u32 = 6;
+/// Whitelist keys the failover scan inspects per block, so an unbounded
+/// whitelist never makes `on_initialize` unbounded.
+pub const FAILOVER_SCAN_PER_BLOCK: u32 = 8;
+/// Digest engine id carrying each qblock's work to the node's fork choice.
+pub const QPOW_ENGINE_ID: sp_runtime::ConsensusEngineId = *b"qpow";
+
 /// How many independent value draws make an all-zero instance unreachable in
 /// practice. With a ternary spec each draw is zero with probability at most
 /// 1/2, so this puts the all-zero instance below `2^-48` — far past anything
@@ -306,6 +317,10 @@ pub mod pallet {
         #[pallet::constant]
         type ExactDefaultGraceBlocks: Get<BlockNumberFor<Self>>;
 
+        /// The block author, paid the includer bonus for each uncle so that
+        /// validators are rewarded for carrying work into the chain.
+        type FindAuthor: frame_support::traits::FindAuthor<Self::AccountId>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -381,11 +396,10 @@ pub mod pallet {
     #[pallet::storage]
     pub type DefaultTopology<T: Config> = StorageValue<_, H256>;
 
-    /// Per-topology difficulty baseline (post-last-adjust; decay is applied
-    /// on read by `current_difficulty_for`). Keyed by `topology_hash` so a
-    /// `DefaultTopology` switch is clean and one topology's winners can never
-    /// pin another's difficulty. Unset entries read back as
-    /// `DifficultyConfig::default()`.
+    /// RETIRED in 119: the per-topology baselines of runtimes up to 118. The
+    /// v7 migration moves the default's entry into `SharedDifficultyOf` and
+    /// clears this map; nothing reads it afterwards. Kept only so the
+    /// migration can decode it.
     #[pallet::storage]
     pub type Difficulties<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
@@ -447,6 +461,46 @@ pub mod pallet {
     /// (never set) leaves 118 behaviour unchanged, so no migration is needed.
     #[pallet::storage]
     pub type DifficultySetAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+    /// The difficulty dial every topology shares. See `types::SharedDifficulty`
+    /// and `Pallet::bar_on`. `None` reads as each topology's own knee.
+    #[pallet::storage]
+    pub type SharedDifficultyOf<T: Config> = StorageValue<_, types::SharedDifficulty>;
+
+    /// Seeds of the last `UNCLE_DEPTH` finished rounds, newest first. A proof
+    /// derived from one of them is a stale proof, eligible only as an uncle.
+    #[pallet::storage]
+    pub type RecentRoundSeeds<T: Config> =
+        StorageValue<_, BoundedVec<H256, ConstU32<UNCLE_DEPTH>>, ValueQuery>;
+
+    /// The best `MAX_UNCLES` non-winning proofs, by work, waiting for the next
+    /// qblock to include them. Bounded, so including them is O(1).
+    #[pallet::storage]
+    pub type PendingUncles<T: Config> =
+        StorageValue<_, BoundedVec<UncleRecordOf<T>, ConstU32<MAX_UNCLES>>, ValueQuery>;
+
+    /// Dedup keys of proofs already counted (winners and uncles) over the
+    /// window a stale proof can still arrive in. FIFO, bounded.
+    #[pallet::storage]
+    pub type CountedProofKeys<T: Config> = StorageValue<
+        _,
+        BoundedVec<H256, ConstU32<{ (UNCLE_DEPTH + 1) * (MAX_UNCLES + 1) }>>,
+        ValueQuery,
+    >;
+
+    /// Uncles a qblock included, with the reward each was paid.
+    #[pallet::storage]
+    pub type QBlockUncles<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        BlockNumberFor<T>,
+        BoundedVec<UncleRecordOf<T>, ConstU32<MAX_UNCLES>>,
+    >;
+
+    /// Where the bounded failover scan resumes, as a raw `MineableTopologies`
+    /// key. `None` = start of the map.
+    #[pallet::storage]
+    pub type FailoverCursor<T: Config> = StorageValue<_, BoundedVec<u8, ConstU32<128>>>;
 
     /// Block at which a default proven tractable stops being mineable. Set
     /// by `on_initialize` when the default first reads Exact; cleared when the
@@ -573,6 +627,15 @@ pub mod pallet {
         /// block then promotes it.
         DefaultRetired {
             topology_hash: H256,
+        },
+        /// A qblock included a non-winning proof as an uncle.
+        UncleIncluded {
+            block_number: BlockNumberFor<T>,
+            miner: T::AccountId,
+            topology_hash: H256,
+            depth: u8,
+            work: u128,
+            reward: BalanceOf<T>,
         },
     }
 
@@ -734,6 +797,9 @@ pub mod pallet {
         /// `set_difficulty` would put the bar easier than the topology's easy
         /// cap or tighter than its typical draw's exact optimum.
         DifficultyOutsideCurve,
+        /// This exact proof (round seed, miner, salt) was already counted as a
+        /// winner or uncle.
+        ProofAlreadyCounted,
     }
 
     #[pallet::hooks]
@@ -829,9 +895,15 @@ pub mod pallet {
             // only correct direction for a hook that returns no weight.
             Self::retire_tractable_default(n).saturating_add(
                 T::DbWeight::get()
-                    .reads_writes(10, 10)
+                    // + PendingUncles, CountedProofKeys, RecentRoundSeeds,
+                    // SharedDifficulty, digest, two uncle miners; writes add
+                    // QBlockUncles and the dedup/seed rings.
+                    .reads_writes(18, 18)
                     .saturating_add(Weight::from_parts(300_000_000, 0))
-                    .saturating_add(T::RewardPayment::weight()),
+                    // Winner, up to MAX_UNCLES uncles, and the author.
+                    .saturating_add(
+                        T::RewardPayment::weight().saturating_mul(u64::from(MAX_UNCLES) + 2),
+                    ),
             )
         }
 
@@ -927,6 +999,9 @@ pub mod pallet {
             // down via `set_topology_hardness` or a witness), expected
             // frustration derived from the coupling spec. Idempotent.
             weight = weight.saturating_add(crate::migration::v7::seed_missing_hardness::<T>());
+            // Per-topology baselines become the one shared dial, written on the
+            // default topology's curve so the default mines exactly as before.
+            weight = weight.saturating_add(crate::migration::v7::seed_shared_difficulty::<T>());
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -998,8 +1073,8 @@ pub mod pallet {
                 );
                 if let Some(hash) = default {
                     ensure!(
-                        Difficulties::<T>::contains_key(hash),
-                        "v2→v3 must seed Difficulties[DefaultTopology]"
+                        SharedDifficultyOf::<T>::get().is_some(),
+                        "v2→v3→v7 must carry the default's baseline into the shared dial"
                     );
                     ensure!(
                         MineableTopologies::<T>::contains_key(hash),
@@ -1023,13 +1098,66 @@ pub mod pallet {
                 return;
             };
 
-            let reward = T::RewardPayment::pay(&record.miner, T::BlockReward::get());
+            // Uncles still within reach. Depth is fixed at submission: rounds
+            // only advance on a win, and every win consumes the pending set.
+            let mut uncles = PendingUncles::<T>::take();
+            uncles.retain(|u| u32::from(u.depth) <= UNCLE_DEPTH);
+            let depths: Vec<u8> = uncles.iter().map(|u| u.depth).collect();
+            let (winner_share, uncle_shares, author_share) =
+                Self::split_reward(T::BlockReward::get(), &depths);
 
+            let reward = T::RewardPayment::pay(&record.miner, winner_share);
             if let Some(mut miner) = Miners::<T>::get(&record.miner) {
                 miner.proofs_won = miner.proofs_won.saturating_add(1);
                 miner.rewards_earned = miner.rewards_earned.saturating_add(reward);
                 Miners::<T>::insert(&record.miner, miner);
             }
+            let mut block_work = record.work;
+            for (uncle, share) in uncles.iter_mut().zip(uncle_shares) {
+                uncle.reward = T::RewardPayment::pay(&uncle.miner, share);
+                if let Some(mut miner) = Miners::<T>::get(&uncle.miner) {
+                    miner.rewards_earned = miner.rewards_earned.saturating_add(uncle.reward);
+                    Miners::<T>::insert(&uncle.miner, miner);
+                }
+                block_work = block_work.saturating_add(uncle.work);
+                Self::remember_counted(uncle.key);
+                Self::deposit_event(Event::UncleIncluded {
+                    block_number: n,
+                    miner: uncle.miner.clone(),
+                    topology_hash: uncle.topology_hash,
+                    depth: uncle.depth,
+                    work: uncle.work,
+                    reward: uncle.reward,
+                });
+            }
+            // The validator that authored this block includes the uncles: the
+            // includer bonus goes to it, so carrying work into the chain pays.
+            // Without a known author the bonus stays with the winner's pot.
+            if !author_share.is_zero() {
+                let digest = frame_system::Pallet::<T>::digest();
+                let pre_runtime = digest.logs().iter().filter_map(|d| d.as_pre_runtime());
+                if let Some(author) =
+                    <T::FindAuthor as frame_support::traits::FindAuthor<_>>::find_author(
+                        pre_runtime,
+                    )
+                {
+                    let _ = T::RewardPayment::pay(&author, author_share);
+                }
+            }
+            if !uncles.is_empty() {
+                QBlockUncles::<T>::insert(n, uncles);
+            }
+            Self::remember_counted(Self::proof_key(
+                record.round_seed,
+                &record.miner,
+                &record.salt,
+            ));
+            // Chain work for the node's fork choice; execution re-derives the
+            // digest, so every importing node verifies it.
+            frame_system::Pallet::<T>::deposit_log(sp_runtime::generic::DigestItem::Consensus(
+                QPOW_ENGINE_ID,
+                block_work.encode(),
+            ));
 
             let previous_proof_block = LastProofBlock::<T>::get();
             // The hash the just-won round actually used in `derive_nonce`. From
@@ -1073,7 +1201,16 @@ pub mod pallet {
                     active
                 }
             };
-            Difficulties::<T>::insert(topology_hash, next);
+            if let Some(curve) = Self::energy_curve_for(topology_hash) {
+                Self::set_shared_bar(curve, next);
+            }
+            // The round that just ended becomes the newest stale-proof seed.
+            RecentRoundSeeds::<T>::mutate(|seeds| {
+                let mut next_seeds = alloc::vec![last_proof_block_hash];
+                next_seeds.extend(seeds.iter().copied());
+                next_seeds.truncate(UNCLE_DEPTH as usize);
+                *seeds = BoundedVec::truncate_from(next_seeds);
+            });
             LastProofBlock::<T>::put(n);
             let qblock_id = Self::next_qblock_id();
 
@@ -1410,7 +1547,10 @@ pub mod pallet {
             let meta = RegisteredTopologies::<T>::get(topology_hash)
                 .ok_or(Error::<T>::TopologyNotRegistered)?;
             Self::ensure_difficulty_on_curve(topology_hash, &meta, difficulty)?;
-            Difficulties::<T>::insert(topology_hash, difficulty);
+            let curve = Self::energy_curve_for(topology_hash).ok_or(Error::<T>::InvalidCurve)?;
+            // The dial is shared: this moves every topology's bar to the same
+            // relative position on its own curve.
+            Self::set_shared_bar(curve, difficulty);
             DifficultySetAt::<T>::put(frame_system::Pallet::<T>::block_number());
             Self::deposit_event(Event::DifficultyUpdated {
                 topology_hash,
@@ -1756,9 +1896,20 @@ pub mod pallet {
             let last_proof_block_hash_bytes = LastProofBlockHash::<T>::get().0;
             let miner_bytes = Self::account_to_bytes(&who);
 
-            let expected_nonce =
-                derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &proof.salt);
-            ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
+            // The current round, else one of the last `UNCLE_DEPTH` rounds: a
+            // stale proof is still useful work and counts as an uncle. At most
+            // `UNCLE_DEPTH + 1` hashes, so O(1).
+            let (round_seed, depth) = core::iter::once(H256(last_proof_block_hash_bytes))
+                .chain(RecentRoundSeeds::<T>::get())
+                .enumerate()
+                .find(|(_, seed)| derive_nonce(&seed.0, &miner_bytes, &proof.salt) == proof.nonce)
+                .map(|(depth, seed)| (seed, depth as u8))
+                .ok_or(Error::<T>::InvalidNonce)?;
+            let key = Self::proof_key(round_seed, &who, &proof.salt);
+            ensure!(
+                !Self::proof_already_counted(key),
+                Error::<T>::ProofAlreadyCounted
+            );
 
             // ONE `NodeIndex` for the instance and its frustration. As two
             // calls each built its own node-position index: a discarded
@@ -1788,7 +1939,7 @@ pub mod pallet {
             miner.proofs_submitted = miner.proofs_submitted.saturating_add(1);
             Miners::<T>::insert(&who, miner);
 
-            let record = ProofRecordOf::<T> {
+            let mut record = ProofRecordOf::<T> {
                 miner: who.clone(),
                 submitted_at: frame_system::Pallet::<T>::block_number(),
                 energy_milli: validation.energy_milli,
@@ -1799,7 +1950,14 @@ pub mod pallet {
                 instance_bar_milli,
                 anchor_milli,
                 difficulty: current,
+                work: 0,
+                round_seed,
+                depth,
             };
+            record.work = crate::difficulty::proof_work(
+                Self::topology_weight(&topology),
+                Self::proof_quality(&record),
+            );
 
             // Rank by how far a proof beat ITS OWN bar, not by absolute energy.
             // Admission is per-instance, so selection has to be too.
@@ -1824,8 +1982,17 @@ pub mod pallet {
             // from the bar to that instance's exact optimum, so a bigger draw's
             // extra depth and extra room cancel. A zero-room instance (bar at
             // the optimum) scores LOWEST, not full marks — see `proof_quality`.
-            if Self::proof_outranks_block_best(&record) {
+            // Rank by work (topology weight × quality), so proofs from
+            // different topologies compete on one scale. The loser, or the
+            // displaced best, is offered as an uncle; a stale proof is only
+            // ever an uncle.
+            if depth == 0 && Self::proof_outranks_block_best(&record) {
+                if let Some(displaced) = BlockBestProof::<T>::take() {
+                    Self::offer_uncle(displaced);
+                }
                 BlockBestProof::<T>::put(record);
+            } else {
+                Self::offer_uncle(record);
             }
 
             BlockProofCount::<T>::mutate(|count| {
@@ -1876,16 +2043,8 @@ pub mod pallet {
                 )?;
             }
             if !MineableTopologies::<T>::contains_key(topology_hash) {
-                // Model A: at most one non-default mineable topology at a time,
-                // so the global decay anchor stays correct. Caps the whitelist
-                // at {default, one incoming}, which is also what bounds this
-                // scan to <=2 keys.
-                let default = DefaultTopology::<T>::get();
-                if Some(topology_hash) != default {
-                    let has_other_non_default =
-                        MineableTopologies::<T>::iter_keys().any(|h| Some(h) != default);
-                    ensure!(!has_other_non_default, Error::<T>::MineableTopologyConflict);
-                }
+                // Any number of topologies may be mineable at once: nothing
+                // on chain iterates the whitelist unboundedly.
                 MineableTopologies::<T>::insert(topology_hash, ());
                 Self::deposit_event(Event::TopologyMineableAdded { topology_hash });
             }
@@ -1925,13 +2084,36 @@ pub mod pallet {
         /// on a large graph, unclearable on a small one. The knee is that
         /// topology's own moderate calibration point.
         fn baseline_for(topology_hash: H256) -> types::DifficultyConfig {
-            Difficulties::<T>::get(topology_hash).unwrap_or_else(|| {
-                Self::energy_curve_for(topology_hash)
-                    .map(|curve| types::DifficultyConfig {
-                        max_energy_milli: curve.knee_milli,
-                    })
-                    .unwrap_or_default()
-            })
+            match Self::energy_curve_for(topology_hash) {
+                Some(curve) => Self::bar_on(curve),
+                None => types::DifficultyConfig::default(),
+            }
+        }
+
+        /// The shared dial, read on `curve`. Exact on the curve it was last
+        /// written against; on any other curve, the same relative position:
+        /// `max − (ref_max − E) × span / ref_span`, saturating. With no dial
+        /// yet, the curve's own knee.
+        pub fn bar_on(curve: crate::difficulty::EnergyCurve) -> types::DifficultyConfig {
+            let Some(shared) = SharedDifficultyOf::<T>::get() else {
+                return types::DifficultyConfig {
+                    max_energy_milli: curve.knee_milli,
+                };
+            };
+            let max_energy_milli = crate::difficulty::map_onto_curve(shared, curve);
+            types::DifficultyConfig { max_energy_milli }
+        }
+
+        /// Write the shared dial as `bar` on `curve`.
+        pub(crate) fn set_shared_bar(
+            curve: crate::difficulty::EnergyCurve,
+            bar: types::DifficultyConfig,
+        ) {
+            SharedDifficultyOf::<T>::put(types::SharedDifficulty {
+                max_energy_milli: bar.max_energy_milli,
+                curve_min_milli: curve.min_milli,
+                curve_max_milli: curve.max_milli,
+            });
         }
 
         /// Reject a structural record that cannot describe any graph.
@@ -2293,14 +2475,30 @@ pub mod pallet {
             if n < retires_at {
                 return db.reads(3);
             }
-            // Model A bounds the whitelist at the default plus one standby.
-            let standby = MineableTopologies::<T>::iter_keys().find(|hash| {
-                *hash != default
-                    && Self::regime_of(*hash) == Some(quantum_validation::Regime::Heuristic)
-            });
-            let scanned = MineableTopologies::<T>::iter_keys().count() as u64;
+            // Bounded, resumable scan: at most FAILOVER_SCAN_PER_BLOCK keys a
+            // block, so an unbounded whitelist cannot make this hook unbounded.
+            let mut keys = match FailoverCursor::<T>::get() {
+                Some(raw) => MineableTopologies::<T>::iter_keys_from(raw.into_inner()),
+                None => MineableTopologies::<T>::iter_keys(),
+            };
+            let (mut scanned, mut standby, mut last, mut wrapped) = (0u64, None, None, false);
+            while scanned < u64::from(FAILOVER_SCAN_PER_BLOCK) {
+                let Some(hash) = keys.next() else {
+                    wrapped = true;
+                    break;
+                };
+                scanned += 1;
+                last = Some(hash);
+                if hash != default
+                    && Self::regime_of(hash) == Some(quantum_validation::Regime::Heuristic)
+                {
+                    standby = Some(hash);
+                    break;
+                }
+            }
             match standby {
                 Some(next) => {
+                    FailoverCursor::<T>::kill();
                     DefaultTopology::<T>::put(next);
                     DefaultRetiresAt::<T>::kill();
                     MineableTopologies::<T>::remove(default);
@@ -2314,17 +2512,112 @@ pub mod pallet {
                         from: default,
                         to: next,
                     });
-                    db.reads_writes(3 + 2 * scanned, 3)
+                    db.reads_writes(4 + 2 * scanned, 4)
                 }
                 None => {
+                    match last.filter(|_| !wrapped) {
+                        Some(hash) => FailoverCursor::<T>::put(BoundedVec::truncate_from(
+                            MineableTopologies::<T>::hashed_key_for(hash),
+                        )),
+                        None => FailoverCursor::<T>::kill(),
+                    }
                     if n == retires_at {
                         Self::deposit_event(Event::DefaultRetired {
                             topology_hash: default,
                         });
                     }
-                    db.reads(3 + 2 * scanned)
+                    db.reads_writes(4 + 2 * scanned, 1)
                 }
             }
+        }
+
+        /// `E[Σ|h| + Σ|J|]` for the topology: its weight in chain work.
+        /// O(|specs|), no storage.
+        pub fn topology_weight(topology: &TopologyMetaOf<T>) -> u64 {
+            quantum_validation::expected_bound_milli(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
+            )
+            .unwrap_or(0)
+        }
+
+        fn proof_key(round_seed: H256, miner: &T::AccountId, salt: &[u8; 32]) -> H256 {
+            H256(sp_io::hashing::blake2_256(
+                &(round_seed, miner, salt).encode(),
+            ))
+        }
+
+        /// Already a winner or uncle, pending or paid. O(1): every list is
+        /// bounded by `MAX_UNCLES` and `UNCLE_DEPTH`.
+        fn proof_already_counted(key: H256) -> bool {
+            CountedProofKeys::<T>::get().contains(&key)
+                || PendingUncles::<T>::get().iter().any(|u| u.key == key)
+                || BlockBestProof::<T>::get().is_some_and(|best| {
+                    Self::proof_key(best.round_seed, &best.miner, &best.salt) == key
+                })
+        }
+
+        /// Keep `record` as an uncle if it beats the weakest pending one.
+        fn offer_uncle(record: ProofRecordOf<T>) {
+            let uncle = UncleRecordOf::<T> {
+                key: Self::proof_key(record.round_seed, &record.miner, &record.salt),
+                miner: record.miner,
+                topology_hash: record.topology_hash,
+                salt: record.salt,
+                energy_milli: record.energy_milli,
+                depth: record.depth,
+                work: record.work,
+                reward: Zero::zero(),
+            };
+            PendingUncles::<T>::mutate(|pending| {
+                if pending.try_push(uncle.clone()).is_ok() {
+                    return;
+                }
+                if let Some(weakest) = pending.iter_mut().min_by_key(|u| u.work) {
+                    if uncle.work > weakest.work {
+                        *weakest = uncle;
+                    }
+                }
+            });
+        }
+
+        #[cfg(test)]
+        pub(crate) fn offer_uncle_for_test(record: ProofRecordOf<T>) {
+            Self::offer_uncle(record)
+        }
+
+        fn remember_counted(key: H256) {
+            CountedProofKeys::<T>::mutate(|keys| {
+                if keys.is_full() {
+                    keys.remove(0);
+                }
+                let _ = keys.try_push(key);
+            });
+        }
+
+        /// Split one `BlockReward` between the winner, its uncles and the block
+        /// author, so emission per qblock stays exactly `BlockReward` however
+        /// many uncles are included. Shares are Ethereum's: winner 1, uncle
+        /// `(8 − depth)/8` (depth 0 counts as 1), author `1/32` per uncle.
+        /// Returns `(winner, per-uncle, author)`; the winner takes rounding dust.
+        pub fn split_reward(
+            reward: BalanceOf<T>,
+            depths: &[u8],
+        ) -> (BalanceOf<T>, Vec<BalanceOf<T>>, BalanceOf<T>) {
+            // In 1/32 units: winner 32, uncle 4 × (8 − d), author 1 per uncle.
+            let uncle_units: Vec<u32> = depths
+                .iter()
+                .map(|d| 4 * (8 - u32::from((*d).clamp(1, UNCLE_DEPTH as u8))))
+                .collect();
+            let author_units = depths.len() as u32;
+            let total = 32 + uncle_units.iter().sum::<u32>() + author_units;
+            let share = |units: u32| reward.saturating_mul(units.into()) / total.into();
+            let uncles: Vec<BalanceOf<T>> = uncle_units.iter().map(|u| share(*u)).collect();
+            let author = share(author_units);
+            let paid = uncles.iter().fold(author, |acc, u| acc.saturating_add(*u));
+            (reward.saturating_sub(paid), uncles, author)
         }
 
         fn retire_unless_default(topology_hash: H256) {
@@ -2442,9 +2735,10 @@ pub mod pallet {
                 Some(existing) => {
                     let (mine, theirs) =
                         (Self::proof_quality(record), Self::proof_quality(&existing));
-                    // Ties broken on absolute energy, so equal-quality proofs
-                    // are still ordered by work rather than by arrival order.
-                    (mine, existing.energy_milli) > (theirs, record.energy_milli)
+                    // Work first (comparable across topologies), then quality,
+                    // then absolute energy, so ties never fall to arrival order.
+                    (record.work, mine, existing.energy_milli)
+                        > (existing.work, theirs, record.energy_milli)
                 }
                 None => true,
             }
@@ -2948,6 +3242,25 @@ pub(crate) mod migration {
         /// entry one: unmeasured width and the expected frustration its
         /// coupling spec determines (`0`, i.e. no handicap or band, when the
         /// spec does not determine it). Leaves existing records untouched.
+        /// Move the default topology's stored baseline into the shared dial,
+        /// on the default's own curve, then clear the retired per-topology
+        /// map. Idempotent: an existing dial is left alone.
+        pub(crate) fn seed_shared_difficulty<T: Config>() -> Weight {
+            let db = T::DbWeight::get();
+            if crate::SharedDifficultyOf::<T>::get().is_none() {
+                if let Some(default) = crate::DefaultTopology::<T>::get() {
+                    if let (Some(bar), Some(curve)) = (
+                        Difficulties::<T>::get(default),
+                        crate::Pallet::<T>::energy_curve_for(default),
+                    ) {
+                        crate::Pallet::<T>::set_shared_bar(curve, bar);
+                    }
+                }
+            }
+            let cleared = Difficulties::<T>::clear(u32::MAX, None).unique;
+            db.reads_writes(6 + u64::from(cleared), 1 + u64::from(cleared))
+        }
+
         pub(crate) fn seed_missing_hardness<T: Config>() -> Weight {
             let (mut visited, mut seeded) = (0u64, 0u64);
             for (hash, meta) in RegisteredTopologies::<T>::iter() {

@@ -488,3 +488,30 @@ pub fn current_difficulty(
         None => base_difficulty,
     }
 }
+
+/// The shared dial's energy on another topology's `curve`: the same relative
+/// position between the easy end (`max`) and the hard end (`min`). Exact
+/// when `curve` is the curve the dial was written against, which keeps
+/// single-topology mining identical to the per-topology controller. Linear
+/// beyond either end, saturating.
+pub fn map_onto_curve(shared: crate::types::SharedDifficulty, curve: EnergyCurve) -> i64 {
+    if (shared.curve_min_milli, shared.curve_max_milli) == (curve.min_milli, curve.max_milli) {
+        return shared.max_energy_milli;
+    }
+    let ref_span = i128::from(shared.curve_max_milli) - i128::from(shared.curve_min_milli);
+    if ref_span <= 0 {
+        return shared.max_energy_milli;
+    }
+    let span = i128::from(curve.max_milli) - i128::from(curve.min_milli);
+    let behind_easy = i128::from(shared.curve_max_milli) - i128::from(shared.max_energy_milli);
+    let scaled = behind_easy.saturating_mul(span) / ref_span;
+    saturating_i64(i128::from(curve.max_milli).saturating_sub(scaled))
+}
+
+/// What a proof adds to chain work: its topology's weight
+/// (`E[Σ|h| + Σ|J|]`, milli) times the fraction of its own instance's room it
+/// found. A proof exactly at its bar adds nothing.
+pub fn proof_work(topology_weight_milli: u64, quality: i128) -> u128 {
+    let quality = u128::try_from(quality.clamp(0, QUALITY_SCALE)).unwrap_or(0);
+    u128::from(topology_weight_milli).saturating_mul(quality) / QUALITY_SCALE as u128
+}

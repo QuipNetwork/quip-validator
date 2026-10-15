@@ -227,6 +227,54 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     pub frustration_milli: u32,
     /// The handicapped bar this proof actually cleared, in milli.
     pub instance_bar_milli: i64,
+    /// `topology_weight × quality`: what this proof adds to chain work and
+    /// what proofs from different topologies are ranked by.
+    pub work: u128,
+    /// The round seed the nonce was derived from.
+    pub round_seed: H256,
+    /// Rounds behind the current one: `0` = current round, `1..=6` = a
+    /// stale proof eligible only as an uncle.
+    pub depth: u8,
+}
+
+/// A proof included as an uncle: a valid solve that did not win its block.
+/// `reward` is `0` while pending and set when the including qblock pays it.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct UncleRecord<AccountId, Balance> {
+    pub miner: AccountId,
+    pub topology_hash: H256,
+    pub salt: [u8; 32],
+    pub energy_milli: i64,
+    pub depth: u8,
+    pub work: u128,
+    /// Dedup key `blake2_256(round_seed, miner, salt)`.
+    pub key: H256,
+    pub reward: Balance,
+}
+
+/// The one difficulty dial every topology shares, stored as an energy on the
+/// curve it was last written against. Another topology reads the same
+/// position on its own curve (see `Pallet::bar_on`), so a win anywhere
+/// hardens all of them. Storing the source curve, not a normalized position,
+/// keeps single-topology mining bit-identical to the !87 controller.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    Eq,
+    PartialEq,
+    TypeInfo,
+    MaxEncodedLen,
+)]
+pub struct SharedDifficulty {
+    pub max_energy_milli: i64,
+    pub curve_min_milli: i64,
+    pub curve_max_milli: i64,
 }
 
 #[derive(

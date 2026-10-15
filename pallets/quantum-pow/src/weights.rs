@@ -87,10 +87,12 @@ const SUBMIT_PROOF_K_EDGE: u64 = 90_000;
 // Distinct storage items on the submit_proof accept path. Reads:
 // TopologyDims (weight closure), RegisteredTopologies (overlay-cached), Miners,
 // BlockProofCount, MineableTopologies, TopologyHardnessOf, LastProofBlockHash,
-// Difficulties, LastProofBlock, TopologyCurveC, BlockBestProof. Writes: Miners,
-// BlockBestProof, BlockProofCount; 4 is a conservative carry-over from the flat weight.
-const SUBMIT_PROOF_READS: u64 = 11;
-const SUBMIT_PROOF_WRITES: u64 = 4;
+// RecentRoundSeeds, CountedProofKeys, PendingUncles, SharedDifficultyOf,
+// LastProofBlock, DifficultySetAt, TopologyCurveC, BlockBestProof. Writes:
+// Miners, BlockBestProof, PendingUncles, BlockProofCount; 5 is a conservative
+// carry-over from the flat weight.
+const SUBMIT_PROOF_READS: u64 = 15;
+const SUBMIT_PROOF_WRITES: u64 = 5;
 
 // Explicit per-allowed-value charge retained on top of the benchmarked
 // register_topology weight, so the allowed-set dimension keeps a visible

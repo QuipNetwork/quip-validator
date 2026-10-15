@@ -519,7 +519,10 @@ mod benchmarks {
         #[extrinsic_call]
         QuantumPow::set_difficulty(RawOrigin::Root, topology_hash, difficulty);
 
-        assert_eq!(Difficulties::<T>::get(topology_hash), Some(difficulty));
+        assert_eq!(
+            SharedDifficultyOf::<T>::get().map(|d| d.max_energy_milli),
+            Some(difficulty.max_energy_milli)
+        );
     }
 
     #[benchmark]
@@ -587,7 +590,9 @@ mod benchmarks {
         let e = e.max(n.saturating_add(4)).min(max_simple);
         let (_nodes, _edges, topology_hash) = register_cyclic_topology_for::<T>(n, e);
         MineableTopologies::<T>::insert(topology_hash, ());
-        Difficulties::<T>::insert(topology_hash, easy_difficulty());
+        // Always-clearable bar on THIS topology's curve: the dial is shared.
+        let curve = QuantumPow::<T>::energy_curve_for(topology_hash).expect("curve");
+        QuantumPow::<T>::set_shared_bar(curve, easy_difficulty());
         let proof = valid_proof_for::<T>(&caller, topology_hash, n);
 
         #[extrinsic_call]

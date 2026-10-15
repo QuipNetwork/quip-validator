@@ -24,7 +24,7 @@ type RuntimeExecutor = sc_executor::WasmExecutor<HostFunctions>;
 
 pub(crate) type FullClient = sc_service::TFullClient<Block, RuntimeApi, RuntimeExecutor>;
 type FullBackend = sc_service::TFullBackend<Block>;
-type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
+type FullSelectChain = crate::work::HeaviestWorkChain<FullBackend, Block>;
 
 /// The minimum period of blocks on which justifications will be
 /// imported and generated.
@@ -40,11 +40,14 @@ pub type Service = sc_service::PartialComponents<
         sc_consensus_babe::BabeBlockImport<
             Block,
             FullClient,
-            sc_consensus_grandpa::GrandpaBlockImport<
-                FullBackend,
-                Block,
+            crate::work::WorkBlockImport<
+                sc_consensus_grandpa::GrandpaBlockImport<
+                    FullBackend,
+                    Block,
+                    FullClient,
+                    FullSelectChain,
+                >,
                 FullClient,
-                FullSelectChain,
             >,
             BabeCreateInherentDataProviders<Block>,
             FullSelectChain,
@@ -85,7 +88,7 @@ pub fn new_partial(config: &Configuration) -> Result<Service, ServiceError> {
         telemetry
     });
 
-    let select_chain = sc_consensus::LongestChain::new(backend.clone());
+    let select_chain = crate::work::HeaviestWorkChain::new(backend.clone());
 
     let transaction_pool = Arc::from(
         sc_transaction_pool::Builder::new(
@@ -108,9 +111,13 @@ pub fn new_partial(config: &Configuration) -> Result<Service, ServiceError> {
 
     let babe_config = sc_consensus_babe::configuration(&*client)?;
     let slot_duration = babe_config.slot_duration();
+    // Work sits inside BABE so it overrides BABE's fork choice, and outside
+    // GRANDPA so justifications still reach GRANDPA's import.
+    let work_block_import =
+        crate::work::WorkBlockImport::new(grandpa_block_import.clone(), client.clone());
     let (block_import, babe_link) = sc_consensus_babe::block_import(
         babe_config,
-        grandpa_block_import.clone(),
+        work_block_import,
         client.clone(),
         Arc::new(move |_, _| async move {
             let timestamp = sp_timestamp::InherentDataProvider::from_system_time();

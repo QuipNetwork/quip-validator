@@ -8,6 +8,7 @@ mod command;
 mod insert_hybrid_key;
 mod rpc;
 mod service;
+mod work;
 
 fn main() -> sc_cli::Result<()> {
     command::run()

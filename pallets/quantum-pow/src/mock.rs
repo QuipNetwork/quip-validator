@@ -70,7 +70,9 @@ parameter_types! {
     pub const MinNodes: u32 = 2;
     pub const EpochLength: u64 = 20;
     pub const MinerDeposit: Balance = 100;
-    pub const BlockReward: Balance = 50;
+    // `static` so the uncle tests can use a reward large enough that the
+    // 1/32-unit includer bonus does not round to zero.
+    pub static BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
     // `static` so a test can lower the ceiling below a graph's true width.
@@ -100,6 +102,21 @@ impl pallet_emission_controller::Config for Test {
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = ();
 }
+/// Block author for the uncle includer bonus. Account 99 stands in for the
+/// validator; `None` is reachable by setting it to 0.
+pub struct MockAuthor;
+parameter_types! {
+    pub static AuthorAccount: u64 = 99;
+}
+impl frame_support::traits::FindAuthor<u64> for MockAuthor {
+    fn find_author<'a, I>(_digests: I) -> Option<u64>
+    where
+        I: 'a + IntoIterator<Item = (frame_support::ConsensusEngineId, &'a [u8])>,
+    {
+        Some(AuthorAccount::get()).filter(|a| *a != 0)
+    }
+}
+
 impl pallet_quantum_pow::Config for Test {
     type RewardPayment = pallet_emission_controller::SubnetRewards<Test, 0>;
     type RuntimeEvent = RuntimeEvent;
@@ -118,6 +135,7 @@ impl pallet_quantum_pow::Config for Test {
     type ExactSolveCeiling = ExactSolveCeilingOverride;
     type HandicapPerSigmaPermille = HandicapPerSigmaPermille;
     type ExactDefaultGraceBlocks = frame_support::traits::ConstU64<10>;
+    type FindAuthor = MockAuthor;
     type WeightInfo = ();
 }
 

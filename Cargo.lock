@@ -9223,6 +9223,7 @@ dependencies = [
 name = "quip-network-node"
 version = "0.3.2"
 dependencies = [
+ "async-trait",
  "clap",
  "frame-benchmarking",
  "frame-benchmarking-cli",
@@ -9230,8 +9231,10 @@ dependencies = [
  "frame-system",
  "futures",
  "jsonrpsee",
+ "pallet-quantum-pow",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc",
+ "parity-scale-codec",
  "quip-crypto-primitives",
  "quip-protocol-runtime",
  "quip-transaction-crypto",

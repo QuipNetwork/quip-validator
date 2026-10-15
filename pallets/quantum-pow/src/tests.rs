@@ -66,12 +66,28 @@ fn set_difficulty_default(difficulty: DifficultyConfig) {
     // Written directly: fixtures need off-curve bars (`i64::MAX` = always
     // clearable) that `set_difficulty` now refuses. The extrinsic's own
     // bounds are covered by `set_difficulty_refuses_bars_off_the_curve`.
-    Difficulties::<Test>::insert(default_hash(), difficulty);
+    set_bar(default_hash(), difficulty);
 }
 
 /// Read the (raw, pre-decay) difficulty baseline for the default topology.
 fn difficulty_default() -> DifficultyConfig {
-    Difficulties::<Test>::get(default_hash()).unwrap_or_default()
+    stored_bar(default_hash()).unwrap_or_default()
+}
+
+/// Write the shared difficulty dial as `difficulty` on `hash`'s curve.
+fn set_bar(hash: sp_core::H256, difficulty: DifficultyConfig) {
+    let curve = QuantumPow::energy_curve_for(hash).expect("registered topology has a curve");
+    crate::SharedDifficultyOf::<Test>::put(crate::types::SharedDifficulty {
+        max_energy_milli: difficulty.max_energy_milli,
+        curve_min_milli: curve.min_milli,
+        curve_max_milli: curve.max_milli,
+    });
+}
+
+/// The shared dial as read on `hash`'s curve (pre-decay), if one is stored.
+fn stored_bar(hash: sp_core::H256) -> Option<DifficultyConfig> {
+    crate::SharedDifficultyOf::<Test>::get()?;
+    Some(QuantumPow::bar_on(QuantumPow::energy_curve_for(hash)?))
 }
 
 fn test_curve_c() -> crate::difficulty::CurveC {
@@ -238,6 +254,9 @@ fn record_at(
         instance_bar_milli: active.max_energy_milli,
         anchor_milli: i64::MIN / 4,
         difficulty: active,
+        work: 0,
+        round_seed: sp_core::H256::zero(),
+        depth: 0,
     }
 }
 
@@ -387,7 +406,7 @@ fn a_gauge_trivial_instance_is_refused_however_good_the_answer() {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let (nodes, edges, hash) = registered_cycle_topology();
         set_difficulty_default(easy_difficulty());
-        Difficulties::<Test>::insert(hash, easy_difficulty());
+        set_bar(hash, easy_difficulty());
 
         let mut trivial = None;
         let mut frustrated = None;
@@ -763,7 +782,7 @@ fn submit_proof_refuses_a_draw_outside_the_expected_frustration_band() {
             assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
             let (nodes, edges, hash) = registered_multicycle_topology(expected);
             set_difficulty_default(easy_difficulty());
-            Difficulties::<Test>::insert(hash, easy_difficulty());
+            set_bar(hash, easy_difficulty());
 
             // SEARCH for a salt on the side under test. Four cycles give `phi`
             // a step of 250, and only some steps are past the band for a given
@@ -901,6 +920,9 @@ fn an_acyclic_draw_on_a_cyclic_topology_is_gauge_trivial() {
             proof.clone()
         ));
         // ...but the same draw against a record claiming cycles is refused.
+        // Cleared first: the identical proof would otherwise be refused as
+        // already counted before the gauge gate runs.
+        BlockBestProof::<Test>::kill();
         TopologyHardnessOf::<Test>::insert(
             hash,
             TopologyHardness {
@@ -1293,7 +1315,7 @@ fn set_difficulty_works() {
             hash,
             difficulty
         ));
-        assert_eq!(Difficulties::<Test>::get(hash), Some(difficulty));
+        assert_eq!(stored_bar(hash), Some(difficulty));
     });
 }
 
@@ -1522,6 +1544,9 @@ fn the_block_goes_to_the_best_margin_not_the_deepest_energy() {
             instance_bar_milli: -6_000,
             anchor_milli: i64::MIN / 4,
             difficulty: easy_difficulty(),
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         });
 
         let challenger = proof_for(1, &nodes, &edges, topology_hash, 0);
@@ -1569,6 +1594,9 @@ fn a_bigger_draw_does_not_beat_a_better_solve() {
             device_access_time_us: 0,
             frustration_milli: 500,
             instance_bar_milli: -1_000,
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         };
         // 3x the reach, barely used: deeper absolutely and a better raw margin,
         // but only a tenth of its own room.
@@ -1583,6 +1611,9 @@ fn a_bigger_draw_does_not_beat_a_better_solve() {
             device_access_time_us: 0,
             frustration_milli: 500,
             instance_bar_milli: -1_500,
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         };
 
         // The strong draw wins on both of the rules this replaces.
@@ -1743,7 +1774,7 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
         QuantumPow::on_runtime_upgrade();
 
         assert_eq!(
-            Difficulties::<Test>::get(hash),
+            stored_bar(hash),
             Some(DifficultyConfig {
                 max_energy_milli: old.max_energy_milli
             }),
@@ -1944,7 +1975,7 @@ fn migration_v5_to_v7_shrinks_difficulty_preserving_the_bar() {
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(Difficulties::<Test>::get(hash), Some(d));
+        assert_eq!(stored_bar(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
         assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(7));
     });
@@ -2486,6 +2517,9 @@ fn qblock_persists_device_access_time() {
             instance_bar_milli: 0,
             anchor_milli: i64::MIN / 4,
             difficulty: easy_difficulty(),
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         });
         QuantumPow::on_finalize(80);
 
@@ -2532,7 +2566,7 @@ fn submit_proof_rejects_non_mineable_topology() {
             !MineableTopologies::<Test>::contains_key(topology_hash),
             "second registration must not be auto-whitelisted"
         );
-        Difficulties::<Test>::insert(topology_hash, easy_difficulty());
+        set_bar(topology_hash, easy_difficulty());
         // Build against A's graph (so `proof_for`'s two-spin candidate set is
         // consistent) but claim B's un-mineable hash. The whitelist check fires
         // before any solution validation.
@@ -2615,28 +2649,13 @@ fn add_mineable_topology_works_and_is_idempotent() {
 }
 
 #[test]
-fn add_mineable_topology_rejects_second_non_default() {
+fn any_number_of_topologies_can_be_whitelisted() {
     new_test_ext().execute_with(|| {
         let _ = registered_topology(); // A: default + whitelisted
         let hash_b = register_unwhitelisted(5, 6);
         let hash_c = register_unwhitelisted(7, 8);
-
-        // One non-default topology may be whitelisted: the model-A switch
-        // window of {default, one incoming}.
+        // Concurrent mining: the old {default, one standby} cap is gone.
         assert_ok!(QuantumPow::add_mineable_topology(
-            RuntimeOrigin::root(),
-            hash_b
-        ));
-
-        // A second concurrent non-default topology is refused — the global
-        // decay anchor only supports one active topology at a time.
-        assert_noop!(
-            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), hash_c),
-            crate::Error::<Test>::MineableTopologyConflict
-        );
-
-        // Remove-old-before-switch: dropping B frees the slot for C.
-        assert_ok!(QuantumPow::remove_mineable_topology(
             RuntimeOrigin::root(),
             hash_b
         ));
@@ -2644,8 +2663,8 @@ fn add_mineable_topology_rejects_second_non_default() {
             RuntimeOrigin::root(),
             hash_c
         ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_b));
         assert!(MineableTopologies::<Test>::contains_key(hash_c));
-        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
     });
 }
 
@@ -2703,21 +2722,38 @@ fn set_default_topology_rejects_non_mineable() {
 }
 
 #[test]
-fn difficulty_for_api_returns_per_topology() {
+fn difficulty_for_api_reads_the_shared_dial_on_each_curve() {
     new_test_ext().execute_with(|| {
         let (_, _, hash_a) = registered_topology();
         let hash_b = registered_zero_field_topology();
-        let da = DifficultyConfig {
-            max_energy_milli: -10_000,
-        };
-        let db = DifficultyConfig {
-            max_energy_milli: -20_000,
-        };
-        set_difficulty_default(da); // A is the default
-        Difficulties::<Test>::insert(hash_b, db);
-
-        assert_eq!(QuantumPow::difficulty_for_api(hash_a), Some(da));
-        assert_eq!(QuantumPow::difficulty_for_api(hash_b), Some(db));
+        let curve_a = QuantumPow::energy_curve_for(hash_a).unwrap();
+        let curve_b = QuantumPow::energy_curve_for(hash_b).unwrap();
+        // Set the dial at A's knee: A reads it exactly, B reads its own knee
+        // position (to rounding), because the dial is one relative position.
+        set_difficulty_default(DifficultyConfig {
+            max_energy_milli: curve_a.max_milli,
+        });
+        assert_eq!(
+            QuantumPow::difficulty_for_api(hash_b),
+            Some(DifficultyConfig {
+                max_energy_milli: curve_b.max_milli
+            })
+        );
+        set_difficulty_default(DifficultyConfig {
+            max_energy_milli: curve_a.min_milli,
+        });
+        assert_eq!(
+            QuantumPow::difficulty_for_api(hash_a),
+            Some(DifficultyConfig {
+                max_energy_milli: curve_a.min_milli
+            })
+        );
+        assert_eq!(
+            QuantumPow::difficulty_for_api(hash_b),
+            Some(DifficultyConfig {
+                max_energy_milli: curve_b.min_milli
+            })
+        );
         assert_eq!(
             QuantumPow::difficulty_for_api(sp_core::H256::repeat_byte(3)),
             None
@@ -2733,7 +2769,7 @@ fn mining_snapshot_some_returns_that_topology_difficulty() {
         let db = DifficultyConfig {
             max_energy_milli: -20_000,
         };
-        Difficulties::<Test>::insert(hash_b, db);
+        set_bar(hash_b, db);
 
         let snap = QuantumPow::mining_snapshot(Some(hash_b)).expect("snapshot exists");
         assert_eq!(snap.topology_hash, hash_b);
@@ -3095,7 +3131,7 @@ fn submit_proof_uses_parameterized_weight() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let (nodes, edges, topology_hash) = registered_topology();
-        Difficulties::<Test>::insert(topology_hash, easy_difficulty());
+        set_bar(topology_hash, easy_difficulty());
 
         let proof = proof_for(1, &nodes, &edges, topology_hash, 0);
 
@@ -3161,10 +3197,10 @@ fn submit_proof_dispatch_info_charges_base_for_unregistered_topology() {
             base_only.ref_time(),
             50_000_000
                 + <Test as frame_system::Config>::DbWeight::get()
-                    .reads(11)
+                    .reads(15)
                     .ref_time()
                 + <Test as frame_system::Config>::DbWeight::get()
-                    .writes(4)
+                    .writes(5)
                     .ref_time(),
             "an unregistered hash pays BASE plus charged DB weight, nothing dimensional"
         );
@@ -4711,10 +4747,7 @@ fn migration_v5_and_v6_to_v7_keeps_qblocks_readable_without_reencoding() {
                 assert_eq!(migrated.instance_bar_milli, -4_242);
                 assert_eq!(migrated.frustration_milli, 0);
             }
-            assert_eq!(
-                Difficulties::<Test>::get(hash).unwrap().max_energy_milli,
-                -4_242
-            );
+            assert_eq!(stored_bar(hash).unwrap().max_energy_milli, -4_242);
         });
     }
 }
@@ -4742,6 +4775,9 @@ fn a_zero_room_proof_scores_lowest_rather_than_full_marks() {
             device_access_time_us: 0,
             frustration_milli: 500,
             instance_bar_milli: -1_200,
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         };
         // Any positive room at all, barely used.
         let some_room = ProofRecord {
@@ -4755,6 +4791,9 @@ fn a_zero_room_proof_scores_lowest_rather_than_full_marks() {
             device_access_time_us: 0,
             frustration_milli: 500,
             instance_bar_milli: -1_000,
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         };
 
         assert_eq!(
@@ -4862,6 +4901,9 @@ fn the_qblock_records_the_bar_the_proof_actually_cleared() {
             device_access_time_us: 0,
             frustration_milli: 500,
             instance_bar_milli: -4_242,
+            work: 0,
+            round_seed: sp_core::H256::zero(),
+            depth: 0,
         };
         BlockBestProof::<Test>::put(record);
 
@@ -5009,7 +5051,7 @@ fn the_config_tunables_reach_the_pallet() {
             assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
             let (nodes, edges, hash) = registered_cycle_topology();
             set_difficulty_default(easy_difficulty());
-            Difficulties::<Test>::insert(hash, easy_difficulty());
+            set_bar(hash, easy_difficulty());
 
             // A frustrated draw. An unfrustrated one is gauge-trivial (refused)
             // and saturates the handicap, so it could not separate the arms.
@@ -5341,38 +5383,31 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
 }
 
 #[test]
-fn winning_topology_does_not_move_other_topology_difficulty() {
+fn a_win_on_one_topology_hardens_every_topology() {
     new_test_ext().execute_with(|| {
-        // Topology A (ternary-h) is default; topology B (zero-field) is a
-        // second registered topology. Each gets its own difficulty entry.
+        // One shared dial: a win on A moves B to the same relative position.
         let (_, _, hash_a) = registered_topology();
         let hash_b = registered_zero_field_topology();
+        let curve_b = QuantumPow::energy_curve_for(hash_b).unwrap();
+        set_bar(
+            hash_a,
+            DifficultyConfig {
+                max_energy_milli: -10_000,
+            },
+        );
+        let b_before = stored_bar(hash_b).unwrap();
 
-        let diff_a = DifficultyConfig {
-            max_energy_milli: -10_000,
-        };
-        let diff_b = DifficultyConfig {
-            max_energy_milli: -20_000,
-        };
-        Difficulties::<Test>::insert(hash_a, diff_a);
-        Difficulties::<Test>::insert(hash_b, diff_b);
-
-        // A wins (finalize against A). B's difficulty must be untouched.
         LastProofBlock::<Test>::put(1);
         System::set_block_number(80);
         BlockBestProof::<Test>::put(record_at(1, 80, hash_a, -10_211));
         QuantumPow::on_finalize(80);
 
-        assert_ne!(
-            Difficulties::<Test>::get(hash_a),
-            Some(diff_a),
-            "A's difficulty must have been adjusted"
+        let b_after = stored_bar(hash_b).unwrap();
+        assert!(
+            b_after.max_energy_milli < b_before.max_energy_milli,
+            "B must harden when A wins: {b_before:?} -> {b_after:?}"
         );
-        assert_eq!(
-            Difficulties::<Test>::get(hash_b),
-            Some(diff_b),
-            "B's difficulty must NOT move when A wins"
-        );
+        assert!(b_after.max_energy_milli <= curve_b.max_milli);
     });
 }
 
@@ -5437,14 +5472,14 @@ fn migration_noop_at_v7() {
         let d = DifficultyConfig {
             max_energy_milli: -1_000,
         };
-        Difficulties::<Test>::insert(hash, d);
+        set_bar(hash, d);
         QBlockCount::<Test>::put(9);
         StorageVersion::new(7).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(Difficulties::<Test>::get(hash), Some(d));
+        assert_eq!(stored_bar(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
         assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(7));
     });
@@ -6221,7 +6256,7 @@ fn instance_check_agrees_with_submit_proof() {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let (nodes, edges, hash) = registered_cycle_topology();
         set_difficulty_default(easy_difficulty());
-        Difficulties::<Test>::insert(hash, easy_difficulty());
+        set_bar(hash, easy_difficulty());
 
         let (mut admitted, mut refused) = (0, 0);
         for salt_byte in 0..32u8 {
@@ -6260,5 +6295,193 @@ fn instance_check_agrees_with_submit_proof() {
             QuantumPow::instance_check(sp_core::H256::repeat_byte(1), &1, [0; 32]),
             Err(crate::Error::<Test>::TopologyNotRegistered.into())
         );
+    });
+}
+
+// ───────────────── concurrent mining: uncles and chain work ─────────────────
+
+/// Emission per qblock stays exactly `BlockReward`, however many uncles ride
+/// along: shares are Ethereum's (winner 1, uncle (8 − d)/8, includer 1/32 per
+/// uncle), normalized to one reward.
+#[test]
+fn the_reward_split_keeps_emission_flat() {
+    let reward: u128 = 1_000_000;
+    let (winner, uncles, author) = QuantumPow::split_reward(reward, &[]);
+    assert_eq!((winner, uncles.len(), author), (reward, 0, 0));
+
+    let (winner, uncles, author) = QuantumPow::split_reward(reward, &[0, 6]);
+    assert_eq!(winner + uncles.iter().sum::<u128>() + author, reward);
+    // Units: winner 32, depth 0 counts as 1 -> 28, depth 6 -> 8, author 2. Total 70.
+    assert_eq!(uncles, vec![reward * 28 / 70, reward * 8 / 70]);
+    assert_eq!(author, reward * 2 / 70);
+    assert!(winner > uncles[0] && uncles[0] > uncles[1]);
+}
+
+/// A same-round loser becomes an uncle of the qblock: paid its share, its work
+/// counted in the block's `qpow` digest, and the author paid the includer
+/// bonus.
+#[test]
+fn a_runner_up_is_included_as_an_uncle_with_its_work_in_the_digest() {
+    BlockReward::set(6_100);
+    new_test_ext().execute_with(|| {
+        let (nodes, edges, hash) = registered_cycle_topology();
+        set_difficulty_default(easy_difficulty());
+        set_bar(hash, easy_difficulty());
+        for miner in [1u64, 2] {
+            assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(miner)));
+        }
+        // Two admitted proofs from different miners in one block.
+        let proof_by = |miner: u64| {
+            (0..64u8)
+                .map(|salt| cycle_proof_for(miner, &nodes, &edges, hash, salt).0)
+                .find(|p| {
+                    frame_support::storage::with_transaction(|| {
+                        let ok = QuantumPow::submit_proof(RuntimeOrigin::signed(miner), p.clone())
+                            .is_ok();
+                        sp_runtime::TransactionOutcome::Rollback(
+                            Ok::<_, sp_runtime::DispatchError>(ok),
+                        )
+                    })
+                    .unwrap()
+                })
+                .expect("an admitted draw")
+        };
+        let (p1, p2) = (proof_by(1), proof_by(2));
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), p1));
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(2), p2));
+        assert_eq!(crate::PendingUncles::<Test>::get().len(), 1);
+
+        let author_before = Balances::free_balance(99);
+        let winner = BlockBestProof::<Test>::get().unwrap();
+        let uncle = crate::PendingUncles::<Test>::get()[0].clone();
+        System::set_block_number(5);
+        QuantumPow::on_finalize(5);
+
+        let included = crate::QBlockUncles::<Test>::get(5).expect("uncle recorded");
+        assert_eq!(included.len(), 1);
+        assert!(included[0].reward > 0);
+        assert!(
+            Balances::free_balance(99) > author_before,
+            "author got the includer bonus"
+        );
+        let total = QuantumPow::qblock_at(5).unwrap().reward
+            + included[0].reward
+            + (Balances::free_balance(99) - author_before);
+        assert_eq!(total, 6_100, "one BlockReward, split three ways");
+
+        let work = System::digest()
+            .logs()
+            .iter()
+            .find_map(|d| d.consensus_try_to::<u128>(&crate::QPOW_ENGINE_ID))
+            .expect("qpow work digest");
+        assert_eq!(work, winner.work + uncle.work);
+        assert!(crate::PendingUncles::<Test>::get().is_empty());
+    });
+    BlockReward::set(50);
+}
+
+/// A proof against a recent finished round is useful work: accepted as an
+/// uncle (never as the winner), once.
+#[test]
+fn a_stale_proof_counts_once_as_an_uncle() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
+        let stale = proof_for(1, &nodes, &edges, hash, 0);
+        // Someone else wins this round; the next round gets a new seed.
+        finalize_winner(2, 10);
+        System::set_block_number(11);
+        System::set_parent_hash(sp_core::H256::repeat_byte(0x11));
+        QuantumPow::on_initialize(11);
+        assert_eq!(crate::RecentRoundSeeds::<Test>::get().len(), 1);
+        set_difficulty_default(easy_difficulty());
+
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(1),
+            stale.clone()
+        ));
+        assert!(
+            BlockBestProof::<Test>::get().is_none(),
+            "stale proofs never win"
+        );
+        assert_eq!(crate::PendingUncles::<Test>::get()[0].depth, 1);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), stale),
+            crate::Error::<Test>::ProofAlreadyCounted
+        );
+    });
+}
+
+/// Pending uncles are bounded at `MAX_UNCLES`, keeping the most work.
+#[test]
+fn pending_uncles_keep_the_most_work() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        for (i, work) in [5u128, 9, 1, 7].into_iter().enumerate() {
+            let mut record = record_at(1, 1, hash, -1);
+            record.work = work;
+            record.salt = [i as u8; 32];
+            QuantumPow::offer_uncle_for_test(record);
+        }
+        let mut kept: Vec<u128> = crate::PendingUncles::<Test>::get()
+            .iter()
+            .map(|u| u.work)
+            .collect();
+        kept.sort();
+        assert_eq!(kept, vec![7, 9]);
+    });
+}
+
+/// The failover scan inspects a bounded number of whitelist keys per block
+/// and resumes from a cursor, so any whitelist size is safe for the hook.
+#[test]
+fn failover_scan_is_bounded_and_resumes() {
+    new_test_ext().execute_with(|| {
+        let (hash, rotation) = planar_zero_field_topology();
+        let base = default_hash();
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            hash
+        ));
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            base
+        ));
+        // More Exact (unusable) whitelisted topologies than one scan covers.
+        for i in 0..(crate::FAILOVER_SCAN_PER_BLOCK + 3) {
+            let fake = sp_core::H256::repeat_byte(0x80 + i as u8);
+            MineableTopologies::<Test>::insert(fake, ());
+            TopologyHardnessOf::<Test>::insert(
+                fake,
+                TopologyHardness {
+                    residual_difficulty: 1,
+                    core_width: 1,
+                    expected_frustration_milli: 0,
+                },
+            );
+        }
+        assert_ok!(QuantumPow::prove_topology_planar(
+            RuntimeOrigin::signed(9),
+            hash,
+            bounded_rotation(rotation)
+        ));
+        System::set_block_number(2);
+        QuantumPow::on_initialize(2);
+        System::set_block_number(12);
+        QuantumPow::on_initialize(12);
+        assert!(
+            crate::FailoverCursor::<Test>::get().is_some(),
+            "scan stopped early"
+        );
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
+
+        // A Heuristic standby is found within a few blocks wherever it sits.
+        MineableTopologies::<Test>::insert(base, ());
+        for n in 13..20 {
+            System::set_block_number(n);
+            QuantumPow::on_initialize(n);
+        }
+        assert_eq!(DefaultTopology::<Test>::get(), Some(base));
     });
 }

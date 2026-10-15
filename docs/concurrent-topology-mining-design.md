@@ -1,6 +1,8 @@
 # Concurrent topology mining: uncles and work-weighted finality (design)
 
-Status: draft for sign-off (qv-s30.13). Nothing here is implemented.
+Status: implemented in runtime 119 (qv-s30.13). Decisions: shared dial as below;
+emission kept flat by splitting one `BlockReward`; the includer bonus goes to
+the block author (validator); uncles count in full toward work.
 
 ## Goals
 
@@ -22,7 +24,7 @@ Ethereum's proof-of-work ommer rules (Yellow Paper, Homestead to Paris):
 | Uncles per block | at most 2 | at most `MaxUncles = 2` |
 | Uncle age | parent within 6 generations | seeded by one of the last 6 qblock rounds |
 | Uncle reward | `(8 - depth)/8 × R` | same, depth in qblock rounds, depth 0 = same block = 7/8 |
-| Includer reward | `R/32` per uncle | `R/32` per uncle to the qblock winner |
+| Includer reward | `R/32` per uncle | `R/32` share per uncle to the block author |
 | Duplicate inclusion | forbidden | forbidden (salt + miner + round key) |
 | Uncles in fork choice | no, total difficulty counts canonical blocks only | yes (GHOST), as requested |
 
@@ -61,8 +63,8 @@ priced at the existing `submit_proof` weight:
 
 `on_finalize`:
 
-- Pays the winner, each uncle `(8 - depth)/8 × R`, and the winner `R/32` per
-  uncle.
+- Splits one `BlockReward` in the ratio winner 1 : uncle `(8 - depth)/8` :
+  author `1/32` per uncle, so emission per qblock is unchanged.
 - Writes uncles to a new `QBlockUncles` map (block → bounded list), not into
   `QBlock`, so the `QBlocks` layout does not change again.
 - Records `(round_seed, miner, salt)` of each uncle in a 6-round dedup set so a
@@ -103,26 +105,19 @@ closing. `add_mineable_topology`'s "one standby" check is removed.
 ## Changes to existing behaviour
 
 - `MineableTopologyConflict` is never raised (kept for index stability).
-- Emission per qblock rises by up to `2 × 7/8 + 2/32 ≈ 1.81 × R`, paid from the
-  same subnet pot.
+- Emission per qblock is unchanged; with uncles the winner's share shrinks.
 - Miner-visible: stale proofs within 6 rounds are no longer refused.
-- New storage: `TopologyWeight`, `BlockUncles`, `QBlockUncles`,
-  `RecentRoundSeeds`, `PaidUncles`, `FailoverCursor`. New digest engine ID
+- New storage: `SharedDifficultyOf`, `PendingUncles`, `QBlockUncles`,
+  `RecentRoundSeeds`, `CountedProofKeys`, `FailoverCursor`. Topology weight is
+  computed from the specs on demand, not stored. New digest engine ID
   `qpow`. Node release required on every validator before the runtime upgrade.
 
-## Questions for sign-off
+## Shared dial
 
-1. **One difficulty dial across topologies.** Each topology's bar is in its own
-   energy units. A shared dial needs a common unit. Proposal: store one
-   position `p` in `[0, 1]` and map it onto each topology's own curve
-   (`bar = max + p × (min − max)`); a win anywhere hardens `p`. Today each
-   topology has its own `Difficulties` entry.
-2. **Emission.** Uncles raise payout per qblock by up to 1.81×. Keep `R`
-   fixed and let the pot absorb it, or scale `R` down so expected emission per
-   block is unchanged?
-3. **Includer reward.** Ethereum pays the block author. Here the BABE author
-   is a validator and the qblock winner is a miner. Proposal: the qblock
-   winner gets `R/32` per uncle, since uncles are included automatically.
-4. **Weight discount.** Proposal: uncles count in full toward block work
-   (GHOST) and are discounted only in reward. Alternatively discount weight by
-   depth too.
+`SharedDifficultyOf` stores one energy and the curve it was written against.
+Another topology reads the same relative position on its own curve
+(`difficulty::map_onto_curve`). On the curve it was written against the read is
+exact, so a chain mining one topology behaves exactly as the !87 controller.
+A win hardens the dial on the winner's curve; `set_difficulty` sets it on the
+named topology's curve. Decay is applied on read, per curve, from the global
+last proof of work.

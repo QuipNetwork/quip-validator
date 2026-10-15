@@ -18,7 +18,9 @@ targets = ["x86_64-unknown-linux-gnu"]
 workspace = true
 
 [dependencies]
+async-trait = "0.1"
 clap = { features = ["derive"], workspace = true }
+codec = { workspace = true, features = ["std"] }
 frame-benchmarking = { optional = true, workspace = true }
 frame-benchmarking-cli.default-features = true
 frame-benchmarking-cli.workspace = true
@@ -123,3 +125,6 @@ try-runtime = [
   "quip-protocol-runtime/try-runtime",
   "sp-runtime/try-runtime",
 ]
+
+[dev-dependencies]
+pallet-quantum-pow = { workspace = true, features = ["std"] }

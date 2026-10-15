@@ -65,6 +65,19 @@ should also handle `DefaultProvenTractable`, `DefaultFailedOver` and
 `DefaultRetired`: a default topology proven tractable keeps paying for one day,
 then a whitelisted standby takes over. Mine whatever `DefaultTopology` names.
 
+## Concurrent mining and uncles
+
+- Any whitelisted topology can be mined; read `mineable_topologies`.
+- The block's winner is the proof with the most work: topology weight
+  (`E[Σ|h| + Σ|J|]`) × `proof_quality`.
+- A proof that loses, or one derived from any of the last 6 round seeds, can
+  still be included as an uncle and paid a share. Submit stale proofs instead
+  of discarding them. Each `(round seed, miner, salt)` counts once
+  (`ProofAlreadyCounted`).
+- Watch `UncleIncluded` events and `QBlockUncles` storage.
+- Validators must run the 119 node: it picks the heaviest-work chain from the
+  `qpow` digest.
+
 ## Release checklist
 
 1. Single-configuration `submit_proof`, `transaction_version` 8.

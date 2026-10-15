@@ -298,6 +298,17 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // - Decay is anchored at the later of `LastProofBlock` and the last root
     //   `set_difficulty` (new `DifficultySetAt`; zero keeps 118 behaviour, so
     //   no migration). The !87 decay and hardening formulas are unchanged.
+    // - Concurrent topology mining. Any number of topologies are mineable
+    //   (failover scans the whitelist 8 keys a block from a cursor). One
+    //   shared difficulty dial (`SharedDifficultyOf`, stored on the curve it
+    //   was written against, read at the same relative position on others)
+    //   replaces per-topology `Difficulties` (migrated, then cleared). Proofs
+    //   rank by work = topology weight (E[Σ|h|+Σ|J|]) × quality. Up to 2
+    //   uncles per qblock (same-block runners-up, or stale proofs from the
+    //   last 6 rounds) share one BlockReward with the winner and the block
+    //   author (Ethereum shares 1 : (8-d)/8 : 1/32), so emission is flat. Each
+    //   qblock deposits its work as a `qpow` consensus digest; the node's
+    //   heaviest-work SelectChain drives BABE's best chain and GRANDPA votes.
     // - `QuantumPowApi` moves to api_version 3 (`DifficultyConfig` and `QBlock`
     //   changed shape).
     // - QuantumPow storage 6 -> 7: re-encodes `Difficulties`, canonicalizes
