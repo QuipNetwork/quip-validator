@@ -6455,3 +6455,307 @@ fn ranking_compares_quality_then_lower_energy_and_retains_complete_ties() {
         assert_eq!(BlockBestProof::<Test>::get(), Some(lower_energy));
     });
 }
+
+/// Complete K8 in canonical edge order: the first seven edges form the star
+/// at node 0, and the remaining 21 edges each close one fundamental triangle.
+/// Registration derives P=500 from symmetric nonzero couplings; tests never
+/// overwrite that expectation. As in the other small mock fixtures, the stored
+/// width claim is Heuristic until someone supplies an exactness witness.
+fn registered_band_boundary_topology() -> sp_core::H256 {
+    let nodes = bounded::<_, MaxNodes>((0..8).collect());
+    let edges = bounded::<_, MaxEdges>(
+        (0..8)
+            .flat_map(|u| ((u + 1)..8).map(move |v| (u, v)))
+            .collect(),
+    );
+    let hash = topology::hash_topology(
+        &nodes,
+        &edges,
+        &zero_h_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
+        &allowed_spin_spec().as_slice(),
+    );
+    assert_ok!(QuantumPow::register_topology(
+        RuntimeOrigin::root(),
+        nodes,
+        edges,
+        zero_h_spec(),
+        allowed_j_spec(),
+        allowed_spin_spec(),
+        TopologyHardness {
+            residual_difficulty: 64,
+            core_width: 64,
+            expected_frustration_milli: 500,
+        },
+    ));
+    MineableTopologies::<Test>::insert(hash, ());
+    // A loose stored baseline isolates admission from solution quality. This
+    // bypasses governance's curve bounds only in the test, not production.
+    Difficulties::<Test>::insert(
+        hash,
+        DifficultyConfig {
+            max_energy_milli: 0,
+        },
+    );
+    assert_eq!(
+        TopologyHardnessOf::<Test>::get(hash)
+            .unwrap()
+            .expected_frustration_milli,
+        500
+    );
+    hash
+}
+
+#[test]
+fn full_proofs_accept_both_three_sigma_edges_and_reject_both_four_sigma_edges() {
+    // Fixed salts found once on the pinned !71 generator. No search or call to
+    // the sigma helper chooses expected acceptance at test time. Star-triangle
+    // parity independently checks the realized counts. K=21, P=500 gives
+    // sigma_micro=floor(sqrt(250000000000/21))=109108; z truncates toward zero.
+    for (salt_word, frustrated, phi, sigma, mask, energy) in [
+        (4_620u32, 3, 143, 3, 56u8, -22_000),
+        (442, 18, 857, -3, 0, -10_000),
+        (160_632, 1, 48, 4, 52, -26_000),
+        (139_258, 20, 952, -4, 4, -6_000),
+        (2_703_338, 0, 0, 4, 68, -28_000),
+    ] {
+        new_test_ext().execute_with(|| {
+            assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+            let hash = registered_band_boundary_topology();
+            let topology = RegisteredTopologies::<Test>::get(hash).unwrap();
+            let mut salt = [0; 32];
+            salt[..4].copy_from_slice(&salt_word.to_le_bytes());
+            // These vectors use the mock's initial round hash and the pallet's
+            // account digest (Blake2-256 of SCALE-encoded 1u64).
+            assert_eq!(
+                LastProofBlockHash::<Test>::get(),
+                sp_core::H256::repeat_byte(0x45)
+            );
+            let nonce = derive_nonce(&[0x45; 32], &QuantumPow::account_to_bytes(&1), &salt);
+            let (h, j) = generate_ising_model(
+                nonce,
+                &topology.nodes,
+                &topology.edges,
+                &zero_h_spec().as_slice(),
+                &allowed_j_spec().as_slice(),
+            )
+            .unwrap();
+            assert_eq!(h, vec![0; 8]);
+            let count = topology
+                .edges
+                .iter()
+                .enumerate()
+                .skip(7)
+                .filter(|(k, (u, v))| {
+                    (j[(*u - 1) as usize] > 0) ^ (j[(*v - 1) as usize] > 0) ^ (j[*k] > 0)
+                })
+                .count();
+            assert_eq!(count, frustrated);
+            assert_eq!(
+                quantum_validation::frustration_index(&topology.nodes, &topology.edges, &j),
+                (phi, 21)
+            );
+            assert_eq!(difficulty::frustration_sigmas(phi, 500, 21), sigma);
+            let spins: Vec<i8> = (0..8)
+                .map(|bit| if mask >> bit & 1 == 1 { 1 } else { -1 })
+                .collect();
+            // Independent integer energy sum for this zero-field fixture.
+            let sum: i64 = topology
+                .edges
+                .iter()
+                .zip(&j)
+                .map(|(&(u, v), &coupling)| {
+                    i64::from(coupling)
+                        * i64::from(spins[u as usize])
+                        * i64::from(spins[v as usize])
+                })
+                .sum();
+            assert_eq!(sum, energy);
+            let proof = QuantumProof {
+                topology_hash: hash,
+                nonce,
+                salt,
+                solutions: pack_spins(&spins),
+                device_access_time_us: 0,
+            };
+            let expected_error = if frustrated == 0 {
+                // This draw also exceeds the band: gauge rejection must win.
+                Some(crate::Error::<Test>::InstanceIsGaugeTrivial)
+            } else if sigma == 4 || sigma == -4 {
+                Some(crate::Error::<Test>::InstanceOutsideFrustrationBand)
+            } else {
+                None
+            };
+            if let Some(error) = expected_error {
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof.clone()),
+                    error
+                );
+                // Nonempty but wrong-length payload is a second fault. Instance
+                // admission must still win before packed decoding/energy work.
+                let mut malformed = proof;
+                malformed.solutions = bounded::<u8, MaxNodes>(vec![0, 0]);
+                let error = if frustrated == 0 {
+                    crate::Error::<Test>::InstanceIsGaugeTrivial
+                } else {
+                    crate::Error::<Test>::InstanceOutsideFrustrationBand
+                };
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(1), malformed),
+                    error
+                );
+            } else {
+                let mut malformed = proof.clone();
+                malformed.solutions = bounded::<u8, MaxNodes>(vec![0, 0]);
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(1), malformed),
+                    crate::Error::<Test>::PackedSolutionLengthMismatch
+                );
+                assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+                let stored = BlockBestProof::<Test>::get().unwrap();
+                assert_eq!(stored.frustration_milli, phi);
+                assert_eq!(stored.instance_bar_milli, 0);
+                assert_eq!(stored.energy_milli, energy);
+                assert_eq!(BlockProofCount::<Test>::get(), 1);
+                assert_eq!(Miners::<Test>::get(1).unwrap().proofs_submitted, 1);
+            }
+        });
+    }
+}
+
+#[test]
+fn full_proof_energy_equal_to_instance_threshold_is_accepted_but_one_above_is_not() {
+    for (curve_bar, instance_bar, accepted) in [
+        (-4_025, -4_001, false),
+        (-4_024, -4_000, true),
+        (-4_023, -3_999, true),
+    ] {
+        new_test_ext().execute_with(|| {
+            assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(7)));
+            let (nodes, edges, hash) = triangle_topology();
+            let proof = triangle_proof(7, &nodes, &edges, hash, 0);
+            Difficulties::<Test>::insert(
+                hash,
+                DifficultyConfig {
+                    max_energy_milli: curve_bar,
+                },
+            );
+            // P=500, K=1, F=1000 => z=-1; slope6 loosens these bars by
+            // trunc(24.1...) =24. The frozen miner7 solution has energy -4000.
+            let check = QuantumPow::instance_check(hash, &7, proof.salt).unwrap();
+            assert_eq!(
+                (
+                    check.frustration_milli,
+                    check.frustration_cycles,
+                    check.sigmas
+                ),
+                (1000, 1, -1)
+            );
+            assert_eq!(check.instance_bar_milli, instance_bar);
+            if accepted {
+                assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(7), proof));
+                let best = BlockBestProof::<Test>::get().unwrap();
+                assert_eq!(best.energy_milli, -4_000);
+                assert_eq!(best.instance_bar_milli, instance_bar);
+            } else {
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(7), proof),
+                    crate::Error::<Test>::InsufficientEnergy
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn cheap_submission_guards_preserve_error_order_on_multiple_faults() {
+    new_test_ext().execute_with(|| {
+        let mut proof = QuantumProof {
+            topology_hash: sp_core::H256::repeat_byte(42),
+            nonce: sp_core::U256::zero(),
+            salt: [0; 32],
+            solutions: bounded::<u8, MaxNodes>(vec![]),
+            device_access_time_us: 0,
+        };
+        BlockProofCount::<Test>::put(MaxProofsPerBlock::get());
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::none(), proof.clone()),
+            sp_runtime::DispatchError::BadOrigin
+        );
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(7), proof.clone()),
+            crate::Error::<Test>::MinerNotRegistered
+        );
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(7)));
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(7), proof.clone()),
+            crate::Error::<Test>::ProofLimitReached
+        );
+        BlockProofCount::<Test>::put(0);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(7), proof.clone()),
+            crate::Error::<Test>::NoSolutionsSubmitted
+        );
+        proof.solutions = bounded::<u8, MaxNodes>(vec![0]);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(7), proof),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn topology_and_nonce_guards_precede_instance_generation_faults() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(3)));
+        let (nodes, edges, hash) = registered_topology();
+        let valid = proof_for(3, &nodes, &edges, hash, 0);
+        let mut invalid = valid.clone();
+        invalid.nonce = valid.nonce.saturating_add(sp_core::U256::one());
+        let original = RegisteredTopologies::<Test>::get(hash).unwrap();
+        // Malformed stored state deliberately makes later generation fail.
+        RegisteredTopologies::<Test>::mutate(hash, |meta| {
+            let meta = meta.as_mut().unwrap();
+            meta.nodes = bounded::<u32, MaxNodes>(vec![0]);
+            meta.allowed_h_values =
+                AllowedValueSpec::Set(bounded::<MilliValue, MaxAllowedValues>(vec![]));
+        });
+        MineableTopologies::<Test>::remove(hash);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), invalid.clone()),
+            crate::Error::<Test>::TopologyNotMineable
+        );
+        MineableTopologies::<Test>::insert(hash, ());
+        TopologyHardnessOf::<Test>::mutate(hash, |h| h.as_mut().unwrap().residual_difficulty = 0);
+        crate::DefaultTopology::<Test>::put(hash);
+        assert_eq!(System::block_number(), 1);
+        // An Exact default still passes eligibility strictly before retirement,
+        // reaching the next fault. At the retirement block, eligibility wins.
+        crate::DefaultRetiresAt::<Test>::put(2);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), invalid.clone()),
+            crate::Error::<Test>::GraphTooSmall
+        );
+        crate::DefaultRetiresAt::<Test>::put(1);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), invalid.clone()),
+            crate::Error::<Test>::TopologyIsExact
+        );
+        TopologyHardnessOf::<Test>::mutate(hash, |h| h.as_mut().unwrap().residual_difficulty = 64);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), invalid.clone()),
+            crate::Error::<Test>::GraphTooSmall
+        );
+        RegisteredTopologies::<Test>::mutate(hash, |meta| {
+            meta.as_mut().unwrap().nodes = original.nodes
+        });
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), invalid),
+            crate::Error::<Test>::InvalidNonce
+        );
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), valid),
+            crate::Error::<Test>::InvalidTopology
+        );
+    });
+}
