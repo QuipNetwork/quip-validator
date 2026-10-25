@@ -6759,3 +6759,152 @@ fn topology_and_nonce_guards_precede_instance_generation_faults() {
         );
     });
 }
+
+#[test]
+fn seeded_hardening_pins_the_fast_interpolated_and_slow_timing_boundaries() {
+    let curve = difficulty::EnergyCurve {
+        min_milli: -200_000_000,
+        knee_milli: -150_000_000,
+        max_milli: -100_000_000,
+    };
+    let active = DifficultyConfig {
+        max_energy_milli: -150_000_000,
+    };
+    // Independently hashed preimage: 0x28 (SCALE length 10), ASCII "controller",
+    // then elapsed as eight little-endian bytes. Interpret the digest's first
+    // eight bytes big-endian and reduce modulo the INCLUSIVE rate-band size.
+    // The 59/60/61 bands are [50,650]/[50,650]/[49,637]; 99/100/101 are
+    // [11,105]/[10,90]/[10,90]. For 99, integer interpolation gives base 58
+    // and variance 47. These literal rates pin sampling as well as band choice.
+    for (elapsed, rate_milli) in [
+        (0, 175),
+        (1, 623),
+        (59, 276),
+        (60, 262),
+        (61, 379),
+        (80, 58),
+        (99, 67),
+        (100, 24),
+        (101, 44),
+        (u64::MAX, 27),
+    ] {
+        // Gap 1,000,000 makes the step exactly rate*1000: all samples are
+        // above the 1000 floor and below the 2,500,000 curve-span cap.
+        assert_eq!(
+            difficulty::adjust_on_proof(active, -151_000_000, elapsed, curve, b"controller")
+                .max_energy_milli,
+            -150_000_000 - rate_milli * 1_000,
+            "elapsed {elapsed}"
+        );
+    }
+}
+
+#[test]
+fn overdue_decay_pins_rounding_at_the_geometric_to_linear_crossover() {
+    let base = DifficultyConfig {
+        max_energy_milli: -14_040_000,
+    };
+    // Independent 60-digit Decimal reference, using rate 79/1600 and floor 1000:
+    // crossover room = 1600000/79 = 20253.1645569620...;
+    // log(crossover/40000)/log(1521/1600) = 13.4405079376419... epochs.
+    // At epoch length 20 the transition is 268.8101587528... overdue blocks.
+    // Round the total easing to nearest milli, then cap at room 40000.
+    for (overdue, expected) in [
+        (267, -14_020_346),
+        (268, -14_020_295),
+        (269, -14_020_244),
+        (270, -14_020_194),
+        (271, -14_020_144),
+        (290, -14_019_194),
+        (291, -14_019_144),
+        (1_000, -14_000_000),
+    ] {
+        assert_eq!(
+            difficulty::apply_decay(base, 100 + overdue, 20, walkup_curve()).max_energy_milli,
+            expected,
+            "overdue {overdue}"
+        );
+    }
+}
+
+#[test]
+fn finalize_uses_epoch_timing_for_genesis_and_nonadvancing_blocks() {
+    for (previous_block, expected_step) in [(0, 11_060), (150, 11_060), (151, 11_060), (149, 2_180)]
+    {
+        new_test_ext().execute_with(|| {
+            assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+            let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
+            let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+            // Scale the coefficient sets so the small mock graph's curve cap
+            // cannot hide the sampled timing rate behind a 1000-milli step.
+            let h = AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![
+                -100_000_000,
+                0,
+                100_000_000,
+            ]));
+            let j = AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![
+                -100_000_000,
+                100_000_000,
+            ]));
+            let hash = topology::hash_topology(
+                &nodes,
+                &edges,
+                &h.as_slice(),
+                &j.as_slice(),
+                &allowed_spin_spec().as_slice(),
+            );
+            assert_ok!(QuantumPow::register_topology(
+                RuntimeOrigin::root(),
+                nodes,
+                edges,
+                h,
+                j,
+                allowed_spin_spec(),
+                TopologyHardness {
+                    residual_difficulty: 64,
+                    core_width: 64,
+                    expected_frustration_milli: 0,
+                },
+            ));
+            let curve = QuantumPow::energy_curve_for(hash).unwrap();
+            assert!(difficulty::max_hardening_delta(curve) > 20_000);
+            assert_eq!(EpochLength::get(), 20);
+            assert_eq!(System::parent_hash(), sp_core::H256::repeat_byte(0x45));
+            LastProofBlock::<Test>::put(previous_block);
+            System::set_block_number(150);
+            let active = DifficultyConfig {
+                max_energy_milli: -150_000_000,
+            };
+            // Inject an already-priced winner to isolate finalization. Its
+            // instance depth is 20000 although raw E is ABOVE the live bar.
+            BlockBestProof::<Test>::put(ProofRecord {
+                miner: 1,
+                submitted_at: 150,
+                energy_milli: -149_020_000,
+                anchor_milli: -300_000_000,
+                difficulty: active,
+                salt: [0; 32],
+                topology_hash: hash,
+                device_access_time_us: 0,
+                frustration_milli: 0,
+                instance_bar_milli: -149_000_000,
+            });
+            // Seed is SCALE(parent hash 0x45*32, miner 1u64, block 150u64), 48 bytes.
+            // Outer (seed, elapsed) preimage starts 0xc0. Independent Blake3
+            // prefixes: elapsed 20 => 869ffca4d320e9b5, elapsed 1 => e85cd923bfe1ce07.
+            // Inclusive [50,650] gives rates 553 and 109, steps 11060 and 2180.
+            QuantumPow::on_finalize(150);
+            assert_eq!(
+                Difficulties::<Test>::get(hash).unwrap().max_energy_milli,
+                active.max_energy_milli - expected_step,
+                "previous block {previous_block}"
+            );
+            assert_eq!(LastProofBlock::<Test>::get(), 150);
+            assert!(BlockBestProof::<Test>::get().is_none());
+            let qblock = QuantumPow::qblock_at(150).unwrap();
+            assert_eq!(qblock.difficulty, active);
+            assert_eq!(qblock.instance_bar_milli, -149_000_000);
+            assert_eq!(qblock.energy_milli, -149_020_000);
+        });
+    }
+}
