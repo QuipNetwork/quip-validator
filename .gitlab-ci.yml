@@ -201,8 +201,8 @@ cargo-test:
   timeout: 90m
   script:
     - cargo fmt --all -- --check
-    - cargo clippy --workspace --lib --bins --tests -- -D warnings
-    - cargo test --workspace --lib --bins --tests
+    - cargo clippy --locked --workspace --lib --bins --tests -- -D warnings
+    - cargo test --locked --workspace --lib --bins --tests
     # The benchmarking module is `#[cfg(feature = "runtime-benchmarks")]`, so
     # the line above never COMPILES it; without this, `pallet-quantum-pow`'s
     # sweeps are dead code and a broken fixture ships unnoticed.
@@ -210,7 +210,7 @@ cargo-test:
     # timing and no regression fit, so this proves they RUN against real state —
     # NOT that any weight constant is correct. Re-deriving the constants needs
     # `frame-benchmarking-cli` against a release build.
-    - cargo test --features runtime-benchmarks -p pallet-quantum-pow --lib
+    - cargo test --locked --features runtime-benchmarks -p pallet-quantum-pow --lib
     # SUBSUMES `cargo build --release -p quip-protocol-runtime`: the test
     # target's `build.rs` runs `substrate_wasm_builder`, so this compiles the
     # runtime in release AND regenerates the 3.3 MB wasm blob (verified by
@@ -224,10 +224,10 @@ cargo-test:
     # headroom — none of which was enforced before. Verified
     # by mutation: ceiling 21 fails `runtime_integrity_tests`.
     #
-    # `--lib` matches the workspace line above: doctests never run in this
-    # pipeline and neither crate has a `tests/` directory, so nothing is
-    # skipped. Marginal cost over the build it replaces: 11.6 s of test time.
-    - cargo test --release -p quip-protocol-runtime --lib
+    # Runtime integration tests, including native/Wasm parity, run in the
+    # workspace --tests command above. This release command runs library tests;
+    # doctests are not included in either command.
+    - cargo test --locked --release -p quip-protocol-runtime --lib
 
 # Node-level suites that need a running chain and the PQ signer. Kept separate
 # from cargo-test because they additionally install Node and the pinned
@@ -281,15 +281,15 @@ browser-signer-test:
         cargo binstall --no-confirm --locked "wasm-pack@${WASM_PACK_VERSION}"
       fi
   script:
-    - cargo test -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
-    - cargo test -p quip-protocol-runtime --test signing_fixture
-    - cargo check -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown
+    - cargo test --locked -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
+    - cargo test --locked -p quip-protocol-runtime --test signing_fixture
+    - cargo check --locked -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown
     - make wasm-signer
     - npm ci --prefix js/quip-signer
     - npm run typecheck --prefix js/quip-signer
     - npm test --prefix js/quip-signer
     - npm run build --prefix js/quip-signer
-    - cargo build -p quip-network-node
+    - cargo build --locked -p quip-network-node
     - bash scripts/test-browser-signer-integration.sh
     - bash scripts/test-xqvm-onchain.sh
 
@@ -461,6 +461,11 @@ benchmark-weights:
   variables:
     CARGO_HOME: /ci-cache/cargo-home
     CARGO_TARGET_DIR: /ci-cache/target
+    # This job does not inherit .cargo-host-cache; its OUT_DIR is external too.
+    WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
+    # The pinned builder does not track hint changes. Invalidate old cached
+    # blobs once; keep this marker stable so subsequent jobs can reuse them.
+    FORCE_WASM_BUILD: workspace-lockfile-v1
     GIT_STRATEGY: clone
     GIT_DEPTH: "0"
   cache: []
@@ -496,14 +501,18 @@ benchmark-quantum-pow-sweeps:
   variables:
     CARGO_HOME: /ci-cache/cargo-home
     CARGO_TARGET_DIR: /ci-cache/target
+    # This job does not inherit .cargo-host-cache; its OUT_DIR is external too.
+    WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
+    # Match benchmark-weights: both jobs share this target directory.
+    FORCE_WASM_BUILD: workspace-lockfile-v1
     GIT_STRATEGY: clone
     GIT_DEPTH: "0"
   cache: []
   script:
-    - cargo build --release --features runtime-benchmarks -p quip-network-node
+    - cargo build --locked --release --features runtime-benchmarks -p quip-network-node
     - ./scripts/run-quantum-pow-sweeps.sh
     - test -r "$CI_PROJECT_DIR/quantum-pow-sweeps/summary.tsv"
-    - QUANTUM_POW_SWEEP_SUMMARY=$CI_PROJECT_DIR/quantum-pow-sweeps/summary.tsv cargo test -p pallet-quantum-pow --lib tests::weight_covers_executed_sweep_with_ten_percent_floor -- --ignored --exact
+    - QUANTUM_POW_SWEEP_SUMMARY=$CI_PROJECT_DIR/quantum-pow-sweeps/summary.tsv cargo test --locked -p pallet-quantum-pow --lib tests::weight_covers_executed_sweep_with_ten_percent_floor -- --ignored --exact
   artifacts:
     when: always
     expire_in: 1 year

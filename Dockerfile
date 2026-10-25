@@ -39,7 +39,7 @@ COPY . .
 ARG SUBSTRATE_CLI_GIT_COMMIT_HASH=""
 ENV SUBSTRATE_CLI_GIT_COMMIT_HASH=${SUBSTRATE_CLI_GIT_COMMIT_HASH}
 
-RUN cargo build --release -p quip-network-node \
+RUN cargo build --locked --release -p quip-network-node \
  && cp target/release/quip-network-node /usr/local/bin/quip-network-node
 
 FROM debian:${DEBIAN_VERSION}-slim AS runtime
