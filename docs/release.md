@@ -102,6 +102,10 @@ described for that runtime are:
   open order, so check the `OpenOrders` count on the live chain before scheduling
   the upgrade.
 
+These are historical changes, not the complete current mempool contract. The
+live state at block 156607 already has mempool storage v4; see the rehearsal
+failure below before using this older parent as an upgrade candidate.
+
 ## Runtime 120 version assignment
 
 The !71 stack assigns **spec 120 / transaction version 8 / QuantumPowApi v3 /
@@ -131,8 +135,9 @@ Read-only checks on **2026-10-25 at 22:29 UTC** established:
 
 This evidence establishes 120 as unused by the inspected refs and newer than
 the pinned live runtime. It is not a reservation across future branches or
-releases. Repeat the check before release, reconcile any conflicting assignment,
-and regenerate/test the signing fixture whenever the version changes. Historical
+releases. Repeat the check before release, including current MR heads
+(`refs/merge-requests/*/head`) as well as branches/tags, reconcile any conflicting
+assignment, and regenerate/test the signing fixture whenever the version changes. Historical
 spec-119 fixtures remain unchanged; they describe the chain at their pinned blocks.
 
 ## Pending !71 API-v3 release gate
@@ -166,6 +171,82 @@ passed.
 
 Deployment and merging require their own release authorization; completing
 the stacked refactor or its test suite does not perform those actions.
+
+### Reproducing the pinned whole-runtime rehearsal
+
+**Status: failed; the full-runtime release gate remains open.** The 2026-10-25
+capture of block 156607 contains 967,080 top-level entries and four default
+child tries with three entries each. Its 246,303,202-byte JSON has SHA-256
+`c871a5fc31a2f5706e4e2cb469db6e6503ea59780dedb5eb03568e1148879953`.
+Capture timestamp: `2026-10-25T22:59:36.040082+00:00`. A new capture can have a
+different file hash because it records its capture time; the pinned state root
+is the content-integrity check.
+
+The rehearsal reconstructed the header's full state root
+`0x5a95746aad6981a8f94899f47a6c0f54457b73db5d178a3155bbe39fe2e507c6`
+and executed the captured on-chain Wasm, confirming spec 119 / tx 7 / API v2.
+Both native and Wasm `TryRuntime_on_runtime_upgrade(All)` then failed the
+storage-version check: **QuantumComputeMempool is v4 on-chain, but this branch
+expects v3**. Both attempted states reached QuantumPow v7. This does not mean
+the complete upgrade passed: final state-root/weight comparisons, exhaustive
+history/index assertions and the idempotence pass were not reached.
+
+The mempool pallet is unchanged from the stack's parent
+`c722e308e1954456dd6cd1c0c3e9e3716470879a`, which expects storage v3. Current
+main `bc4552a2cc6913bd057ecfdf9abc99197393b55c` expects v4, introduced by
+[`5686afd288ec0fcd63405d4ef505d9e7cfef6954`](https://gitlab.com/quip.network/quip-validator/-/commit/5686afd288ec0fcd63405d4ef505d9e7cfef6954)
+(`fix(mempool): allow permissionless reward settlement`). This is an inherited
+parent-integration dependency. Integrate the appropriate main changes at the
+parent, rebase the stack and rerun preservation and upgrade checks. Do not
+silence the failure by changing the snapshot's version, bumping only the local
+marker, or disabling checks. The rehearsal has not changed any live state.
+
+The opt-in `runtime/tests/runtime_upgrade.rs` test uses the complete state of
+block 156607 above. Capture all top-level keys **and child tries** with read-only
+RPC, keeping the large JSON outside the repository:
+
+```bash
+python3 scripts/capture_runtime_upgrade_state.py \
+  --endpoint https://bootnode-2.aglais.quip.network:20049/rpc \
+  --at 0x0df326c87aee42ebfea81e5b2e8761e90af39c9e5a827008ecef905a2d934a6b \
+  --output /tmp/quip-upgrade-156607.json
+```
+
+The capture refuses to overwrite an existing output. It checks that the hash is
+canonical at its height and no newer than the RPC's finalized head. The test
+then reconstructs both top and child tries and requires the complete state root
+to match the pinned header; a missing key or incomplete child trie fails. It
+also hashes the header and executes `Core_version` from the captured on-chain
+Wasm, requiring spec 119 / tx 7 / API v2 before substituting the candidate code.
+
+```bash
+# Run from the workspace root. The hint is required for an external target dir.
+unset SKIP_WASM_BUILD
+export WASM_BUILD_WORKSPACE_HINT="$PWD"
+export FORCE_WASM_BUILD=mr71-ci-lock-audit
+export CARGO_TARGET_DIR=/tmp/quip-mr71-clarity-target
+export CARGO_BUILD_JOBS=4
+export QUIP_UPGRADE_SNAPSHOT=/tmp/quip-upgrade-156607.json
+cargo test --locked -p quip-protocol-runtime --features try-runtime \
+  --test runtime_upgrade -- --ignored --exact \
+  whole_runtime_upgrade_matches_wasm_on_pinned_state --nocapture
+```
+
+The harness invokes `TryRuntime_on_runtime_upgrade(All)` through both the native
+runtime API and actual Wasm. This exercises Executive's full migration tuple,
+all pallet hooks, pre/post checks, state decoding and try-state invariants. It
+requires matching full-state roots and reported weights, checks the reported
+weight against both block-weight dimensions, checks every historical QBlock and
+both index directions, verifies difficulty conversion and topology backfills,
+and repeats the upgrade to require idempotent state. It prints changed keys,
+weights and post-upgrade roots for the release record.
+
+The test is ignored by default because it needs the external snapshot. A normal
+test-suite pass without the explicit invocation above is not rehearsal evidence.
+Reported weights are runtime accounting, not reference-machine measurements or
+proof-size measurements. This hook-level rehearsal does not submit an upgrade
+extrinsic, author subsequent blocks, test companion miners, or replace release
+builds, benchmarks and deployment authorization.
 
 ## What v0.2.0 ships
 
