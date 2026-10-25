@@ -102,16 +102,49 @@ described for that runtime are:
   open order, so check the `OpenOrders` count on the live chain before scheduling
   the upgrade.
 
+## Runtime 120 version assignment
+
+The !71 stack assigns **spec 120 / transaction version 8 / QuantumPowApi v3 /
+QuantumPow storage v7**. The spec bump is required because 119 is deployed.
+This is a candidate assignment, not a released or deployed runtime.
+
+Read-only checks on **2026-10-25 at 22:29 UTC** established:
+
+- A fresh `chain_getFinalizedHead` from
+  `https://bootnode-2.aglais.quip.network:20049/rpc` returned block **156607**,
+  hash `0x0df326c87aee42ebfea81e5b2e8761e90af39c9e5a827008ecef905a2d934a6b`.
+  The genesis hash was
+  `0x542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecb`.
+- `state_getRuntimeVersion` at that same block reported **spec 119 / tx 7**
+  and API ID `0x17f0e16273cf5f3b` at **version 2**.
+  `state_getStorage` at that block for QuantumPow's storage-version key
+  `0x9b2c4dbe49d7a1aed7ce99e4b8c072e84e7b9012096b41c4eb3aaf947f6ea429`
+  returned `0x0600` (**storage version 6**).
+- `git ls-remote --heads --tags origin` identified `main` and the peeled
+  latest release tag `v0.4.0` as
+  `bc4552a2cc6913bd057ecfdf9abc99197393b55c`. Its
+  [runtime source](https://gitlab.com/quip.network/quip-validator/-/blob/bc4552a2cc6913bd057ecfdf9abc99197393b55c/runtime/src/lib.rs)
+  declares **spec 119 / tx 7**. Reading `runtime/src/lib.rs` at every returned
+  head/tag object (76 refs, including annotated tags and their peeled entries)
+  found no spec above 119; no object was unavailable. The !71 parent remained
+  `c722e308e1954456dd6cd1c0c3e9e3716470879a`.
+
+This evidence establishes 120 as unused by the inspected refs and newer than
+the pinned live runtime. It is not a reservation across future branches or
+releases. Repeat the check before release, reconcile any conflicting assignment,
+and regenerate/test the signing fixture whenever the version changes. Historical
+spec-119 fixtures remain unchanged; they describe the chain at their pinned blocks.
+
 ## Pending !71 API-v3 release gate
 
 Follow the [miner/client upgrade contract](runtime-119-miner-integration.md).
-The filename is historical: the API3/tx8/storage7 upgrade must use a spec version
-newer than the deployed runtime, not reuse 119. These are release obligations,
-not evidence that the checks have already passed.
+The filename is historical: this branch assigns spec 120 to the API3/tx8/storage7
+upgrade. These are release obligations, not evidence that the checks have already
+passed.
 
-- [ ] Record a fresh finalized block hash, spec/transaction/API/storage
-      versions and the selected newer release spec. Regenerate and test the
-      signing fixture after version changes.
+- [ ] Recheck the runtime-120 assignment above against a fresh finalized block
+      and current release refs before release. Record spec/transaction/API/storage
+      versions; regenerate and test the signing fixture after version changes.
 - [ ] Record a compatible companion coordinator/miner revision and local
       API3/tx8 end-to-end submission/finalization evidence. The audited
       canonical `quip-solver` revision

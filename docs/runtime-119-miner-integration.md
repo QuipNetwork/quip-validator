@@ -5,12 +5,13 @@ upgrade, not the already deployed spec-119 contract. At pinned AGLS block
 153726 (`0xb06d9fcbf2dcd1db33540f22b479728c462b8d1e64d61459cad6fca36b158712`),
 the chain reports spec 119, transaction version 7, QuantumPowApi v2 and
 QuantumPow storage v6. See the [captured evidence](../runtime/tests/fixtures/README.md).
-The incompatible upgrade needs a newer spec version, assigned and verified in
-the release step; retaining spec 119 is not release-ready.
+This branch assigns spec **120** to the incompatible upgrade, based on the
+[fresh live-version and release-ref audit](release.md#runtime-120-version-assignment).
+Recheck that assignment against the live chain and release refs before release.
 
 | Version domain | Pinned deployed state | !71 contract |
 | --- | --- | --- |
-| Runtime spec | 119 | Newer than the deployed spec; release assignment required |
+| Runtime spec | 119 | 120 (recheck before release) |
 | Signed transaction | 7 | 8 |
 | QuantumPowApi | 2 | 3 |
 | QuantumPow storage | 6 | 7, with legacy QBlock values retained |

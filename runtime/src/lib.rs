@@ -266,11 +266,12 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // with an index-building migration, and `ResultReady` plus `OrderResults`
     // move from `claim_reward` to expiry. Call encodings are unchanged, so
     // `transaction_version` stays at 7.
-    // 119 also carries single-dial PoUW difficulty (!71), rebased onto the
+    // 120 carries single-dial PoUW difficulty (!71), rebased onto the
     // !87 controller: `adjust_on_proof` and the continuous `apply_decay` stay
     // the only difficulty writers (see
-    // docs/quantum-pow-difficulty-controller-decisions.md). 119 has not
-    // shipped, so this folds into it rather than minting 120.
+    // docs/quantum-pow-difficulty-controller-decisions.md). Spec 119 / tx 7
+    // is deployed; this incompatible upgrade uses spec 120 / tx 8. See
+    // docs/release.md for the pinned live-version and release-ref audit.
     // - `DifficultyConfig` sheds `min_solutions` and `min_diversity_milli`;
     //   `QuantumProof::solutions` is one `PackedSpinBytes` (was a
     //   `BoundedVec<_, MaxSolutions>`), so the energy bar alone decides.
@@ -310,7 +311,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `register_topology` gains a trailing `TopologyHardness`, and
     // `submit_proof`/`set_difficulty` arguments change shape, so
     // `transaction_version` moves to 8.
-    spec_version: 119,
+    spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 8,
