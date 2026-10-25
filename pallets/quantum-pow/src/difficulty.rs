@@ -30,38 +30,25 @@ fn saturating_i64(value: i128) -> i64 {
 /// refusal without running a node.
 pub use quantum_validation::{frustration_sigmas, HANDICAP_MAX_SIGMA};
 
-/// Handicap per σ of frustration, in per-mille of the curve bar.
-///
-/// MEASURED, and the slope is **not determinable over the range that matters**:
-/// riff-morph's `handicap_calibration` regresses work on frustration for
-/// `d(bar)/dφ` over chimera C2/C4, grid 8×8 and mobius M24 and gets
-/// correlations under 0.3 with inconsistent signs, the implied constant
-/// scattering 4..29 per-mille per σ. Solver variance dominates the natural draw
-/// distribution, so grinding only pays far into the tail — bounded by
-/// [`HANDICAP_MAX_SIGMA`], not by this. Hence the low end of the scatter: the
-/// handicap is symmetric, so too large a slope over-rewards grinding *upward*
-/// exactly as much as it over-penalizes an unlucky honest draw.
-///
-/// A tunable DEFAULT, not the chain's value — it moves as calibration improves
-/// and the mock sweeps it. Contrast `HANDICAP_MAX_SIGMA`, which gates
-/// `submit_proof` validity and correctly stays a code constant.
+/// Default handicap slope, in per-mille of the active threshold per integer σ.
+/// The runtime supplies its configured value separately. This is a model
+/// parameter: frustration is a proxy for solve effort, not a measured guarantee
+/// of equal work across instances. See `docs/quantum-pow-difficulty-controller-decisions.md`
+/// for the calibration provenance and limits of that interpretation.
 pub const DEFAULT_HANDICAP_PER_SIGMA_PERMILLE: i64 = 6;
 
 /// Ceiling for `Config::HandicapPerSigmaPermille`, per-mille per σ.
 ///
 /// Shared by `integrity_test` and [`instance_bar_milli`]'s use-site clamp so
-/// they cannot drift. Measured scatter is 4..29; far below the `i64` wrap.
+/// they cannot drift. The use-site clamp also bounds the signed multiplication.
 pub const HANDICAP_SLOPE_MAX_PERMILLE: i64 = 1_000;
 
-/// `1e15` puts a unit at 1e-15 of the room while `depth * SCALE` stays around
-/// 1e21 for a 1e6-milli depth — four orders inside `i128`.
-///
-/// The scale is the resolution of the comparison, so it decides who is paid. At
-/// per-mille and production energies (a bar near -3.6e6 milli against an anchor
-/// near -6.1e6) one unit would span 2500 milli: proofs 2.4 energy units apart
-/// tie, and the tie goes to whoever submitted first. Miners cluster within a
-/// few units of the bar, so selection would become a latency race, not a work
-/// race.
+/// Normalized ranking resolution: one unit is 10^-15 of the available room.
+/// With room 2,500,000 milli, one milli of depth adds 400,000,000 score units.
+/// A hypothetical per-mille scale would instead put 2,500 milli in one bucket;
+/// that is not the implemented scale. Quantized ties still compare energy,
+/// and only equal quality AND equal energy retain the incumbent.
+/// Differences of any two i64 energies, multiplied by this scale, fit in i128.
 pub const QUALITY_SCALE: i128 = 1_000_000_000_000_000;
 
 /// The three milli energies that place a proof against its own instance.
@@ -73,24 +60,24 @@ pub const QUALITY_SCALE: i128 = 1_000_000_000_000_000;
 pub struct ProofDepth {
     /// The bar this instance had to clear.
     pub instance_bar_milli: i64,
-    /// The instance's exact optimum, `-(sum|h| + sum|J|)`.
+    /// The instance's lower energy bound, `-(sum|h| + sum|J|)`.
     pub anchor_milli: i64,
     /// The energy the proof actually reached.
     pub energy_milli: i64,
 }
 
 /// Fraction of its own instance's room a proof actually found, in
-/// [`QUALITY_SCALE`] units — `0` at the bar, full scale at that instance's
-/// exact optimum.
+/// [`QUALITY_SCALE`] units — `0` at the bar, full scale at the lower bound
+/// when room is positive. A frustrated instance need not attain that bound.
 ///
 /// Pure arithmetic over three milli energies, so the ranking is testable
 /// without a `T: Config` and a MINER can compute it before paying the fee.
 ///
-/// `room <= 0` scores LOWEST, not highest. `room == 0` means the bar was
-/// clamped to the anchor, which happens on the draws with the smallest realized
-/// `Σ|h| + Σ|J|` — the cheapest to grind for at `O(n + m)` per salt. Full marks
-/// would make the least informative outcome the most rewarded one, and tie
-/// every such proof with every other.
+/// `room <= 0` scores zero, avoiding division by zero or an automatic full
+/// score at the bound. It loses to a positive score, but can tie another zero.
+/// For admitted proofs depth is nonnegative. This pure helper also accepts
+/// other inputs: negative depth can produce a negative score; only the upper
+/// score is capped. Division truncates toward zero.
 pub fn proof_quality(d: ProofDepth) -> i128 {
     let room = i128::from(d.instance_bar_milli) - i128::from(d.anchor_milli);
     let depth = i128::from(d.instance_bar_milli) - i128::from(d.energy_milli);
@@ -101,16 +88,11 @@ pub fn proof_quality(d: ProofDepth) -> i128 {
     }
 }
 
-/// The instance's exact optimum as a signed milli energy: `-bound`.
-///
-/// One definition, because there were three in two overflow spellings, two of
-/// them on the SAME value in one `submit_proof` call. The anchor is the
-/// load-bearing clamp in [`instance_bar_milli`], so its overflow behaviour must
-/// not be decided per site.
-///
-/// Saturating. `ensure_curve_outlasts_the_typical_anchor` must fail closed
-/// instead — `i64::MAX` there would make the anchor the most negative value
-/// there is and pass the check vacuously — so it keeps its own `try_from`.
+/// Convert a bound magnitude into a signed lower energy bound in milli.
+/// Clamp the unsigned magnitude to i64::MAX BEFORE negating, yielding
+/// -i64::MAX for oversized inputs, not i64::MIN. Registration instead uses a
+/// checked conversion and rejects overflow: saturating its bound comparison
+/// could admit a curve that cannot be represented safely.
 pub fn anchor_milli(energy_bound_milli: u64) -> i64 {
     (energy_bound_milli.min(i64::MAX as u64) as i64).saturating_neg()
 }
@@ -119,8 +101,7 @@ pub fn anchor_milli(energy_bound_milli: u64) -> i64 {
 ///
 /// A struct, not three positional arguments: `(realized, expected, cycles)` are
 /// adjacent same-typed scalars, and transposing the two `u32`s COMPILES while
-/// flipping the sign of the handicap — turning the equalizer into an amplifier
-/// that pays for salt-shopping.
+/// flipping the sign of the handicap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FrustrationDraw {
     /// This instance's realized frustration index, in milli.
@@ -133,40 +114,25 @@ pub struct FrustrationDraw {
 
 /// [`frustration_sigmas`] of a whole draw.
 ///
-/// Exists so `submit_proof`'s validity gate and [`instance_bar_milli`]'s
-/// pricing are THE SAME z-score by construction: the gate refuses draws *past
-/// the handicap's reach*, which only means anything if both measure the same
-/// reach. Spelled differently, the gate kept the transposable triple at the one
-/// site `FrustrationDraw` exists to protect.
-///
-/// The positional [`frustration_sigmas`] stays public: tests sweep it, and an
-/// off-chain miner has three loose numbers, not a draw.
+/// The raw integer score is shared conceptually by admission and pricing:
+/// admission rejects abs(score) > 3; pricing clamps the score to [-3, 3].
+/// Calling pricing alone therefore does not establish proof admissibility.
 pub fn frustration_sigmas_of(draw: FrustrationDraw) -> i64 {
     frustration_sigmas(draw.realized_milli, draw.expected_milli, draw.cycles)
 }
 
 /// The energy bar this specific instance must clear, in milli.
 ///
-/// The miner picks its salt and therefore its instance, so the bar compensates:
-/// an easier-than-typical draw must reach further. This *equalizes expected
-/// work across instances*; it does not punish anyone.
+/// Start at max(curve threshold, lower bound), then apply a bounded handicap
+/// in integer sigma buckets. With a negative threshold, positive sigma
+/// tightens and negative sigma loosens. The intended relation between lower
+/// frustration and lower solve effort is a model assumption.
 ///
-/// **Scaled in σ of the frustration distribution**, which concentrates because
-/// frustration is a mean over `cycles` fundamental cycles: at Z(12,4)'s ~41,000
-/// cycles, σ ≈ 2.5 milli. An earlier form interpolated to the `φ = 0` anchor
-/// ~44M milli away — ~89,000 milli of bar per milli of frustration, so an
-/// ordinary −1σ draw got a bar 19% tighter for reasons unrelated to solver
-/// quality, punishing sampling noise and biasing the controller's input. Now
-/// `HANDICAP_PER_SIGMA_PERMILLE` per σ, clamped at `±HANDICAP_MAX_SIGMA`.
-///
-/// **Symmetric**: a harder-than-expected draw earns a proportionally *looser*
-/// bar. Tightening below while clamping above would leave grinding upward free
-/// — two draws reach `φ ≥ expected`, after which the loosest bar is permanent.
-/// Withheld entirely, never one-sidedly, where the anchor clamp leaves no room
-/// to tighten. That clamp at `anchor = −(Σ|h| + Σ|J|)` is load-bearing on its
-/// own: `expected_gse` is mean-field and on low-degree graphs lands *below* any
-/// reachable energy — on a bare cycle it demands −65.6 against a floor of −64,
-/// leaving the topology silently unmineable.
+/// Withhold the whole adjustment when room above the lower bound is smaller
+/// than the maximum swing; equality permits it. This keeps the adjustment
+/// symmetric around the active threshold instead of allowing only loosening
+/// at the bound. Clamping to a lower bound does not make the threshold
+/// attainable: frustration or conflicting fields can keep the optimum above it.
 pub fn instance_bar_milli(
     curve_bar_milli: i64,
     energy_bound_milli: u64,
@@ -177,45 +143,21 @@ pub fn instance_bar_milli(
 
     let typical = curve_bar_milli.max(anchor);
 
-    // NOT scaled by this draw's weight, though the asymmetry is real: the bar
-    // is an absolute energy while reachable depth grows with the draw's own
-    // `Σ|h| + Σ|J|`, and finding a heavy one costs `O(n + m)`.
-    //
-    // Dividing by `expected_bound_milli` prices that exactly — and
-    // over-demands, because the bound is not the achievable optimum and
-    // frustration separates the two by a lot (a frustrated triangle reaches
-    // about a third of its bound). Measured on the 3-node fixture, NO draw was
-    // clearable at any calibrated bar with the ratio applied. The correct
-    // denominator is achievable depth, which the σ handicap below already
-    // prices — the two must be designed together, not stacked (`riff-hv9.41`).
-    // Keep `expected_bound_milli` off `EnergyCurve`: only the registration
-    // guard reads it, and every difficulty read would pay for it.
+    // The threshold remains an absolute energy; it is not rescaled by the
+    // draw's weight. A bound ratio is not an achievable-depth ratio.
     if draw.expected_milli == 0 || draw.cycles == 0 {
         return typical;
     }
 
-    // CLAMP THE SLOPE AT THE USE SITE. `integrity_test` asserts this range but
-    // is `#[cfg(test)]`-only and never runs on a live chain, so a governance
-    // `set_code` carrying a wasm built outside this repo is otherwise
-    // unguarded.
-    //
-    // A NEGATIVE slope makes `max_swing` negative, so the withholding test
-    // below is false, execution proceeds, and the handicap's SIGN FLIPS: the
-    // equalizer becomes the amplifier it exists to prevent, with no panic and
-    // no log. An absurd POSITIVE value wraps the `sigmas * slope` `i64`
-    // multiply below (release builds do not check overflow) to the same end.
-    //
-    // Clamp rather than fall back to the default: zero is coherent (it
-    // disables the handicap), so no substitute is needed.
+    // Runtime integrity tests do not execute on chain. Clamp here to prevent
+    // negative slopes reversing the adjustment and oversized slopes overflowing
+    // the signed multiplication. Zero intentionally disables the handicap.
     let slope = handicap_per_sigma_permille.clamp(0, HANDICAP_SLOPE_MAX_PERMILLE);
 
     let sigmas = frustration_sigmas_of(draw).clamp(-HANDICAP_MAX_SIGMA, HANDICAP_MAX_SIGMA);
 
-    // Symmetric only while there is room to move in BOTH directions. Once
-    // `typical` is clamped to the attainable floor, tightening is impossible
-    // but loosening is not, so applying the handicap would pay for grinding
-    // UPWARD and nothing else. Withhold it entirely rather than apply half of
-    // it.
+    // Compare in i128 before applying either sign of adjustment. The bound
+    // need not be attainable; this guard only limits the threshold's movement.
     let headroom = i128::from(typical) - i128::from(anchor);
     let max_swing =
         i128::from(typical).abs() * i128::from(HANDICAP_MAX_SIGMA) * i128::from(slope) / 1000;
@@ -223,8 +165,9 @@ pub fn instance_bar_milli(
         return typical;
     }
 
-    // `typical` is negative, so a positive handicap makes the bar more
-    // negative, i.e. tighter.
+    // For a negative threshold, positive sigma gives a negative adjustment.
+    // Signed division truncates toward zero: both tightening and loosening
+    // lose any fractional milli. Pure callers may also supply zero/positive bars.
     let handicap = i128::from(typical) * i128::from(sigmas * slope) / 1000;
     saturating_i64(i128::from(typical) + handicap)
 }
@@ -252,13 +195,13 @@ pub fn instance_bar_milli(
 pub struct CurveC {
     /// Easiest (least-negative) end of the curve.
     pub easy_milli: u32,
-    /// Knee, where adjustment motion peaks.
+    /// Intermediate calibration point; supplies a missing stored baseline.
     pub knee_milli: u32,
     /// Hardest (most-negative) end of the curve.
     pub hard_milli: u32,
 }
 
-/// Topology-derived bounds for the difficulty energy curve.
+/// Topology-derived calibration points for the difficulty energy curve.
 ///
 /// The curve is calibrated against a single topology's `(num_nodes,
 /// num_edges)` and its allowed h/J value specs, evaluated at three empirical
@@ -278,8 +221,9 @@ pub struct CurveC {
 /// `max_milli` (difficulty stays at or above the easiest calibrated puzzle).
 /// Hardening instead follows the achieved energy; see [`adjust_on_proof`].
 ///
-/// All three values are in milli precision. `min_milli < knee_milli <
-/// max_milli` (all negative).
+/// All three values are in milli precision. Their intended order is
+/// `min_milli < knee_milli < max_milli`; the pure constructor does not validate
+/// coefficient order or require negative results.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnergyCurve {
     pub min_milli: i64,
@@ -323,8 +267,8 @@ impl EnergyCurve {
 }
 
 // Hardening rate band, mirroring v0.1 `calculate_adjustment_rate_with_randomness`:
-// <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%; linear
-// interpolation in between. Every win hardens, so the graduated band is what
+// <60 blocks -> 35% ± 30%; >100 blocks -> 5% ± 4%; integer linear
+// interpolation in between. For a positive winning gap, the graduated band
 // keeps a slow qblock on the gentle 5% rate instead of the fast-qblock 35%
 // one. Easing between wins comes only from decay (`apply_decay`).
 fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8]) -> u32 {
@@ -375,13 +319,13 @@ pub fn apply_decay(
     }
 }
 
-/// Ease `room` milli over `blocks` at `rate` per epoch, in closed form,
-/// reproducing the retired per-epoch loop. That loop stepped
-/// `max(round(room * rate), MIN_ENERGY_DELTA_MILLI)` once per epoch,
-/// clamped to the room: geometric while `room * rate` beat the floor,
-/// linear at the floor after. The crossover room is `floor / rate`, and the
-/// geometric phase lasts `ln(crossover / room) / ln(1 - rate)` epochs.
-/// Returns the amount eased, at most `room`.
+/// Ease `room` milli in a continuous geometric phase followed by a linear
+/// floor of 1000 milli per epoch. The crossover room is `floor / rate`, and
+/// the geometric phase lasts `ln(crossover / room) / ln(1 - rate)` epochs.
+/// Round the TOTAL easing once, then cap it at room. This is not bit-for-bit
+/// equivalent to repeatedly rounding a discrete per-epoch recurrence.
+/// Preserve the f64 operation order and libm calls: their integer result is
+/// consensus-visible. Runtime integration tests compare native and Wasm outputs.
 fn ease_room(room: i64, blocks: u32, epoch_length: u32, rate: f64) -> i64 {
     if room <= 0 || blocks == 0 || epoch_length == 0 || rate <= 0.0 || rate >= 1.0 {
         return 0;
@@ -456,19 +400,15 @@ pub fn winning_energy_on_curve(
     saturating_i64(i128::from(active_milli) - depth.max(0))
 }
 
-/// Compute the active difficulty for `block_number`, applying continuous
-/// decay only for blocks past the target since the previous winning proof.
+/// Compute the active curve threshold, easing only after the 100-block gate.
+/// Despite the parameter name, `last_proof_block` is the decay anchor: the
+/// pallet supplies max(last win, last root difficulty update). This pure
+/// helper reads no storage. The pallet also supplies the topology's stored
+/// baseline (or curve knee when missing) and its configured curve.
 ///
-/// This is the per-block view of difficulty that miners must clear and
-/// that `adjust_on_proof` consumes as its baseline. All inputs are
-/// explicit — the function reads no storage and is unit-testable in
-/// isolation. The pallet wraps this with a method that does the four
-/// storage reads (`Difficulty<T>`, `LastProofBlock<T>`, `EpochLength`
-/// const, and `DefaultTopology<T>` → `RegisteredTopologies<T>` → curve).
-///
-/// A `None` curve disables decay — used at genesis (no topology
-/// registered) or as a defensive fallback. `last_proof_block == 0` is
-/// the genesis sentinel for "no winning proof yet".
+/// A zero anchor, zero epoch length, missing curve or nonpositive elapsed
+/// time disables decay. Instance pricing applies its own lower-bound clamp
+/// and handicap to this active curve threshold.
 pub fn current_difficulty(
     block_number: u32,
     base_difficulty: DifficultyConfig,

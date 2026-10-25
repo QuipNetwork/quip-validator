@@ -1,17 +1,19 @@
 //! Per-instance hardness invariants for the PoUW energy bar.
 //!
-//! The miner picks its salt, so it picks its instance. The chain prices that
-//! rather than preventing it — the energy bar scales with instance hardness.
+//! The miner picks its salt, so it selects an instance. The chain uses cycle
+//! frustration as a pricing proxy and also applies separate admission gates.
 //! See `pallet_quantum_pow::difficulty::instance_bar_milli`.
 //!
-//! For a fixed graph and fixed `|J|` an instance is determined by its coupling
-//! signs, and every gauge `J_ij ↦ J_ij·s_i·s_j` relabels spins without changing
-//! the physics. The cycle frustration pattern is the only invariant of that
-//! action, so [`frustration_index_milli`] is the instance's one gauge-invariant
-//! degree of freedom, not merely a proxy. Both anchors are exact: at `0` the
-//! instance is gauge-equivalent to all-ferromagnetic with ground state exactly
-//! `−Σ|J|` ([`energy_bound_milli`]); at the spec's expected frustration the
-//! mean-field [`crate::energy::expected_gse`] applies.
+//! For binary spins, a fixed graph and fixed nonzero coupling magnitudes,
+//! cycle parities survive `J_ij ↦ J_ij·s_i·s_j`. With zero fields this is an
+//! energy-preserving relabeling of spins. With fields, the fields must also
+//! transform as `h_i ↦ h_i·s_i`; changing couplings alone is insufficient.
+//! The fraction of frustrated basis cycles compresses the full parity pattern;
+//! equal fractions need not imply equivalent instances or equal solve effort.
+//! Zero frustration attains `−Σ|J|` in the zero-field case, but frustrated
+//! instances need not attain the lower bound from [`energy_bound_milli`].
+//! The mean-field [`crate::energy::expected_gse`] is an estimate, not an exact
+//! ground-state formula at expected frustration.
 //!
 //! [`Regime`] is the orthogonal, weight-independent key: a property of the
 //! graph alone, so no salt can move it.
@@ -25,10 +27,8 @@
 /// `prove_topology_planar` rotation built against pre-canonicalization edges is
 /// rejected with no way to tell why.
 ///
-/// One definition because there were three (`hash_topology`,
-/// `register_topology`, the v6 migration) and two disagreed: the hash
-/// canonicalized, storage did not, so the hash stopped naming the instance the
-/// chain generated.
+/// Shared by topology hashing, registration and the storage-v7 canonicalization
+/// step so the stored edge order agrees with the hashed definition.
 pub fn canonical_graph(nodes: &[u32], edges: &[(u32, u32)]) -> (Vec<u32>, Vec<(u32, u32)>) {
     let mut nodes = nodes.to_vec();
     nodes.sort_unstable();
@@ -41,22 +41,19 @@ pub fn canonical_graph(nodes: &[u32], edges: &[(u32, u32)]) -> (Vec<u32>, Vec<(u
 }
 
 /// How many sigma below its expectation this draw's frustration landed,
-/// unclamped. Positive means less frustrated than typical, i.e. easier.
-/// Returns `0` when there is no expectation or no cycle to frustrate.
+/// unclamped. Positive means less frustrated than expected; interpreting that
+/// as easier to solve is a model assumption. Returns zero when expectation or
+/// cycle count is zero. Full proof admission still has other gates.
 ///
-/// Sigma is that of a mean over `cycles` Bernoulli(p) draws with
-/// `p = expected/1000`, carried in MICRO (sigma x 1000) rather than milli.
-/// Dividing before the square root and then flooring the root loses precision
-/// twice: at Z(12,4)'s 41,065 cycles the true sigma is 2.467 milli, the two
-/// floors report 2, and the +/-3 sigma band becomes reachable in roughly a
-/// fifth of the salt draws it should take. Scaling up before the root keeps
-/// sigma to ~0.1%.
+/// With P and F in milli, variance uses min(P,1000) and integer division by K.
+/// Its integer square root is in micro units (1000 times milli), floored at 1.
+/// The signed quotient `(P-F)*1000/sigma_micro` truncates toward zero. Thus
+/// the accepted integer buckets [-3,3] also include magnitudes between 3 and 4
+/// before truncation; this is not a continuous three-sigma cutoff.
 ///
-/// Lives here, not in the pallet that rejects on it: it reads no storage and no
-/// `Config`, and a miner must evaluate it BEFORE spending solve effort —
-/// `submit_proof` refuses an instance outside the band and the error tells them
-/// to re-salt. From the pallet, reproducing that off-chain meant linking the
-/// whole of FRAME. Both inputs come from [`frustration_index`].
+/// Only the variance caps P at 1000: the deviation uses the original P. P=1000
+/// is not an early return; zero variance takes the denominator floor. These
+/// rules are shared with off-chain callers and must preserve operation order.
 pub fn frustration_sigmas(
     frustration_milli: u32,
     expected_frustration_milli: u32,
@@ -76,27 +73,21 @@ pub fn frustration_sigmas(
 
 /// Cap on how far the handicap may move the bar, in standard deviations.
 ///
-/// Consensus-critical, not a tuning knob: `submit_proof` refuses an instance
-/// whose frustration lands outside `+/-` this. It, not the per-sigma slope, is
-/// the load-bearing limit on salt-shopping. Here rather than in the pallet for
-/// the same reason as [`frustration_sigmas`] — a miner needs the predicate and
-/// its bound together to predict a refusal without running a node.
+/// `submit_proof` refuses raw integer scores outside [-3,3]; standalone pricing
+/// clamps them to that range. This bounds which frustration buckets can be
+/// admitted, not the profitability of every possible salt-selection strategy.
 pub const HANDICAP_MAX_SIGMA: i64 = 3;
 
 /// Expected frustration, in milli, for a coupling spec that pins it — or
 /// `None` when the spec implies nothing and the operator's declaration stands.
 ///
-/// A sign-symmetric spec makes each fundamental cycle an independent fair coin,
-/// so the index is exactly half; a graph with no cycles takes zero. Both
-/// anchors are exact, which is why the value is DERIVED and overwrites the
-/// declaration rather than merely being checked against it: rejecting a wrong
-/// declaration still leaves an operator to get it right.
-///
-/// Being wrong here is unrecoverable. This is the mean the sigma band is
-/// measured against, so an error of one percentage point shifts every draw's
-/// z-score by roughly `0.01 * sqrt(cycles) / 0.5`. At a few thousand cycles
-/// that is well past the +/-3 sigma gate, and EVERY honest `submit_proof` is
-/// refused `InstanceOutsideFrustrationBand` forever.
+/// The configured expectation is 500 for a cyclic graph with a sign-symmetric
+/// spec, or zero for a forest. Independent fair nonzero bond signs make the
+/// parities of a fixed fundamental cycle basis independent fair bits; 500 is
+/// their expected fraction, not the realized fraction of every draw. Zero
+/// couplings can change a draw's cycle count, which is measured separately.
+/// Registration uses this derived value in preference to an operator's claim.
+/// A biased expectation shifts every score and therefore the admission band.
 pub fn expected_frustration_for(
     coupling_spec: &AllowedValueSpec<&[MilliValue]>,
     nodes: &[u32],
@@ -108,7 +99,7 @@ pub fn expected_frustration_for(
     Some(if cycle_rank(nodes, edges) == 0 {
         0
     } else {
-        // Each fundamental cycle is an independent fair coin.
+        // Configured expectation under the fair-sign cycle-parity model.
         500
     })
 }
@@ -351,17 +342,12 @@ pub fn loosest_energy_bound_milli(
         .saturating_add(edge_count.saturating_mul(allowed_j.min_abs_milli()))
 }
 
-/// `Σ|h| + Σ|J|`, in milli: the magnitude of the lowest energy any
-/// configuration could reach, since `E = Σ h·σ + Σ J·σ·σ` and no term can
-/// contribute more than its own magnitude. Negated, it is the tightest bar the
-/// chain can ever demand. Saturates rather than wrapping.
-///
-/// For the zero-field instances production topologies sample this is `Σ|J|`,
-/// and then *exact* rather than a bound: an unfrustrated instance is
-/// gauge-equivalent to all-ferromagnetic, so `−Σ|J|` is precisely its ground
-/// state. With fields present, field and coupling preferences can conflict, so
-/// it stays a lower bound — dropping the field term would put the bar *above*
-/// what a field-bearing instance can reach.
+/// `Σ|h| + Σ|J|`, in milli, with saturating unsigned accumulation.
+/// For spins ±1 and a representable sum, negating it gives a lower energy bound:
+/// each term in `E = Σ h·σ + Σ J·σ·σ` is bounded below by minus its magnitude.
+/// Equality requires all terms to reach their individual minima together.
+/// Zero fields AND unfrustrated couplings permit that; frustration or competing
+/// field/coupling preferences can make the bound unattainable.
 pub fn energy_bound_milli(h: &[MilliValue], j: &[MilliValue]) -> u64 {
     h.iter().chain(j.iter()).fold(0u64, |acc, &w| {
         acc.saturating_add(u64::from(w.unsigned_abs()))
@@ -574,20 +560,17 @@ pub fn frustration_index_milli(nodes: &[u32], edges: &[(u32, u32)], j: &[MilliVa
 /// averaged over.
 ///
 /// The count lets a caller scale a per-instance handicap in units of the
-/// index's own standard deviation: the index is a mean over `cycles`
-/// roughly-independent Bernoulli draws, so `σ ≈ √(p(1000−p)/cycles)` in milli.
-/// Without it a handicap cannot tell sampling noise from signal — and at
-/// hardware scale (tens of thousands of cycles, σ a couple of milli) that
-/// distinction is the whole mechanism.
+/// index's modeled standard deviation: under independent Bernoulli cycle
+/// parities, `σ ≈ √(p(1000−p)/cycles)` in milli. The computed cycle count alone
+/// does not establish independence for an arbitrary coupling distribution.
 pub fn frustration_index(nodes: &[u32], edges: &[(u32, u32)], j: &[MilliValue]) -> (u32, u64) {
     frustration_index_with_index(&NodeIndex::new(nodes), edges, j)
 }
 
 /// [`frustration_index`] over an index the caller already built.
 ///
-/// `submit_proof` builds a `NodeIndex` over the same immutable
-/// `topology.nodes` for `generate_ising_model` and then again here. The owning
-/// wrapper above stays for callers with only a slice.
+/// The combined Ising-generation path reuses one index for generation and
+/// frustration. The owning wrapper above remains for callers with only a slice.
 pub(crate) fn frustration_index_with_index(
     index: &NodeIndex<'_>,
     edges: &[(u32, u32)],

@@ -52,7 +52,9 @@ three records**; the transient best-proof sentinel and candidate salt are also
 test inputs. This is a partial-state fixture, not a full-chain upgrade rehearsal.
 It checks the runtime's storage-v6-to-v7 hook, unchanged historical bytes and
 meaning, preserved round and generated instance, seeded hardness/dimensions,
-and an idempotent second upgrade. Every sampled history value must decode.
+and a version-gated rerun that leaves the state root unchanged. That rerun
+does not establish idempotence of individual migration steps. Every sampled
+history value must decode.
 
 Enable the production pre/post-upgrade checks and the negative malformed-history
 test with:

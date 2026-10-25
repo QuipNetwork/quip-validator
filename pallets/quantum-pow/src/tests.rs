@@ -5843,9 +5843,10 @@ fn print_golden_table() {
 
 #[test]
 fn apply_decay_and_adjust_on_proof_golden_table() {
-    // Pinned outputs of the float path that gates proof admission. libm is
-    // pure Rust and pinned exactly, so native and wasm agree bit for bit;
-    // this table turns red if either the closed form or the rounding moves.
+    // Native golden outputs of the float path that gates proof admission.
+    // Pinning libm alone does not prove native/Wasm parity; runtime integration
+    // fixtures compare actual executions in runtime/tests/quantum_pow_wasm.rs.
+    // This table detects changes to these closed-form and rounding outputs.
     // Regenerate with `cargo test -p pallet-quantum-pow print_golden_table
     // -- --ignored --nocapture` and paste the rows.
     const GOLDEN: &[(i64, u32, i64, i64)] = &[
@@ -6730,7 +6731,7 @@ fn topology_and_nonce_guards_precede_instance_generation_faults() {
         crate::DefaultTopology::<Test>::put(hash);
         assert_eq!(System::block_number(), 1);
         // An Exact default still passes eligibility strictly before retirement,
-        // reaching the next fault. At the retirement block, eligibility wins.
+        // reaching the next fault. At retirement, the Exact rejection wins.
         crate::DefaultRetiresAt::<Test>::put(2);
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(3), invalid.clone()),
