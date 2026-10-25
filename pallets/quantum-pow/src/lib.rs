@@ -2362,12 +2362,14 @@ pub mod pallet {
         pub fn proof_outranks_block_best(record: &ProofRecordOf<T>) -> bool {
             match BlockBestProof::<T>::get() {
                 Some(existing) => {
-                    let (mine, theirs) =
-                        (Self::proof_quality(record), Self::proof_quality(&existing));
-                    // Equal quality prefers lower numerical energy. The crossed
-                    // energy operands implement that direction; a complete tie
-                    // returns false and keeps the incumbent.
-                    (mine, existing.energy_milli) > (theirs, record.energy_milli)
+                    let candidate_quality = Self::proof_quality(record);
+                    let incumbent_quality = Self::proof_quality(&existing);
+                    match candidate_quality.cmp(&incumbent_quality) {
+                        core::cmp::Ordering::Greater => true,
+                        core::cmp::Ordering::Less => false,
+                        // Lower energy wins a quality tie; equality retains the incumbent.
+                        core::cmp::Ordering::Equal => record.energy_milli < existing.energy_milli,
+                    }
                 }
                 None => true,
             }
