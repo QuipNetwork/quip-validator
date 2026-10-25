@@ -66,3 +66,52 @@ SKIP_WASM_BUILD=1 cargo test --locked -p quip-protocol-runtime --test qblock_his
 The negative case keeps the key count unchanged but supplies an unsupported
 181-byte record, proving the postcheck rejects an undecodable value rather than
 accepting key-count equality alone. These migration tests run natively.
+
+## API-v2 response fixtures
+
+`agls-api-v2-153726.json` captures public `state_call` responses fetched read-only
+on 2026-10-25 at the same pinned block. Its SHA-256 is
+`a75214537e26a5c59ab3fbc44ff7471360344fb14e84bb1475737dc77ba22dec`.
+Each entry records the exact export name, SCALE input, response length and
+SHA-256. Small responses are inline; both mining-snapshot requests share
+`agls-mining-snapshot-api-v2-153726.scale` (350,533 bytes, SHA-256
+`a0a0419ddd0259a01e2b065f9569b680eb590fe20dea861644c0d7356e6e72d2`).
+The capture also includes `Core_version` bytes and the independently queried
+`state_getRuntimeVersion` result: spec 119 / transaction 7 / QuantumPowApi v2.
+QBlock id 1 was resolved through `QuantumPowApi_qblock_id_by_block(1006)`.
+
+To reproduce a response, send JSON-RPC `state_call` to the recorded endpoint
+with parameters `[entry.method, entry.input, at_block_hash]`. Decode the hex
+result and compare its length/hash to the entry. The snapshot is stored as
+binary to avoid embedding a 700 KB hex string in JSON. Neither fetching nor
+running the tests submits transactions.
+
+`quantum_pow_api_versions.rs` constructs the actual generated runtime API
+client over a `CallApiAt` adapter that matches the exact block, export and
+argument bytes before returning a captured response. All seven
+`#[changed_in(3)]` methods are called through their generated
+`*_before_version_3` names. Their wire names retain the original exports;
+there are no `before_version` Wasm exports. Full re-encoding checks ensure the
+returned value accounts for every response byte. Historical QBlock and graph
+fields are cross-checked against the separate storage fixtures, and the nonce
+is pinned to the captured API result.
+
+Clients must inspect the reported API version and choose the matching method.
+The pinned SDK's generated client uses `Decode`, not `DecodeAll`, and
+`changed_in` does not select a decoder automatically. The negative test shows
+that calling the modern difficulty method against the old response silently
+interprets its first eight bytes as the wrong threshold. This characterizes
+the client contract; it does not change SDK decoding or implement a miner's
+version-selection policy.
+
+Run offline from the repository root:
+
+```sh
+SKIP_WASM_BUILD=1 cargo test --locked -p quip-protocol-runtime --test quantum_pow_api_versions
+```
+
+These are generated-client routing/decoding tests using responses actually
+served by the pinned historical runtime. They do not locally execute its old
+Wasm, exercise the current runtime's API exports, or rehearse a full upgrade.
+The adapter uses the pinned SDK's macro-support backend/extension types only
+to satisfy `CallApiAt`; it intentionally has no storage backend.

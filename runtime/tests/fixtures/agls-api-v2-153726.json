@@ -1,0 +1,168 @@
+{
+  "description": "Read-only state_call responses from pinned AGLS runtime for generated QuantumPowApi v2 client decoding/routing tests. Captured 2026-10-25. Offline replay is not local execution of the old Wasm runtime.",
+  "endpoint": "https://bootnode-2.aglais.quip.network:20049/rpc",
+  "at_block_hash": "0xb06d9fcbf2dcd1db33540f22b479728c462b8d1e64d61459cad6fca36b158712",
+  "at_block_number": 153726,
+  "runtime": {
+    "specName": "quip",
+    "implName": "quip",
+    "authoringVersion": 1,
+    "specVersion": 119,
+    "implVersion": 1,
+    "apis": [
+      [
+        "0x37e397fc7c91f5e4",
+        2
+      ],
+      [
+        "0x37c8bb1350a9a2a8",
+        4
+      ],
+      [
+        "0xd2bc9897eed08f15",
+        3
+      ],
+      [
+        "0xed99c5acb25eedf5",
+        3
+      ],
+      [
+        "0x17f0e16273cf5f3b",
+        2
+      ],
+      [
+        "0x40fe3ad401f8959a",
+        6
+      ],
+      [
+        "0x8c403e5c4a9fd442",
+        1
+      ],
+      [
+        "0xf78b278be53f454c",
+        2
+      ],
+      [
+        "0xcbca25e39f142387",
+        2
+      ],
+      [
+        "0x3ab6f66093fb3e09",
+        1
+      ],
+      [
+        "0xccd9de6396c899ca",
+        1
+      ],
+      [
+        "0xab3c0572291feb8b",
+        2
+      ],
+      [
+        "0xfbc577b9d747efd6",
+        1
+      ],
+      [
+        "0xf3ff14d5ab527059",
+        3
+      ],
+      [
+        "0xbc9d89904f5b923f",
+        1
+      ],
+      [
+        "0xdf6acb689907609b",
+        5
+      ],
+      [
+        "0x3107b6d741d617f6",
+        1
+      ]
+    ],
+    "transactionVersion": 7,
+    "systemVersion": 1,
+    "stateVersion": 1
+  },
+  "topology_hash": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+  "sample_qblock_number": 1006,
+  "sample_qblock_id": 1,
+  "calls": [
+    {
+      "method": "Core_version",
+      "input": "0x",
+      "len": 232,
+      "sha256": "0c7929433ba6e0c67a3ecdc77997520a9baa9ebc30c2bee2491d17d0d90d9fae",
+      "output": "0x1071756970107175697001000000770000000100000044df6acb689907609b0500000037e397fc7c91f5e402000000ccd9de6396c899ca0100000040fe3ad401f8959a06000000d2bc9897eed08f1503000000f78b278be53f454c02000000cbca25e39f14238702000000ab3c0572291feb8b02000000ed99c5acb25eedf50300000017f0e16273cf5f3b020000003107b6d741d617f6010000003ab6f66093fb3e0901000000bc9d89904f5b923f0100000037c8bb1350a9a2a804000000f3ff14d5ab52705903000000fbc577b9d747efd6010000008c403e5c4a9fd442010000000700000001"
+    },
+    {
+      "method": "QuantumPowApi_current_difficulty",
+      "input": "0x",
+      "len": 16,
+      "sha256": "1b3ff231c5189658417db146d463087ebe88c44d71915110da211374efe9d310",
+      "output": "0x01000000a8dc1effffffffff00000000"
+    },
+    {
+      "method": "QuantumPowApi_current_hardness",
+      "input": "0x",
+      "len": 16,
+      "sha256": "1b3ff231c5189658417db146d463087ebe88c44d71915110da211374efe9d310",
+      "output": "0x01000000a8dc1effffffffff00000000"
+    },
+    {
+      "method": "QuantumPowApi_difficulty_for",
+      "input": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+      "len": 17,
+      "sha256": "3852978760518075e22601c71b71e2d39578303acc803cb60ecba901cd15336e",
+      "output": "0x0101000000a8dc1effffffffff00000000"
+    },
+    {
+      "method": "QuantumPowApi_difficulty_for",
+      "input": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "len": 1,
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "output": "0x00"
+    },
+    {
+      "method": "QuantumPowApi_winning_solution",
+      "input": "0xee030000",
+      "len": 213,
+      "sha256": "0c7962a8a01522b5804a892f5c031bd8b43af5d4e5b76783518681327f831e08",
+      "output": "0x01d2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca4825c4e28247d21ea18837e4603000005000000000000000000000000000000000050aa1fffffffffff0010a5d4e80000000000000000000000ee0300000100000020b21fffffffffff00000000542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecbcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7f11a190000000000ba93abbccb98495140a61bced2adee78d37d0fa8c0b138aad17625fca00edd7e"
+    },
+    {
+      "method": "QuantumPowApi_qblock_by_block",
+      "input": "0xee030000",
+      "len": 213,
+      "sha256": "0c7962a8a01522b5804a892f5c031bd8b43af5d4e5b76783518681327f831e08",
+      "output": "0x01d2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca4825c4e28247d21ea18837e4603000005000000000000000000000000000000000050aa1fffffffffff0010a5d4e80000000000000000000000ee0300000100000020b21fffffffffff00000000542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecbcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7f11a190000000000ba93abbccb98495140a61bced2adee78d37d0fa8c0b138aad17625fca00edd7e"
+    },
+    {
+      "method": "QuantumPowApi_qblock_by_id",
+      "input": "0x0100000000000000",
+      "len": 213,
+      "sha256": "0c7962a8a01522b5804a892f5c031bd8b43af5d4e5b76783518681327f831e08",
+      "output": "0x01d2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca4825c4e28247d21ea18837e4603000005000000000000000000000000000000000050aa1fffffffffff0010a5d4e80000000000000000000000ee0300000100000020b21fffffffffff00000000542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecbcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7f11a190000000000ba93abbccb98495140a61bced2adee78d37d0fa8c0b138aad17625fca00edd7e"
+    },
+    {
+      "method": "QuantumPowApi_winning_solution",
+      "input": "0xed030000",
+      "len": 1,
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "output": "0x00"
+    },
+    {
+      "method": "QuantumPowApi_mining_snapshot",
+      "input": "0x00",
+      "len": 350533,
+      "sha256": "a0a0419ddd0259a01e2b065f9569b680eb590fe20dea861644c0d7356e6e72d2",
+      "output_file": "agls-mining-snapshot-api-v2-153726.scale"
+    },
+    {
+      "method": "QuantumPowApi_mining_snapshot",
+      "input": "0x01cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+      "len": 350533,
+      "sha256": "a0a0419ddd0259a01e2b065f9569b680eb590fe20dea861644c0d7356e6e72d2",
+      "output_file": "agls-mining-snapshot-api-v2-153726.scale"
+    }
+  ]
+}
