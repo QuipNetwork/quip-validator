@@ -6262,3 +6262,196 @@ fn instance_check_agrees_with_submit_proof() {
         );
     });
 }
+
+// Characterization of the pinned !71 integer math and ranking rules. These
+// expected values are calculated explicitly, not by a second call to the helper.
+#[test]
+fn instance_bar_applies_handicap_at_exact_headroom_and_withholds_below_it() {
+    // |bar| * 3 sigma * slope / 1000 = 1000 * 3 * 6 / 1000 = 18.
+    for (bound, easy, hard) in [
+        (1_017, -1_000, -1_000),
+        (1_018, -1_018, -982),
+        (1_019, -1_018, -982),
+    ] {
+        assert_eq!(
+            difficulty::instance_bar_milli(-1_000, bound, draw(350, 500, 100), 6),
+            easy
+        );
+        assert_eq!(
+            difficulty::instance_bar_milli(-1_000, bound, draw(650, 500, 100), 6),
+            hard
+        );
+    }
+}
+
+#[test]
+fn instance_bar_clamps_pricing_sigma_without_rewriting_the_raw_sigma() {
+    // Sigma is 5 milli. The band boundary is raw +/-3; pricing also accepts
+    // out-of-band inputs and clamps them. This is not a proof-admission test.
+    for (realized, raw_sigma, price) in [
+        (481, 3, -1_018),
+        (480, 4, -1_018),
+        (519, -3, -982),
+        (520, -4, -982),
+    ] {
+        let input = draw(realized, 500, 10_000);
+        assert_eq!(difficulty::frustration_sigmas_of(input), raw_sigma);
+        assert_eq!(
+            difficulty::instance_bar_milli(-1_000, 10_000, input, 6),
+            price
+        );
+    }
+}
+
+#[test]
+fn instance_bar_zero_and_out_of_range_slopes_have_exact_clamped_prices() {
+    let input = draw(350, 500, 100); // exactly +3 sigma
+    for slope in [i64::MIN, -1, 0] {
+        assert_eq!(
+            difficulty::instance_bar_milli(-1_000, 10_000, input, slope),
+            -1_000
+        );
+        // Zero slope still applies the lower-bound clamp to the curve bar.
+        assert_eq!(
+            difficulty::instance_bar_milli(-2_000, 1_000, input, slope),
+            -1_000
+        );
+    }
+    for slope in [1_000, 1_001, i64::MAX] {
+        assert_eq!(
+            difficulty::instance_bar_milli(-1_000, 10_000, input, slope),
+            -4_000
+        );
+    }
+}
+
+#[test]
+fn instance_bar_truncates_signed_handicap_toward_zero() {
+    // +/-1 sigma at slope 6 gives +/-6.006 milli, truncated to +/-6.
+    assert_eq!(
+        difficulty::instance_bar_milli(-1_001, 10_000, draw(450, 500, 100), 6),
+        -1_007
+    );
+    assert_eq!(
+        difficulty::instance_bar_milli(-1_001, 10_000, draw(550, 500, 100), 6),
+        -995
+    );
+}
+
+#[test]
+fn pricing_bound_conversion_saturates_before_negation() {
+    for (bound, expected) in [
+        (0, 0),
+        (i64::MAX as u64, -i64::MAX),
+        (i64::MAX as u64 + 1, -i64::MAX),
+        (u64::MAX, -i64::MAX),
+    ] {
+        assert_eq!(difficulty::anchor_milli(bound), expected);
+        assert_eq!(
+            difficulty::instance_bar_milli(i64::MIN, bound, draw(500, 500, 0), 6),
+            expected
+        );
+    }
+}
+
+#[test]
+fn proof_quality_has_exact_milli_resolution_and_nonpositive_room_is_zero() {
+    use difficulty::{proof_quality, ProofDepth};
+    // Room = 2,500,000 milli. One milli of depth earns 10^15 / 2,500,000.
+    for (energy_milli, expected) in [
+        (-3_600_000, 0),
+        (-3_600_001, 400_000_000),
+        (-6_100_000, 1_000_000_000_000_000),
+        (-6_100_001, 1_000_000_000_000_000),
+    ] {
+        assert_eq!(
+            proof_quality(ProofDepth {
+                instance_bar_milli: -3_600_000,
+                anchor_milli: -6_100_000,
+                energy_milli
+            }),
+            expected
+        );
+    }
+    for anchor_milli in [-1_000, -999] {
+        assert_eq!(
+            proof_quality(ProofDepth {
+                instance_bar_milli: -1_000,
+                anchor_milli,
+                energy_milli: -1_001
+            }),
+            0
+        );
+    }
+    // A positive room need not have a positive score: even positive depth
+    // can quantize to zero when the room exceeds the fixed-point scale.
+    assert_eq!(
+        proof_quality(ProofDepth {
+            instance_bar_milli: 0,
+            anchor_milli: -4_000_000_000_000_000,
+            energy_milli: -1
+        }),
+        0
+    );
+    // The room/depth span the whole i64 domain; subtraction must widen first.
+    assert_eq!(
+        proof_quality(ProofDepth {
+            instance_bar_milli: i64::MAX,
+            anchor_milli: i64::MIN,
+            energy_milli: i64::MIN
+        }),
+        1_000_000_000_000_000
+    );
+}
+
+#[test]
+fn ranking_compares_quality_then_lower_energy_and_retains_complete_ties() {
+    new_test_ext().execute_with(|| {
+        let make = |miner, anchor_milli, energy_milli| ProofRecord {
+            miner,
+            submitted_at: 1,
+            energy_milli,
+            anchor_milli,
+            difficulty: DifficultyConfig {
+                max_energy_milli: 0,
+            },
+            salt: [0; 32],
+            topology_hash: sp_core::H256::zero(),
+            device_access_time_us: 0,
+            frustration_milli: 500,
+            instance_bar_milli: 0,
+        };
+        // Higher normalized quality wins even with less-negative energy:
+        // 1500/2000 = 3/4 versus 10000/20000 = 1/2.
+        let incumbent = make(1, -20_000, -10_000);
+        let better_quality = make(2, -2_000, -1_500);
+        assert_eq!(QuantumPow::proof_quality(&incumbent), 500_000_000_000_000);
+        assert_eq!(
+            QuantumPow::proof_quality(&better_quality),
+            750_000_000_000_000
+        );
+        BlockBestProof::<Test>::put(&incumbent);
+        assert!(QuantumPow::proof_outranks_block_best(&better_quality));
+        BlockBestProof::<Test>::put(&better_quality);
+        assert!(!QuantumPow::proof_outranks_block_best(&incumbent));
+
+        // A genuine quantization tie at the implemented 10^15 scale:
+        // depths 1 and 2 over room 4*10^15 both score 0. Lower energy wins.
+        let tied = make(3, -4_000_000_000_000_000, -1);
+        let lower_energy = make(4, -4_000_000_000_000_000, -2);
+        assert_eq!(QuantumPow::proof_quality(&tied), 0);
+        assert_eq!(QuantumPow::proof_quality(&lower_energy), 0);
+        BlockBestProof::<Test>::put(&tied);
+        assert!(QuantumPow::proof_outranks_block_best(&lower_energy));
+        BlockBestProof::<Test>::put(&lower_energy);
+        assert!(!QuantumPow::proof_outranks_block_best(&tied));
+
+        // Equal quality AND energy retain the stored incumbent even though
+        // the candidate has different identity, salt, and submitted_at fields.
+        let mut complete_tie = make(5, -4_000_000_000_000_000, -2);
+        complete_tie.salt = [1; 32];
+        complete_tie.submitted_at = 0;
+        assert!(!QuantumPow::proof_outranks_block_best(&complete_tie));
+        assert_eq!(BlockBestProof::<Test>::get(), Some(lower_energy));
+    });
+}

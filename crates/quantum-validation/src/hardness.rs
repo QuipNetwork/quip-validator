@@ -988,6 +988,34 @@ mod tests {
     }
 
     #[test]
+    fn frustration_sigmas_truncates_toward_zero_on_both_band_edges() {
+        // P=500, K=10,000: variance_micro=25,000,000, sigma_micro=5000.
+        // Thus z=(500-F)/5, truncated toward zero (not rounded or floored).
+        for (realized, expected_sigma) in [(481, 3), (480, 4), (519, -3), (520, -4)] {
+            assert_eq!(
+                super::frustration_sigmas(realized, 500, 10_000),
+                expected_sigma
+            );
+        }
+    }
+
+    #[test]
+    fn frustration_sigmas_caps_only_variance_and_keeps_degenerate_denominator_one() {
+        // P=1000 has zero variance, not an early return. Its denominator is 1.
+        assert_eq!(super::frustration_sigmas(999, 1000, 10_000), 1000);
+        assert_eq!(super::frustration_sigmas(1001, 1000, 10_000), -1000);
+        // P>1000 is capped only in variance; deviation retains the original P.
+        assert_eq!(super::frustration_sigmas(1000, 1001, 10_000), 1000);
+        assert_eq!(
+            super::frustration_sigmas(0, u32::MAX, u64::MAX),
+            4_294_967_295_000
+        );
+        // Zero expectation/cycles still return zero even for extreme inputs.
+        assert_eq!(super::frustration_sigmas(u32::MAX, 0, u64::MAX), 0);
+        assert_eq!(super::frustration_sigmas(0, u32::MAX, 0), 0);
+    }
+
+    #[test]
     fn frustration_sigmas_measures_deviation_in_sigma() {
         use super::frustration_sigmas;
 
