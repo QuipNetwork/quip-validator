@@ -3253,9 +3253,8 @@ fn instance_bar_equalizes_in_units_of_sigma() {
     }
 }
 
-/// The defect riff-hv9.14 caught, at the scale it caught it: with Z(12,4)'s
-/// numbers the old form gave a -1 sigma draw a bar ~19% tighter purely from
-/// sampling noise, and let a grinder reach the loosest bar in ~2 draws.
+/// Pure pricing at the recorded Z(12,4) scale: the handicap stays within its
+/// clamp. This does not measure solve effort or salt-grinding profitability.
 #[test]
 fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
     use difficulty::instance_bar_milli;
@@ -3266,11 +3265,12 @@ fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
     let curve = -1_200_000i64;
     let bar = |phi| instance_bar_milli(curve, bound, draw(phi, 500, cycles), SLOPE);
 
-    // sigma = sqrt(500*500/41065) = 2 milli at this scale.
+    // Model sigma is about 2.467 milli; the micro denominator floors to 2467.
     let honest = bar(500);
     assert_eq!(honest, curve);
 
-    // An ordinary -1 sigma draw must cost a couple of percent, not a fifth.
+    // F=498 gives raw score 2000/2467 = 0 after truncation. This assertion
+    // bounds the movement at that point; it does not test a full sigma step.
     let unlucky = bar(498);
     let penalty = (honest - unlucky) as f64 / curve.abs() as f64;
     assert!(
@@ -3279,15 +3279,8 @@ fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
         penalty.abs() * 100.0
     );
 
-    // Across the plausible range the bar stays within the clamp, so the controller
-    // sees a difficulty dial rather than a lottery.
-    //
-    // The bound is DERIVED, not a literal: the handicap is at most
-    // `HANDICAP_MAX_SIGMA * SLOPE` per-mille of the curve — 3 x 6 = 18 per-mille
-    // = 1.8% — and that is the same clamp `bar(0) == bar(350)` demonstrates
-    // above. A hardcoded number here disagreed with the assertion it sat on
-    // (the comment claimed 6%), which is exactly the drift computing it prevents:
-    // retuning `SLOPE` now moves the prose, the bound and the mechanism together.
+    // Bound pure pricing by HANDICAP_MAX_SIGMA * SLOPE: 18 per-mille here.
+    // Some swept inputs would be rejected by the separate admission band.
     let max_drift = (difficulty::HANDICAP_MAX_SIGMA * SLOPE) as f64 / 1000.0;
     assert_eq!(max_drift, 0.018, "the clamp's width moved");
     for phi in 480..=520u32 {
@@ -3302,10 +3295,9 @@ fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
         );
     }
 
-    // Grinding upward is worthless: symmetric handicap, and past the +3 sigma
-    // clamp every draw gets the same bar. Asserted as properties rather than
-    // hand-computed indices, so a change in sigma's precision cannot silently
-    // rewrite the claim while still passing.
+    // These nearby inputs have symmetric movement (zero after truncation).
+    // High-frustration inputs beyond the negative-score clamp share the loosest
+    // priced bar; they need not be admitted or require equal solve effort.
     assert_eq!(bar(500) - bar(502), bar(498) - bar(500));
     let loosest = bar(1_000);
     for phi in 512..=1_000u32 {
@@ -3324,9 +3316,9 @@ fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
 #[test]
 fn instance_bar_clamps_an_unreachable_curve_to_the_optimum() {
     use difficulty::instance_bar_milli;
-    // `expected_gse` overshoots on low-degree graphs — a bare cycle's knee sits
-    // below -Sum|J|, so no configuration clears it. The clamp is what keeps such
-    // a topology mineable.
+    // Literal pure-helper inputs place the curve below the lower bound.
+    // Clamping raises the threshold to that bound without proving that an
+    // instance can attain it or that a full proof passes admission.
     assert_eq!(
         instance_bar_milli(-65_620, 64_000, draw(500, 500, 100), SLOPE),
         -64_000
@@ -5299,7 +5291,7 @@ fn on_finalize_fast_proof_hardens_difficulty() {
         QuantumPow::on_finalize(System::block_number());
 
         let next = difficulty_default();
-        // Only the energy threshold moves; the chain-static fields stay put.
+        // The winning proof hardens the stored energy threshold.
         assert!(next.max_energy_milli < initial.max_energy_milli);
     });
 }
@@ -5308,10 +5300,8 @@ fn on_finalize_fast_proof_hardens_difficulty() {
 fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        // min_solutions / min_diversity_milli are chain-static under the new
-        // curve policy; only max_energy_milli decays. Set the chain-static
-        // fields permissively so the proof passes those gates. A slow win
-        // hardens gently from the decayed base.
+        // Set a permissive initial threshold. A slow win hardens gently from
+        // the decayed baseline; DifficultyConfig has only this one field.
         let initial = DifficultyConfig {
             max_energy_milli: 0,
         };

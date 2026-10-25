@@ -312,10 +312,9 @@ pub struct QBlock<AccountId, Balance, BlockNumber> {
     /// remains derivable from block spacing (`LastProofBlock` deltas), so
     /// no information is lost by carrying compute time here instead.
     pub device_access_time_us: u64,
-    /// Frustration of the instance that was solved, in milli. With
-    /// `difficulty` above and the topology's registered
-    /// `expected_frustration_milli`, this makes the bar the block actually
-    /// had to clear reproducible from state alone.
+    /// Measured frustration of the solved instance, in milli. Legacy records
+    /// backfill zero as unmeasured; zero can also be a genuine measured value.
+    /// The actual threshold is retained separately in `instance_bar_milli`.
     pub frustration_milli: u32,
     /// The handicapped bar the winning proof cleared, in milli.
     pub instance_bar_milli: i64,
@@ -333,15 +332,17 @@ pub struct QBlockWithNonce<AccountId, Balance, BlockNumber> {
     pub nonce: U256,
 }
 
-/// The `QBlocks` storage value: a [`QBlock`] that also DECODES from the v6
-/// layout, so entries written before 119 need no re-encode.
+/// The `QBlocks` storage value: a [`QBlock`] that also decodes the storage-v6
+/// layout. That legacy layout was observed at AGLS spec 119, block 153726;
+/// runtime spec version is not the decoder's discriminator.
 ///
-/// Re-encoding every entry in the upgrade block took 71% of a block on aglais
-/// at 11k qblocks and grows ~1.6k a day. Instead each value decodes as the
-/// current layout if it is exactly one, else as a v6 entry converted on the
-/// fly. Encodes as the current layout, so a rewritten entry upgrades itself.
-/// Every storage read, iteration and the full-state decode check stay valid.
-/// Off-chain indexers reading raw storage must handle both layouts.
+/// Avoid rewriting all history in the upgrade block. Decode a length-bounded
+/// value as the current layout first, then try the legacy layout; both require
+/// complete consumption. Encoding always writes the current layout, while a
+/// read leaves the stored bytes unchanged. Raw-storage consumers must handle
+/// both layouts. There is no format tag: truncation to another supported layout
+/// length is not necessarily detectable. See `runtime/tests/qblock_history.rs`
+/// for frozen production-type values and malformed-length cases.
 #[derive(Clone, Debug, Encode, Eq, PartialEq, MaxEncodedLen)]
 pub struct StoredQBlock<AccountId, Balance, BlockNumber>(
     pub QBlock<AccountId, Balance, BlockNumber>,
@@ -378,9 +379,10 @@ where
 impl<AccountId, Balance, BlockNumber> From<v2::QBlock<AccountId, Balance, BlockNumber>>
     for QBlock<AccountId, Balance, BlockNumber>
 {
-    /// Historical blocks predate the per-instance handicap, so their bar WAS
-    /// the topology-level `max_energy_milli`: backfilling `instance_bar_milli`
-    /// with it is exact. `frustration_milli` was never measured, so it is `0`.
+    /// Preserve the historical threshold D as `instance_bar_milli`. Historical
+    /// admission used strict `energy < D`; backfilling D does not retroactively
+    /// apply today's inclusive comparison or change D to D-1. Frustration was
+    /// unmeasured and is represented by zero, which can also be a measured value.
     fn from(old: v2::QBlock<AccountId, Balance, BlockNumber>) -> Self {
         Self {
             miner: old.miner,
@@ -400,19 +402,20 @@ impl<AccountId, Balance, BlockNumber> From<v2::QBlock<AccountId, Balance, BlockN
     }
 }
 
-/// What `submit_proof` would make of one draw, before any solving: the
-/// `instance_check` runtime API response. A refused draw comes back as the
-/// dispatch error `submit_proof` would raise, so a miner re-salts instead of
-/// solving it.
+/// Pre-solve `instance_check` response for a draw that passes the shared topology
+/// and instance gates. Rejections use the corresponding dispatch error. Success
+/// does not establish full proof admissibility: miner registration, block proof
+/// limits, solution decoding and achieved energy are checked separately.
 #[derive(Clone, Debug, Encode, Decode, Eq, PartialEq, TypeInfo)]
 pub struct InstanceCheck {
     /// `derive_nonce(last_proof_block_hash, miner, salt)` for this round.
     pub nonce: U256,
     pub frustration_milli: u32,
     pub frustration_cycles: u64,
-    /// Signed σ from the topology's expected frustration (positive = easier).
+    /// Raw integer sigma score; positive means less frustration than expected.
+    /// Interpreting that as easier solving is a model assumption.
     pub sigmas: i64,
-    /// The instance's exact optimum bound, `-(Σ|h| + Σ|J|)`.
+    /// Signed lower-bound anchor from `Σ|h| + Σ|J|`, not necessarily attainable.
     pub anchor_milli: i64,
     /// The bar a proof of this draw must reach (`energy <= bar`).
     pub instance_bar_milli: i64,
@@ -420,12 +423,15 @@ pub struct InstanceCheck {
     pub live_bar_milli: i64,
 }
 
-/// `QuantumPowApi` version-2 response shapes (runtimes up to spec 118).
+/// `QuantumPowApi` version-2 response shapes, including the observed AGLS
+/// spec-119 runtime at block 153726.
 ///
 /// Version 3 shrank [`DifficultyConfig`] to one field and appended the solved
 /// instance to [`QBlock`], so every response embedding either changed shape.
 /// These are what the `*_before_version_3` client methods decode when a
-/// client compiled against version 3 queries a pre-119 block. Never stored.
+/// client compiled against version 3 queries a runtime reporting API v2.
+/// The legacy QBlock and difficulty shapes also describe storage-v6 values;
+/// `StoredQBlock` decoding and storage migration are separate from API dispatch.
 pub mod v2 {
     use super::*;
 

@@ -202,6 +202,17 @@ sigma. That report motivated the default slope of 6; this documentation change
 does not reproduce the experiment or establish an optimal slope. The runtime's
 configured value remains separate from the default constant.
 
+Two existing arithmetic examples explain why the bound and sigma units matter.
+The [pure-pricing fixtures](../pallets/quantum-pow/src/tests.rs) supply a curve
+threshold of -65,620 milli and a bound magnitude of 64,000 milli; pricing returns
+-64,000. This demonstrates the clamp, not that a frustrated graph can attain
+that threshold or that the full admission path accepts it. For P=500 and
+K=41,065 (the Z(12,4) cycle count cited by the existing fixture), the model's
+standard deviation is about 2.467 milli and the integer micro denominator is
+2,467. F=498 therefore gives raw score zero after signed truncation, not one
+sigma. These examples preserve the useful numerical context without treating
+the bound as an optimum or a scalar frustration score as a work estimate.
+
 Ranking uses `room = B-L` and `depth = B-E`. Nonpositive room scores zero;
 otherwise quality is `min(depth*10^15/room, 10^15)`, with signed truncation toward
 zero and no lower clamp for arbitrary pure-helper inputs. Admitted proofs have

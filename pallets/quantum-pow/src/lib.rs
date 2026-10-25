@@ -67,11 +67,13 @@ sp_api::decl_runtime_apis! {
     /// `mineable_topologies` whitelist query. Clients can feature-detect
     /// these via the reported API version against older runtimes.
     ///
-    /// Version 3 (spec 119): `DifficultyConfig` drops `min_solutions` and
+    /// API version 3: `DifficultyConfig` drops `min_solutions` and
     /// `min_diversity_milli`, and `QBlock` appends `frustration_milli` and
     /// `instance_bar_milli`. The `#[changed_in(3)]` declarations keep the
-    /// version-2 shapes (`types::v2`) decodable for pre-119 blocks as
-    /// `*_before_version_3`.
+    /// version-2 shapes (`types::v2`) available to clients through
+    /// `*_before_version_3` when querying a runtime reporting API v2.
+    /// API versions are separate from spec/storage versions: pinned AGLS
+    /// block 153726 reports spec 119 with API v2 and pallet storage v6.
     #[api_version(3)]
     pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
@@ -285,18 +287,11 @@ pub mod pallet {
         #[pallet::constant]
         type ExactSolveCeiling: Get<u32>;
 
-        /// Handicap applied per standard deviation of frustration, in
-        /// per-mille of the curve bar.
-        ///
-        /// A `Config` constant because it is provisional: riff-morph's
-        /// calibration puts the slope anywhere from 4 to 29 per-mille per sigma
-        /// with correlations under 0.3, so it is expected to move. As a code
-        /// constant every move cost a source edit and a spec bump, and the mock
-        /// could not sweep it.
-        ///
-        /// NOT `HANDICAP_MAX_SIGMA`, which gates `submit_proof` validity and is
-        /// consensus-critical — that one stays a code constant in
-        /// `quantum-validation`, beside the band predicate.
+        /// Handicap per integer sigma bucket, in per-mille of the threshold
+        /// after its lower-bound clamp. Configurable for runtime selection
+        /// and test sweeps; changing the runtime value is consensus-visible.
+        /// See `difficulty::DEFAULT_HANDICAP_PER_SIGMA_PERMILLE` for calibration
+        /// provenance. `HANDICAP_MAX_SIGMA` separately limits admission.
         #[pallet::constant]
         type HandicapPerSigmaPermille: Get<i64>;
 
@@ -444,7 +439,7 @@ pub mod pallet {
     /// Block of the last root `set_difficulty`. Decay is anchored at the
     /// later of this and `LastProofBlock`: every topology decays off the last
     /// collected proof of work, and a governance bar gets a full gate. Zero
-    /// (never set) leaves 118 behaviour unchanged, so no migration is needed.
+    /// (never set) leaves the last win as the anchor without a backfill.
     #[pallet::storage]
     pub type DifficultySetAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
@@ -534,7 +529,7 @@ pub mod pallet {
             energy_milli: i64,
             submitted_at: BlockNumberFor<T>,
         },
-        // New in spec 119; appended so no existing event index moves.
+        // Appended for structural-hardness support; earlier event indices stay fixed.
         /// Root registered or replaced a topology's structural record.
         TopologyHardnessSet {
             topology_hash: H256,
@@ -594,10 +589,10 @@ pub mod pallet {
         InvalidSpinValues,
         SolutionLengthMismatch,
         InsufficientEnergy,
-        /// Retired in spec 119: a proof carries one configuration. Kept so
+        /// Unused with single-configuration proofs. Kept so
         /// later error indices do not move.
         InsufficientDiversity,
-        /// Retired in spec 119: a proof carries one configuration. Kept so
+        /// Unused with single-configuration proofs. Kept so
         /// later error indices do not move.
         InsufficientSolutions,
         ArithmeticOverflow,
@@ -630,10 +625,10 @@ pub mod pallet {
         /// non-default topologies would let one's wins mis-drive the other's
         /// difficulty. Remove the existing one first.
         MineableTopologyConflict,
-        /// Retired in spec 119: a proof carries one configuration. Kept so
+        /// Unused with single-configuration proofs. Kept so
         /// later error indices do not move.
         InvalidDiversityConfig,
-        // New in spec 119; appended so no existing error index moves.
+        // Appended for single-configuration support; earlier error indices stay fixed.
         /// Dead, retained deliberately: `solutions` is a single `PackedSpinBytesOf<T>`, so
         /// this can no longer be returned. Error variant indices are CONSENSUS-VISIBLE —
         /// deleting it would renumber every variant after it, changing what already-deployed
@@ -732,7 +727,7 @@ pub mod pallet {
         /// cannot derive the expected frustration the ±3σ band is centred on.
         CouplingSpecNotSignSymmetric,
         /// `set_difficulty` would put the bar easier than the topology's easy
-        /// cap or tighter than its typical draw's exact optimum.
+        /// cap or tighter than the negative expected bound magnitude.
         DifficultyOutsideCurve,
     }
 
@@ -744,10 +739,9 @@ pub mod pallet {
         /// the strongest check available for a `#[pallet::constant]`, but it is
         /// NOT a runtime guarantee.
         fn integrity_test() {
-            // The slope multiplies a +/-3 sigma value in `i64` before widening,
-            // and release builds do not check overflow: an absurd governance
-            // value WRAPS and flips the handicap's sign, turning the equalizer
-            // into the amplifier it exists to prevent. Measured scatter 4..29.
+            // Check configured values in the harness. Pricing also clamps at
+            // use: a negative slope reverses the adjustment, and an unbounded
+            // slope could overflow the i64 multiplication before widening.
             assert!(
                 (0..=crate::difficulty::HANDICAP_SLOPE_MAX_PERMILLE)
                     .contains(&T::HandicapPerSigmaPermille::get()),
@@ -863,10 +857,12 @@ pub mod pallet {
         /// together with the `WinnerStreak` value it read. The step kills
         /// the retired key; no other value changes shape.
         ///
-        /// v6 → v7 (spec 119): single-dial difficulty. `DifficultyConfig`
-        /// sheds two fields and `QBlock` gains the solved instance, so both
-        /// are re-encoded; stored graphs are canonicalized and `TopologyDims`
-        /// is backfilled.
+        /// Storage v6 → v7: `DifficultyConfig` sheds two fields and is
+        /// re-encoded. Historical `QBlocks` stay in their old layout and
+        /// convert on read through `StoredQBlock`; new records carry instance
+        /// frustration and threshold. Graphs are canonicalized, dimensions
+        /// backfilled and missing hardness records seeded. This is distinct
+        /// from runtime API v2 → v3 compatibility.
         ///
         /// Cumulative: a v2 chain runs v3 then the combined v5 backfill; a v4
         /// chain runs only the device-time append; a `< 2` chain wipes, which
@@ -900,11 +896,10 @@ pub mod pallet {
                 weight = weight.saturating_add(crate::migration::v6::remove_winner_streak::<T>());
             }
 
-            // Shrink `Difficulties` only where an older runtime wrote it in the
-            // legacy shape and this upgrade has not already rewritten it: the
-            // v5 step above writes `QBlocks` in today's shape, so re-translating
-            // there would fail to decode and silently drop every entry. v6 did
-            // not change either layout, so a v5 or v6 chain takes the full path.
+            // Shrink legacy `Difficulties` where earlier steps have not already
+            // replaced them; all routes clear transient best-proof state.
+            // The v5 step above handles older history layouts. These v7 paths
+            // leave QBlocks untouched, relying on StoredQBlock for legacy reads.
             weight = weight.saturating_add(if on_chain >= StorageVersion::new(5) {
                 crate::migration::v7::shrink_difficulty::<T>()
             } else if on_chain >= StorageVersion::new(3) {
@@ -921,11 +916,9 @@ pub mod pallet {
             // Backfills `TopologyDims` for every already-registered topology.
             // Runs from every prior version and is idempotent.
             weight = weight.saturating_add(crate::migration::v7::backfill_topology_dims::<T>());
-            // Topologies registered before 119 carry no structural record, so
-            // the handicap, the frustration band and both witnesses would be
-            // off for them. Seed one: width unmeasured (`u32::MAX`, ratchets
-            // down via `set_topology_hardness` or a witness), expected
-            // frustration derived from the coupling spec. Idempotent.
+            // Seed missing structural records on retained topologies: width
+            // unmeasured (u32::MAX, reducible by root or a witness), expectation
+            // derived from the coupling spec. Preserve existing records.
             weight = weight.saturating_add(crate::migration::v7::seed_missing_hardness::<T>());
 
             STORAGE_VERSION.put::<Pallet<T>>();
@@ -1010,9 +1003,8 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Invariants that must hold on EVERY block, not once per upgrade: in
-        /// `post_upgrade` alone, a bug introduced in v119 stays invisible until
-        /// v120's migration, IF v120 has one.
+        /// Per-block try-runtime invariants supplement the upgrade postcheck,
+        /// so checks need not wait for a later runtime migration.
         #[cfg(feature = "try-runtime")]
         fn try_state(_n: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
             Self::do_try_state()
@@ -1047,9 +1039,8 @@ pub mod pallet {
             };
 
             let topology_hash = record.topology_hash;
-            // The live (decay-applied) threshold this proof had to clear, as
-            // `submit_proof` read it in this same block. Carried on the record:
-            // `current_difficulty_for` would recompute the same value.
+            // Use the active curve threshold captured at admission. Recomputing
+            // here could observe a later root difficulty update in this block.
             let active = record.difficulty;
             // Adjust ONLY the winning topology's difficulty, using ITS curve.
             // The proof cleared its own instance bar, so its depth below that
@@ -1477,8 +1468,8 @@ pub mod pallet {
         ///
         /// The values come from the riff toolkit's off-chain analysis, trusted
         /// as the topology's nodes and specs are.
-        /// `expected_frustration_milli` is load-bearing: the energy curve is
-        /// calibrated at it, so the per-instance bar equalizes around it. The
+        /// `expected_frustration_milli` centers the admission band and handicap;
+        /// it is not a guarantee of equal solve effort across draws. The
         /// regime is derived, not stored (`regime_of`), and the width may only
         /// be revised downward (`WidthWidened`).
         #[pallet::call_index(9)]
@@ -1760,11 +1751,8 @@ pub mod pallet {
                 derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
-            // ONE `NodeIndex` for the instance and its frustration. As two
-            // calls each built its own node-position index: a discarded
-            // allocation plus an O(n log n) sort per proof on the sorted-table
-            // path, an extra O(n) scan on the contiguous one. Same arithmetic,
-            // same error ordering.
+            // Pricing shares one node index between generation and frustration.
+            // Instance gates run before packed-solution decoding and energy.
             let PricedInstance {
                 h,
                 j,
@@ -1776,9 +1764,8 @@ pub mod pallet {
             } = Self::price_instance(proof.topology_hash, &topology, proof.nonce)?;
 
             let validation = Self::validate_proof(&proof, &topology, &h, &j)?;
-            // Reaching the bar clears it. The handicap can drive the bar to the
-            // instance's exact optimum, and a strict comparison would make that
-            // demand unsatisfiable rather than merely maximal.
+            // Equality clears the bar, including when it equals an attainable
+            // lower bound. Frustrated instances may not attain that bound.
             ensure!(
                 validation.energy_milli <= instance_bar_milli,
                 Error::<T>::InsufficientEnergy
@@ -1801,29 +1788,11 @@ pub mod pallet {
                 difficulty: current,
             };
 
-            // Rank by how far a proof beat ITS OWN bar, not by absolute energy.
-            // Admission is per-instance, so selection has to be too.
-            //
-            // Absolute energy is not comparable across draws: reachable depth
-            // scales with the instance's own `sum|h| + sum|J|`, which the salt
-            // moves. Grinding for the largest-magnitude draw is O(n + m) per
-            // try, so 1e5 salts on a ternary-field topology at n = 4800 buys
-            // ~4 sigma of extra reach — a ~12% edge, dwarfing the 1.8% handicap
-            // this file works so hard to bound.
-            //
-            // A raw margin `energy - bar` does NOT fix that, though it looks
-            // like it should. `instance_bar_milli` is `max(curve_bar, anchor)`
-            // with `curve_bar` a per-topology constant, so where the curve binds
-            // the margin is the energy shifted by a constant and the ranking is
-            // unchanged. Where the anchor binds it is worse: the best reachable
-            // margin is `anchor - bar`, which grows with `sum|h| + sum|J|`, so
-            // a strong draw beats every weak draw however well solved.
-            //
-            // Normalizing by the instance's own room is what makes the
-            // comparison scale-free: `quality` is the fraction of the distance
-            // from the bar to that instance's exact optimum, so a bigger draw's
-            // extra depth and extra room cancel. A zero-room instance (bar at
-            // the optimum) scores LOWEST, not full marks — see `proof_quality`.
+            // Rank improvement below the instance's own threshold as a fraction
+            // of its room above the lower bound. That bound need not be attainable;
+            // this normalization does not establish equal work across draws.
+            // Nonpositive room scores zero. Quality ties prefer lower energy,
+            // and a complete tie retains the incumbent (see proof_outranks_block_best).
             if Self::proof_outranks_block_best(&record) {
                 BlockBestProof::<T>::put(record);
             }
@@ -1866,7 +1835,7 @@ pub mod pallet {
                 Self::regime_of(topology_hash) == Some(quantum_validation::Regime::Heuristic),
                 Error::<T>::TopologyIsExact
             );
-            // Topologies registered before 119 skipped today's coupling gates;
+            // Legacy registrations may have skipped the current coupling gates;
             // whitelisting is where they would start paying, so check here.
             if let Some(meta) = RegisteredTopologies::<T>::get(topology_hash) {
                 Self::ensure_couplings_are_priceable(
@@ -1955,10 +1924,9 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Overwrite `expected_frustration_milli` when the coupling spec
-        /// determines it. Same path as `register_topology`: a wrong
-        /// declaration at production cycle counts bricks every honest
-        /// `submit_proof` with `InstanceOutsideFrustrationBand`.
+        /// Derive the configured expectation from the coupling spec when
+        /// possible, as in registration. A biased expectation shifts the
+        /// admission band and can reject draws the model would otherwise admit.
         fn apply_derived_expected_frustration(
             hardness: &mut types::TopologyHardness,
             allowed_j: &quantum_validation::AllowedValueSpec<&[quantum_validation::MilliValue]>,
@@ -2030,13 +1998,11 @@ pub mod pallet {
             Self::ensure_couplings_cannot_draw_zero(nodes, edges, allowed_j)
         }
 
-        /// A root-set bar must lie where the controller can work with it: no
-        /// easier than the curve's easy cap (decay never eases past it, so a
-        /// looser bar is free reward until a win walks it back), and no
-        /// tighter than the typical draw's exact optimum `-E[Σ|h| + Σ|J|]`
-        /// (there every instance bar clamps to its optimum and nothing wins
-        /// until decay recovers). Hardening may still walk the bar below the
-        /// curve's hard end; only root input is bounded.
+        /// Bound root input by the negative expected magnitude `-E[Σ|h|+Σ|J|]`
+        /// and the curve's easy cap, inclusively. This is a calibration guard,
+        /// not an attainability test: expected magnitude is neither an individual
+        /// draw's bound nor its optimum. Hardening may still move below the
+        /// curve's hard end; this check applies to root input only.
         fn ensure_difficulty_on_curve(
             topology_hash: H256,
             meta: &TopologyMetaOf<T>,
@@ -2062,10 +2028,10 @@ pub mod pallet {
         /// Refuse a coupling spec that admits `0` on a graph with cycles.
         ///
         /// `frustration_index` skips zero couplings, so on such a spec a draw
-        /// can leave the nonzero subgraph acyclic: treewidth 1, ground state by
-        /// linear-time DP, any bar cleared at near-maximal quality. Refused at
-        /// the spec rather than per draw because no width or frustration test
-        /// on one draw can price it, and production specs are binary `±J`.
+        /// can leave a nonzero forest with a linear-time binary-spin solver.
+        /// The topology-wide width would then overstate that draw's structure.
+        /// Refusing zero-admitting specs on cyclic graphs prevents this case;
+        /// tractability alone does not imply that every threshold is clearable.
         fn ensure_couplings_cannot_draw_zero(
             nodes: &[u32],
             edges: &[(u32, u32)],
@@ -2078,35 +2044,20 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Refuse a curve whose easiest value the anchor clamp would override
-        /// for the *typical* draw.
-        ///
-        /// The per-instance bar is `max(curve_bar, anchor)`. When the anchor
-        /// sits above `curve.max_milli` that `max` picks the anchor, and no
-        /// bar the controller can produce changes the effective one — the
-        /// control loop is disconnected and a chain needing easing has no way
-        /// to get it.
-        ///
-        /// Weighed against the *expected* bound, not the loosest single draw.
-        /// The loosest-draw form over-rejects: a low-magnitude draw genuinely
-        /// has a shallow optimum, so pinning the bar there asks for that
-        /// instance's exact ground state — attainable, merely hard, and the
-        /// miner re-salts. A tail event, not a stall. The pathology this
-        /// catches is the anchor above the cap for the draw the topology
-        /// usually produces, a curve-calibration failure.
-        ///
-        /// The expected bound is an ARGUMENT, not a field on `EnergyCurve`:
-        /// as a field, every difficulty read (`current_difficulty_for`)
-        /// computed a value
-        /// whose only reader is this registration-time guard.
+        /// Refuse a curve whose easy cap is below the negative expected bound
+        /// magnitude. If an individual draw's anchor is above that cap, the
+        /// anchor clamp fixes its threshold throughout the controller's easing
+        /// range. This guard checks the expectation, not every possible draw,
+        /// and does not prove reachability or prevent all mining stalls.
+        /// The caller computes the expected bound for this validation step;
+        /// ordinary difficulty reads need no extra expected-bound calculation.
         fn ensure_curve_outlasts_the_typical_anchor(
             curve: &crate::difficulty::EnergyCurve,
             expected_bound_milli: u64,
         ) -> DispatchResult {
-            // Fail CLOSED on overflow. `unwrap_or(i64::MAX)` — or the saturating
-            // `difficulty::anchor_milli` — would make `typical_anchor` the most
-            // negative value there is, so the `<=` below would pass vacuously
-            // and the guard would check nothing.
+            // Reject overflow instead of saturating: substituting i64::MAX
+            // would yield -i64::MAX and could pass the comparison despite an
+            // unrepresentable bound. Pricing intentionally uses another policy.
             let bound =
                 i64::try_from(expected_bound_milli).map_err(|_| Error::<T>::InvalidCurve)?;
             // Deliberately NOT `difficulty::anchor_milli`, which saturates:
@@ -2148,57 +2099,25 @@ pub mod pallet {
                 .map(|hardness| hardness.expected_frustration_milli)
                 .unwrap_or_default();
 
-            // An unfrustrated draw is not hard, at any width: zero frustrated
-            // cycles means the couplings gauge-transform to all-ferromagnetic,
-            // so the ground state is `-(Sum|h| + Sum|J|)` and gauge propagation
-            // finds it in O(m). The handicap cannot price this away: a zero
-            // draw sits many sigma below expected, saturates the +/-3 sigma
-            // clamp, and buys a bar only 1.8% tighter than typical. The clamp
-            // is denominated in sampling noise and tractability is not noise,
-            // so this must be a validity gate, not a difficulty adjustment.
-            //
-            // `frustration_cycles == 0` alone is NOT a forest exemption:
-            // `frustration_index` skips zero couplings, so a draw whose NONZERO
-            // couplings happen to form a forest also reports `(0, 0)`, and that
-            // instance has treewidth 1 and a linear-time ground state. Only a
-            // topology that declares itself acyclic (`expected_frustration_milli
-            // == 0`) may draw zero cycles; there the regime gate owns the call.
-            // Registration also refuses zero-admitting coupling specs on cyclic
-            // graphs, so this is the second of two locks.
+            // Reject zero measured frustration unless both the cycle count and
+            // configured expectation are zero. In a zero-field unfrustrated
+            // draw, gauge propagation attains -sum|J|. With fields, coupling
+            // parity alone does not establish that optimum; the same admission
+            // restriction still applies. Zero cycles alone is insufficient:
+            // frustration skips zero couplings, which may leave a nonzero forest.
+            // Topology eligibility and the spec-level zero-coupling gate remain
+            // separate checks; the exception here does not bypass them.
             ensure!(
                 frustration_milli > 0
                     || (frustration_cycles == 0 && expected_frustration_milli == 0),
                 Error::<T>::InstanceIsGaugeTrivial
             );
 
-            // Refuse draws past the handicap's reach instead of capping them.
-            // Past ±3σ the clamp saturates and hands back a bar only 1.8%
-            // tighter than typical, so that is where the mechanism gives up and
-            // where the instance should stop being valid. Costs honest miners
-            // ~1 salt in 1000 and a re-salt; costs a grinder the only part of
-            // the distribution worth grinding for.
-            //
-            // TWO-SIDED. Refusing only the easy tail is wrong once the handicap
-            // is in play: it LOOSENS the bar for a hard draw, so if its slope
-            // over-states frustration's true cost — measured scatter is 4-29
-            // per-mille per σ against a deployed 6, so it might — grinding
-            // toward the hard tail buys a bar looser than justified.
-            //
-            // A residual gradient remains INSIDE the band, worth up to
-            // `HANDICAP_MAX_SIGMA` times the deployed-vs-true slope gap. It is
-            // bounded by the band width and cannot be removed without a slope
-            // measurement `riff-hv9.22` found unobtainable over the natural
-            // draw range.
-            //
-            // ONE `FrustrationDraw`, read by both the gate and the price. As
-            // two separate spellings each computed sigma independently, and
-            // nothing made them agree — the gate only refuses draws past the
-            // handicap's REACH if it measures the same reach. It also removes
-            // the last transposable positional triple from the consensus path:
-            // both `u32` milli in `0..=1000`, adjacent, confusable names, so
-            // transposed it COMPILES, the deviation flips sign (which the
-            // gate's `.abs()` HIDES) and sigma comes from the realized draw
-            // instead of the topology's expectation.
+            // Admission uses raw integer sigma buckets on both sides; pricing
+            // separately clamps to [-3,3]. Reusing the named draw fields avoids
+            // positional realized/expected arguments at these call sites.
+            // Signed truncation means this is not a continuous three-sigma
+            // cutoff, nor does it establish a universal salt-grinding cost.
             let draw = crate::difficulty::FrustrationDraw {
                 realized_milli: frustration_milli,
                 expected_milli: expected_frustration_milli,
@@ -2442,8 +2361,9 @@ pub mod pallet {
                 Some(existing) => {
                     let (mine, theirs) =
                         (Self::proof_quality(record), Self::proof_quality(&existing));
-                    // Ties broken on absolute energy, so equal-quality proofs
-                    // are still ordered by work rather than by arrival order.
+                    // Equal quality prefers lower numerical energy. The crossed
+                    // energy operands implement that direction; a complete tie
+                    // returns false and keeps the incumbent.
                     (mine, existing.energy_milli) > (theirs, record.energy_milli)
                 }
                 None => true,
@@ -2557,9 +2477,10 @@ pub mod pallet {
             })
         }
 
-        /// Hashes of every topology currently on the mineable whitelist.
         /// Backs the `instance_check` runtime API: `submit_proof`'s topology
         /// and instance gates, evaluated for `(miner, salt)` at this block.
+        /// This does not check miner registration, the per-block proof limit,
+        /// packed solution validity or achieved energy.
         pub fn instance_check(
             topology_hash: H256,
             miner: &T::AccountId,
@@ -2585,6 +2506,7 @@ pub mod pallet {
             })
         }
 
+        /// Hashes of every topology currently on the mineable whitelist.
         pub fn mineable_topologies() -> Vec<H256> {
             MineableTopologies::<T>::iter_keys().collect()
         }
@@ -2869,17 +2791,14 @@ pub(crate) mod migration {
         /// solved. Only the small `Difficulties` map is re-encoded here;
         /// `QBlocks` entries are converted on read (`types::StoredQBlock`).
         pub(crate) fn shrink_difficulty<T: Config>() -> Weight {
-            // `QBlocks` is NOT translated: aglais holds >11k entries and the
-            // re-encode alone took 71% of a block at 119's try-runtime, growing
-            // daily. Old entries stay in the v6 layout and
-            // `types::StoredQBlock` converts them on decode.
+            // Keep upgrade work independent of history length: old QBlocks
+            // stay in the storage-v6 layout and StoredQBlock converts on read.
             shrink_difficulties_only::<T>()
         }
 
-        /// Re-encode `Difficulties` alone. Chains arriving from below v5 have
-        /// already had their `QBlocks` written in the final shape by the v5
-        /// step, so only the map is left in the legacy layout — re-translating
-        /// `QBlocks` there would fail to decode and silently drop every entry.
+        /// Re-encode legacy `Difficulties` and clear the transient best proof.
+        /// This does not rewrite QBlocks, including records already converted
+        /// by an earlier step of the cumulative upgrade.
         pub(crate) fn shrink_difficulties_only<T: Config>() -> Weight {
             let difficulties = shrink_map::<T>();
             crate::BlockBestProof::<T>::kill();
