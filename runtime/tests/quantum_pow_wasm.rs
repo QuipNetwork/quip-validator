@@ -8,9 +8,9 @@ use frame_support::{assert_ok, BoundedVec};
 use pallet_quantum_pow::{types, Config, RegisteredTopologies};
 use quantum_validation::AllowedValueSpec;
 use quip_protocol_runtime::{
-    native_tx_extension, AccountId, Address, Balances, BuildStorage, QuantumPow, Runtime,
-    RuntimeCall, RuntimeGenesisConfig, RuntimeOrigin, SignedPayload, System, Timestamp,
-    UncheckedExtrinsic,
+    native_tx_extension, AccountId, Address, Balances, BuildStorage, EmissionController,
+    QuantumPow, Runtime, RuntimeCall, RuntimeGenesisConfig, RuntimeOrigin, SignedPayload, System,
+    Timestamp, UncheckedExtrinsic, EXISTENTIAL_DEPOSIT, UNIT,
 };
 use quip_transaction_crypto::{account_id_from_public, HybridPair, HybridTxSignature};
 use sp_core::{
@@ -590,5 +590,102 @@ fn signed_candidate_ranking_matches_wasm_against_synthetic_incumbents() {
             assert_eq!(pallet_quantum_pow::BlockProofCount::<Runtime>::get(), 2);
             assert_eq!(System::account_nonce(&miner), 2);
         });
+    }
+}
+
+#[test]
+fn signed_winner_finalization_and_payout_match_wasm() {
+    let executor = Executor::builder().build();
+    let pair = HybridPair::from_seed_slice(&[7; 32]).unwrap();
+    let miner = account_id_from_public(&pair.public());
+    let pot = EmissionController::pot(pallet_emission_controller::ISING_SUBNET);
+    // Available pot funds exclude the existential deposit. Cover zero,
+    // partial and full payment without asserting scheduled emission accrual.
+    for (available, reward) in [(0, 0), (UNIT / 2, UNIT / 2), (2 * UNIT, UNIT)] {
+        for strong in [false, true] {
+            let (mut native, hash) = admission_fixture(&miner);
+            let (mut wasm, wasm_hash) = admission_fixture(&miner);
+            assert_eq!(hash, wasm_hash);
+            for ext in [&mut native, &mut wasm] {
+                ext.execute_with(|| {
+                    assert_ok!(Balances::force_set_balance(
+                        RuntimeOrigin::root(),
+                        Address::Id(pot.clone()),
+                        EXISTENTIAL_DEPOSIT + available,
+                    ));
+                    // Same synthetic initialized-block setup as the controller
+                    // test: moment 1 agrees with slot 0, not full block authoring.
+                    assert_ok!(Timestamp::set(RuntimeOrigin::none(), 1));
+                });
+            }
+            let proof = ranking_proof(hash, &miner, strong, 123);
+            let salt = proof.salt;
+            apply_proof_in_both_engines(&executor, &mut native, &mut wasm, &pair, proof);
+            // Take the balance baseline after all signed-extension fees. The
+            // finalization delta must be a transfer from the pot, not issuance.
+            let (balance_before, issuance_before) = native
+                .execute_with(|| (Balances::free_balance(&miner), Balances::total_issuance()));
+            let native_header = native_call(&mut native, "BlockBuilder_finalize_block", &[]);
+            let wasm_header = wasm_call(&executor, &mut wasm, "BlockBuilder_finalize_block", &[]);
+            assert_eq!(
+                native_header, wasm_header,
+                "available {available}, strong {strong}"
+            );
+            let root = || sp_io::storage::root(StateVersion::V1);
+            assert_eq!(native.execute_with(root), wasm.execute_with(root));
+            native.execute_with(|| {
+                assert_eq!(Balances::free_balance(&miner), balance_before + reward);
+                assert_eq!(
+                    Balances::free_balance(&pot),
+                    EXISTENTIAL_DEPOSIT + available - reward
+                );
+                assert_eq!(Balances::total_issuance(), issuance_before);
+                let info = pallet_quantum_pow::Miners::<Runtime>::get(&miner).unwrap();
+                assert_eq!(info.proofs_submitted, 1);
+                assert_eq!(info.proofs_won, 1);
+                assert_eq!(info.rewards_earned, reward);
+                assert!(pallet_quantum_pow::BlockBestProof::<Runtime>::get().is_none());
+                assert_eq!(pallet_quantum_pow::LastProofBlock::<Runtime>::get(), 200);
+                assert_eq!(pallet_quantum_pow::QBlockCount::<Runtime>::get(), 1);
+                assert_eq!(
+                    pallet_quantum_pow::QBlockBlockById::<Runtime>::get(1),
+                    Some(200)
+                );
+                assert_eq!(
+                    pallet_quantum_pow::QBlockIdByBlock::<Runtime>::get(200),
+                    Some(1)
+                );
+                assert_eq!(
+                    QuantumPow::qblock_at(200).unwrap(),
+                    types::QBlock {
+                        miner: miner.clone(),
+                        salt,
+                        energy_milli: if strong { -22_000 } else { -10_000 },
+                        reward,
+                        submitted_at: 200,
+                        difficulty: types::DifficultyConfig {
+                            max_energy_milli: -10_000
+                        },
+                        last_proof_block_hash: H256::repeat_byte(0x45),
+                        topology_hash: hash,
+                        device_access_time_us: 123,
+                        frustration_milli: if strong { 143 } else { 857 },
+                        instance_bar_milli: if strong { -10_180 } else { -9_820 },
+                    }
+                );
+                // For n=16,m=28, |J|=1000,h=0, the calibration endpoints are
+                // round(-c*16000*sqrt(3.5)) = -22450/-20953 (c=.75/.70).
+                // Their span 1497 gives a 1000-milli hardening cap and floor.
+                // Strong depth 11820 therefore hardens by 1000; weak depth 180
+                // limits the step to 180. Using raw weak E=-10000 instead of
+                // its translated depth would incorrectly produce no change.
+                assert_eq!(
+                    pallet_quantum_pow::Difficulties::<Runtime>::get(hash)
+                        .unwrap()
+                        .max_energy_milli,
+                    if strong { -11_000 } else { -10_180 }
+                );
+            });
+        }
     }
 }
