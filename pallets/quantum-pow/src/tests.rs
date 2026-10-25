@@ -6277,6 +6277,46 @@ fn instance_bar_clamps_pricing_sigma_without_rewriting_the_raw_sigma() {
             difficulty::instance_bar_milli(-1_000, 10_000, input, 6),
             price
         );
+        assert_eq!(
+            difficulty::instance_bar_from_sigmas(-1_000, 10_000, raw_sigma, 6),
+            price
+        );
+    }
+}
+
+#[test]
+fn zero_sigma_pricing_keeps_the_clamped_threshold_for_degenerate_and_centered_draws() {
+    // Degenerate inputs and ordinary deviations that truncate to zero share
+    // the zero-adjustment result, including nonnegative pure-helper bars.
+    for input in [
+        draw(u32::MAX, 0, u64::MAX),
+        draw(0, u32::MAX, 0),
+        draw(500, 500, 10_000),
+        draw(1000, 1000, 10_000),
+        draw(496, 500, 10_000),
+        draw(504, 500, 10_000),
+    ] {
+        assert_eq!(difficulty::frustration_sigmas_of(input), 0);
+        for (curve, bound, expected) in [
+            (i64::MIN, 0, 0),
+            (i64::MIN, u64::MAX, -i64::MAX),
+            (-2_000, 1_000, -1_000),
+            (-1_001, 10_000, -1_001),
+            (0, 10_000, 0),
+            (5, 0, 5),
+            (i64::MAX, u64::MAX, i64::MAX),
+        ] {
+            for slope in [i64::MIN, 0, 6, 1_000, i64::MAX] {
+                assert_eq!(
+                    difficulty::instance_bar_milli(curve, bound, input, slope),
+                    expected
+                );
+                assert_eq!(
+                    difficulty::instance_bar_from_sigmas(curve, bound, 0, slope),
+                    expected
+                );
+            }
+        }
     }
 }
 
@@ -6582,6 +6622,15 @@ fn full_proofs_accept_both_three_sigma_edges_and_reject_both_four_sigma_edges() 
                     error
                 );
             } else {
+                // The same raw score feeds admission, pricing and the API.
+                // Expected values come from the frozen parity/energy vectors.
+                let check = QuantumPow::instance_check(hash, &1, salt).unwrap();
+                assert_eq!(check.sigmas, sigma);
+                assert_eq!(check.frustration_milli, phi);
+                assert_eq!(check.frustration_cycles, 21);
+                assert_eq!(check.anchor_milli, -28_000);
+                assert_eq!(check.live_bar_milli, 0);
+                assert_eq!(check.instance_bar_milli, 0);
                 let mut malformed = proof.clone();
                 malformed.solutions = bounded::<u8, MaxNodes>(vec![0, 0]);
                 assert_noop!(

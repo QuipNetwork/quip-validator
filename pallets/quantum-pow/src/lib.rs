@@ -2126,17 +2126,17 @@ pub mod pallet {
                 expected_milli: expected_frustration_milli,
                 cycles: frustration_cycles,
             };
+            let raw_sigmas = crate::difficulty::frustration_sigmas_of(draw);
             ensure!(
-                crate::difficulty::frustration_sigmas_of(draw).abs()
-                    <= crate::difficulty::HANDICAP_MAX_SIGMA,
+                raw_sigmas.abs() <= crate::difficulty::HANDICAP_MAX_SIGMA,
                 Error::<T>::InstanceOutsideFrustrationBand
             );
             let bound_milli = energy_bound_milli(&h, &j);
             let anchor_milli = crate::difficulty::anchor_milli(bound_milli);
-            let instance_bar_milli = crate::difficulty::instance_bar_milli(
+            let instance_bar_milli = crate::difficulty::instance_bar_from_sigmas(
                 current.max_energy_milli,
                 bound_milli,
-                draw,
+                raw_sigmas,
                 T::HandicapPerSigmaPermille::get(),
             );
 
@@ -2145,7 +2145,7 @@ pub mod pallet {
                 j,
                 frustration_milli,
                 frustration_cycles,
-                sigmas: crate::difficulty::frustration_sigmas_of(draw),
+                sigmas: raw_sigmas,
                 anchor_milli,
                 instance_bar_milli,
                 current,

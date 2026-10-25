@@ -114,8 +114,9 @@ pub struct FrustrationDraw {
 
 /// [`frustration_sigmas`] of a whole draw.
 ///
-/// The raw integer score is shared conceptually by admission and pricing:
-/// admission rejects abs(score) > 3; pricing clamps the score to [-3, 3].
+/// Instance validation computes this once and shares the raw score with
+/// admission, pricing and API output. Admission rejects abs(score) > 3;
+/// pricing clamps the score to [-3, 3].
 /// Calling pricing alone therefore does not establish proof admissibility.
 pub fn frustration_sigmas_of(draw: FrustrationDraw) -> i64 {
     frustration_sigmas(draw.realized_milli, draw.expected_milli, draw.cycles)
@@ -139,13 +140,31 @@ pub fn instance_bar_milli(
     draw: FrustrationDraw,
     handicap_per_sigma_permille: i64,
 ) -> i64 {
+    instance_bar_from_sigmas(
+        curve_bar_milli,
+        energy_bound_milli,
+        frustration_sigmas_of(draw),
+        handicap_per_sigma_permille,
+    )
+}
+
+/// Price a draw using its already-computed raw score. This does not enforce
+/// admission: callers validating a proof must reject out-of-band scores first.
+pub(crate) fn instance_bar_from_sigmas(
+    curve_bar_milli: i64,
+    energy_bound_milli: u64,
+    raw_sigmas: i64,
+    handicap_per_sigma_permille: i64,
+) -> i64 {
     let lower_bound_milli = anchor_milli(energy_bound_milli);
 
     let active_threshold_milli = curve_bar_milli.max(lower_bound_milli);
 
     // The threshold remains an absolute energy; it is not rescaled by the
     // draw's weight. A bound ratio is not an achievable-depth ratio.
-    if draw.expected_milli == 0 || draw.cycles == 0 {
+    // Zero expectation/cycles produce score zero. Every other zero score also
+    // leaves the threshold unchanged, whether headroom withholds or delta is zero.
+    if raw_sigmas == 0 {
         return active_threshold_milli;
     }
 
@@ -154,7 +173,7 @@ pub fn instance_bar_milli(
     // the signed multiplication. Zero intentionally disables the handicap.
     let slope_permille = handicap_per_sigma_permille.clamp(0, HANDICAP_SLOPE_MAX_PERMILLE);
 
-    let clamped_sigmas = frustration_sigmas_of(draw).clamp(-HANDICAP_MAX_SIGMA, HANDICAP_MAX_SIGMA);
+    let clamped_sigmas = raw_sigmas.clamp(-HANDICAP_MAX_SIGMA, HANDICAP_MAX_SIGMA);
 
     // Compare in i128 before applying either sign of adjustment. The bound
     // need not be attainable; this guard only limits the threshold's movement.

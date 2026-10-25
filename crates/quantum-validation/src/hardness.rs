@@ -63,7 +63,7 @@ pub fn frustration_sigmas(
         return 0;
     }
     let p = i128::from(expected_frustration_milli.min(1000));
-    let cycles = i128::from(frustration_cycles).max(1);
+    let cycles = i128::from(frustration_cycles);
     let variance_micro = (p * (1000 - p) * 1_000_000) / cycles;
     let sigma_micro = (variance_micro.max(0) as u128).isqrt().max(1) as i128;
     let deviation = i128::from(expected_frustration_milli) - i128::from(frustration_milli);
