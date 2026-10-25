@@ -34,3 +34,33 @@ SKIP_WASM_BUILD=1 cargo test --locked -p quip-protocol-runtime --test qblock_his
 
 This deliberately skips building runtime Wasm; it establishes neither Wasm
 execution parity nor successful runtime release/benchmark builds.
+
+## Partial storage-v6 migration fixture
+
+`agls-topology-153726.scale` is the complete raw `RegisteredTopologies` value
+fetched read-only on 2026-10-25 at the same finalized block. Its 350,456 bytes
+have SHA-256 `d7ff6acd88cc31a81f2c17e164756b7041f8dc5fac159af1bee5e20498ba0f8d`,
+matching RR's earlier capture. `agls-migration-153726.json` records its exact key,
+independently decoded dimensions/specifications and the small storage values
+and absences fetched at that block. A Python SCALE-compact/struct decoder also
+verified canonical node/edge order, one connected component and cycle rank
+36,938. The graph has 4,577 nodes and 41,514 edges and was registered at block 87.
+
+The migration test combines this graph and frozen round/difficulty state with
+the three sampled QBlocks. The counter and indices are **synthetic for those
+three records**; the transient best-proof sentinel and candidate salt are also
+test inputs. This is a partial-state fixture, not a full-chain upgrade rehearsal.
+It checks the runtime's storage-v6-to-v7 hook, unchanged historical bytes and
+meaning, preserved round and generated instance, seeded hardness/dimensions,
+and an idempotent second upgrade. Every sampled history value must decode.
+
+Enable the production pre/post-upgrade checks and the negative malformed-history
+test with:
+
+```sh
+SKIP_WASM_BUILD=1 cargo test --locked -p quip-protocol-runtime --test qblock_history --features try-runtime
+```
+
+The negative case keeps the key count unchanged but supplies an unsupported
+181-byte record, proving the postcheck rejects an undecodable value rather than
+accepting key-count equality alone. These migration tests run natively.

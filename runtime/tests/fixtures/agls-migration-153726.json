@@ -1,0 +1,57 @@
+{
+  "description": "Partial migration fixture at the same finalized block as agls-qblocks-v2-153726.json; not a whole-state snapshot. Topology decoded independently with Python struct/compact parsing; canonical order and component count verified.",
+  "endpoint": "https://bootnode-2.aglais.quip.network:20049/rpc",
+  "at_block_number": 153726,
+  "at_block_hash": "0xb06d9fcbf2dcd1db33540f22b479728c462b8d1e64d61459cad6fca36b158712",
+  "topology_hash": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+  "topology_key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e869e36f224eee7745986b1399492ef513c6ccb099470dcf196ea0f6bd85434fa8cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+  "topology_file": "agls-topology-153726.scale",
+  "topology_sha256": "d7ff6acd88cc31a81f2c17e164756b7041f8dc5fac159af1bee5e20498ba0f8d",
+  "topology_bytes": 350456,
+  "nodes": 4577,
+  "edges": 41514,
+  "components": 1,
+  "cycle_rank": 36938,
+  "allowed_h": [
+    0
+  ],
+  "allowed_j": [
+    -1000,
+    1000
+  ],
+  "allowed_spins": [
+    -1000,
+    1000
+  ],
+  "registered_at": 87,
+  "state": {
+    "difficulty": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e8bdf21c30f23169fc2c529bd0c1503af2c6ccb099470dcf196ea0f6bd85434fa8cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+      "raw_value": "0x01000000a8dc1effffffffff00000000"
+    },
+    "last_proof_block": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e858fb3505663e2d8f34ce3ec5513b7fd1",
+      "raw_value": "0x22580200"
+    },
+    "last_proof_block_hash": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e83ffa7db465d794007c13023fc48fd193",
+      "raw_value": "0xaadd43b422fbf15ec2593ac2e7c9e68119945d567d62e3829493fb7a5d542943"
+    },
+    "default_topology": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e8a4bccd2391f1245103331f3189ad079f",
+      "raw_value": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7"
+    },
+    "topology_dims": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e8a7f7a5ab5f082ef5293ca27480e0a169c6ccb099470dcf196ea0f6bd85434fa8cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+      "raw_value": null
+    },
+    "topology_hardness": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e885bee2f14478b137c6a2c4afd2ccafcfc6ccb099470dcf196ea0f6bd85434fa8cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+      "raw_value": null
+    },
+    "difficulty_set_at": {
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e8c3255772d76b0b37e35767658a8a3161",
+      "raw_value": null
+    }
+  }
+}

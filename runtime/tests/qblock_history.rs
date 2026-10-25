@@ -195,3 +195,276 @@ fn stored_qblocks_reject_unsupported_lengths_and_require_a_bounded_input() {
         }
     }
 }
+
+#[test]
+fn storage_v6_upgrade_preserves_the_pinned_graph_round_and_sampled_history() {
+    use frame_support::traits::{Hooks, StorageVersion};
+    use pallet_quantum_pow as pow;
+    use quantum_validation::{generate_ising_model_and_frustration, AllowedValueSpec};
+
+    let snapshot: Value =
+        serde_json::from_str(include_str!("fixtures/agls-migration-153726.json")).unwrap();
+    let topology_raw = include_bytes!("fixtures/agls-topology-153726.scale");
+    assert_eq!(topology_raw.len(), 350_456);
+    assert_eq!(
+        hex::encode(sha2_256(topology_raw)),
+        "d7ff6acd88cc31a81f2c17e164756b7041f8dc5fac159af1bee5e20498ba0f8d"
+    );
+    let history = fixture();
+    assert_eq!(snapshot["at_block_hash"], history["at_block_hash"]);
+    let hash = H256::from(array32(&snapshot["topology_hash"]));
+    sp_io::TestExternalities::default().execute_with(|| {
+        quip_protocol_runtime::System::set_block_number(153_727);
+        let topology_key = bytes(&snapshot["topology_key"]);
+        assert_eq!(
+            pow::RegisteredTopologies::<Runtime>::hashed_key_for(hash),
+            topology_key
+        );
+        sp_io::storage::set(&topology_key, topology_raw);
+        let before = pow::RegisteredTopologies::<Runtime>::get(hash).unwrap();
+        assert_eq!((before.nodes.len(), before.edges.len()), (4_577, 41_514));
+        assert_eq!(before.registered_at, 87);
+        assert_eq!(
+            before.allowed_h_values.as_slice(),
+            AllowedValueSpec::Set(&[0][..])
+        );
+        assert_eq!(
+            before.allowed_j_values.as_slice(),
+            AllowedValueSpec::Set(&[-1000, 1000][..])
+        );
+        assert_eq!(
+            before.allowed_spin_values.as_slice(),
+            AllowedValueSpec::Set(&[-1000, 1000][..])
+        );
+        assert_eq!(
+            quantum_validation::cycle_rank(&before.nodes, &before.edges),
+            36_938
+        );
+        assert_eq!(
+            pow::topology::hash_topology(
+                &before.nodes,
+                &before.edges,
+                &before.allowed_h_values.as_slice(),
+                &before.allowed_j_values.as_slice(),
+                &before.allowed_spin_values.as_slice(),
+            ),
+            hash
+        );
+        // These small values and absences were read at the same pinned block.
+        for (name, key) in [
+            (
+                "difficulty",
+                pow::Difficulties::<Runtime>::hashed_key_for(hash),
+            ),
+            (
+                "last_proof_block",
+                pow::LastProofBlock::<Runtime>::hashed_key().to_vec(),
+            ),
+            (
+                "last_proof_block_hash",
+                pow::LastProofBlockHash::<Runtime>::hashed_key().to_vec(),
+            ),
+            (
+                "default_topology",
+                pow::DefaultTopology::<Runtime>::hashed_key().to_vec(),
+            ),
+            (
+                "topology_dims",
+                pow::TopologyDims::<Runtime>::hashed_key_for(hash),
+            ),
+            (
+                "topology_hardness",
+                pow::TopologyHardnessOf::<Runtime>::hashed_key_for(hash),
+            ),
+            (
+                "difficulty_set_at",
+                pow::DifficultySetAt::<Runtime>::hashed_key().to_vec(),
+            ),
+        ] {
+            let value = &snapshot["state"][name];
+            assert_eq!(key, bytes(&value["key"]), "{name}");
+            if !value["raw_value"].is_null() {
+                sp_io::storage::set(&key, &bytes(&value["raw_value"]));
+            } else {
+                assert!(sp_io::storage::get(&key).is_none());
+            }
+        }
+        let difficulty_key = pow::Difficulties::<Runtime>::hashed_key_for(hash);
+        let old_difficulty = sp_io::storage::get(&difficulty_key).unwrap();
+        assert_eq!(old_difficulty.len(), 16);
+        assert_eq!(
+            types::v2::DifficultyConfig::decode_all(&mut &old_difficulty[..]).unwrap(),
+            types::v2::DifficultyConfig {
+                min_solutions: 1,
+                max_energy_milli: -14_754_648,
+                min_diversity_milli: 0,
+            }
+        );
+        let round_hash = pow::LastProofBlockHash::<Runtime>::get();
+        assert_eq!(pow::LastProofBlock::<Runtime>::get(), 153_634);
+        assert_eq!(pow::DefaultTopology::<Runtime>::get(), Some(hash));
+
+        let mut entries = history["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry["qblock_block_number"].as_u64().unwrap());
+        for (index, entry) in entries.iter().enumerate() {
+            let old = legacy_expected(entry);
+            sp_io::storage::set(&bytes(&entry["key"]), &bytes(&entry["raw_value"]));
+            // Synthetic indices/counter for this three-record sample. These
+            // are NOT claimed to be the full chain's QBlock ids or count.
+            let id = index as u64 + 1;
+            pow::QBlockBlockById::<Runtime>::insert(id, old.submitted_at);
+            pow::QBlockIdByBlock::<Runtime>::insert(old.submitted_at, id);
+        }
+        pow::QBlockCount::<Runtime>::put(3);
+        // Synthetic transient bytes test unconditional stale-record cleanup,
+        // without pretending to have captured an in-block winning proof.
+        let best_key = pow::BlockBestProof::<Runtime>::hashed_key();
+        sp_io::storage::set(&best_key, &[0xff]);
+        StorageVersion::new(6).put::<QuantumPow>();
+
+        // A deterministic candidate in the pinned round, not a historical
+        // submitted proof: use one sampled miner with an explicit test salt.
+        let miner = legacy_expected(entries[0]).miner;
+        let salt = [7; 32];
+        let nonce = quantum_validation::derive_nonce(
+            &round_hash.0,
+            &QuantumPow::account_to_bytes(&miner),
+            &salt,
+        );
+        let instance_before = generate_ising_model_and_frustration(
+            nonce,
+            &before.nodes,
+            &before.edges,
+            &before.allowed_h_values.as_slice(),
+            &before.allowed_j_values.as_slice(),
+        )
+        .unwrap();
+        assert_eq!(instance_before.frustration_cycles, 36_938);
+        assert_eq!(
+            quantum_validation::energy_bound_milli(&instance_before.h, &instance_before.j),
+            41_514_000
+        );
+
+        #[cfg(feature = "try-runtime")]
+        let pre = QuantumPow::pre_upgrade().unwrap();
+        QuantumPow::on_runtime_upgrade();
+        #[cfg(feature = "try-runtime")]
+        QuantumPow::post_upgrade(pre).unwrap();
+
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(7));
+        assert_eq!(
+            pow::Difficulties::<Runtime>::get(hash)
+                .unwrap()
+                .max_energy_milli,
+            -14_754_648
+        );
+        assert_eq!(
+            sp_io::storage::get(&difficulty_key).unwrap().as_ref(),
+            &(-14_754_648i64).to_le_bytes()
+        );
+        assert!(sp_io::storage::get(&best_key).is_none());
+        assert_eq!(pow::QBlockCount::<Runtime>::get(), 3);
+        assert_eq!(QBlocks::<Runtime>::iter_keys().count(), 3);
+        assert_eq!(QBlocks::<Runtime>::iter().count(), 3); // every value must decode
+        for (index, entry) in entries.iter().enumerate() {
+            let old = legacy_expected(entry);
+            assert_eq!(
+                QuantumPow::qblock_at(old.submitted_at),
+                Some(current_expected(&old))
+            );
+            assert_eq!(
+                sp_io::storage::get(&bytes(&entry["key"])).unwrap().as_ref(),
+                bytes(&entry["raw_value"]).as_slice()
+            ); // legacy 180-byte history is not rewritten
+            let id = index as u64 + 1;
+            assert_eq!(
+                pow::QBlockBlockById::<Runtime>::get(id),
+                Some(old.submitted_at)
+            );
+            assert_eq!(
+                pow::QBlockIdByBlock::<Runtime>::get(old.submitted_at),
+                Some(id)
+            );
+        }
+        assert_eq!(
+            pow::TopologyDims::<Runtime>::get(hash),
+            Some(pow::TopologyDim {
+                nodes: 4_577,
+                edges: 41_514
+            })
+        );
+        assert_eq!(
+            pow::TopologyHardnessOf::<Runtime>::get(hash),
+            Some(types::TopologyHardness {
+                residual_difficulty: u32::MAX,
+                core_width: u32::MAX,
+                expected_frustration_milli: 500,
+            })
+        );
+        assert_eq!(
+            QuantumPow::regime_of(hash),
+            Some(quantum_validation::Regime::Heuristic)
+        );
+        assert_eq!(pow::DefaultTopology::<Runtime>::get(), Some(hash));
+        assert_eq!(pow::LastProofBlock::<Runtime>::get(), 153_634);
+        assert_eq!(pow::LastProofBlockHash::<Runtime>::get(), round_hash);
+        assert!(!pow::DifficultySetAt::<Runtime>::exists());
+        assert!(QuantumPow::topology_dims_consistent());
+
+        let after = pow::RegisteredTopologies::<Runtime>::get(hash).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(
+            sp_io::storage::get(&topology_key).unwrap().as_ref(),
+            topology_raw
+        );
+        let after_nonce = quantum_validation::derive_nonce(
+            &pow::LastProofBlockHash::<Runtime>::get().0,
+            &QuantumPow::account_to_bytes(&miner),
+            &salt,
+        );
+        assert_eq!(after_nonce, nonce);
+        assert_eq!(
+            generate_ising_model_and_frustration(
+                after_nonce,
+                &after.nodes,
+                &after.edges,
+                &after.allowed_h_values.as_slice(),
+                &after.allowed_j_values.as_slice(),
+            )
+            .unwrap(),
+            instance_before
+        );
+
+        let root = sp_io::storage::root(sp_runtime::StateVersion::V1);
+        QuantumPow::on_runtime_upgrade();
+        assert_eq!(sp_io::storage::root(sp_runtime::StateVersion::V1), root);
+    });
+}
+
+#[cfg(feature = "try-runtime")]
+#[test]
+fn migration_postcheck_rejects_undecodable_history_even_when_keys_survive() {
+    use frame_support::traits::{Hooks, StorageVersion};
+
+    sp_io::TestExternalities::default().execute_with(|| {
+        let entry = &fixture()["entries"][0];
+        let mut raw = bytes(&entry["raw_value"]);
+        raw.push(0); // unsupported 181-byte layout
+        sp_io::storage::set(&bytes(&entry["key"]), &raw);
+        StorageVersion::new(6).put::<QuantumPow>();
+        let pre = QuantumPow::pre_upgrade().unwrap();
+        QuantumPow::on_runtime_upgrade();
+        assert_eq!(QBlocks::<Runtime>::iter_keys().count(), 1);
+        assert!(QuantumPow::qblock_at(1006).is_none());
+        assert_eq!(
+            QuantumPow::post_upgrade(pre),
+            Err(sp_runtime::DispatchError::Other(
+                "every QBlocks entry must read in the current or the v6 layout"
+            ))
+        );
+    });
+}
