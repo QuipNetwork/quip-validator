@@ -79,8 +79,9 @@ pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
 
 ## Runtime 119 mempool changes
 
-Runtime 119 has not shipped. The next tag that carries it includes these
-`QuantumComputeMempool` changes:
+The pinned AGLS block 153726 reports runtime spec 119 / transaction version 7.
+The earlier claim that 119 had not shipped is obsolete. The mempool changes
+described for that runtime are:
 
 - `IsingParams.min_energy_milli` is renamed to `max_energy_milli`. The SCALE
   position and type are unchanged, so positional decoders keep working.
@@ -100,6 +101,38 @@ Runtime 119 has not shipped. The next tag that carries it includes these
   onwards, eight per block. The migration runs inside one block and reads every
   open order, so check the `OpenOrders` count on the live chain before scheduling
   the upgrade.
+
+## Pending !71 API-v3 release gate
+
+Follow the [miner/client upgrade contract](runtime-119-miner-integration.md).
+The filename is historical: the API3/tx8/storage7 upgrade must use a spec version
+newer than the deployed runtime, not reuse 119. These are release obligations,
+not evidence that the checks have already passed.
+
+- [ ] Record a fresh finalized block hash, spec/transaction/API/storage
+      versions and the selected newer release spec. Regenerate and test the
+      signing fixture after version changes.
+- [ ] Record a compatible companion coordinator/miner revision and local
+      API3/tx8 end-to-end submission/finalization evidence. The audited
+      canonical `quip-solver` revision
+      `4674a34b6c7155aadc60ac3eb7b69db93241c1af` is still v2-shaped and accepts
+      API>=2; it does not satisfy this rollout gate. This pre-existing companion
+      dependency does not block creating the validator draft MR.
+- [ ] Verify miner/indexer decoder selection from the API version **at the
+      queried block**, strict full-consumption decoding where clients own it,
+      supported-version refusal, and upgrade/reconnect cache invalidation.
+      Test both historical v2 reads and current v3 responses. Generated
+      `changed_in` client methods do not route decoders automatically.
+- [ ] Verify raw QBlock legacy/current layouts independently of API/spec
+      version, including unmeasured-frustration backfill and preserved nonce.
+- [ ] Rehearse the full runtime upgrade with pre/post checks against a pinned
+      real snapshot and record all history/index checks, weights and limits.
+      Partial pallet fixtures and API response replay are not this rehearsal.
+- [ ] Complete runtime release/signing, workspace tests/Clippy, benchmark
+      preflight, required reference-machine weights and actual MR CI checks.
+
+Deployment and merging require their own release authorization; completing
+the stacked refactor or its test suite does not perform those actions.
 
 ## What v0.2.0 ships
 
