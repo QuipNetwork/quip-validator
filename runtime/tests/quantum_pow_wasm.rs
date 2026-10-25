@@ -443,3 +443,152 @@ fn instance_admission_and_signed_proof_dispatch_match_wasm() {
         }
     }
 }
+
+fn apply_proof_in_both_engines(
+    executor: &Executor,
+    native: &mut sp_io::TestExternalities,
+    wasm: &mut sp_io::TestExternalities,
+    pair: &HybridPair,
+    proof: types::QuantumProof<BoundedVec<u8, <Runtime as Config>::MaxNodes>>,
+) {
+    let call = RuntimeCall::QuantumPow(pallet_quantum_pow::Call::submit_proof { proof });
+    let encoded = signed_call(native, pair, call).encode();
+    let native_result = native_call(native, "BlockBuilder_apply_extrinsic", &encoded);
+    let wasm_result = wasm_call(executor, wasm, "BlockBuilder_apply_extrinsic", &encoded);
+    assert_eq!(native_result, wasm_result);
+    assert_eq!(
+        ApplyExtrinsicResult::decode_all(&mut &native_result[..]).unwrap(),
+        Ok(Ok(()))
+    );
+    let root = || sp_io::storage::root(StateVersion::V1);
+    assert_eq!(native.execute_with(root), wasm.execute_with(root));
+}
+
+fn ranking_proof(
+    hash: H256,
+    miner: &AccountId,
+    strong: bool,
+    device_access_time_us: u64,
+) -> types::QuantumProof<BoundedVec<u8, <Runtime as Config>::MaxNodes>> {
+    // Reuse the independently checked admission vectors above. Quality is
+    // floor(depth * 10^15 / room): 11820/17820 for the stronger proof, versus
+    // 180/18180 for the weaker one. Both pass admission.
+    let (salt_word, mask) = if strong { (802u32, 89) } else { (3716, 2) };
+    let mut salt = [0; 32];
+    salt[..4].copy_from_slice(&salt_word.to_le_bytes());
+    types::QuantumProof {
+        topology_hash: hash,
+        nonce: quantum_validation::derive_nonce(
+            &[0x45; 32],
+            &QuantumPow::account_to_bytes(miner),
+            &salt,
+        ),
+        salt,
+        solutions: vec![mask, 0].try_into().unwrap(),
+        device_access_time_us,
+    }
+}
+
+#[test]
+fn signed_proof_competition_matches_wasm_in_both_orders_and_on_complete_ties() {
+    let executor = Executor::builder().build();
+    let pair = HybridPair::from_seed_slice(&[7; 32]).unwrap();
+    let miner = account_id_from_public(&pair.public());
+    for strong_first in [false, true] {
+        let (mut native, hash) = admission_fixture(&miner);
+        let (mut wasm, wasm_hash) = admission_fixture(&miner);
+        assert_eq!(hash, wasm_hash);
+        let mut first_strong = None;
+        // The third proof ties the stronger proof completely in quality and
+        // energy. Its distinct device time makes incumbent retention visible.
+        for (index, strong) in [strong_first, !strong_first, true].into_iter().enumerate() {
+            let marker = 100 + index as u64;
+            let proof = ranking_proof(hash, &miner, strong, marker);
+            apply_proof_in_both_engines(&executor, &mut native, &mut wasm, &pair, proof);
+            if strong && first_strong.is_none() {
+                first_strong = Some(marker);
+            }
+            let winner_strong = first_strong.is_some();
+            let winner = ranking_proof(hash, &miner, winner_strong, first_strong.unwrap_or(100));
+            native.execute_with(|| {
+                assert_eq!(System::account_nonce(&miner), index as u32 + 1);
+                assert_eq!(
+                    pallet_quantum_pow::BlockProofCount::<Runtime>::get(),
+                    index as u32 + 1
+                );
+                assert_eq!(
+                    pallet_quantum_pow::Miners::<Runtime>::get(&miner)
+                        .unwrap()
+                        .proofs_submitted,
+                    index as u32 + 1
+                );
+                assert_eq!(
+                    pallet_quantum_pow::BlockBestProof::<Runtime>::get().unwrap(),
+                    types::ProofRecord {
+                        miner: miner.clone(),
+                        submitted_at: 200,
+                        energy_milli: if winner_strong { -22_000 } else { -10_000 },
+                        anchor_milli: -28_000,
+                        difficulty: types::DifficultyConfig {
+                            max_energy_milli: -10_000
+                        },
+                        salt: winner.salt,
+                        topology_hash: hash,
+                        device_access_time_us: winner.device_access_time_us,
+                        frustration_milli: if winner_strong { 143 } else { 857 },
+                        instance_bar_milli: if winner_strong { -10_180 } else { -9_820 },
+                    }
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn signed_candidate_ranking_matches_wasm_against_synthetic_incumbents() {
+    let executor = Executor::builder().build();
+    let pair = HybridPair::from_seed_slice(&[7; 32]).unwrap();
+    let miner = account_id_from_public(&pair.public());
+    // The real candidate has E=-22000 and quality floor(11820*10^15/17820).
+    // First isolate quality from energy: a lower-energy incumbent with quality
+    // 1/6000 loses, while a higher-energy one with quality 11819/11820 wins.
+    // Then translate all three energies by +/-1 to keep depth and room fixed:
+    // exact quality ties must prefer the lower numerical energy in either order.
+    for (energy, bar, anchor, candidate_wins) in [
+        (-22_001, -22_000, -28_000, true),
+        (-21_999, -10_180, -22_000, false),
+        (-22_001, -10_181, -28_001, false),
+        (-21_999, -10_179, -27_999, true),
+    ] {
+        let (mut native, hash) = admission_fixture(&miner);
+        let (mut wasm, wasm_hash) = admission_fixture(&miner);
+        assert_eq!(hash, wasm_hash);
+        let original = ranking_proof(hash, &miner, true, 123);
+        apply_proof_in_both_engines(&executor, &mut native, &mut wasm, &pair, original);
+        let admitted =
+            native.execute_with(|| pallet_quantum_pow::BlockBestProof::<Runtime>::get().unwrap());
+        // Synthetic record, not a second realizable Ising solution. Only the
+        // candidate is re-admitted through the signed production dispatch.
+        let mut incumbent = admitted.clone();
+        incumbent.energy_milli = energy;
+        incumbent.anchor_milli = anchor;
+        incumbent.instance_bar_milli = bar;
+        for ext in [&mut native, &mut wasm] {
+            ext.execute_with(|| pallet_quantum_pow::BlockBestProof::<Runtime>::put(&incumbent));
+        }
+        let candidate = ranking_proof(hash, &miner, true, 456);
+        apply_proof_in_both_engines(&executor, &mut native, &mut wasm, &pair, candidate);
+        let mut expected = if candidate_wins { admitted } else { incumbent };
+        if candidate_wins {
+            expected.device_access_time_us = 456;
+        }
+        native.execute_with(|| {
+            assert_eq!(
+                pallet_quantum_pow::BlockBestProof::<Runtime>::get().unwrap(),
+                expected
+            );
+            assert_eq!(pallet_quantum_pow::BlockProofCount::<Runtime>::get(), 2);
+            assert_eq!(System::account_nonce(&miner), 2);
+        });
+    }
+}
