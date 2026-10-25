@@ -8,13 +8,16 @@ use frame_support::{assert_ok, BoundedVec};
 use pallet_quantum_pow::{types, Config, RegisteredTopologies};
 use quantum_validation::AllowedValueSpec;
 use quip_protocol_runtime::{
-    AccountId, BuildStorage, QuantumPow, Runtime, RuntimeGenesisConfig, RuntimeOrigin, System,
-    Timestamp,
+    native_tx_extension, AccountId, Address, Balances, BuildStorage, QuantumPow, Runtime,
+    RuntimeCall, RuntimeGenesisConfig, RuntimeOrigin, SignedPayload, System, Timestamp,
+    UncheckedExtrinsic,
 };
+use quip_transaction_crypto::{account_id_from_public, HybridPair, HybridTxSignature};
 use sp_core::{
     traits::{CallContext, CodeExecutor, RuntimeCode, WrappedRuntimeCode},
-    H256,
+    Pair as _, H256,
 };
+use sp_runtime::{generic, ApplyExtrinsicResult, DispatchError, StateVersion};
 
 type Executor = sc_executor::WasmExecutor<sp_io::SubstrateHostFunctions>;
 
@@ -199,5 +202,244 @@ fn finalized_controller_state_and_header_match_wasm() {
             native_state.0.max_energy_milli,
             -4_400_000_000 - expected_rate * 1_000
         );
+    }
+}
+
+fn admission_fixture(miner: &AccountId) -> (sp_io::TestExternalities, H256) {
+    let mut ext =
+        sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+    let hash = ext.execute_with(|| {
+        System::set_block_number(199);
+        System::initialize(&200, &H256::repeat_byte(0x45), &Default::default());
+        assert_ok!(Balances::force_set_balance(
+            RuntimeOrigin::root(),
+            Address::Id(miner.clone()),
+            1_000_000_000_000_000_000,
+        ));
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(
+            miner.clone()
+        )));
+        // K8 plus eight isolated nodes meets the production minimum of 16.
+        // The deliberately overstated root width claim admits this small test
+        // fixture as Heuristic; it is not evidence of computational hardness.
+        let nodes = (0..16).collect::<Vec<_>>().try_into().unwrap();
+        let edges = (0..8)
+            .flat_map(|u| ((u + 1)..8).map(move |v| (u, v)))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes,
+            edges,
+            AllowedValueSpec::Set(vec![0].try_into().unwrap()),
+            AllowedValueSpec::Set(vec![-1000, 1000].try_into().unwrap()),
+            AllowedValueSpec::Set(vec![-1000, 1000].try_into().unwrap()),
+            types::TopologyHardness {
+                residual_difficulty: 64,
+                core_width: 64,
+                expected_frustration_milli: 500,
+            },
+        ));
+        let hash = RegisteredTopologies::<Runtime>::iter_keys().next().unwrap();
+        pallet_quantum_pow::DefaultTopology::<Runtime>::put(hash);
+        pallet_quantum_pow::MineableTopologies::<Runtime>::insert(hash, ());
+        pallet_quantum_pow::LastProofBlock::<Runtime>::put(100);
+        pallet_quantum_pow::LastProofBlockHash::<Runtime>::put(H256::repeat_byte(0x45));
+        // Exactly 100 elapsed blocks: no decay. Both admitted sigma signs have
+        // room for the 180-milli handicap around this synthetic baseline.
+        pallet_quantum_pow::Difficulties::<Runtime>::insert(
+            hash,
+            types::DifficultyConfig {
+                max_energy_milli: -10_000,
+            },
+        );
+        hash
+    });
+    (ext, hash)
+}
+
+fn signed_call(
+    ext: &mut sp_io::TestExternalities,
+    pair: &HybridPair,
+    call: RuntimeCall,
+) -> UncheckedExtrinsic {
+    ext.execute_with(|| {
+        let account = account_id_from_public(&pair.public());
+        let extension =
+            native_tx_extension(generic::Era::Immortal, System::account_nonce(&account), 0);
+        let payload = SignedPayload::new(call.clone(), extension.clone()).unwrap();
+        let signature = payload.using_encoded(|bytes| HybridTxSignature::sign(pair, bytes));
+        generic::UncheckedExtrinsic::new_signed(call, Address::Id(account), signature, extension)
+            .into()
+    })
+}
+
+#[test]
+fn instance_admission_and_signed_proof_dispatch_match_wasm() {
+    let executor = Executor::builder().build();
+    let pair = HybridPair::from_seed_slice(&[7; 32]).unwrap();
+    let miner = account_id_from_public(&pair.public());
+    assert_eq!(
+        hex::encode(miner.as_ref() as &[u8]),
+        "808af44598815693be4133f83fee7662b14e4ade7ca81fb91b3932d4845e1a42"
+    );
+    // Frozen salt search with the production AccountId32 digest and 16-node
+    // sampling. Independent star-triangle parity gives counts 3/18/1/20/0
+    // over K=28-8+1=21. Round count*1000/21 to get F; sigma_micro=109108,
+    // then truncate (500-F)*1000/109108. Exhaustive 8-spin enumeration supplied
+    // the masks/energies; the isolated nodes contribute zero.
+    for (salt_word, frustrated, phi, sigma, mask, energy, threshold) in [
+        (802u32, 3, 143, 3, 89u8, -22_000i64, -10_180),
+        (3716, 18, 857, -3, 2, -10_000, -9_820),
+        (169764, 1, 48, 4, 88, -26_000, 0),
+        (22772, 20, 952, -4, 21, -6_000, 0),
+        (1669538, 0, 0, 4, 126, -28_000, 0),
+    ] {
+        // For each draw, a valid-length solution and a nonempty malformed one
+        // distinguish instance rejection from later packed-solution rejection.
+        for malformed in [false, true] {
+            let (mut native, hash) = admission_fixture(&miner);
+            let (mut wasm, wasm_hash) = admission_fixture(&miner);
+            assert_eq!(hash, wasm_hash);
+            let mut salt = [0; 32];
+            salt[..4].copy_from_slice(&salt_word.to_le_bytes());
+            let nonce = quantum_validation::derive_nonce(
+                &[0x45; 32],
+                &QuantumPow::account_to_bytes(&miner),
+                &salt,
+            );
+            let topology =
+                native.execute_with(|| RegisteredTopologies::<Runtime>::get(hash).unwrap());
+            let (h, j) = quantum_validation::generate_ising_model(
+                nonce,
+                &topology.nodes,
+                &topology.edges,
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
+            )
+            .unwrap();
+            assert_eq!(h, vec![0; 16]);
+            let count = topology
+                .edges
+                .iter()
+                .enumerate()
+                .skip(7)
+                .filter(|(k, (u, v))| {
+                    (j[(*u - 1) as usize] > 0) ^ (j[(*v - 1) as usize] > 0) ^ (j[*k] > 0)
+                })
+                .count();
+            assert_eq!(count, frustrated);
+            assert_eq!((count * 1000 + 10) / 21, phi as usize);
+            let independent_energy: i64 = topology
+                .edges
+                .iter()
+                .zip(&j)
+                .map(|(&(u, v), &w)| {
+                    i64::from(w)
+                        * if ((mask >> u) ^ (mask >> v)) & 1 == 0 {
+                            1
+                        } else {
+                            -1
+                        }
+                })
+                .sum();
+            assert_eq!(independent_energy, energy);
+
+            let instance_error: Option<DispatchError> = if frustrated == 0 {
+                Some(pallet_quantum_pow::Error::<Runtime>::InstanceIsGaugeTrivial.into())
+            } else if sigma == 4 || sigma == -4 {
+                Some(pallet_quantum_pow::Error::<Runtime>::InstanceOutsideFrustrationBand.into())
+            } else {
+                None
+            };
+            let api_input = (hash, miner.clone(), salt).encode();
+            let native_check = native_call(&mut native, "QuantumPowApi_instance_check", &api_input);
+            let wasm_check = wasm_call(
+                &executor,
+                &mut wasm,
+                "QuantumPowApi_instance_check",
+                &api_input,
+            );
+            assert_eq!(native_check, wasm_check, "instance salt {salt_word}");
+            let check =
+                Result::<types::InstanceCheck, DispatchError>::decode_all(&mut &native_check[..])
+                    .unwrap();
+            if let Some(error) = &instance_error {
+                assert_eq!(check, Err(*error));
+            } else {
+                let check = check.unwrap();
+                assert_eq!(check.nonce, nonce);
+                assert_eq!(
+                    (
+                        check.frustration_milli,
+                        check.frustration_cycles,
+                        check.sigmas
+                    ),
+                    (phi, 21, sigma)
+                );
+                assert_eq!(
+                    (
+                        check.anchor_milli,
+                        check.live_bar_milli,
+                        check.instance_bar_milli
+                    ),
+                    (-28_000, -10_000, threshold)
+                );
+            }
+
+            // Binary Set [-1000,1000] packs node i in bit i, low bit first.
+            let proof = types::QuantumProof {
+                topology_hash: hash,
+                nonce,
+                salt,
+                solutions: if malformed { vec![mask] } else { vec![mask, 0] }
+                    .try_into()
+                    .unwrap(),
+                device_access_time_us: 123,
+            };
+            let call = RuntimeCall::QuantumPow(pallet_quantum_pow::Call::submit_proof { proof });
+            let encoded = signed_call(&mut native, &pair, call).encode();
+            let native_result = native_call(&mut native, "BlockBuilder_apply_extrinsic", &encoded);
+            let wasm_result = wasm_call(
+                &executor,
+                &mut wasm,
+                "BlockBuilder_apply_extrinsic",
+                &encoded,
+            );
+            assert_eq!(
+                native_result, wasm_result,
+                "dispatch salt {salt_word}, malformed {malformed}"
+            );
+            let expected_error = instance_error.or_else(|| {
+                malformed.then(|| {
+                    pallet_quantum_pow::Error::<Runtime>::PackedSolutionLengthMismatch.into()
+                })
+            });
+            let result = ApplyExtrinsicResult::decode_all(&mut &native_result[..]).unwrap();
+            assert_eq!(result, Ok(expected_error.map_or(Ok(()), Err)));
+            let root = || sp_io::storage::root(StateVersion::V1);
+            assert_eq!(native.execute_with(root), wasm.execute_with(root));
+            native.execute_with(|| {
+                let accepted = expected_error.is_none();
+                assert_eq!(
+                    pallet_quantum_pow::BlockProofCount::<Runtime>::get(),
+                    u32::from(accepted)
+                );
+                assert_eq!(System::account_nonce(&miner), 1);
+                let best = pallet_quantum_pow::BlockBestProof::<Runtime>::get();
+                if accepted {
+                    let best = best.unwrap();
+                    assert_eq!(best.miner, miner);
+                    assert_eq!(
+                        (best.energy_milli, best.instance_bar_milli),
+                        (energy, threshold)
+                    );
+                    assert_eq!(best.frustration_milli, phi);
+                } else {
+                    assert!(best.is_none());
+                }
+            });
+        }
     }
 }
