@@ -689,3 +689,176 @@ fn signed_winner_finalization_and_payout_match_wasm() {
         }
     }
 }
+
+#[test]
+fn current_api_exports_match_wasm_and_preserve_historical_response_meaning() {
+    let executor = Executor::builder().build();
+    let captured: serde_json::Value =
+        serde_json::from_slice(include_bytes!("fixtures/agls-api-v2-153726.json")).unwrap();
+    let history: serde_json::Value =
+        serde_json::from_slice(include_bytes!("fixtures/agls-qblocks-v2-153726.json")).unwrap();
+    let decode_hex = |value: &serde_json::Value| {
+        hex::decode(value.as_str().unwrap().strip_prefix("0x").unwrap()).unwrap()
+    };
+    let hash = H256::from_slice(&decode_hex(&captured["topology_hash"]));
+    let graph = include_bytes!("fixtures/agls-topology-153726.scale");
+    let old_snapshot = include_bytes!("fixtures/agls-mining-snapshot-api-v2-153726.scale");
+    let old_record = decode_hex(&history["entries"][0]["raw_value"]);
+    assert_eq!(history["entries"][0]["qblock_block_number"], 1006);
+    assert_eq!(old_record.len(), 180);
+    let record_key = pallet_quantum_pow::QBlocks::<Runtime>::hashed_key_for(1006);
+    let mut native = sp_io::TestExternalities::default();
+    let mut wasm = sp_io::TestExternalities::default();
+    for ext in [&mut native, &mut wasm] {
+        ext.execute_with(|| {
+            // Partial post-upgrade-shaped state, not a migration execution or
+            // full historical snapshot. The legacy QBlock remains raw v6.
+            System::set_block_number(153_726);
+            sp_io::storage::set(
+                &RegisteredTopologies::<Runtime>::hashed_key_for(hash),
+                graph,
+            );
+            pallet_quantum_pow::DefaultTopology::<Runtime>::put(hash);
+            pallet_quantum_pow::Difficulties::<Runtime>::insert(
+                hash,
+                types::DifficultyConfig {
+                    max_energy_milli: -14_754_648,
+                },
+            );
+            pallet_quantum_pow::LastProofBlock::<Runtime>::put(153_634);
+            pallet_quantum_pow::LastProofBlockHash::<Runtime>::put(H256::from_slice(
+                &old_snapshot[1..33],
+            ));
+            sp_io::storage::set(&record_key, &old_record);
+            // QBlock1006 really has id1; only this sampled index is installed.
+            pallet_quantum_pow::QBlockBlockById::<Runtime>::insert(1, 1006);
+            pallet_quantum_pow::QBlockIdByBlock::<Runtime>::insert(1006, 1);
+        });
+    }
+    let root = || sp_io::storage::root(StateVersion::V1);
+    let initial_root = native.execute_with(root);
+    assert_eq!(initial_root, wasm.execute_with(root));
+    let mut query = |method: &str, input: &[u8], expected: &[u8]| {
+        let before = native.execute_with(root);
+        let result = native_call(&mut native, method, input);
+        assert_eq!(
+            result,
+            wasm_call(&executor, &mut wasm, method, input),
+            "{method}"
+        );
+        assert_eq!(result, expected, "{method}");
+        assert_eq!(
+            native.execute_with(root),
+            before,
+            "{method} wrote native state"
+        );
+        assert_eq!(wasm.execute_with(root), before, "{method} wrote Wasm state");
+    };
+
+    query(
+        "Core_version",
+        &[],
+        &quip_protocol_runtime::VERSION.encode(),
+    );
+    assert_eq!(
+        quip_protocol_runtime::VERSION
+            .api_version(&[0x17, 0xf0, 0xe1, 0x62, 0x73, 0xcf, 0x5f, 0x3b]),
+        Some(3)
+    );
+    let mut expected_qblock = Vec::new();
+    let mut queries = 0;
+    for entry in captured["calls"].as_array().unwrap() {
+        let method = entry["method"].as_str().unwrap();
+        if method == "Core_version" {
+            continue;
+        }
+        let input = decode_hex(&entry["input"]);
+        let old = if entry["output_file"].is_string() {
+            old_snapshot.to_vec()
+        } else {
+            decode_hex(&entry["output"])
+        };
+        assert_eq!(
+            hex::encode(sp_core::hashing::sha2_256(&old)),
+            entry["sha256"].as_str().unwrap()
+        );
+        // Independent SCALE-layout oracle: remove the legacy u32 fields from
+        // difficulty; for QBlocks also append unmeasured frustration=0 and D.
+        // Keep the original nonce bytes. Do not use From<v2> or StoredQBlock.
+        let expected = match method {
+            "QuantumPowApi_current_difficulty" | "QuantumPowApi_current_hardness" => {
+                old[4..12].to_vec()
+            }
+            "QuantumPowApi_difficulty_for" if old == [0] => old,
+            "QuantumPowApi_difficulty_for" => [&old[..1], &old[5..13]].concat(),
+            "QuantumPowApi_mining_snapshot" => [&old[..33], &old[37..45], &old[49..]].concat(),
+            "QuantumPowApi_winning_solution"
+            | "QuantumPowApi_qblock_by_block"
+            | "QuantumPowApi_qblock_by_id" => {
+                if old == [0] {
+                    old
+                } else {
+                    assert_eq!(old.len(), 213);
+                    let q = &old[1..181];
+                    assert_eq!(q, old_record);
+                    let expected = [
+                        &old[..1],
+                        &q[..92],
+                        &q[96..104],
+                        &q[108..],
+                        &[0u8; 4],
+                        &q[96..104],
+                        &old[181..],
+                    ]
+                    .concat();
+                    assert_eq!(expected.len(), 217);
+                    let value = Option::<types::QBlockWithNonce<AccountId, u128, u32>>::decode_all(
+                        &mut &expected[..],
+                    )
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!(value.solution.frustration_milli, 0);
+                    assert_eq!(value.solution.instance_bar_milli, -14_700_000);
+                    assert_eq!(value.solution.difficulty.max_energy_milli, -14_700_000);
+                    expected_qblock = expected.clone();
+                    expected
+                }
+            }
+            _ => panic!("unexpected captured method {method}"),
+        };
+        query(method, &input, &expected);
+        queries += 1;
+    }
+    assert_eq!(queries, 10);
+    for ext in [&mut native, &mut wasm] {
+        ext.execute_with(|| {
+            assert_eq!(sp_io::storage::root(StateVersion::V1), initial_root);
+            assert_eq!(
+                sp_io::storage::get(&record_key).unwrap().as_ref(),
+                old_record
+            );
+        });
+    }
+
+    // Nonzero measured fields distinguish the current-layout branch from the
+    // historical backfill above. These bytes are a test record, not chain data.
+    expected_qblock[173..177].copy_from_slice(&501u32.to_le_bytes());
+    expected_qblock[177..185].copy_from_slice(&(-14_700_180i64).to_le_bytes());
+    for ext in [&mut native, &mut wasm] {
+        ext.execute_with(|| sp_io::storage::set(&record_key, &expected_qblock[1..185]));
+    }
+    let current_root = native.execute_with(root);
+    for (method, input) in [
+        ("QuantumPowApi_winning_solution", 1006u32.encode()),
+        ("QuantumPowApi_qblock_by_block", 1006u32.encode()),
+        ("QuantumPowApi_qblock_by_id", 1u64.encode()),
+    ] {
+        assert_eq!(native_call(&mut native, method, &input), expected_qblock);
+        assert_eq!(
+            wasm_call(&executor, &mut wasm, method, &input),
+            expected_qblock
+        );
+        assert_eq!(native.execute_with(root), current_root);
+        assert_eq!(wasm.execute_with(root), current_root);
+    }
+}
