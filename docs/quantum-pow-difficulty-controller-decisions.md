@@ -221,3 +221,13 @@ zero. Equal quality prefers lower numerical energy; equal quality and energy
 retain the incumbent. With room 2,500,000 milli, one milli of improvement adds
 400,000,000 quality units. The old 2,500-milli bucket example described a
 hypothetical per-mille scale, not the implemented scale.
+
+## 8. Historical motivation for lazy QBlock decoding
+
+The earlier inline migration note reported that re-encoding roughly 11,000
+AGLS QBlocks consumed 71% of a block in a try-runtime measurement. That reported
+cost motivated conversion on read rather than a history-wide rewrite in the
+storage-v7 step. The source note did not identify the measurement artifact or
+block hash; this cleanup preserves its provenance as a reported result, not a
+reproduced benchmark or a bound on current upgrade cost. Earlier cumulative
+migration steps and try-runtime checks can still traverse history.

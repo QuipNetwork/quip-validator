@@ -1277,7 +1277,7 @@ pub mod pallet {
                 &allowed_j_values.as_slice(),
             )?;
             Self::ensure_couplings_are_priceable(&nodes, &edges, &allowed_j_values.as_slice())?;
-            Self::ensure_curve_outlasts_the_typical_anchor(
+            Self::ensure_curve_covers_expected_lower_bound(
                 &crate::difficulty::EnergyCurve::new(
                     nodes.len() as u32,
                     edges.len() as u32,
@@ -1448,7 +1448,7 @@ pub mod pallet {
                 Error::<T>::InvalidCurve
             );
 
-            Self::ensure_curve_outlasts_the_typical_anchor(
+            Self::ensure_curve_covers_expected_lower_bound(
                 &curve,
                 quantum_validation::expected_bound_milli(
                     topology.nodes.len() as u32,
@@ -2051,7 +2051,7 @@ pub mod pallet {
         /// and does not prove reachability or prevent all mining stalls.
         /// The caller computes the expected bound for this validation step;
         /// ordinary difficulty reads need no extra expected-bound calculation.
-        fn ensure_curve_outlasts_the_typical_anchor(
+        fn ensure_curve_covers_expected_lower_bound(
             curve: &crate::difficulty::EnergyCurve,
             expected_bound_milli: u64,
         ) -> DispatchResult {
@@ -2062,8 +2062,11 @@ pub mod pallet {
                 i64::try_from(expected_bound_milli).map_err(|_| Error::<T>::InvalidCurve)?;
             // Deliberately NOT `difficulty::anchor_milli`, which saturates:
             // see the fail-closed note above and on that helper.
-            let typical_anchor = 0i64.saturating_sub(bound);
-            ensure!(typical_anchor <= curve.max_milli, Error::<T>::InvalidCurve);
+            let expected_lower_bound_milli = 0i64.saturating_sub(bound);
+            ensure!(
+                expected_lower_bound_milli <= curve.max_milli,
+                Error::<T>::InvalidCurve
+            );
             Ok(())
         }
 

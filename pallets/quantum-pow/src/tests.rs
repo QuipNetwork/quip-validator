@@ -447,11 +447,9 @@ fn a_degenerate_expected_frustration_is_refused() {
     });
 }
 
-/// A curve calibrated past the topology's own typical weight disconnects the
-/// controller: the per-instance bar is `max(curve_bar, anchor)`, so an anchor above
-/// the easiest curve value wins for every bar and the chain can never ease.
+/// The calibration guard refuses an easy cap below the negative expected bound.
 #[test]
-fn a_curve_the_typical_anchor_would_override_is_refused() {
+fn a_curve_below_the_expected_lower_bound_is_refused() {
     new_test_ext().execute_with(|| {
         let (nodes, edges, hash) = registered_topology();
         let curve = QuantumPow::energy_curve_for(hash).expect("curve");
@@ -467,18 +465,17 @@ fn a_curve_the_typical_anchor_would_override_is_refused() {
         )
         .expect("the registered specs are valid");
 
-        // Sanity: the registered curve sits inside the topology's typical
-        // weight, which is why registration accepted it.
+        // The registered easy cap covers the negative expected bound.
         assert!(
             -(expected_bound as i64) <= curve.max_milli,
-            "fixture precondition: typical anchor {} must sit at or below the \
+            "fixture precondition: expected lower bound {} must sit at or below the \
              easy cap {}",
             -(expected_bound as i64),
             curve.max_milli
         );
 
         // Demanding several times the total available weight puts the whole
-        // curve below the typical anchor.
+        // curve below the expected lower bound.
         assert_noop!(
             QuantumPow::set_topology_curve(
                 RuntimeOrigin::root(),
@@ -1297,8 +1294,7 @@ fn set_difficulty_works() {
     });
 }
 
-/// Root input must stay where the controller can work with it: no easier than
-/// the easy cap, no tighter than the typical draw's exact optimum.
+/// Root input stays between the negative expected bound and easy cap.
 #[test]
 fn set_difficulty_refuses_bars_off_the_curve() {
     new_test_ext().execute_with(|| {
@@ -3223,7 +3219,7 @@ fn weight_proportionality_constant_is_reasonable() {
 // ───────────────── per-instance bar (the salt handicap) ─────────────────
 
 #[test]
-fn instance_bar_equalizes_in_units_of_sigma() {
+fn instance_bar_applies_symmetric_integer_sigma_steps() {
     use difficulty::instance_bar_milli;
     // Curve -6_000, floor -10_000, expected frustration 500 over 100 cycles,
     // so sigma = sqrt(500*500/100) = 50 milli and one sigma is worth 6
@@ -3232,11 +3228,9 @@ fn instance_bar_equalizes_in_units_of_sigma() {
 
     // A typical draw clears exactly the curve.
     assert_eq!(bar(500), -6_000);
-    // One sigma easier: 6 per-mille tighter, not 20x. The handicap scales to how
-    // much instances actually differ, not to an anchor nothing reaches.
+    // One positive integer sigma bucket tightens by 6 per-mille.
     assert_eq!(bar(450), -6_036);
-    // One sigma harder earns the mirrored slack, so grinding upward buys
-    // nothing — the old one-sided form punished only honest miners.
+    // One negative bucket loosens by the same amount.
     assert_eq!(bar(550), -5_964);
     // The swing is capped at +/-3 sigma either way.
     assert_eq!(bar(0), bar(350));
@@ -3256,7 +3250,7 @@ fn instance_bar_equalizes_in_units_of_sigma() {
 /// Pure pricing at the recorded Z(12,4) scale: the handicap stays within its
 /// clamp. This does not measure solve effort or salt-grinding profitability.
 #[test]
-fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
+fn production_scale_pricing_is_bounded_and_saturates_at_sigma_clamps() {
     use difficulty::instance_bar_milli;
     // Z(12,4): m = 45_864 unit couplings, so the floor is -45_864_000 milli
     // and there are m - n + 1 = 41_065 fundamental cycles.
@@ -3275,7 +3269,7 @@ fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
     let penalty = (honest - unlucky) as f64 / curve.abs() as f64;
     assert!(
         penalty.abs() <= 0.01,
-        "a 1-sigma draw moved the bar by {:.1}% of the curve",
+        "the F=498 draw moved the bar by {:.1}% of the curve",
         penalty.abs() * 100.0
     );
 
@@ -3314,7 +3308,7 @@ fn production_scale_bar_is_bounded_and_grinding_upward_is_worthless() {
 }
 
 #[test]
-fn instance_bar_clamps_an_unreachable_curve_to_the_optimum() {
+fn instance_bar_clamps_a_curve_below_the_lower_bound() {
     use difficulty::instance_bar_milli;
     // Literal pure-helper inputs place the curve below the lower bound.
     // Clamping raises the threshold to that bound without proving that an
@@ -3335,7 +3329,7 @@ fn instance_bar_clamps_an_unreachable_curve_to_the_optimum() {
 }
 
 #[test]
-fn grinding_a_less_frustrated_instance_tightens_its_bar() {
+fn less_frustration_does_not_loosen_the_priced_fixture() {
     new_test_ext().execute_with(|| {
         let (nodes, edges, hash) = registered_topology();
         // The bar arithmetic is independent of stored hardness; this fixture
@@ -3363,7 +3357,7 @@ fn grinding_a_less_frustrated_instance_tightens_its_bar() {
             difficulty::instance_bar_milli(curve, bound, draw(realized / 2, 500, 100), SLOPE);
         assert!(
             half < at_realized || realized == 0,
-            "an easier draw ({}) must face a tighter bar than {realized}: {half} vs {at_realized}",
+            "when realized frustration is nonzero, lower frustration ({}) must tighten this fixture relative to {realized}: {half} vs {at_realized}",
             realized / 2
         );
         assert!(
@@ -4509,10 +4503,8 @@ fn governance_repointing_ends_the_grace_window_and_retires_the_old_default() {
 #[test]
 fn the_handicap_is_withheld_where_the_floor_leaves_no_room_to_tighten() {
     use difficulty::instance_bar_milli;
-    // Curve bar below the attainable floor, so `typical` clamps to the floor and
-    // there is nowhere left to tighten. Applying the handicap there would loosen
-    // for a high-frustration draw while a low one got nothing — paying for
-    // grinding upward.
+    // The active threshold clamps to the lower bound, leaving no headroom.
+    // The entire handicap is withheld for either sign of sigma.
     let bound = 10_000u64;
     let clamped = |phi| instance_bar_milli(-1_000_000, bound, draw(phi, 500, 100), SLOPE);
     assert_eq!(clamped(500), -(bound as i64));
@@ -4710,15 +4702,10 @@ fn migration_v5_and_v6_to_v7_keeps_qblocks_readable_without_reencoding() {
         });
     }
 }
-/// A zero-room proof scores LOWEST, not full marks. `proof_quality` normalizes
-/// depth by the instance's own room; a bar clamped flush to the anchor has none,
-/// so it returns the minimum — reaching a bar that sits at the optimum says
-/// nothing about difficulty, and zero-room draws are the cheapest to grind at
-/// `O(n + m)` per salt. `submit_proof`'s comment used to assert the OPPOSITE,
-/// and this case was claimed "tested elsewhere" when it was not: without this
-/// test, "fixing" the branch to full marks gives a green suite and a grinder.
+/// A zero-room proof scores zero and loses to this positive-quality proof.
+/// Positive room alone would not guarantee positive quality: depth matters too.
 #[test]
-fn a_zero_room_proof_scores_lowest_rather_than_full_marks() {
+fn a_zero_room_proof_scores_zero_and_loses_to_positive_quality() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
 
@@ -4756,8 +4743,7 @@ fn a_zero_room_proof_scores_lowest_rather_than_full_marks() {
         );
         assert!(
             QuantumPow::proof_quality(&some_room) > QuantumPow::proof_quality(&zero_room),
-            "a proof with real room must outscore a zero-room one even when it \
-             used almost none of that room"
+            "this positive-depth, positive-room proof must outscore the zero-room proof"
         );
 
         // And the ordering must actually decide selection, not merely differ.

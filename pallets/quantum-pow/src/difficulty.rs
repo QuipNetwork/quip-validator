@@ -139,37 +139,40 @@ pub fn instance_bar_milli(
     draw: FrustrationDraw,
     handicap_per_sigma_permille: i64,
 ) -> i64 {
-    let anchor = anchor_milli(energy_bound_milli);
+    let lower_bound_milli = anchor_milli(energy_bound_milli);
 
-    let typical = curve_bar_milli.max(anchor);
+    let active_threshold_milli = curve_bar_milli.max(lower_bound_milli);
 
     // The threshold remains an absolute energy; it is not rescaled by the
     // draw's weight. A bound ratio is not an achievable-depth ratio.
     if draw.expected_milli == 0 || draw.cycles == 0 {
-        return typical;
+        return active_threshold_milli;
     }
 
     // Runtime integrity tests do not execute on chain. Clamp here to prevent
     // negative slopes reversing the adjustment and oversized slopes overflowing
     // the signed multiplication. Zero intentionally disables the handicap.
-    let slope = handicap_per_sigma_permille.clamp(0, HANDICAP_SLOPE_MAX_PERMILLE);
+    let slope_permille = handicap_per_sigma_permille.clamp(0, HANDICAP_SLOPE_MAX_PERMILLE);
 
-    let sigmas = frustration_sigmas_of(draw).clamp(-HANDICAP_MAX_SIGMA, HANDICAP_MAX_SIGMA);
+    let clamped_sigmas = frustration_sigmas_of(draw).clamp(-HANDICAP_MAX_SIGMA, HANDICAP_MAX_SIGMA);
 
     // Compare in i128 before applying either sign of adjustment. The bound
     // need not be attainable; this guard only limits the threshold's movement.
-    let headroom = i128::from(typical) - i128::from(anchor);
-    let max_swing =
-        i128::from(typical).abs() * i128::from(HANDICAP_MAX_SIGMA) * i128::from(slope) / 1000;
-    if headroom < max_swing {
-        return typical;
+    let headroom_milli = i128::from(active_threshold_milli) - i128::from(lower_bound_milli);
+    let max_swing_milli = i128::from(active_threshold_milli).abs()
+        * i128::from(HANDICAP_MAX_SIGMA)
+        * i128::from(slope_permille)
+        / 1000;
+    if headroom_milli < max_swing_milli {
+        return active_threshold_milli;
     }
 
     // For a negative threshold, positive sigma gives a negative adjustment.
     // Signed division truncates toward zero: both tightening and loosening
     // lose any fractional milli. Pure callers may also supply zero/positive bars.
-    let handicap = i128::from(typical) * i128::from(sigmas * slope) / 1000;
-    saturating_i64(i128::from(typical) + handicap)
+    let handicap_milli =
+        i128::from(active_threshold_milli) * i128::from(clamped_sigmas * slope_permille) / 1000;
+    saturating_i64(i128::from(active_threshold_milli) + handicap_milli)
 }
 
 /// The three per-mille empirical `c` values that calibrate an
