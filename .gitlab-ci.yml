@@ -335,6 +335,10 @@ benchmark-preflight:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - when: never
   script:
+    # Fail before compiling if tracked mempool weights omit required cases or
+    # retain bootstrap aliases. The manual reference job has needs: [] and can
+    # replace them even while this check is red.
+    - ./scripts/run-benchmarks.sh --verify-regenerated-mempool pallets/quantum-compute-mempool/src/benchmark_weights.rs
     - ./scripts/run-benchmarks.sh --check-output-resolver
     - ./scripts/check-benchmark-preflight.sh --check-wrapper-guard
     - ./scripts/check-benchmark-preflight.sh

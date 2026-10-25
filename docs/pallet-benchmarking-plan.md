@@ -28,9 +28,10 @@ work.
 `pallet_faucet_ops` and `pallet_emission_controller` now have benchmark modules,
 `runtime-benchmarks` features, and runtime registrations. Phase 1 adds authority,
 fuse, budget, and scheduled issuance storage access, so the previous reused
-Balances weight is no longer sufficient. Run the reference-machine job for their
-`mint`, `disable`, `accrue`, and `reward` paths before release; initial estimates
-are provisional. See `validator-onboarding-phase-1.md`.
+Balances weight is no longer sufficient. Reference commit `46ab082` includes
+generated weights for their `mint`, `disable`, `accrue`, and `reward` paths,
+replacing the initial provisional estimates. See `validator-onboarding-phase-1.md`
+for the original rollout requirements and historical validation.
 
 `pallet_xqvm` is intentionally out of scope because it is not actively used.
 Its execution and per-step weights should be reviewed before the pallet becomes
@@ -221,11 +222,191 @@ The work is complete when:
 ## Validator onboarding Phase 2
 
 The runtime now registers admission, Foundation collective/membership and classic
-staking benchmarks. `pallets/validator-admission/src/weights.rs` is provisional;
-run the reference-machine job before release. The admission snapshot adapter in
+staking benchmarks. `pallets/validator-admission/src/weights.rs` was regenerated
+on the reference machine in `46ab082`. The admission snapshot adapter in
 `runtime/src/configs/validator_onboarding.rs` additionally reserves a conservative
 bounded read/CPU/proof budget for at most 32 accounts; calibrate it against the
 maximum approved set with keys and staking ledgers. Upstream governance/staking
 weights are baselines, not Quip reference-machine measurements. Nomination
 benchmark capacity is a measurement parameter only; the live nomination cap
 remains Some(0).
+
+
+## Permissionless settlement: reference coverage and release gate
+
+Reference job [17104770617](https://gitlab.com/quip.network/quip-validator/-/jobs/17104770617)
+completed successfully on input `0e0d05e497da7ec1355fbc546b0a03aa76f4a342`,
+producing bot commit `46ab082adb5e99f572005de1ce6093b954225a05`. Its generated
+header records 2026-10-12, compiled Wasm, CLI 54.0.0, 50 steps / 20 repeats,
+`--extra`, and AMD Ryzen 7 3700X reference hardware. All 14 mempool cases have
+trait, generic and unit implementations; no provisional aliases remain. The
+committed-output completeness and public-wrapper consumption guards pass.
+Reference regeneration is complete; final review and CI of the resulting head
+remain separate acceptance checks.
+
+The following values are from that generated output. Base time excludes DB and
+component terms; complete maximum time includes production RocksDB costs
+(25,000,000 ps/read and 100,000,000 ps/write) at 5,000 nodes, 50,000 edges,
+20 solutions, 16 bid miners and eight miner types, where applicable.
+
+| Measured case | Base ref_time (ps) | Reads / writes | Complete maximum ref_time (ps) | Generated proof (bytes) |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary claim | 2,432,194,000 | 69 / 69 | 11,057,194,000 | 644,411 |
+| Dust claim | 2,441,902,000 | 69 / 69 | 11,066,902,000 | 644,411 |
+| First legacy submission | 4,222,448,000 | 7 / 6 | 88,544,786,920 | 644,411 |
+| First payee submission | 4,212,776,000 | 7 / 7 | 88,718,060,440 | 644,411 |
+| Replacement with changed payee | 4,290,355,000 | 7 / 5 | 88,298,195,900 | 644,411 |
+| Legacy replacement clearing payee | 4,277,734,000 | 7 / 5 | 88,559,599,880 | 644,411 |
+| Refund | 710,218,000 | 2 / 3 | 1,060,218,000 | 644,411 |
+| Proposal | 517,487,000 | 3 / 6 | 6,488,947,000 | 3,770 |
+| Required-payee proposal | 519,572,000 | 3 / 7 | 6,609,437,000 | 3,770 |
+
+Every submission case now records an `OrderPayees` read. First legacy submission
+has no payee write; first payee, changed-payee and legacy-clear cases each have
+one. Claim/refund retain metadata and do not access the payee maps.
+The public claim weight is 11,066,902,000 ps and both public submission weights
+at production maxima are 88,718,060,440 ps, each with the maintained 1 MiB proof
+floor. Proposal and refund also use that floor. The regenerated extrinsic base
+is 320,028,000 ps, so the Normal max_extrinsic ref_time is
+`1,500,000,000,000 - 200,000,000,000 - 320,028,000 = 1,299,679,972,000` ps;
+Normal max_total is 1,500,000,000,000 ps. Runtime integrity checks validate both
+time and proof dimensions against the configured limits.
+
+Historical baseline `4b70e3f` measured ordinary claim at 2,367,341,000 ps before
+DB costs, but omitted extra cases and predates conditional payee writes/events.
+It is superseded by `46ab082`; it does not pass the expanded all-extra guard.
+
+The public `weights.rs` consumes complete generated `Weight` values, including
+each provider's DB costs, using componentwise maxima:
+
+- Claim: ordinary surviving-proposer claim and `claim_reward_dust`.
+- Both submission calls: first legacy submission, first payee submission,
+  `submit_solution_replacement` with an actual destination change, and
+  `submit_solution_clear_payee` through the legacy call on an optional-payee order.
+
+The maintained proof floor is applied after those maxima, preserving a larger
+measured proof. There is no extra DB surcharge in the wrapper. The same
+composition applies to the runtime generic and unit/RocksDB providers.
+Regeneration writes `benchmark_weights.rs`, preserving the maintained wrapper.
+The reference bot replaced the earlier three bootstrap aliases with measured
+implementations. Local diagnostic timings are never copied into tracked weights,
+and no invented margin substitutes for measurement.
+
+### Proof envelope and integrity checks
+
+The pinned SDK (`845eb9986c7131056b077d14ad7249f9d65ca111`), in
+`substrate/utils/frame/benchmarking-cli/src/pallet/writer.rs`, takes the maximum
+proof estimate across storage prefixes rather than summing simultaneous keys.
+The maintained envelope uses `StorageInfo::max_size` (key/hasher plus bounded
+encoded value) for every touched key, without assuming shared trie nodes.
+
+| Claim storage | Distinct keys | Maximum encoded size per key |
+| --- | ---: | ---: |
+| JobOrders | 1 | 640946 |
+| JobSpecs | 1 | 297 |
+| OrderTopSolvers, or the larger ranking representation | 1 | 1305 |
+| ProposerOrders | 1 | 305 |
+| System Account (proposer + winners) | 33 | 128 |
+| Solvers | 32 | 109 |
+| OpenOrders (removal included conservatively) | 1 | 24 |
+| TotalIssuance (including benchmark-whitelisted storage) | 1 | 16 |
+
+These 71 keys total 650,605 encoded bytes. The SDK's largest u32 map-cardinality
+bucket (eight radix-16 layers), plus two global layers, costs
+`(8 + 2) * 15 * 33 = 4,950` bytes **per key**. The current claim envelope is
+`650605 + 71 * 4950 = 1,002,055`, below the **1,048,576-byte (1 MiB)** floor.
+Result publication is hook work; claim does not read solutions, poll results or
+payee maps. Historical metadata remains stored after closure.
+
+| Family | Production union envelope | Maintained floor |
+| --- | ---: | ---: |
+| Claim | 1,002,055 | 1,048,576 |
+| Refund | 666,169 | 1,048,576 |
+| Submission (both APIs) | 792,516 | 1,048,576 |
+| Proposal (both APIs) | 686,322 | 1,048,576 |
+
+Refund includes JobOrders, ProposerOrders, proposer System Account, OpenOrders
+and TotalIssuance. Submission includes JobOrders, JobSpecs, Solvers,
+OrderSolutions, the larger ranking, both expiry keys, OrderPayeeRequirements,
+OrderPayees and System::Number. Proposal includes JobOrders, JobSpecs,
+ProposerOrders, proposer System Account, NextOrderId, OpenOrders, OrdersExpiringAt,
+OrderPayeeRequirements and System::Number. Conditional payee updates add a read
+of an already included key, so they do not add another proof key.
+
+These bounds use the SDK estimation model; they are neither an enforced
+cardinality cap nor an unconditional proof for every adversarial trie shape.
+An assumption-free bound needs separate codec/path analysis. Integrity checks
+derive bounds from actual runtime types, pin the winner limit, enforce floors,
+and check both dimensions against Normal max_extrinsic and max_total. Runtime
+tests check actual dispatch weights. Currency, VM, account-hook or storage-bound
+changes require renewed timing, access and proof analysis.
+
+### Required lifecycle coverage
+
+Both claim cases settle 32 weighted winners with maximum topology, bid list,
+callback endpoint and proposer-index sizes. Setup runs expiry hooks outside the
+measured claim and verifies that prepublished results survive settlement. Neither
+case is assumed slower before measurement. A reserved balance is a consumer;
+setting a sole-provider account below ED would be invalid. The dust case first
+adds an independent provider, leaves ED-1 free, then verifies dust burning and
+balance-provider removal. The independent provider retains the System account;
+removing it later is outside this benchmark. Mock ED=1 covers zero-dust provider
+removal; runtime tests with production ED cover nonzero burning and later reaping.
+
+Submission setup measures first-submission expiry rescheduling and replacement
+of a real maximal accepted payload separately, with a full ranking. Replacement
+uses a strictly better solution and changes the stored payee; legacy clearing
+uses an order with no mandatory destination. Thus event suppression cannot turn
+these cases into same-payee/no-event measurements. Maximal topology is 5,000 nodes,
+50,000 edges and 20 solutions. Both proposal APIs cover 16 bid miners and eight
+miner types. Rejected calls retain state/events and must fit the charged maximum;
+correctness tests cover early failures and late diversity/improvement rejection.
+Quantum-PoW selection is unchanged.
+
+The signed Executive payout-failure test verifies atomic rollback of earlier
+winner transfers, counters and events, while already committed hook expiry and
+results remain. Fees and nonce still apply to the failed signed call. Retrying
+after the authorised lock owner removes the restriction settles exactly once.
+Missing aggregate reserves also roll back settlement/refund. No global order
+sweep, forced close, or caller bounty is introduced.
+
+### Reference procedure and checks
+
+The manual `benchmark-weights` job uses the serialized `reference-machine`
+resource and runs `scripts/run-benchmarks.sh`, then commits/pushes generated files
+through `push-weights.sh`. For MR !100 the approved sequence is implementation,
+reviewer/rr review of the exact SHA, push, manual reference regeneration, then
+review of bot output and CI. Record the input/output SHAs, pinned toolchain/image,
+machine checks, SDK revision, command lines and fresh Wasm hash. A local
+`SKIP_PALLET_REVIVE_FIXTURES=1` build is diagnostic evidence, not reference provenance.
+
+Both reference and preflight scripts pass `--extra` for the mempool wildcard.
+Reference resolution is 50 steps / 20 repeats by default. The resulting file must
+contain the trait declaration and both implementations for each required case;
+provisional markers/delegations are rejected. The wrapper guard verifies that
+both providers consume all cases through the full-weight maxima. Positive and
+negative fixtures exercise missing and unconsumed cases. Structural guards do
+not certify hardware, fit quality or adequate sampling: inspect raw results,
+DB counts and maximal runtime weights after generation, then rerun tests, strict
+Clippy, formatting and runtime integrity checks on the bot's exact output SHA.
+
+```bash
+bash scripts/run-benchmarks.sh --check-output-resolver
+bash scripts/run-benchmarks.sh --check-regenerated-mempool-guard
+bash scripts/check-benchmark-preflight.sh --check-signature-helpers
+bash scripts/check-benchmark-preflight.sh --check-wrapper-guard
+bash scripts/run-benchmarks.sh --verify-regenerated-mempool pallets/quantum-compute-mempool/src/benchmark_weights.rs
+```
+
+All commands above pass on reference bot output `46ab082`. The automatic MR
+`benchmark-preflight` CI job verifies the **committed** file before its expensive
+build, so successful temporary output cannot hide incomplete committed weights.
+The earlier pre-reference failure was intentional and is resolved by the bot
+output. Future missing cases or provisional aliases fail this check. The manual
+`benchmark-weights` job has `needs: []` and remains independently runnable; the
+advisory `weights-staleness-check` remains unchanged.
+
+Preflight generates into temporary files, checks the same coverage gate and
+never modifies tracked weights. Native mock
+tests, production Wasm preflight, reference measurements, and deployment/SDK
+validation are distinct checks; report each at its actual provenance and SHA.
