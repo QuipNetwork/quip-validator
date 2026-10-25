@@ -1,0 +1,82 @@
+{
+  "description": "Frozen historical QuantumPow.QBlocks values (v2 / storage v6 layout, 180 bytes, production types AccountId32/u128/u32) read via state_getStorage. Decoded per main bc4552a2 types.rs QBlock field order.",
+  "endpoint": "https://bootnode-2.aglais.quip.network:20049/rpc",
+  "genesis": "0x542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecb",
+  "at_block_hash": "0xb06d9fcbf2dcd1db33540f22b479728c462b8d1e64d61459cad6fca36b158712",
+  "at_block_number": 153726,
+  "runtime": {
+    "specVersion": 119,
+    "transactionVersion": 7
+  },
+  "pallet_storage_version": "0x0600",
+  "storage_prefix": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e83655cc34fa9a67264c44b73b3c27a2d4",
+  "key_hasher": "Blake2_128Concat(u32 block number)",
+  "entries": [
+    {
+      "qblock_block_number": 1006,
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e83655cc34fa9a67264c44b73b3c27a2d446a76b2bace61b4088fc1a405de25b7fee030000",
+      "raw_value": "0xd2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca4825c4e28247d21ea18837e4603000005000000000000000000000000000000000050aa1fffffffffff0010a5d4e80000000000000000000000ee0300000100000020b21fffffffffff00000000542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecbcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7f11a190000000000",
+      "len": 180,
+      "sha256": "d8ca5394706ecb2993d64fe26102cf6247e151824fb12d2b90b682d17c80bf15",
+      "decoded": {
+        "miner": "0xd2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca482",
+        "salt": "0x5c4e28247d21ea18837e46030000050000000000000000000000000000000000",
+        "energy_milli": -14702000,
+        "reward": "1000000000000",
+        "submitted_at": 1006,
+        "difficulty": {
+          "min_solutions": 1,
+          "max_energy_milli": -14700000,
+          "min_diversity_milli": 0
+        },
+        "last_proof_block_hash": "0x542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecb",
+        "topology_hash": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+        "device_access_time_us": 1645297
+      }
+    },
+    {
+      "qblock_block_number": 153634,
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e83655cc34fa9a67264c44b73b3c27a2d456352ffd92facba6a84a7987553d661822580200",
+      "raw_value": "0x5abae304a260efb27bfbd8aa1a2e10442513e5ac88ee3dc92cdf9991de8009e75c67c123906c7c170f80ad58e70400000000000000000000000000000000000060d71effffffffff0010a5d4e80000000000000000000000225802000100000073e41effffffffff000000001875226893cde66252bb28da6670a627b1415d4ebf3c1a3bebdcc22c37ef9721cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7af13790000000000",
+      "len": 180,
+      "sha256": "da9ef834d7756ab0e184408ccbec23a283c69411ac775272c21ebc59844f6557",
+      "decoded": {
+        "miner": "0x5abae304a260efb27bfbd8aa1a2e10442513e5ac88ee3dc92cdf9991de8009e7",
+        "salt": "0x5c67c123906c7c170f80ad58e704000000000000000000000000000000000000",
+        "energy_milli": -14756000,
+        "reward": "1000000000000",
+        "submitted_at": 153634,
+        "difficulty": {
+          "min_solutions": 1,
+          "max_energy_milli": -14752653,
+          "min_diversity_milli": 0
+        },
+        "last_proof_block_hash": "0x1875226893cde66252bb28da6670a627b1415d4ebf3c1a3bebdcc22c37ef9721",
+        "topology_hash": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+        "device_access_time_us": 7934895
+      }
+    },
+    {
+      "qblock_block_number": 1017,
+      "key": "0x9b2c4dbe49d7a1aed7ce99e4b8c072e83655cc34fa9a67264c44b73b3c27a2d41724f8608fbac57d80eba25efa7287e5f9030000",
+      "raw_value": "0xd2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca4825c4e28247d21ea18777bda0a0000070000000000000000000000000000000000a0731fffffffffff0010a5d4e80000000000000000000000f90300000100000038ae1fffffffffff000000003b73c25807757564a789986d9c3add416a10c4a71af3400acd9fecceec3d7563cbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e72b97180000000000",
+      "len": 180,
+      "sha256": "09a12cc5465ea6c82219c5f23de0b4ede486e7114bfdc28ed8b84fcd1ef9533f",
+      "decoded": {
+        "miner": "0xd2ec60d4103ff1efc3e3d4ff5de415f67d036236227d7a382bdf3046034ca482",
+        "salt": "0x5c4e28247d21ea18777bda0a0000070000000000000000000000000000000000",
+        "energy_milli": -14716000,
+        "reward": "1000000000000",
+        "submitted_at": 1017,
+        "difficulty": {
+          "min_solutions": 1,
+          "max_energy_milli": -14701000,
+          "min_diversity_milli": 0
+        },
+        "last_proof_block_hash": "0x3b73c25807757564a789986d9c3add416a10c4a71af3400acd9fecceec3d7563",
+        "topology_hash": "0xcbec1eb4e9dcc7ae343b386902d4dbba19b694a66cebf95bc06bd9260c3270e7",
+        "device_access_time_us": 1611563
+      }
+    }
+  ]
+}
