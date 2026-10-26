@@ -174,7 +174,11 @@ the stacked refactor or its test suite does not perform those actions.
 
 ### Reproducing the pinned whole-runtime rehearsal
 
-**Status: failed; the full-runtime release gate remains open.** The 2026-10-25
+**Clarity-only result at `f0fcfff`: failed.** A later disposable combined tree
+passed the full native/Wasm hook rehearsal; see the
+[accepted combined evidence](mr71-combined-validation.md) for exact sources,
+roots, weights and remaining obligations. This branch still needs the parent
+integration, followed by exact-head validation after rebasing. The 2026-10-25
 capture of block 156607 contains 967,080 top-level entries and four default
 child tries with three entries each. Its 246,303,202-byte JSON has SHA-256
 `c871a5fc31a2f5706e4e2cb469db6e6503ea59780dedb5eb03568e1148879953`.
@@ -189,7 +193,7 @@ Both native and Wasm `TryRuntime_on_runtime_upgrade(All)` then failed the
 storage-version check: **QuantumComputeMempool is v4 on-chain, but this branch
 expects v3**. Both attempted states reached QuantumPow v7. This does not mean
 the complete upgrade passed: final state-root/weight comparisons, exhaustive
-history/index assertions and the idempotence pass were not reached.
+history/index assertions and the version-gated rerun were not reached.
 
 The mempool pallet is unchanged from the stack's parent
 `c722e308e1954456dd6cd1c0c3e9e3716470879a`, which expects storage v3. Current
@@ -238,8 +242,9 @@ all pallet hooks, pre/post checks, state decoding and try-state invariants. It
 requires matching full-state roots and reported weights, checks the reported
 weight against both block-weight dimensions, checks every historical QBlock and
 both index directions, verifies difficulty conversion and topology backfills,
-and repeats the upgrade to require idempotent state. It prints changed keys,
-weights and post-upgrade roots for the release record.
+and repeats the upgrade to require unchanged state on the version-gated rerun.
+This checks the rerun/no-op path, not each migration step's individual idempotence.
+It prints changed keys, weights and post-upgrade roots for the release record.
 
 The test is ignored by default because it needs the external snapshot. A normal
 test-suite pass without the explicit invocation above is not rehearsal evidence.
