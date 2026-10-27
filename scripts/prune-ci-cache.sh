@@ -5,7 +5,6 @@ set -euo pipefail
 #   scripts/prune-ci-cache.sh [extra cargo-sweep args]
 #
 # Prunes the host cache volume that .cargo-host-cache mounts at /ci-cache.
-# See docs/ci-cache.md for the volume layout and the host setup.
 #
 # The jobs that fill this volume land on every host in the amd64 pool, so the
 # prune rides along with them instead of running as a scheduled job. A

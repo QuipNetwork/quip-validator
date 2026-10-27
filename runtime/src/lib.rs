@@ -231,8 +231,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // any node still on 116 refuse the new runtime outright.
     // Extended 117 with custody pallets starting at index 16, keeping the
     // existing extrinsic format, so transaction version 7 stayed. 117 shipped
-    // on aglais in the v0.3.x tags; every consensus change after it bumps
-    // (see docs/quantum-pow-difficulty-controller-decisions.md).
+    // on aglais in the v0.3.x tags; every consensus change after it bumps.
     // Bumped to 118: quantum-pow difficulty decay is continuous per block
     // instead of stepped per 100-block epoch and eases faster past the
     // target round length, per-win hardening is capped at one epoch of decay

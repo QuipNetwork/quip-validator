@@ -350,7 +350,7 @@ pub fn local_three_validator_config_genesis() -> Value {
 ///
 /// Each authority slot is held by an independent operator who generated their
 /// own libp2p node-key and hybrid BABE/GRANDPA keys offline (see
-/// [`scripts/derive-operator-keys.sh`] and [`docs/testnet-keys.md`]). Only the
+/// `scripts/derive-operator-keys.sh`). Only the
 /// public bytes are committed in this repository; private material lives on
 /// each operator's host.
 ///

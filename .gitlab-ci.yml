@@ -115,7 +115,7 @@ variables:
   WASM_PACK_VERSION: "0.12.1"
   # Gate for the publish jobs. They stay dormant on `v*` tags until this is set
   # to "true" in project CI/CD variables — which the maintainer does only after
-  # the PyPI Trusted Publisher is configured (see docs/releasing-quip-signer.md).
+  # the PyPI Trusted Publisher is configured.
   # Until then a node release tag never triggers (and so never reds on) an
   # unconfigured wheel publish.
   QUIP_SIGNER_PUBLISH: "false"
@@ -172,7 +172,7 @@ workflow:
 # scheduled job only ever lands on one runner, but the jobs that fill the
 # volume already reach every host in the pool — a host that never runs them has
 # nothing to prune. The script holds a per-host lock and prunes at most once a
-# day, so the cost does not land on every pipeline. See docs/ci-cache.md.
+# day, so the cost does not land on every pipeline.
 .cargo-host-cache:
   variables:
     CARGO_HOME: /ci-cache/cargo-home
@@ -859,7 +859,7 @@ manifest-evm-sidecar:
 # via Trusted Publishing (OIDC) — no long-lived token in CI. The one-time
 # PyPI- and GitLab-side setup that CI *cannot* do (creating the TestPyPI/PyPI
 # projects, configuring each Trusted Publisher, the `release` environment, and
-# the protected `v*` tag pattern) is documented in docs/releasing-quip-signer.md.
+# the protected `v*` tag pattern) must be configured before publishing.
 #
 # The pipeline is build → smoke (both arches) → publish, one job per mode of
 # scripts/python-dists.sh, so the cross-built aarch64 wheel is import-tested on

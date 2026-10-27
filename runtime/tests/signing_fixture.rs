@@ -8,10 +8,8 @@ use sp_runtime::transaction_validity::InvalidTransaction;
 use sp_runtime::{traits::Checkable, BuildStorage};
 
 fn fixture_extrinsic_bytes() -> Vec<u8> {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../docs/polkadotjs/fixtures/hybrid-signing.json"
-    ))
-    .expect("checked-in fixture is valid JSON");
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/hybrid-signing.json"))
+        .expect("checked-in fixture is valid JSON");
     let encoded = fixture["signedExtrinsicHex"]
         .as_str()
         .expect("signed extrinsic is a string");
@@ -38,10 +36,8 @@ fn check_fixture_extrinsic(bytes: &[u8]) -> sp_runtime::transaction_validity::Tr
 
 #[test]
 fn checked_in_fixture_matches_rust_generator() {
-    let checked_in: Value = serde_json::from_str(include_str!(
-        "../../docs/polkadotjs/fixtures/hybrid-signing.json"
-    ))
-    .expect("checked-in fixture is valid JSON");
+    let checked_in: Value = serde_json::from_str(include_str!("fixtures/hybrid-signing.json"))
+        .expect("checked-in fixture is valid JSON");
 
     assert_eq!(checked_in, signing_fixture_support::generate_fixture());
 }
