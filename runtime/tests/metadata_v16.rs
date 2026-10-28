@@ -1,5 +1,4 @@
-// Metadata V16 conformance tests (QUI-901 Phase 1, see
-// `docs/metadata-v15-external-decoding-plan.md`).
+// Metadata V16 conformance tests (QUI-901 Phase 1).
 //
 // Hermetic: all metadata comes from `Runtime::metadata_at_version(16)` and
 // all decoding is done in-process by stock `subxt-core` with metadata only —

@@ -59,7 +59,7 @@ interface SigningFixture {
 }
 
 const fixture = JSON.parse(readFileSync(
-  new URL('../../../../docs/polkadotjs/fixtures/hybrid-signing.json', import.meta.url),
+  new URL('../../../../runtime/tests/fixtures/hybrid-signing.json', import.meta.url),
   'utf8'
 )) as SigningFixture;
 
@@ -253,7 +253,7 @@ await generatedWasm.default({ module_or_path: wasmBytes });
 
 const wasmPublic = generatedWasm.publicFromSeed(
   (JSON.parse(readFileSync(
-    new URL('../../../../docs/polkadotjs/fixtures/hybrid-signing.json', import.meta.url),
+    new URL('../../../../runtime/tests/fixtures/hybrid-signing.json', import.meta.url),
     'utf8'
   )) as { seedHex: string }).seedHex
 );
@@ -267,7 +267,7 @@ assert(
 for (const fixtureCase of fixture.payloadBoundaryCases) {
   const wasmEnvelope = generatedWasm.signPayloadFromSeed(
     (JSON.parse(readFileSync(
-      new URL('../../../../docs/polkadotjs/fixtures/hybrid-signing.json', import.meta.url),
+      new URL('../../../../runtime/tests/fixtures/hybrid-signing.json', import.meta.url),
       'utf8'
     )) as { seedHex: string }).seedHex,
     fixtureCase.messageToSignHex

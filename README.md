@@ -138,8 +138,7 @@ also find the source code and instructions for hosting your own instance in the
 [`polkadot-js/apps`](https://github.com/polkadot-js/apps) repository.
 
 Quip uses hybrid BABE and GRANDPA consensus keys. Polkadot.js Apps does not
-require custom types for Quip anymore; for usage notes, see
-[docs/polkadotjs/README.md](docs/polkadotjs/README.md).
+require custom types for Quip anymore.
 
 ### Multi-Node Local Testnet
 
@@ -233,10 +232,6 @@ with [the Substrate
 repository](https://github.com/paritytech/polkadot-sdk/tree/master/substrate/frame) and a
 template pallet that is [defined in the
 `pallets`](./pallets/template/src/lib.rs) directory.
-
-The quantum PoW puzzle definition -- the Ising topology object, its canonical
-hash, how it is registered, and which pallets enforce it -- is specified in
-[`docs/ising-topology.md`](docs/ising-topology.md).
 
 A FRAME pallet is comprised of a number of blockchain primitives, including:
 
@@ -383,7 +378,7 @@ docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
 
 ### Running a validator
 
-Operator validator slots are committed at genesis (see
-[`docs/genesis-quip-testnet.md`](docs/genesis-quip-testnet.md)). To rotate or
-add a slot, follow [`docs/testnet-keys.md`](docs/testnet-keys.md) and the
-`scripts/derive-operator-keys.sh` helper.
+Operator validator slots are committed in
+[`runtime/src/genesis_config_presets.rs`](runtime/src/genesis_config_presets.rs).
+The [`scripts/derive-operator-keys.sh`](scripts/derive-operator-keys.sh) helper
+derives operator keys.

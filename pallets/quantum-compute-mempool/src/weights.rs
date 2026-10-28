@@ -1,7 +1,7 @@
 //! Public weight composition. Generated measurements live in `benchmark_weights`.
 //!
 //! Reference measurements include ordinary/dust settlement and first/replacement
-//! submissions; see `docs/pallet-benchmarking-plan.md`. The proof envelope below is
+//! submissions. The proof envelope below is
 //! maintained independently because the pinned SDK takes a maximum across
 //! storage prefixes instead of adding their simultaneous proof contributions.
 

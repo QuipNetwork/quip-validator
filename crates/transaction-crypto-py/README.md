@@ -13,8 +13,7 @@ pip install quip-signer
 
 Prebuilt abi3 wheels are published for **linux x86_64** and **linux aarch64**
 (CPython ≥ 3.9). macOS and Windows resolve the sdist and build it locally, which
-needs a [Rust toolchain](https://rustup.rs/) on the machine. Releasing is
-covered in [`docs/releasing-quip-signer.md`](../../docs/releasing-quip-signer.md).
+needs a [Rust toolchain](https://rustup.rs/) on the machine.
 
 ### Building from source (submodule)
 

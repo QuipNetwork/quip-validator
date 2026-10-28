@@ -11,8 +11,8 @@ fn main() {
     );
 
     if env::args().any(|arg| arg == "--write") {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../docs/polkadotjs/fixtures/hybrid-signing.json");
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hybrid-signing.json");
         fs::create_dir_all(path.parent().expect("fixture has a parent"))
             .expect("fixture directory can be created");
         fs::write(&path, rendered).expect("fixture can be written");
