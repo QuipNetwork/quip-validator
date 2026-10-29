@@ -147,7 +147,7 @@ impl pallet_babe::Config for Runtime {
     type DisabledValidators = ();
     type WeightInfo = ();
     type MaxAuthorities = ConstU32<64>;
-    type MaxNominators = ConstU32<0>;
+    type MaxNominators = ConstU32<64>;
     type KeyOwnerProof = sp_core::Void;
     type EquivocationReportSystem = ();
 }
@@ -157,7 +157,7 @@ impl pallet_grandpa::Config for Runtime {
 
     type WeightInfo = ();
     type MaxAuthorities = ConstU32<64>;
-    type MaxNominators = ConstU32<0>;
+    type MaxNominators = ConstU32<64>;
     type MaxSetIdSessionEntries = validator_onboarding::SetIdSessionEntries;
 
     type KeyOwnerProof = sp_core::Void;

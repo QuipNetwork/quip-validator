@@ -194,9 +194,10 @@ fn testnet_genesis(
     // SDK benchmark setups require low-bond validators and nominators. Keep
     // the production chainspec limits unchanged in every non-benchmark build.
     #[cfg(not(feature = "runtime-benchmarks"))]
-    let (max_nominator_count, min_validator_bond) = (Some(0u32), 100 * crate::UNIT);
+    let (max_nominator_count, min_validator_bond, min_nominator_bond) =
+        (Some(1024u32), 2_000 * crate::UNIT, 10 * crate::UNIT);
     #[cfg(feature = "runtime-benchmarks")]
-    let (max_nominator_count, min_validator_bond) = (None::<u32>, 0u128);
+    let (max_nominator_count, min_validator_bond, min_nominator_bond) = (None::<u32>, 0u128, 0u128);
     build_struct_json_patch!(RuntimeGenesisConfig {
         foundation_membership: pallet_membership::GenesisConfig {
             members: roles
@@ -215,12 +216,13 @@ fn testnet_genesis(
             max_validator_count: None,
             max_nominator_count: max_nominator_count,
             min_validator_bond: min_validator_bond,
+            min_nominator_bond: min_nominator_bond,
             stakers: approved
                 .iter()
                 .map(|who| (
                     who.clone(),
                     who.clone(),
-                    100 * crate::UNIT,
+                    2_000 * crate::UNIT,
                     pallet_staking::StakerStatus::Validator
                 ))
                 .collect(),
@@ -613,11 +615,15 @@ mod tests {
             {
                 assert_eq!(
                     pallet_staking::MaxNominatorsCount::<crate::Runtime>::get(),
-                    Some(0)
+                    Some(1024)
                 );
                 assert_eq!(
                     pallet_staking::MinValidatorBond::<crate::Runtime>::get(),
-                    100 * crate::UNIT
+                    2_000 * crate::UNIT
+                );
+                assert_eq!(
+                    pallet_staking::MinNominatorBond::<crate::Runtime>::get(),
+                    10 * crate::UNIT
                 );
             }
             #[cfg(feature = "runtime-benchmarks")]

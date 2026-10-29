@@ -37,8 +37,10 @@ parameter_types! {
     pub const SetIdSessionEntries: u64 = 28 * 6;
     pub const FoundationMotionDuration: BlockNumber = 24 * super::super::HOURS;
     pub FoundationProposalWeight: Weight = RuntimeBlockWeights::get().max_block / 2;
+    // The voter ceiling covers approved self-votes plus nominators. MBE removes
+    // this single-page snapshot limit; until then it caps the election.
     pub ElectionBoundsConfig: ElectionBounds = ElectionBoundsBuilder::default()
-        .voters_count(64.into()).targets_count(64.into()).build();
+        .voters_count(256.into()).targets_count(64.into()).build();
 }
 impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
     type RuntimeOrigin = RuntimeOrigin;
@@ -126,7 +128,7 @@ impl pallet_staking::Config for Runtime {
     // ideal stake 50% / falloff 5%) with RewardRemainder returning to the same
     // pot, and the routes need a migration.
     type EraPayout = ();
-    type MaxExposurePageSize = ConstU32<32>;
+    type MaxExposurePageSize = ConstU32<64>;
     type NextNewSession = Session;
     #[cfg(not(feature = "runtime-benchmarks"))]
     type ElectionProvider = AdmissionElection;
@@ -142,12 +144,10 @@ impl pallet_staking::Config for Runtime {
     type VoterList = benchmark_voter_list::BenchmarkVoterList;
     type TargetList = pallet_staking::UseValidatorsMap<Self>;
     type MaxValidatorSet = MaxValidatorSetCap;
-    #[cfg(not(feature = "runtime-benchmarks"))]
-    type NominationsQuota = pallet_staking::FixedNominationsQuota<1>;
-    // The SDK nominate benchmark uses Linear<1, MaxNominations>; a singleton
-    // range panics in median-slopes analysis. Give benchmark builds two points.
-    #[cfg(feature = "runtime-benchmarks")]
-    type NominationsQuota = pallet_staking::FixedNominationsQuota<2>;
+    // Each nominator may back up to 16 validators. The SDK nominate benchmark
+    // uses Linear<1, MaxNominations>, which is a real range at 16 (a singleton
+    // range panics in median-slopes analysis), so benchmarks use the same quota.
+    type NominationsQuota = pallet_staking::FixedNominationsQuota<16>;
     type MaxUnlockingChunks = ConstU32<32>;
     type HistoryDepth = ConstU32<84>;
     type MaxControllersInDeprecationBatch = ConstU32<32>;
@@ -181,7 +181,8 @@ impl AdmissionData {
 impl ElectionDataProvider for AdmissionData {
     type AccountId = AccountId;
     type BlockNumber = BlockNumber;
-    type MaxVotesPerVoter = ConstU32<1>;
+    // A nominator's vote list is its target list, bounded by the nominations quota.
+    type MaxVotesPerVoter = ConstU32<16>;
     fn electable_targets(
         bounds: DataProviderBounds,
         page: PageIndex,
@@ -202,18 +203,45 @@ impl ElectionDataProvider for AdmissionData {
         if page != 0 {
             return Err("only one election page is supported");
         }
-        let voters: Vec<_> = Self::candidates()
-            .into_iter()
+        let targets = Self::candidates();
+        let mut voters: Vec<VoterOf<Self>> = targets
+            .iter()
             .map(|who| {
-                let stake = Staking::weight_of(&who);
+                let stake = Staking::weight_of(who);
                 (
                     who.clone(),
                     stake,
-                    vec![who].try_into().expect("one self vote fits"),
+                    vec![who.clone()].try_into().expect("one self vote fits"),
                 )
             })
             .filter(|(_, stake, _)| *stake > 0)
             .collect();
+        // Nominators are read by scanning the whole `Nominators` map, so charge for it.
+        let nominators = pallet_staking::Nominators::<Runtime>::count();
+        System::register_extra_weight_unchecked(
+            <Runtime as frame_system::Config>::DbWeight::get().reads(nominators.into()),
+            DispatchClass::Mandatory,
+        );
+        for (nominator, nominations) in pallet_staking::Nominators::<Runtime>::iter() {
+            // Approved validators vote for themselves above, so their own
+            // nominations are not counted.
+            if nominations.suppressed || targets.contains(&nominator) {
+                continue;
+            }
+            let votes: Vec<AccountId> = nominations
+                .targets
+                .into_iter()
+                .filter(|target| targets.contains(target))
+                .collect();
+            let stake = Staking::weight_of(&nominator);
+            if votes.is_empty() || stake == 0 {
+                continue;
+            }
+            let votes = votes
+                .try_into()
+                .map_err(|_| "nomination exceeds the vote bound")?;
+            voters.push((nominator, stake, votes));
+        }
         if bounds.slice_exhausted(&voters) {
             return Err("approved voter snapshot exceeds bounds");
         }
@@ -641,15 +669,24 @@ mod tests {
     }
     fn bond(who: AccountId) {
         use frame_support::traits::Currency;
-        let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&who, 1000 * UNIT);
+        let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&who, 3000 * UNIT);
         assert_ok!(Staking::bond(
             RuntimeOrigin::signed(who.clone()),
-            100 * UNIT,
+            2_000 * UNIT,
             pallet_staking::RewardDestination::Staked
         ));
         assert_ok!(Staking::validate(
             RuntimeOrigin::signed(who),
             Default::default()
+        ));
+    }
+    fn bond_nominator(who: AccountId) {
+        use frame_support::traits::Currency;
+        let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&who, 3000 * UNIT);
+        assert_ok!(Staking::bond(
+            RuntimeOrigin::signed(who),
+            100 * UNIT,
+            pallet_staking::RewardDestination::Staked
         ));
     }
     #[test]
@@ -703,26 +740,102 @@ mod tests {
             assert_ok!(<Staking as frame_support::traits::Hooks<BlockNumber>>::try_state(1));
         });
     }
-    // Benchmark builds intentionally enable nominations for the SDK fixtures.
-    #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
-    fn nominate_is_closed_directly_and_through_utility() {
+    fn nominate_is_open_directly_and_through_utility() {
         ext().execute_with(|| {
-            let who = AccountId::new([99; 32]);
-            bond(who.clone());
-            let targets = vec![crate::Address::Id(Session::validators()[0].clone())];
-            assert_noop!(
-                Staking::nominate(RuntimeOrigin::signed(who.clone()), targets.clone()),
-                pallet_staking::Error::<Runtime>::TooManyNominators
-            );
+            let direct = AccountId::new([99; 32]);
+            let batched = AccountId::new([98; 32]);
+            let target = Session::validators()[0].clone();
+            bond_nominator(direct.clone());
+            bond_nominator(batched.clone());
+            assert_ok!(Staking::nominate(
+                RuntimeOrigin::signed(direct.clone()),
+                vec![crate::Address::Id(target.clone())]
+            ));
             let call = RuntimeCall::Utility(pallet_utility::Call::batch_all {
                 calls: vec![RuntimeCall::Staking(pallet_staking::Call::nominate {
-                    targets,
+                    targets: vec![crate::Address::Id(target)],
                 })],
             });
-            assert!(call.dispatch(RuntimeOrigin::signed(who)).is_err());
-            assert_eq!(pallet_staking::Nominators::<Runtime>::count(), 0);
+            assert_ok!(call.dispatch(RuntimeOrigin::signed(batched.clone())));
+            assert!(pallet_staking::Nominators::<Runtime>::contains_key(&direct));
+            assert!(pallet_staking::Nominators::<Runtime>::contains_key(
+                &batched
+            ));
         });
+    }
+    #[test]
+    fn nominator_backs_approved_validator_with_own_stake() {
+        ext().execute_with(|| {
+            let nominator = AccountId::new([97; 32]);
+            let target = Session::validators()[0].clone();
+            bond_nominator(nominator.clone());
+            assert_ok!(Staking::nominate(
+                RuntimeOrigin::signed(nominator.clone()),
+                vec![crate::Address::Id(target.clone())]
+            ));
+            let voters = AdmissionData::electing_voters(Default::default(), 0).unwrap();
+            let (_, stake, votes) = voters
+                .iter()
+                .find(|(who, _, _)| *who == nominator)
+                .expect("nominator is an elector");
+            assert_eq!(*stake, Staking::weight_of(&nominator));
+            assert_eq!(votes.to_vec(), vec![target]);
+        });
+    }
+    #[test]
+    fn nominator_backing_only_unapproved_targets_is_absent() {
+        ext().execute_with(|| {
+            let unapproved = AccountId::new([96; 32]);
+            let nominator = AccountId::new([95; 32]);
+            bond(unapproved.clone());
+            bond_nominator(nominator.clone());
+            assert_ok!(Staking::nominate(
+                RuntimeOrigin::signed(nominator.clone()),
+                vec![crate::Address::Id(unapproved)]
+            ));
+            let voters = AdmissionData::electing_voters(Default::default(), 0).unwrap();
+            assert!(voters.iter().all(|(who, _, _)| *who != nominator));
+        });
+    }
+    #[test]
+    fn nominator_votes_stay_inside_electable_targets() {
+        ext().execute_with(|| {
+            let unapproved = AccountId::new([94; 32]);
+            let nominator = AccountId::new([93; 32]);
+            let target = Session::validators()[0].clone();
+            bond(unapproved.clone());
+            bond_nominator(nominator.clone());
+            assert_ok!(Staking::nominate(
+                RuntimeOrigin::signed(nominator.clone()),
+                vec![
+                    crate::Address::Id(unapproved.clone()),
+                    crate::Address::Id(target.clone())
+                ]
+            ));
+            let electable = AdmissionData::electable_targets(Default::default(), 0).unwrap();
+            let voters = AdmissionData::electing_voters(Default::default(), 0).unwrap();
+            let (_, _, votes) = voters
+                .iter()
+                .find(|(who, _, _)| *who == nominator)
+                .expect("nominator keeps its electable target");
+            assert_eq!(votes.to_vec(), vec![target]);
+            assert!(votes.iter().all(|vote| electable.contains(vote)));
+            assert!(!votes.contains(&unapproved));
+        });
+    }
+    #[test]
+    fn nominator_bounds_stay_within_their_ceilings() {
+        // `MaxNominators` bounds the proof-verification nominator count, so it
+        // must cover a full exposure page; the vote list must hold a full quota.
+        use frame_support::traits::Get;
+        assert!(
+            <<Runtime as pallet_babe::Config>::MaxNominators as Get<u32>>::get()
+                >= <<Runtime as pallet_staking::Config>::MaxExposurePageSize as Get<u32>>::get()
+        );
+        assert!(
+            <<AdmissionData as ElectionDataProvider>::MaxVotesPerVoter as Get<u32>>::get() >= 16
+        );
     }
     #[test]
     fn migration_closes_missing_nominator_limit() {
@@ -920,7 +1033,7 @@ mod tests {
             use sp_core::proof_of_possession::ProofOfPossessionGenerator;
             use sp_core::Pair;
             let who = AccountId::new([91; 32]);
-            let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&who, 1000 * UNIT);
+            let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&who, 3000 * UNIT);
             let mut babe = sr25519_fndsa512::Pair::from_string("//Charlie", None).unwrap();
             let mut grandpa = ed25519_fndsa512::Pair::from_string("//Charlie", None).unwrap();
             let keys: crate::BoxedSessionKeys = crate::SessionKeys {
@@ -947,7 +1060,7 @@ mod tests {
                 RuntimeCall::Utility(pallet_utility::Call::batch_all {
                     calls: vec![
                         RuntimeCall::Staking(pallet_staking::Call::bond {
-                            value: 100 * UNIT,
+                            value: 2_000 * UNIT,
                             payee: pallet_staking::RewardDestination::Staked,
                         }),
                         RuntimeCall::Session(pallet_session::Call::set_keys {
