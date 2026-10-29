@@ -45,7 +45,6 @@ pallet-quantum-pow.workspace = true
 pallet-revive.workspace = true
 quantum-validation.workspace = true
 pallet-session = { workspace = true, features = ["historical"] }
-pallet-sudo.workspace = true
 pallet-template.workspace = true
 pallet-xqvm.workspace = true
 pallet-timestamp.workspace = true
@@ -120,7 +119,6 @@ std = [
   "pallet-revive/std",
   "quantum-validation/std",
   "pallet-session/std",
-  "pallet-sudo/std",
   "pallet-template/std",
   "pallet-timestamp/std",
   "pallet-transaction-payment-rpc-runtime-api/std",
@@ -171,7 +169,6 @@ runtime-benchmarks = [
   "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-quantum-pow/runtime-benchmarks",
   "pallet-revive/runtime-benchmarks",
-  "pallet-sudo/runtime-benchmarks",
   "pallet-template/runtime-benchmarks",
   "pallet-timestamp/runtime-benchmarks",
   "pallet-transaction-payment/runtime-benchmarks",
@@ -202,7 +199,6 @@ try-runtime = [
   "pallet-quantum-pow/try-runtime",
   "pallet-revive/try-runtime",
   "pallet-session/try-runtime",
-  "pallet-sudo/try-runtime",
   "pallet-template/try-runtime",
   "pallet-timestamp/try-runtime",
   "pallet-transaction-payment/try-runtime",

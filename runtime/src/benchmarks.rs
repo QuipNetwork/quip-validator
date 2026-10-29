@@ -41,7 +41,6 @@ frame_benchmarking::define_benchmarks!(
     [pallet_quantum_pow, QuantumPow]
     [pallet_revive, Revive]
     [pallet_timestamp, Timestamp]
-    [pallet_sudo, Sudo]
     [pallet_template, Template]
     [pallet_utility, Utility]
     [pallet_xqvm, Xqvm]

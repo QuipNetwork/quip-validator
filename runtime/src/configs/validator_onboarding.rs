@@ -11,7 +11,15 @@ use frame_support::traits::{EitherOfDiverse, Nothing};
 
 pub type FoundationOrigin =
     pallet_collective::EnsureProportionAtLeast<AccountId, pallet_collective::Instance1, 2, 3>;
+/// Removing a council member needs a strictly stronger mandate than ordinary
+/// decisions: 4/5 of the seats. At the V0 size of six that is five votes, so a
+/// member can never be removed by the same threshold that appoints them, and a
+/// bare majority cannot clear a seat.
+pub type CouncilRemovalOrigin =
+    pallet_collective::EnsureProportionAtLeast<AccountId, pallet_collective::Instance1, 4, 5>;
 pub type FoundationOrRoot = EitherOfDiverse<frame_system::EnsureRoot<AccountId>, FoundationOrigin>;
+pub type CouncilRemovalOrRoot =
+    EitherOfDiverse<frame_system::EnsureRoot<AccountId>, CouncilRemovalOrigin>;
 /// Foundation privileges require actual affirmative votes. Neither the prime
 /// nor a simple majority may convert abstentions into approval at expiry.
 pub struct AbstentionsAlwaysNo;
@@ -52,7 +60,10 @@ impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
 impl pallet_membership::Config<pallet_membership::Instance1> for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type AddOrigin = FoundationOrRoot;
-    type RemoveOrigin = FoundationOrRoot;
+    // Appointment, swap and reset stay at the ordinary 2/3 threshold; only
+    // removal is raised to 4/5 so a seat cannot be cleared by the body that
+    // filled it.
+    type RemoveOrigin = CouncilRemovalOrRoot;
     type SwapOrigin = FoundationOrRoot;
     type ResetOrigin = FoundationOrRoot;
     type PrimeOrigin = FoundationOrRoot;
@@ -100,6 +111,17 @@ impl pallet_staking::Config for Runtime {
     // validator share of 40M QUIP/year is not allocated in the companion spec.
     // Phase 0 #3 is open: mint nothing until specified; any nonzero payout needs
     // plan §6.4 reservation/accounting for delayed claims and era remainders.
+    //
+    // TODO(v0-governance): staking rewards. V0 plan §5.1 fixes the staking
+    // emission share at 25% of the 40M QUIP/yr envelope (10M QUIP/yr), added as
+    // a third emission route alongside ISING_SUBNET and QVRF_SUBNET (currently
+    // 50/50, and `valid_routes` requires the shares to sum to 100%). The 25% is
+    // TBD pending calibration against the final genesis supply: the payout is a
+    // fixed annual amount, so APR = share / staked, which is ~2%/yr at 10M/yr
+    // against 500M staked. EraPayout must then draw that share
+    // (pallet_staking::inflation::compute_total_payout, min 2.5% / max 10% /
+    // ideal stake 50% / falloff 5%) with RewardRemainder returning to the same
+    // pot, and the routes need a migration.
     type EraPayout = ();
     type MaxExposurePageSize = ConstU32<32>;
     type NextNewSession = Session;

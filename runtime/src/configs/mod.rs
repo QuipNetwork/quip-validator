@@ -388,12 +388,6 @@ impl pallet_revive::Config for Runtime {
     type GasScale = ConstU32<1_000>;
 }
 
-impl pallet_sudo::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type RuntimeCall = RuntimeCall;
-    type WeightInfo = pallet_sudo::weights::SubstrateWeight<Runtime>;
-}
-
 /// Configure the pallet-template in pallets/template.
 impl pallet_template::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
@@ -629,7 +623,8 @@ parameter_types! {
 ///
 /// Genesis presets can record each preset's actual root account directly, but
 /// runtime migrations need one chain-independent account baked into the
-/// runtime. Operator 1 is the current quip-testnet sudo holder.
+/// runtime. This is operator 1's account on quip-testnet; note that spec 120
+/// removed `pallet-sudo`, so the attribution no longer implies any sudo key.
 pub const QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58: &str =
     "5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi";
 
@@ -863,4 +858,6 @@ mod xqvm_weights {
     }
 }
 
+#[cfg(test)]
+mod governance_matrix;
 pub mod validator_onboarding;

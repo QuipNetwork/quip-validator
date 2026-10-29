@@ -17,7 +17,7 @@
 
 use crate::{
     AccountId, BalancesConfig, QuantumComputeMempoolConfig, RuntimeGenesisConfig, SessionConfig,
-    SessionKeys, SudoConfig, BABE_GENESIS_EPOCH_CONFIG,
+    SessionKeys, BABE_GENESIS_EPOCH_CONFIG,
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
@@ -116,8 +116,13 @@ fn tx_account_from_hex(hex: &str, source: &str) -> AccountId {
 struct GenesisRoles {
     foundation_members: Vec<AccountId>,
     faucet_authority: AccountId,
-    sudo_key: Option<AccountId>,
     ising_spec_builder: AccountId,
+    /// Reject a genesis where a council seat is also a validator operator.
+    /// Local presets keep the single-key convenience and leave this off; the
+    /// mainnet preset must turn it on — V0 governance exists to separate the
+    /// two roles, and a chain that starts with council == operators cannot
+    /// reach that state without a governance change.
+    require_council_disjoint: bool,
 }
 
 // Small local presets retain their single-key convenience. Rehearsal and the
@@ -127,8 +132,23 @@ fn development_roles() -> GenesisRoles {
     GenesisRoles {
         foundation_members: vec![alice.clone()],
         faucet_authority: alice.clone(),
-        sudo_key: Some(alice.clone()),
         ising_spec_builder: alice,
+        require_council_disjoint: false,
+    }
+}
+
+/// Council seats must not double as validator operators.
+fn assert_council_disjoint(
+    council: &[AccountId],
+    operators: &[AccountId],
+    require: bool,
+) -> Result<(), &'static str> {
+    if !require {
+        return Ok(());
+    }
+    match council.iter().find(|who| operators.contains(who)) {
+        Some(_) => Err("council member is also a validator operator"),
+        None => Ok(()),
     }
 }
 
@@ -164,6 +184,13 @@ fn testnet_genesis(
         roles.foundation_members.len(),
         "duplicate Foundation member"
     );
+    if let Err(why) = assert_council_disjoint(
+        &roles.foundation_members,
+        &approved,
+        roles.require_council_disjoint,
+    ) {
+        panic!("{why}");
+    }
     // SDK benchmark setups require low-bond validators and nominators. Keep
     // the production chainspec limits unchanged in every non-benchmark build.
     #[cfg(not(feature = "runtime-benchmarks"))]
@@ -251,6 +278,13 @@ fn testnet_genesis(
         emission_controller: pallet_emission_controller::GenesisConfig {
             enabled: true,
             start_at: None,
+            // TODO(v0-governance): add the staking route. V0 plan §5.1/§5.7 sets
+            // the staking emission share at 25% of the 40M QUIP/yr envelope
+            // (10M QUIP/yr), so mainnet routes become e.g. 37.5 / 37.5 / 25.
+            // The 25% is TBD: it must be calibrated against the final genesis
+            // supply (APR = share / staked) before launch. Do not add the route
+            // until pallet_staking has a real EraPayout, or the staking share
+            // would accrue into a pot nothing pays out of.
             routes: vec![
                 (
                     pallet_emission_controller::ISING_SUBNET,
@@ -264,9 +298,6 @@ fn testnet_genesis(
             // Test currency only; mainnet MUST use zero plus the disabled fuse.
             faucet_budget: 1_000_000_000 * crate::UNIT,
             ..Default::default()
-        },
-        sudo: SudoConfig {
-            key: roles.sudo_key
         },
     })
 }
@@ -355,8 +386,12 @@ pub fn local_three_validator_config_genesis() -> Value {
 /// each operator's host.
 ///
 /// Fresh spec-119 genesis gives all three operators Foundation membership.
-/// Operator 1 remains sudo, faucet authority and Ising spec builder until ops
+/// Operator 1 is also faucet authority and Ising spec builder until ops
 /// provisions separate role accounts; this preset does not migrate live state.
+///
+/// Spec 120 drops `pallet_sudo` entirely, so no preset carries a sudo key. The
+/// council reaches Root through `ValidatorAdmission::dispatch_as_root` behind a
+/// 2/3 collective motion instead of a single-key escape hatch.
 pub fn quip_testnet_config_genesis() -> Value {
     let op1_babe = babe_authority_from_public_hex(
         include_str!("genesis_quip_testnet/operator_1_babe.hex"),
@@ -409,12 +444,14 @@ pub fn quip_testnet_config_genesis() -> Value {
         ],
         GenesisRoles {
             foundation_members: vec![op1_account.clone(), op2_account, op3_account],
-            // TODO(ops): derive and commit a dedicated faucet public account and
-            // coordinate sudo multisig custody before changing these genesis defaults.
-            // Post-genesis, rotate via faucetOps.set_authority before faucet deployment.
+            // TODO(ops): derive and commit a dedicated faucet public account before
+            // changing this genesis default. Post-genesis, rotate via
+            // faucetOps.set_authority before faucet deployment.
             faucet_authority: op1_account.clone(),
-            sudo_key: Some(op1_account.clone()),
             ising_spec_builder: op1_account,
+            // The public testnet predates V0 governance: council seats are the
+            // three operators, which mainnet must not repeat (W6 / QUI-2065).
+            require_council_disjoint: false,
         },
         pallet_evm_chain_id::TESTNET_CHAIN_ID,
         3,
@@ -430,13 +467,12 @@ pub fn rehearsal_config_genesis() -> Value {
         .map(|seed| tx_account_from_seed(seed))
         .collect();
     foundation_members.sort();
-    let sudo = crate::Multisig::multi_account_id(&foundation_members, 2);
     let faucet_authority = tx_account_from_seed("//Eve");
     let mut endowed_accounts: Vec<_> = seeds
         .iter()
         .map(|seed| tx_account_from_seed(seed))
         .collect();
-    endowed_accounts.extend([faucet_authority.clone(), sudo.clone()]);
+    endowed_accounts.push(faucet_authority.clone());
     testnet_genesis(
         seeds
             .iter()
@@ -452,8 +488,8 @@ pub fn rehearsal_config_genesis() -> Value {
         GenesisRoles {
             foundation_members,
             faucet_authority,
-            sudo_key: Some(sudo),
             ising_spec_builder: tx_account_from_seed("//Alice"),
+            require_council_disjoint: false,
         },
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
         4,
@@ -547,8 +583,12 @@ mod tests {
             .expect("default runtime genesis config serialises");
         let expected_faucet: Option<AccountId> =
             serde_json::from_value(patch["faucetOps"]["authority"].clone()).unwrap();
-        let expected_sudo: Option<AccountId> =
-            serde_json::from_value(patch["sudo"]["key"].clone()).unwrap();
+        // Spec 120 removed pallet-sudo: no preset may carry a sudo key, and a
+        // stray one must fail the genesis build rather than silently return.
+        assert!(
+            patch.get("sudo").is_none(),
+            "spec 120 genesis must not configure pallet_sudo"
+        );
         let mut expected_members: Vec<AccountId> =
             serde_json::from_value(patch["foundationMembership"]["members"].clone()).unwrap();
         expected_members.sort();
@@ -565,7 +605,6 @@ mod tests {
                 pallet_faucet_ops::Authority::<crate::Runtime>::get(),
                 expected_faucet
             );
-            assert_eq!(pallet_sudo::Key::<crate::Runtime>::get(), expected_sudo);
             assert_eq!(
                 pallet_collective::Members::<crate::Runtime, pallet_collective::Instance1>::get(),
                 expected_members
@@ -628,18 +667,27 @@ mod tests {
             patch["faucetOps"]["authority"],
             serde_json::to_value(&faucet).unwrap()
         );
-        let sudo = crate::Multisig::multi_account_id(&expected, 2);
-        assert_eq!(patch["sudo"]["key"], serde_json::to_value(&sudo).unwrap());
-        assert!(!members.contains(&sudo));
-        assert_ne!(sudo, faucet);
         let balances: Vec<(AccountId, crate::Balance)> =
             serde_json::from_value(patch["balances"]["balances"].clone()).unwrap();
-        for account in [faucet, sudo] {
-            assert!(balances
-                .iter()
-                .any(|(who, balance)| who == &account && *balance > 0));
-        }
+        assert!(balances
+            .iter()
+            .any(|(who, balance)| who == &faucet && *balance > 0));
         assert_preset_builds_storage_with_chain_id(patch, pallet_evm_chain_id::LOCAL_CHAIN_ID);
+    }
+
+    /// V0 governance exists to separate the council from the validator set.
+    /// The mainnet preset turns the requirement on; local presets keep the
+    /// single-key convenience.
+    #[test]
+    fn council_must_be_disjoint_from_operators_when_required() {
+        let seat = AccountId::from([7; 32]);
+        let other = AccountId::from([8; 32]);
+        assert_eq!(
+            assert_council_disjoint(&[seat.clone()], &[seat.clone()], true),
+            Err("council member is also a validator operator")
+        );
+        assert!(assert_council_disjoint(&[seat.clone()], &[seat], false).is_ok());
+        assert!(assert_council_disjoint(&[other], &[AccountId::from([9; 32])], true).is_ok());
     }
 
     #[test]
@@ -674,7 +722,6 @@ mod tests {
         assert_eq!(members.len(), 3);
         assert_eq!(members, approved);
         assert!(members[0] != members[1] && members[0] != members[2] && members[1] != members[2]);
-        assert_eq!(patch["sudo"]["key"], members[0]);
         assert_eq!(patch["faucetOps"]["authority"], members[0]);
         assert_eq!(
             patch["quantumComputeMempool"]["defaultIsingSpecBuilder"],

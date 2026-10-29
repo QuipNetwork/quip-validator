@@ -265,7 +265,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // with an index-building migration, and `ResultReady` plus `OrderResults`
     // move from `claim_reward` to expiry. Call encodings are unchanged, so
     // `transaction_version` stays at 7.
-    spec_version: 119,
+    // Bumped to 120 for V0 governance. `pallet-sudo` (index 6) is removed, so
+    // Root is reachable only through the council's
+    // `ValidatorAdmission::dispatch_as_root`; pallet index 6 is retired and
+    // must not be reused. Membership removal moves from 2/3 to 4/5 while
+    // ordinary council decisions stay at 2/3. No call encoding changes, so
+    // `transaction_version` stays at 7.
+    spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,
@@ -1672,8 +1678,10 @@ mod runtime {
     #[runtime::pallet_index(5)]
     pub type TransactionPayment = pallet_transaction_payment;
 
-    #[runtime::pallet_index(6)]
-    pub type Sudo = pallet_sudo;
+    // Pallet index 6 is retired. Spec 120 removed `pallet-sudo` so that Root is
+    // reachable only through the council: a 2/3 motion dispatching via
+    // `ValidatorAdmission::dispatch_as_root`. Never reuse index 6 for a new
+    // pallet — its index is part of every stored storage key and extrinsic.
 
     // Include the custom logic from the pallet-template in the runtime.
     #[runtime::pallet_index(7)]

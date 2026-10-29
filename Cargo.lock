@@ -7655,21 +7655,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-sudo"
-version = "46.0.0"
-source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=845eb9986c7131056b077d14ad7249f9d65ca111#845eb9986c7131056b077d14ad7249f9d65ca111"
-dependencies = [
- "docify",
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "parity-scale-codec",
- "scale-info",
- "sp-io",
- "sp-runtime",
-]
-
-[[package]]
 name = "pallet-template"
 version = "0.4.0"
 dependencies = [
@@ -9298,7 +9283,6 @@ dependencies = [
  "pallet-revive",
  "pallet-session",
  "pallet-staking",
- "pallet-sudo",
  "pallet-template",
  "pallet-timestamp",
  "pallet-transaction-payment",
