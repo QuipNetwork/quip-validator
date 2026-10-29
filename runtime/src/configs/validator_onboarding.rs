@@ -29,13 +29,16 @@ impl pallet_collective::DefaultVote for AbstentionsAlwaysNo {
     }
 }
 parameter_types! {
+    /// V0 validator-set cap (50, council-configurable later). Distinct from the
+    /// 64-wide authority and election bounds, which are headroom above it.
+    pub const MaxValidatorSetCap: u32 = 50;
     pub const SessionsPerEra: u32 = 6;
     pub const BondingDuration: u32 = 28;
     pub const SetIdSessionEntries: u64 = 28 * 6;
     pub const FoundationMotionDuration: BlockNumber = 24 * super::super::HOURS;
     pub FoundationProposalWeight: Weight = RuntimeBlockWeights::get().max_block / 2;
     pub ElectionBoundsConfig: ElectionBounds = ElectionBoundsBuilder::default()
-        .voters_count(32.into()).targets_count(32.into()).build();
+        .voters_count(64.into()).targets_count(64.into()).build();
 }
 impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
     type RuntimeOrigin = RuntimeOrigin;
@@ -75,7 +78,7 @@ impl pallet_membership::Config<pallet_membership::Instance1> for Runtime {
 impl pallet_validator_admission::Config for Runtime {
     type FoundationOrigin = FoundationOrigin;
     type GovernanceCall = RuntimeCall;
-    type MaxAuthorities = ConstU32<32>;
+    type MaxAuthorities = ConstU32<64>;
     type Graduation = ();
     type WeightInfo = pallet_validator_admission::weights::SubstrateWeight<Runtime>;
 }
@@ -138,7 +141,7 @@ impl pallet_staking::Config for Runtime {
     #[cfg(feature = "runtime-benchmarks")]
     type VoterList = benchmark_voter_list::BenchmarkVoterList;
     type TargetList = pallet_staking::UseValidatorsMap<Self>;
-    type MaxValidatorSet = ConstU32<32>;
+    type MaxValidatorSet = MaxValidatorSetCap;
     #[cfg(not(feature = "runtime-benchmarks"))]
     type NominationsQuota = pallet_staking::FixedNominationsQuota<1>;
     // The SDK nominate benchmark uses Linear<1, MaxNominations>; a singleton
@@ -218,8 +221,8 @@ impl ElectionDataProvider for AdmissionData {
     }
     fn desired_targets() -> data_provider::Result<u32> {
         let desired = <Staking as ElectionDataProvider>::desired_targets()?;
-        if desired > 32 {
-            return Err("requested validator count exceeds authority bound");
+        if desired > MaxValidatorSetCap::get() {
+            return Err("requested validator count exceeds the admitted validator set cap");
         }
         Ok(desired)
     }
@@ -235,8 +238,8 @@ impl onchain::Config for OnChainConfig {
     type DataProvider = AdmissionData;
     type WeightInfo = frame_election_provider_support::weights::SubstrateWeight<Runtime>;
     type Bounds = ElectionBoundsConfig;
-    type MaxBackersPerWinner = ConstU32<32>;
-    type MaxWinnersPerPage = ConstU32<32>;
+    type MaxBackersPerWinner = ConstU32<64>;
+    type MaxWinnersPerPage = ConstU32<64>;
 }
 // The SDK map has an unimplemented benchmark score-update hook. Delegate all
 // actual list operations to that same map; it has no score-dependent ordering,
@@ -338,9 +341,9 @@ impl ElectionProvider for AdmissionElection {
     type AccountId = AccountId;
     type BlockNumber = BlockNumber;
     type Error = <FilteredElection as ElectionProvider>::Error;
-    type MaxWinnersPerPage = ConstU32<32>;
-    type MaxBackersPerWinner = ConstU32<32>;
-    type MaxBackersPerWinnerFinal = ConstU32<32>;
+    type MaxWinnersPerPage = ConstU32<64>;
+    type MaxBackersPerWinner = ConstU32<64>;
+    type MaxBackersPerWinnerFinal = ConstU32<64>;
     type Pages = ConstU32<1>;
     type DataProvider = Staking;
     fn elect(page: PageIndex) -> Result<BoundedSupportsOf<Self>, Self::Error> {
@@ -770,7 +773,7 @@ mod tests {
     #[test]
     fn election_rejects_out_of_bound_desired_count() {
         ext().execute_with(|| {
-            pallet_staking::ValidatorCount::<Runtime>::put(33);
+            pallet_staking::ValidatorCount::<Runtime>::put(51);
             assert!(AdmissionElection::elect(0).is_err());
         });
     }

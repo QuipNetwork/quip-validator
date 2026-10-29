@@ -134,8 +134,9 @@ impl frame_system::Config for Runtime {
 }
 
 parameter_types! {
-    // BABE epochs are defined in slots. Keep them short enough for local development.
-    pub const EpochDuration: u64 = 10 * super::MINUTES as u64;
+    // BABE epochs are defined in slots. One epoch is one staking session (ShouldEndSession = Babe),
+    // so a 4h session with SessionsPerEra = 6 gives a 24h era.
+    pub const EpochDuration: u64 = 4 * super::HOURS as u64;
     pub const ExpectedBlockTime: u64 = SLOT_DURATION;
 }
 
@@ -145,7 +146,7 @@ impl pallet_babe::Config for Runtime {
     type EpochChangeTrigger = pallet_babe::ExternalTrigger;
     type DisabledValidators = ();
     type WeightInfo = ();
-    type MaxAuthorities = ConstU32<32>;
+    type MaxAuthorities = ConstU32<64>;
     type MaxNominators = ConstU32<0>;
     type KeyOwnerProof = sp_core::Void;
     type EquivocationReportSystem = ();
@@ -155,7 +156,7 @@ impl pallet_grandpa::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
 
     type WeightInfo = ();
-    type MaxAuthorities = ConstU32<32>;
+    type MaxAuthorities = ConstU32<64>;
     type MaxNominators = ConstU32<0>;
     type MaxSetIdSessionEntries = validator_onboarding::SetIdSessionEntries;
 
@@ -733,6 +734,15 @@ impl pallet_miner_registry::Config for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn era_clock_is_four_hour_sessions_and_day_long_eras() {
+        assert_eq!(EpochDuration::get(), 4 * crate::HOURS as u64);
+        assert_eq!(
+            validator_onboarding::SessionsPerEra::get() as u64 * EpochDuration::get(),
+            crate::DAYS as u64
+        );
+    }
 
     #[test]
     fn runtime_block_weights_use_benchmarked_overhead() {

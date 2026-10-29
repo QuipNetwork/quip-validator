@@ -104,7 +104,12 @@ pub mod pallet {
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn integrity_test() {
-            assert!(T::MaxAuthorities::get() > 0 && T::MaxAuthorities::get() <= 32);
+            // `Approved` is a `BoundedBTreeSet<_, MaxAuthorities>`, so this bound must
+            // hold at least the whole admitted validator set and must not exceed the
+            // session authority bound (Babe/Grandpa `MaxAuthorities`), or an admitted
+            // validator could never hold a session key.
+            let max = T::MaxAuthorities::get();
+            assert!(max > 0 && max <= 64);
         }
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
