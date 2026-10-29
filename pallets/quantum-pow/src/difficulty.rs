@@ -6,7 +6,12 @@ use crate::types::DifficultyConfig;
 
 // Difficulty uses elapsed chain blocks, not timestamps. The target gates
 // easing; EpochLength sets its rate unit. Production config uses 100 for both.
-const FAST_PROOF_BLOCKS: u64 = 60;
+pub(crate) const FAST_PROOF_BLOCKS: u64 = 60;
+/// Historical value of the round-length target. It is no longer the live value:
+/// every entry point takes the current target from the pallet (council-settable,
+/// defaulting to the runtime's `TargetProofBlocks`). Kept so the difficulty
+/// tests can pin the pre-120 behaviour they were written against.
+#[cfg(test)]
 pub(crate) const TARGET_PROOF_BLOCKS: u64 = 100;
 
 /// One energy unit per adjustment, limited by the winning energy gap when
@@ -118,14 +123,18 @@ impl EnergyCurve {
 // interpolation in between. Every win hardens, so the graduated band is what
 // keeps a slow qblock on the gentle 5% rate instead of the fast-qblock 35%
 // one. Easing between wins comes only from decay (`apply_decay`).
-fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8]) -> u32 {
+fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8], target_proof_blocks: u32) -> u32 {
+    // The band interpolates between the fast and slow anchors, so the target
+    // must stay strictly above `FAST_PROOF_BLOCKS` or the denominator vanishes.
+    // `set_target_proof_blocks` enforces that bound; clamp defensively anyway.
+    let target = u64::from(target_proof_blocks).max(FAST_PROOF_BLOCKS + 1);
     let (base, variance) = if mining_time_blocks < FAST_PROOF_BLOCKS {
         (350_u32, 300_u32)
-    } else if mining_time_blocks > TARGET_PROOF_BLOCKS {
+    } else if mining_time_blocks > target {
         (50_u32, 40_u32)
     } else {
-        let progress = ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000
-            / (TARGET_PROOF_BLOCKS - FAST_PROOF_BLOCKS)) as u32;
+        let progress =
+            ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000 / (target - FAST_PROOF_BLOCKS)) as u32;
         (
             350 - ((350 - 50) * progress / 1000),
             300 - ((300 - 40) * progress / 1000),
@@ -143,8 +152,9 @@ fn sample_adjustment_milli(mining_time_blocks: u64, seed: &[u8]) -> u32 {
     min_rate + (sample % (span + 1)) as u32
 }
 
-/// Ease the threshold only for blocks strictly past `TARGET_PROOF_BLOCKS`.
-/// The first 100 blocks contribute no decay, regardless of `epoch_length`.
+/// Ease the threshold only for blocks strictly past the round-length target.
+/// The first `target_proof_blocks` blocks contribute no decay, regardless of
+/// `epoch_length`.
 /// At block 101, exactly one block of overdue easing accrues. Each read
 /// recomputes from the stored baseline, so rounding does not compound.
 /// Diversity and minimum solution count remain unchanged.
@@ -153,8 +163,9 @@ pub fn apply_decay(
     elapsed_blocks: u32,
     epoch_length: u32,
     curve: EnergyCurve,
+    target_proof_blocks: u32,
 ) -> DifficultyConfig {
-    let overdue = elapsed_blocks.saturating_sub(TARGET_PROOF_BLOCKS as u32);
+    let overdue = elapsed_blocks.saturating_sub(target_proof_blocks);
     if curve.max_milli <= curve.min_milli || overdue == 0 || epoch_length == 0 {
         return current;
     }
@@ -216,12 +227,14 @@ pub fn adjust_on_proof(
     mining_time_blocks: u64,
     curve: EnergyCurve,
     randomness_seed: &[u8],
+    target_proof_blocks: u32,
 ) -> DifficultyConfig {
     let gap = active.max_energy_milli.saturating_sub(winning_energy_milli);
     if gap <= 0 {
         return active;
     }
-    let rate_milli = sample_adjustment_milli(mining_time_blocks, randomness_seed);
+    let rate_milli =
+        sample_adjustment_milli(mining_time_blocks, randomness_seed, target_proof_blocks);
     let geometric = libm::round(gap as f64 * f64::from(rate_milli) / 1000.0) as i64;
     let delta = geometric
         .max(MIN_ENERGY_DELTA_MILLI)
@@ -252,6 +265,7 @@ pub fn current_difficulty(
     last_proof_block: u32,
     epoch_length: u32,
     curve: Option<EnergyCurve>,
+    target_proof_blocks: u32,
 ) -> DifficultyConfig {
     if last_proof_block == 0 || epoch_length == 0 {
         return base_difficulty;
@@ -261,7 +275,13 @@ pub fn current_difficulty(
         return base_difficulty;
     }
     match curve {
-        Some(curve) => apply_decay(base_difficulty, elapsed, epoch_length, curve),
+        Some(curve) => apply_decay(
+            base_difficulty,
+            elapsed,
+            epoch_length,
+            curve,
+            target_proof_blocks,
+        ),
         None => base_difficulty,
     }
 }

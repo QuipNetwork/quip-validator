@@ -74,6 +74,9 @@ parameter_types! {
     pub const BlockReward: Balance = 50;
     pub const MinBlockReward: Balance = 1;
     pub const MaxBlockReward: Balance = 1_000;
+    pub const TargetProofBlocks: u32 = 100;
+    pub const MinTargetProofBlocks: u32 = 80;
+    pub const MaxTargetProofBlocks: u32 = 400;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
 }
@@ -110,6 +113,9 @@ impl pallet_quantum_pow::Config for Test {
     type MinBlockReward = MinBlockReward;
     type MaxBlockReward = MaxBlockReward;
     type AdminOrigin = frame_system::EnsureRoot<u64>;
+    type TargetProofBlocks = TargetProofBlocks;
+    type MinTargetProofBlocks = MinTargetProofBlocks;
+    type MaxTargetProofBlocks = MaxTargetProofBlocks;
     type MaxProofsPerBlock = MaxProofsPerBlock;
     type MaxAllowedValues = MaxAllowedValues;
     type CurveCEasyMilli = ConstU32<700>;

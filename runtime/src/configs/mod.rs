@@ -582,6 +582,12 @@ parameter_types! {
     /// subnet pot can pay out before the emission budget is re-planned.
     pub const QuantumPowMinBlockReward: Balance = UNIT / 10;
     pub const QuantumPowMaxBlockReward: Balance = 100 * UNIT;
+    /// Round-length target for the difficulty controller, in blocks (~10 min at
+    /// 6s blocks), and the council's allowed range. The floor sits above the
+    /// fast-proof anchor (60 blocks) so the hardening band keeps an interior.
+    pub const QuantumPowTargetProofBlocks: u32 = 100;
+    pub const QuantumPowMinTargetProofBlocks: u32 = 80;
+    pub const QuantumPowMaxTargetProofBlocks: u32 = 400;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
     /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
     /// and `allowed_spin_values` per registered topology. Set well above the
@@ -672,8 +678,12 @@ impl pallet_quantum_pow::Config for Runtime {
     type BlockReward = QuantumPowBlockReward;
     type MinBlockReward = QuantumPowMinBlockReward;
     type MaxBlockReward = QuantumPowMaxBlockReward;
-    // QBlock reward changes are council business (2/3 motion), not Root.
+    // QBlock reward and round-length changes are council business (2/3
+    // motion), not Root.
     type AdminOrigin = validator_onboarding::FoundationOrRoot;
+    type TargetProofBlocks = QuantumPowTargetProofBlocks;
+    type MinTargetProofBlocks = QuantumPowMinTargetProofBlocks;
+    type MaxTargetProofBlocks = QuantumPowMaxTargetProofBlocks;
     type RewardPayment = pallet_emission_controller::SubnetRewards<
         Runtime,
         { pallet_emission_controller::ISING_SUBNET },

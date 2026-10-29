@@ -89,10 +89,7 @@ mod tests {
                 DispatchError::BadOrigin
             );
             // Four of six is exactly 2/3.
-            assert_ok!(ValidatorAdmission::approve(
-                council_origin(4),
-                candidate()
-            ));
+            assert_ok!(ValidatorAdmission::approve(council_origin(4), candidate()));
             assert!(pallet_validator_admission::Approved::<Runtime>::get().contains(&candidate()));
         });
     }
@@ -164,7 +161,10 @@ mod tests {
             // Removing a seat needs 5 of 6; 4 of 6 (enough to appoint) is not
             // enough to remove.
             assert_noop!(
-                FoundationMembership::remove_member(council_origin(4), into_member(outgoing.clone())),
+                FoundationMembership::remove_member(
+                    council_origin(4),
+                    into_member(outgoing.clone())
+                ),
                 DispatchError::BadOrigin
             );
             assert_ok!(FoundationMembership::remove_member(
@@ -172,7 +172,10 @@ mod tests {
                 into_member(outgoing.clone())
             ));
             assert!(!pallet_collective::Members::<Runtime, Instance1>::get().contains(&outgoing));
-            assert_eq!(pallet_collective::Members::<Runtime, Instance1>::get().len(), 5);
+            assert_eq!(
+                pallet_collective::Members::<Runtime, Instance1>::get().len(),
+                5
+            );
         });
     }
 
@@ -214,6 +217,30 @@ mod tests {
             assert_noop!(
                 crate::QuantumPow::set_block_reward(council_origin(4), max + 1),
                 pallet_quantum_pow::Error::<Runtime>::BlockRewardOutOfBounds
+            );
+        });
+    }
+
+    /// QBlock round length is the second half of the same council knob: the
+    /// difficulty controller's decay gate and hardening band both read it.
+    #[test]
+    fn qblock_round_length_is_council_settable_and_bounded() {
+        use frame_support::traits::Get;
+
+        new_test_ext().execute_with(|| {
+            let max = <crate::configs::QuantumPowMaxTargetProofBlocks as Get<u32>>::get();
+            assert_noop!(
+                crate::QuantumPow::set_target_proof_blocks(council_origin(3), 200),
+                DispatchError::BadOrigin
+            );
+            assert_ok!(crate::QuantumPow::set_target_proof_blocks(
+                council_origin(4),
+                200
+            ));
+            assert_eq!(crate::QuantumPow::target_proof_blocks(), 200);
+            assert_noop!(
+                crate::QuantumPow::set_target_proof_blocks(council_origin(4), max + 1),
+                pallet_quantum_pow::Error::<Runtime>::TargetProofBlocksOutOfBounds
             );
         });
     }

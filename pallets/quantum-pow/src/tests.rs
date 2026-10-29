@@ -474,12 +474,24 @@ fn set_default_topology_repoints_default_and_curve() {
         LastProofBlock::<Test>::put(1);
         System::set_block_number(121); // 120 blocks elapsed, epoch_length = 20
 
-        let expected = difficulty::apply_decay(initial, 120, 20, curve_b);
+        let expected = difficulty::apply_decay(
+            initial,
+            120,
+            20,
+            curve_b,
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         let decayed = QuantumPow::mining_snapshot(None).expect("snapshot exists");
         assert_eq!(decayed.difficulty, expected);
         assert_ne!(
             expected,
-            difficulty::apply_decay(initial, 120, 20, test_curve()),
+            difficulty::apply_decay(
+                initial,
+                120,
+                20,
+                test_curve(),
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            ),
             "sanity: A's and B's curves must differ for this test to mean anything"
         );
     });
@@ -965,6 +977,7 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
             250_u32 - 1,
             EpochLength::get() as u32,
             test_curve(),
+            difficulty::TARGET_PROOF_BLOCKS as u32,
         );
         QuantumPow::on_finalize(System::block_number());
 
@@ -1289,6 +1302,7 @@ fn small_curve_hardening_stays_within_the_winning_gap() {
                     mining_time,
                     curve,
                     &[seed_byte],
+                    difficulty::TARGET_PROOF_BLOCKS as u32,
                 );
                 assert_eq!(adjusted.max_energy_milli, start - 1_000);
             }
@@ -1465,7 +1479,13 @@ fn qblock_records_active_difficulty_threshold() {
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
 
-        let expected_active = difficulty::apply_decay(initial, 44, 20, test_curve());
+        let expected_active = difficulty::apply_decay(
+            initial,
+            44,
+            20,
+            test_curve(),
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         let stored = QBlocks::<Test>::get(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
@@ -1508,7 +1528,13 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         System::set_block_number(121); // 120 blocks elapsed, epoch_length = 20
         let snapshot =
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
-        let expected = difficulty::apply_decay(initial, 120, 20, test_curve());
+        let expected = difficulty::apply_decay(
+            initial,
+            120,
+            20,
+            test_curve(),
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         assert_eq!(snapshot.difficulty, expected);
         assert_ne!(
             snapshot.difficulty, initial,
@@ -1596,10 +1622,31 @@ fn decay_waits_until_after_the_100_block_gate() {
     };
     let curve = walkup_curve();
     for elapsed in [1, 35, 89, 99, 100] {
-        assert_eq!(difficulty::apply_decay(start, elapsed, 100, curve), start);
+        assert_eq!(
+            difficulty::apply_decay(
+                start,
+                elapsed,
+                100,
+                curve,
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            ),
+            start
+        );
     }
-    let first = difficulty::apply_decay(start, 101, 100, curve);
-    let second = difficulty::apply_decay(start, 102, 100, curve);
+    let first = difficulty::apply_decay(
+        start,
+        101,
+        100,
+        curve,
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
+    let second = difficulty::apply_decay(
+        start,
+        102,
+        100,
+        curve,
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
     assert!(first.max_energy_milli > start.max_energy_milli);
     assert!(first.max_energy_milli - start.max_energy_milli < 1_000);
     assert!(second.max_energy_milli > first.max_energy_milli);
@@ -1615,7 +1662,14 @@ fn current_difficulty_passes_through_at_zero_elapsed() {
     };
     // block_number == last_proof_block: zero elapsed → no decay.
     assert_eq!(
-        difficulty::current_difficulty(100, base, 100, 10, Some(curve)),
+        difficulty::current_difficulty(
+            100,
+            base,
+            100,
+            10,
+            Some(curve),
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
         base,
     );
 }
@@ -1629,7 +1683,14 @@ fn current_difficulty_holds_until_the_gate() {
         min_diversity_milli: 200,
     };
     // The 100-block gate is independent of the 10-block decay rate unit.
-    let result = difficulty::current_difficulty(109, base, 100, 10, Some(curve));
+    let result = difficulty::current_difficulty(
+        109,
+        base,
+        100,
+        10,
+        Some(curve),
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
     assert_eq!(result, base);
 }
 
@@ -1642,8 +1703,18 @@ fn current_difficulty_applies_decay_per_elapsed_block() {
         min_diversity_milli: 200,
     };
     // 125 blocks elapsed: only the 25 overdue blocks accrue decay.
-    let result = difficulty::current_difficulty(225, base, 100, 10, Some(curve));
-    assert_eq!(result, difficulty::apply_decay(base, 125, 10, curve));
+    let result = difficulty::current_difficulty(
+        225,
+        base,
+        100,
+        10,
+        Some(curve),
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
+    assert_eq!(
+        result,
+        difficulty::apply_decay(base, 125, 10, curve, difficulty::TARGET_PROOF_BLOCKS as u32)
+    );
     assert!(result.max_energy_milli > base.max_energy_milli);
 }
 
@@ -1656,7 +1727,14 @@ fn current_difficulty_short_circuits_without_curve() {
         min_diversity_milli: 200,
     };
     assert_eq!(
-        difficulty::current_difficulty(200, base, 100, 10, None),
+        difficulty::current_difficulty(
+            200,
+            base,
+            100,
+            10,
+            None,
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
         base,
     );
 }
@@ -1671,7 +1749,14 @@ fn current_difficulty_short_circuits_at_genesis() {
     };
     // last_proof_block == 0 → genesis path → no decay.
     assert_eq!(
-        difficulty::current_difficulty(500, base, 0, 10, Some(curve)),
+        difficulty::current_difficulty(
+            500,
+            base,
+            0,
+            10,
+            Some(curve),
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
         base,
     );
 }
@@ -1683,7 +1768,14 @@ fn adjust_on_proof_only_mutates_max_energy() {
         max_energy_milli: -2_300,
         min_diversity_milli: 400,
     };
-    let after = difficulty::adjust_on_proof(before, -2_511, 30, test_curve(), b"seed");
+    let after = difficulty::adjust_on_proof(
+        before,
+        -2_511,
+        30,
+        test_curve(),
+        b"seed",
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
     assert_eq!(after.max_energy_milli, -2_511);
     assert_eq!(after.min_solutions, before.min_solutions);
     assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
@@ -1706,7 +1798,13 @@ fn overdue_decay_has_no_catch_up_at_the_gate() {
         (200, -15_521_000),
         (300, -15_445_901),
     ] {
-        let actual = difficulty::apply_decay(start, elapsed, 100, walkup_curve());
+        let actual = difficulty::apply_decay(
+            start,
+            elapsed,
+            100,
+            walkup_curve(),
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         assert_eq!(actual.max_energy_milli, expected, "elapsed {elapsed}");
         assert_eq!(actual.min_solutions, start.min_solutions);
         assert_eq!(actual.min_diversity_milli, start.min_diversity_milli);
@@ -1721,11 +1819,24 @@ fn decay_gate_is_independent_of_the_epoch_rate_unit() {
     };
     for epoch in [10, 20, 100, 200] {
         assert_eq!(
-            difficulty::apply_decay(start, 100, epoch, walkup_curve()),
+            difficulty::apply_decay(
+                start,
+                100,
+                epoch,
+                walkup_curve(),
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            ),
             start
         );
         assert_eq!(
-            difficulty::apply_decay(start, 100 + epoch, epoch, walkup_curve()).max_energy_milli,
+            difficulty::apply_decay(
+                start,
+                100 + epoch,
+                epoch,
+                walkup_curve(),
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            )
+            .max_energy_milli,
             -15_521_000,
         );
     }
@@ -1746,7 +1857,14 @@ fn apply_decay_is_monotone_and_capped_for_long_stalls() {
         };
         let mut previous = base;
         for elapsed in [0, 1, 99, 100, 101, 102, 150, 200, 500, 10_000, u32::MAX] {
-            let now = difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli;
+            let now = difficulty::apply_decay(
+                start,
+                elapsed,
+                100,
+                curve,
+                difficulty::TARGET_PROOF_BLOCKS as u32,
+            )
+            .max_energy_milli;
             assert!(now >= previous && now <= curve.max_milli);
             previous = now;
         }
@@ -1761,23 +1879,50 @@ fn apply_decay_handles_zero_epoch_degenerate_curve_and_easy_sentinel() {
         max_energy_milli: curve.knee_milli,
         ..easy_difficulty()
     };
-    assert_eq!(difficulty::apply_decay(start, 500, 0, curve), start);
+    assert_eq!(
+        difficulty::apply_decay(start, 500, 0, curve, difficulty::TARGET_PROOF_BLOCKS as u32),
+        start
+    );
     let degenerate = difficulty::EnergyCurve {
         min_milli: 0,
         knee_milli: 0,
         max_milli: 0,
     };
-    assert_eq!(difficulty::apply_decay(start, 500, 100, degenerate), start);
+    assert_eq!(
+        difficulty::apply_decay(
+            start,
+            500,
+            100,
+            degenerate,
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
+        start
+    );
     let sentinel = easy_difficulty();
     assert_eq!(
-        difficulty::apply_decay(sentinel, u32::MAX, 100, curve),
+        difficulty::apply_decay(
+            sentinel,
+            u32::MAX,
+            100,
+            curve,
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
         sentinel
     );
     let at_cap = DifficultyConfig {
         max_energy_milli: curve.max_milli,
         ..start
     };
-    assert_eq!(difficulty::apply_decay(at_cap, 500, 100, curve), at_cap);
+    assert_eq!(
+        difficulty::apply_decay(
+            at_cap,
+            500,
+            100,
+            curve,
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
+        at_cap
+    );
 }
 
 #[test]
@@ -1796,7 +1941,14 @@ fn decay_floor_eases_one_unit_per_overdue_epoch_without_overshooting() {
         (300, 1_500),
     ] {
         assert_eq!(
-            difficulty::apply_decay(start, elapsed, 100, curve).max_energy_milli,
+            difficulty::apply_decay(
+                start,
+                elapsed,
+                100,
+                curve,
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            )
+            .max_energy_milli,
             start.max_energy_milli + eased,
         );
     }
@@ -1821,8 +1973,14 @@ fn apply_decay_matches_an_independent_stepwise_reference_after_the_gate() {
             let room = curve.max_milli - reference;
             // 4.9375% = 79 / 1600, rounded to nearest milli, with the floor.
             reference += ((room * 79 + 800) / 1_600).max(1_000).min(room);
-            let actual =
-                difficulty::apply_decay(start, 100 + epochs * 100, 100, curve).max_energy_milli;
+            let actual = difficulty::apply_decay(
+                start,
+                100 + epochs * 100,
+                100,
+                curve,
+                difficulty::TARGET_PROOF_BLOCKS as u32,
+            )
+            .max_energy_milli;
             assert!(
                 (actual - reference).abs() <= i64::from(epochs),
                 "base {base}, epochs {epochs}"
@@ -1851,6 +2009,7 @@ fn hardening_uses_the_winning_energy_gap_and_elapsed_rate_band() {
                 elapsed,
                 curve,
                 &[seed],
+                difficulty::TARGET_PROOF_BLOCKS as u32,
             );
             let better = difficulty::adjust_on_proof(
                 active,
@@ -1858,6 +2017,7 @@ fn hardening_uses_the_winning_energy_gap_and_elapsed_rate_band() {
                 elapsed,
                 curve,
                 &[seed],
+                difficulty::TARGET_PROOF_BLOCKS as u32,
             );
             assert_eq!(close.max_energy_milli, active.max_energy_milli - 211);
             let step = active.max_energy_milli - better.max_energy_milli;
@@ -1887,7 +2047,14 @@ fn every_win_hardens_without_exceeding_the_cap_or_winning_energy() {
             let energy = base - margin;
             for elapsed in [1, 59, 60, 99, 100, 101, 150, 1_000] {
                 for seed in 0_u8..32 {
-                    let next = difficulty::adjust_on_proof(active, energy, elapsed, curve, &[seed]);
+                    let next = difficulty::adjust_on_proof(
+                        active,
+                        energy,
+                        elapsed,
+                        curve,
+                        &[seed],
+                        difficulty::TARGET_PROOF_BLOCKS as u32,
+                    );
                     assert!(energy <= next.max_energy_milli && next.max_energy_milli < base);
                     assert!(base - next.max_energy_milli <= 50_000);
                 }
@@ -1903,11 +2070,24 @@ fn exceptional_winning_energy_cannot_exceed_the_hardening_cap() {
         ..easy_difficulty()
     };
     for seed in 0_u8..64 {
-        let next = difficulty::adjust_on_proof(active, -24_700_000, 30, walkup_curve(), &[seed]);
+        let next = difficulty::adjust_on_proof(
+            active,
+            -24_700_000,
+            30,
+            walkup_curve(),
+            &[seed],
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         assert_eq!(next.max_energy_milli, -14_750_000);
     }
-    let extremes =
-        difficulty::adjust_on_proof(easy_difficulty(), i64::MIN, 30, walkup_curve(), b"seed");
+    let extremes = difficulty::adjust_on_proof(
+        easy_difficulty(),
+        i64::MIN,
+        30,
+        walkup_curve(),
+        b"seed",
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
     assert_eq!(extremes.max_energy_milli, i64::MAX - 50_000);
 }
 
@@ -1919,7 +2099,14 @@ fn nonwinning_energy_does_not_change_the_threshold() {
     };
     for energy in [-14_700_000, -14_699_000, i64::MAX] {
         assert_eq!(
-            difficulty::adjust_on_proof(active, energy, 30, walkup_curve(), b"seed"),
+            difficulty::adjust_on_proof(
+                active,
+                energy,
+                30,
+                walkup_curve(),
+                b"seed",
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            ),
             active
         );
     }
@@ -1934,7 +2121,13 @@ fn consecutive_on_time_winning_targets_never_get_easier() {
     };
     // Includes the observed 7591 -> 7592 interval; no decay may accrue at 89 blocks.
     for elapsed in [35, 89, 1, 99, 100, 47, 92] {
-        let active = difficulty::apply_decay(base, elapsed, 100, curve);
+        let active = difficulty::apply_decay(
+            base,
+            elapsed,
+            100,
+            curve,
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         assert_eq!(active, base);
         let next = difficulty::adjust_on_proof(
             active,
@@ -1942,6 +2135,7 @@ fn consecutive_on_time_winning_targets_never_get_easier() {
             u64::from(elapsed),
             curve,
             b"seed",
+            difficulty::TARGET_PROOF_BLOCKS as u32,
         );
         assert_eq!(next.max_energy_milli, base.max_energy_milli - 211);
         base = next;
@@ -1955,17 +2149,45 @@ fn late_win_preserves_easing_and_restarts_the_full_gate() {
         max_energy_milli: -15_600_000,
         ..easy_difficulty()
     };
-    let active = difficulty::apply_decay(base, 200, 100, curve);
+    let active = difficulty::apply_decay(
+        base,
+        200,
+        100,
+        curve,
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
     assert_eq!(active.max_energy_milli, -15_521_000);
-    let next = difficulty::adjust_on_proof(active, -15_521_211, 200, curve, b"seed");
+    let next = difficulty::adjust_on_proof(
+        active,
+        -15_521_211,
+        200,
+        curve,
+        b"seed",
+        difficulty::TARGET_PROOF_BLOCKS as u32,
+    );
     assert_eq!(next.max_energy_milli, -15_521_211);
     assert!(next.max_energy_milli > base.max_energy_milli);
     assert_eq!(
-        difficulty::current_difficulty(300, next, 200, 100, Some(curve)),
+        difficulty::current_difficulty(
+            300,
+            next,
+            200,
+            100,
+            Some(curve),
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        ),
         next
     );
     assert!(
-        difficulty::current_difficulty(301, next, 200, 100, Some(curve)).max_energy_milli
+        difficulty::current_difficulty(
+            301,
+            next,
+            200,
+            100,
+            Some(curve),
+            difficulty::TARGET_PROOF_BLOCKS as u32
+        )
+        .max_energy_milli
             > next.max_energy_milli
     );
 }
@@ -2006,13 +2228,20 @@ fn print_golden_table() {
             max_energy_milli: curve.min_milli + offset,
             min_diversity_milli: 0,
         };
-        let eased = difficulty::apply_decay(start, elapsed, 100, curve);
+        let eased = difficulty::apply_decay(
+            start,
+            elapsed,
+            100,
+            curve,
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         let won = difficulty::adjust_on_proof(
             eased,
             eased.max_energy_milli - 20_000,
             u64::from(elapsed),
             curve,
             b"golden",
+            difficulty::TARGET_PROOF_BLOCKS as u32,
         );
         println!(
             "    ({offset}, {elapsed}, {}, {}),",
@@ -2146,13 +2375,20 @@ fn apply_decay_and_adjust_on_proof_golden_table() {
             max_energy_milli: curve.min_milli + offset,
             min_diversity_milli: 0,
         };
-        let eased = difficulty::apply_decay(start, elapsed, 100, curve);
+        let eased = difficulty::apply_decay(
+            start,
+            elapsed,
+            100,
+            curve,
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         let won = difficulty::adjust_on_proof(
             eased,
             eased.max_energy_milli - 20_000,
             u64::from(elapsed),
             curve,
             b"golden",
+            difficulty::TARGET_PROOF_BLOCKS as u32,
         );
         assert_eq!(
             eased.max_energy_milli, expect_eased,
@@ -2216,7 +2452,13 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
 
         // Expected decay using A's curve (the default).
-        let expected_default = difficulty::apply_decay(initial, 120, 20, test_curve());
+        let expected_default = difficulty::apply_decay(
+            initial,
+            120,
+            20,
+            test_curve(),
+            difficulty::TARGET_PROOF_BLOCKS as u32,
+        );
         // Decay using B's curve (the *non-default* topology — this is what
         // a miner-controlled curve would produce if the invariant were broken).
         let expected_other = difficulty::apply_decay(
@@ -2231,6 +2473,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
                 &allowed_j_spec().as_slice(),
             )
             .expect("registered specs are non-empty"),
+            difficulty::TARGET_PROOF_BLOCKS as u32,
         );
 
         assert_eq!(
@@ -3346,5 +3589,80 @@ fn set_block_reward_overrides_the_payout_and_emits_the_old_value() {
             RuntimeEvent::QuantumPow(crate::Event::BlockRewardChanged { old, new })
                 if old == previous && new == next
         )));
+    });
+}
+
+#[test]
+fn target_proof_blocks_falls_back_to_the_runtime_constant() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(
+            QuantumPow::target_proof_blocks(),
+            <TargetProofBlocks as Get<u32>>::get()
+        );
+        assert!(crate::TargetProofBlocksOverride::<Test>::get().is_none());
+    });
+}
+
+#[test]
+fn set_target_proof_blocks_requires_the_admin_origin() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            QuantumPow::set_target_proof_blocks(RuntimeOrigin::signed(1), 120),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_target_proof_blocks_enforces_bounds() {
+    new_test_ext().execute_with(|| {
+        let min = <MinTargetProofBlocks as Get<u32>>::get();
+        let max = <MaxTargetProofBlocks as Get<u32>>::get();
+        assert_noop!(
+            QuantumPow::set_target_proof_blocks(RuntimeOrigin::root(), min - 1),
+            crate::Error::<Test>::TargetProofBlocksOutOfBounds
+        );
+        assert_noop!(
+            QuantumPow::set_target_proof_blocks(RuntimeOrigin::root(), max + 1),
+            crate::Error::<Test>::TargetProofBlocksOutOfBounds
+        );
+        let previous = QuantumPow::target_proof_blocks();
+        assert_ok!(QuantumPow::set_target_proof_blocks(
+            RuntimeOrigin::root(),
+            max
+        ));
+        assert_eq!(QuantumPow::target_proof_blocks(), max);
+        assert!(System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumPow(crate::Event::TargetProofBlocksChanged { old, new })
+                if old == previous && new == max
+        )));
+    });
+}
+
+#[test]
+fn target_proof_blocks_gates_decay() {
+    // Both calls use the same elapsed time; only the target differs. This is the
+    // property that makes the council knob meaningful: it moves the decay gate.
+    new_test_ext().execute_with(|| {
+        let curve = test_curve();
+        // Start below the curve's easy end so there is room to ease into,
+        // without depending on a registered topology or its stored baseline.
+        let start = DifficultyConfig {
+            max_energy_milli: curve.knee_milli,
+            ..DifficultyConfig::default()
+        };
+
+        let at_default = difficulty::apply_decay(start, 120, 100, curve, 100);
+        let at_slow = difficulty::apply_decay(start, 120, 100, curve, 200);
+
+        assert!(
+            at_default.max_energy_milli > start.max_energy_milli,
+            "the default target should have started easing by block 120"
+        );
+        assert_eq!(
+            at_slow, start,
+            "a 200-block target must not ease before block 200"
+        );
     });
 }
