@@ -192,6 +192,32 @@ mod tests {
         });
     }
 
+    /// QBlock reward changes are council business, bounded by the runtime
+    /// constants, and never need a runtime upgrade.
+    #[test]
+    fn qblock_reward_is_council_settable_and_bounded() {
+        use frame_support::traits::Get;
+
+        new_test_ext().execute_with(|| {
+            let reward = 5 * crate::UNIT;
+            assert_noop!(
+                crate::QuantumPow::set_block_reward(council_origin(3), reward),
+                DispatchError::BadOrigin
+            );
+            assert_ok!(crate::QuantumPow::set_block_reward(
+                council_origin(4),
+                reward
+            ));
+            assert_eq!(crate::QuantumPow::block_reward(), reward);
+
+            let max = <crate::configs::QuantumPowMaxBlockReward as Get<u128>>::get();
+            assert_noop!(
+                crate::QuantumPow::set_block_reward(council_origin(4), max + 1),
+                pallet_quantum_pow::Error::<Runtime>::BlockRewardOutOfBounds
+            );
+        });
+    }
+
     /// `AdminOrigin`-gated staking calls (discretionary slashing, commission
     /// floor) are ordinary council business: 2/3, not Root and not 4/5.
     #[test]

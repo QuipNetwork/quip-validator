@@ -150,6 +150,11 @@ pub mod pallet {
     #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
+    /// Council-set qblock reward. `None` keeps the runtime constant, so an
+    /// unset chain behaves exactly as it did before this storage existed.
+    #[pallet::storage]
+    pub type BlockRewardOverride<T: Config> = StorageValue<_, BalanceOf<T>, OptionQuery>;
+
     #[pallet::config]
     pub trait Config: frame_system::Config + pallet_balances::Config {
         #[allow(deprecated)]
@@ -175,8 +180,17 @@ pub mod pallet {
         type EpochLength: Get<BlockNumberFor<Self>>;
         #[pallet::constant]
         type MinerDeposit: Get<BalanceOf<Self>>;
+        /// Reward paid for winning a qblock when no council override is set.
         #[pallet::constant]
         type BlockReward: Get<BalanceOf<Self>>;
+        /// Inclusive lower bound accepted by `set_block_reward`.
+        #[pallet::constant]
+        type MinBlockReward: Get<BalanceOf<Self>>;
+        /// Inclusive upper bound accepted by `set_block_reward`.
+        #[pallet::constant]
+        type MaxBlockReward: Get<BalanceOf<Self>>;
+        /// Origin allowed to change protocol parameters (the block reward).
+        type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
         /// Pays from a prefunded subnet pot; never mints outside the controller.
         type RewardPayment: MiningReward<Self::AccountId, BalanceOf<Self>>;
@@ -304,6 +318,12 @@ pub mod pallet {
             node_count: u32,
             edge_count: u32,
         },
+        /// The council changed the qblock reward. Carries both values so a
+        /// client can reconcile against `BlockRewardOverride` without a diff.
+        BlockRewardChanged {
+            old: BalanceOf<T>,
+            new: BalanceOf<T>,
+        },
         DifficultyUpdated {
             /// The topology whose difficulty baseline changed. Difficulty is
             /// per-topology, so consumers need this to attribute the update.
@@ -346,6 +366,8 @@ pub mod pallet {
     #[pallet::error]
     pub enum Error<T> {
         MinerAlreadyRegistered,
+        /// The requested block reward is outside `MinBlockReward..=MaxBlockReward`.
+        BlockRewardOutOfBounds,
         MinerNotRegistered,
         TopologyAlreadyRegistered,
         TopologyNotRegistered,
@@ -562,7 +584,7 @@ pub mod pallet {
                 return;
             };
 
-            let reward = T::RewardPayment::pay(&record.miner, T::BlockReward::get());
+            let reward = T::RewardPayment::pay(&record.miner, Self::block_reward());
 
             if let Some(mut miner) = Miners::<T>::get(&record.miner) {
                 miner.proofs_won = miner.proofs_won.saturating_add(1);
@@ -896,6 +918,26 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set the qblock reward paid to the winning miner.
+        ///
+        /// Council business, not Root: the payout is a protocol parameter with a
+        /// bounded range, and a runtime upgrade per tweak is too slow for
+        /// retuning. Bounds are `MinBlockReward..=MaxBlockReward`; the value is
+        /// paid on the next winning proof and never applies retroactively.
+        #[pallet::call_index(9)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
+        pub fn set_block_reward(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
+            T::AdminOrigin::ensure_origin(origin)?;
+            ensure!(
+                amount >= T::MinBlockReward::get() && amount <= T::MaxBlockReward::get(),
+                Error::<T>::BlockRewardOutOfBounds
+            );
+            let old = Self::block_reward();
+            BlockRewardOverride::<T>::put(amount);
+            Self::deposit_event(Event::BlockRewardChanged { old, new: amount });
+            Ok(())
+        }
+
         #[pallet::call_index(4)]
         #[pallet::weight({
             // Calculate weight based on actual proof dimensions to prevent under-charging
@@ -1126,6 +1168,12 @@ pub mod pallet {
                 T::EpochLength::get().saturated_into::<u32>(),
                 Self::energy_curve_for(topology_hash),
             )
+        }
+
+        /// Reward paid for winning a qblock: the council override when one is
+        /// set, otherwise the runtime constant.
+        pub fn block_reward() -> BalanceOf<T> {
+            BlockRewardOverride::<T>::get().unwrap_or_else(T::BlockReward::get)
         }
 
         pub fn latest_qblock_id() -> Option<u64> {

@@ -72,6 +72,8 @@ parameter_types! {
     pub const EpochLength: u64 = 20;
     pub const MinerDeposit: Balance = 100;
     pub const BlockReward: Balance = 50;
+    pub const MinBlockReward: Balance = 1;
+    pub const MaxBlockReward: Balance = 1_000;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
 }
@@ -105,6 +107,9 @@ impl pallet_quantum_pow::Config for Test {
     type EpochLength = EpochLength;
     type MinerDeposit = MinerDeposit;
     type BlockReward = BlockReward;
+    type MinBlockReward = MinBlockReward;
+    type MaxBlockReward = MaxBlockReward;
+    type AdminOrigin = frame_system::EnsureRoot<u64>;
     type MaxProofsPerBlock = MaxProofsPerBlock;
     type MaxAllowedValues = MaxAllowedValues;
     type CurveCEasyMilli = ConstU32<700>;

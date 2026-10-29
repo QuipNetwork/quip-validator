@@ -577,6 +577,11 @@ parameter_types! {
     pub const QuantumPowEpochLength: BlockNumber = 100;
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
+    /// Inclusive bounds for the council-settable qblock reward. The floor keeps
+    /// a win worth more than the miner's deposit; the ceiling bounds what one
+    /// subnet pot can pay out before the emission budget is re-planned.
+    pub const QuantumPowMinBlockReward: Balance = UNIT / 10;
+    pub const QuantumPowMaxBlockReward: Balance = 100 * UNIT;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
     /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
     /// and `allowed_spin_values` per registered topology. Set well above the
@@ -665,6 +670,10 @@ impl pallet_quantum_pow::Config for Runtime {
     type EpochLength = QuantumPowEpochLength;
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
+    type MinBlockReward = QuantumPowMinBlockReward;
+    type MaxBlockReward = QuantumPowMaxBlockReward;
+    // QBlock reward changes are council business (2/3 motion), not Root.
+    type AdminOrigin = validator_onboarding::FoundationOrRoot;
     type RewardPayment = pallet_emission_controller::SubnetRewards<
         Runtime,
         { pallet_emission_controller::ISING_SUBNET },

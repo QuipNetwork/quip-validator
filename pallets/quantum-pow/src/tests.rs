@@ -3291,3 +3291,60 @@ fn empty_emission_pot_records_zero_reward_without_losing_valid_proof() {
         assert_eq!(Miners::<Test>::get(1).unwrap().proofs_won, 1);
     });
 }
+
+#[test]
+fn block_reward_falls_back_to_the_runtime_constant() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(
+            QuantumPow::block_reward(),
+            <BlockReward as Get<u128>>::get()
+        );
+        assert!(crate::BlockRewardOverride::<Test>::get().is_none());
+    });
+}
+
+#[test]
+fn set_block_reward_requires_the_admin_origin() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            QuantumPow::set_block_reward(RuntimeOrigin::signed(1), 10),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_block_reward_enforces_bounds() {
+    new_test_ext().execute_with(|| {
+        let min = <MinBlockReward as Get<u128>>::get();
+        let max = <MaxBlockReward as Get<u128>>::get();
+        assert_noop!(
+            QuantumPow::set_block_reward(RuntimeOrigin::root(), min - 1),
+            crate::Error::<Test>::BlockRewardOutOfBounds
+        );
+        assert_noop!(
+            QuantumPow::set_block_reward(RuntimeOrigin::root(), max + 1),
+            crate::Error::<Test>::BlockRewardOutOfBounds
+        );
+        // Bounds are inclusive.
+        assert_ok!(QuantumPow::set_block_reward(RuntimeOrigin::root(), min));
+        assert_ok!(QuantumPow::set_block_reward(RuntimeOrigin::root(), max));
+    });
+}
+
+#[test]
+fn set_block_reward_overrides_the_payout_and_emits_the_old_value() {
+    new_test_ext().execute_with(|| {
+        let previous = QuantumPow::block_reward();
+        let next = previous * 2;
+        assert_ok!(QuantumPow::set_block_reward(RuntimeOrigin::root(), next));
+
+        assert_eq!(crate::BlockRewardOverride::<Test>::get(), Some(next));
+        assert_eq!(QuantumPow::block_reward(), next);
+        assert!(System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumPow(crate::Event::BlockRewardChanged { old, new })
+                if old == previous && new == next
+        )));
+    });
+}
