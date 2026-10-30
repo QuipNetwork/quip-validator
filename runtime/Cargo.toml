@@ -71,6 +71,7 @@ sp-consensus-grandpa = { features = ["serde"], workspace = true }
 sp-core = { features = ["serde"], workspace = true }
 sp-genesis-builder.workspace = true
 sp-inherents.workspace = true
+sp-io.workspace = true
 sp-keyring.workspace = true
 sp-offchain.workspace = true
 sp-runtime = { features = ["serde"], workspace = true }
@@ -87,7 +88,6 @@ hex.workspace = true
 quip-transaction-crypto-core.workspace = true
 sc-executor = { workspace = true, default-features = true }
 sc-executor-common = { workspace = true, default-features = true }
-sp-io.workspace = true
 subxt-core.workspace = true
 
 [build-dependencies]

@@ -379,3 +379,125 @@ fn runtime_identity_rejects_cross_network_upgrades() {
         });
     });
 }
+
+mod unchecked_upgrade_tests {
+    use super::*;
+    use frame_support::{assert_ok, assert_storage_noop};
+    use quip_testnet_runtime::{configs::RUNTIME_IDENTITY_MISMATCH, RuntimeOrigin, VERSION};
+    use sp_core::storage::well_known_keys::CODE;
+    use sp_runtime::{traits::Hash as _, DispatchError};
+
+    fn ext() -> sp_io::TestExternalities {
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.register_extension(sp_core::traits::ReadRuntimeVersionExt::new(
+            sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build(),
+        ));
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            sp_io::storage::set(CODE, b"previous code");
+        });
+        ext
+    }
+
+    fn foreign_name() -> &'static str {
+        match VERSION.spec_name.as_ref() {
+            "quip" => "quip-testnet",
+            "quip-testnet" => "quip",
+            other => panic!("unexpected runtime identity: {other}"),
+        }
+    }
+
+    // Synthetic future candidate, not a separately built production runtime.
+    fn candidate(name: &str, spec_version: u32) -> Vec<u8> {
+        let wasm = quip_testnet_runtime::WASM_BINARY
+            .expect("upgrade integration tests require a build without SKIP_WASM_BUILD");
+        let wasm = sc_executor_common::runtime_blob::RuntimeBlob::uncompress_if_needed(wasm)
+            .unwrap()
+            .serialize();
+        let mut version = VERSION;
+        version.spec_name = name.to_owned().into();
+        version.spec_version = spec_version;
+        sp_version::embed::embed_runtime_version(&wasm, version).unwrap()
+    }
+
+    #[test]
+    fn unchecked_foreign_upgrade_rejects_without_changing_code() {
+        let code = candidate(foreign_name(), VERSION.spec_version + 1);
+        ext().execute_with(|| {
+            let before = sp_io::storage::get(CODE);
+            assert_storage_noop!({
+                let error = System::set_code_without_checks(RuntimeOrigin::root(), code)
+                    .unwrap_err()
+                    .error;
+                assert_eq!(error, DispatchError::Other(RUNTIME_IDENTITY_MISMATCH));
+                println!("{} unchecked foreign upgrade: {error:?}", VERSION.spec_name);
+            });
+            assert_eq!(sp_io::storage::get(CODE), before);
+        });
+    }
+
+    #[test]
+    fn unchecked_same_network_upgrade_preserves_version_number_bypass() {
+        for spec_version in [VERSION.spec_version + 1, VERSION.spec_version] {
+            let code = candidate(VERSION.spec_name.as_ref(), spec_version);
+            ext().execute_with(|| {
+                assert_ok!(System::set_code_without_checks(
+                    RuntimeOrigin::root(),
+                    code.clone()
+                ));
+                assert_eq!(sp_io::storage::get(CODE).unwrap().to_vec(), code);
+            });
+        }
+    }
+
+    #[test]
+    fn authorized_foreign_upgrade_rejects_and_retains_authorization() {
+        let code = candidate(foreign_name(), VERSION.spec_version + 1);
+        let hash = <Runtime as frame_system::Config>::Hashing::hash(&code);
+        ext().execute_with(|| {
+            assert_ok!(System::authorize_upgrade_without_checks(
+                RuntimeOrigin::root(),
+                hash
+            ));
+            // The SDK storage type is private; read its verified key and public value type.
+            let authorization_key =
+                frame_support::storage::storage_prefix(b"System", b"AuthorizedUpgrade");
+            let before_authorization = frame_support::storage::unhashed::get::<
+                frame_system::CodeUpgradeAuthorization<Runtime>,
+            >(&authorization_key)
+            .unwrap();
+            assert_eq!(*before_authorization.code_hash(), hash);
+            let before_code = sp_io::storage::get(CODE);
+            let error = System::apply_authorized_upgrade(RuntimeOrigin::none(), code)
+                .unwrap_err()
+                .error;
+            assert_eq!(error, DispatchError::Other(RUNTIME_IDENTITY_MISMATCH));
+            // The dispatchable's storage layer rolls back its earlier authorization kill.
+            let retained = frame_support::storage::unhashed::get::<
+                frame_system::CodeUpgradeAuthorization<Runtime>,
+            >(&authorization_key)
+            .expect("rejected apply must retain the authorization");
+            assert_eq!(*retained.code_hash(), hash);
+            assert_eq!(retained.encode(), before_authorization.encode());
+            assert_eq!(sp_io::storage::get(CODE), before_code);
+            println!(
+                "{} authorized foreign upgrade: {error:?}; authorization retained",
+                VERSION.spec_name
+            );
+        });
+    }
+
+    #[test]
+    fn unchecked_upgrade_preserves_extraction_failure_delegation() {
+        let code = b"not a Wasm runtime".to_vec();
+        ext().execute_with(|| {
+            assert!(sp_io::misc::runtime_version(&code).is_none());
+            assert_ok!(System::set_code_without_checks(
+                RuntimeOrigin::root(),
+                code.clone()
+            ));
+            assert_eq!(sp_io::storage::get(CODE).unwrap().to_vec(), code);
+        });
+    }
+}

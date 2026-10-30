@@ -24,6 +24,7 @@
 // For more information, please refer to <http://unlicense.org>
 
 // Substrate and Polkadot dependencies
+use alloc::vec::Vec;
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::{
     derive_impl,
@@ -102,6 +103,23 @@ parameter_types! {
 #[allow(unused_parens)]
 type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
 
+/// Stable error shared by all runtime-upgrade entry points.
+pub const RUNTIME_IDENTITY_MISMATCH: &str = "Runtime spec_name does not match this network";
+
+/// Emergency upgrades may bypass version ordering, but not network identity.
+pub struct NetworkIdentityGuard;
+impl frame_system::SetCode<Runtime> for NetworkIdentityGuard {
+    fn set_code(code: Vec<u8>) -> frame_support::dispatch::DispatchResult {
+        let version = sp_io::misc::runtime_version(&code)
+            .and_then(|v| sp_version::RuntimeVersion::decode(&mut &v[..]).ok());
+        if version.is_some_and(|version| version.spec_name != crate::VERSION.spec_name) {
+            return Err(sp_runtime::DispatchError::Other(RUNTIME_IDENTITY_MISMATCH));
+        }
+        // Preserve the unchecked path's existing behavior when extraction fails.
+        <() as frame_system::SetCode<Runtime>>::set_code(code)
+    }
+}
+
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
 /// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
 /// but overridden as needed.
@@ -131,6 +149,7 @@ impl frame_system::Config for Runtime {
     type SS58Prefix = SS58Prefix;
     type MaxConsumers = frame_support::traits::ConstU32<16>;
     type SingleBlockMigrations = SingleBlockMigrations;
+    type OnSetCode = NetworkIdentityGuard;
 }
 
 parameter_types! {
