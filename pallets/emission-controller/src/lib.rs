@@ -370,14 +370,12 @@ pub mod pallet {
                 sp_runtime::Rounding::Down,
             )
             .ok_or("rebase duration overflow or zero annual emission")?;
-            let elapsed = u64::try_from(elapsed).map_err(|_| "rebase duration exceeds u64")?;
-            let start = T::Clock::now()
-                .as_secs()
-                .checked_sub(elapsed)
-                .filter(|start| *start != 0)
-                .ok_or("rebase precedes Unix epoch")?;
-            // Flooring can leave less than one second of entitlement below the
-            // counters. It never remints; the next timestamp second resumes accrual.
+            // An offset larger than the clock clamps the anchor to Unix epoch.
+            let elapsed = u64::try_from(elapsed).unwrap_or(u64::MAX);
+            let start = T::Clock::now().as_secs().saturating_sub(elapsed);
+            // Without clamping, flooring leaves less than one second of
+            // entitlement below the counters and the next second resumes accrual.
+            // A clamped curve must first reach the preserved issued counters.
             Ok(Some(start))
         }
         /// Cumulative entitlement avoids per-block rounding loss and handles gaps.

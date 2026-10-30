@@ -262,25 +262,40 @@ fn rebase_keeps_missing_and_disabled_schedules_closed() {
 }
 
 #[test]
-fn invalid_rebase_does_not_change_state_or_mark_upgrade_complete() {
+fn rebase_clamps_to_epoch_without_reminting_when_clock_is_below_offset() {
     use frame_support::traits::{GetStorageVersion, StorageVersion};
-    new_test_ext().execute_with(|| {
-        // A clock before the required virtual anchor cannot represent the rebase.
-        AnnualEmission::set(40_000_000 * 1_000_000_000_000);
-        EmissionController::accrue(100 + YEAR_SECONDS);
-        AnnualEmission::set(30_000_000 * 1_000_000_000_000);
-        StorageVersion::new(1).put::<EmissionController>();
-        let issued = ScheduledIssued::<Test>::get();
-        let issuance = Balances::total_issuance();
-        #[cfg(feature = "try-runtime")]
-        assert!(EmissionController::pre_upgrade().is_err());
-        EmissionController::on_runtime_upgrade();
-        assert_eq!(
-            EmissionController::on_chain_storage_version(),
-            StorageVersion::new(1)
-        );
-        assert_eq!(StartAt::<Test>::get(), Some(100));
-        assert_eq!(ScheduledIssued::<Test>::get(), issued);
-        assert_eq!(Balances::total_issuance(), issuance);
-    });
+    let offset = YEAR_SECONDS * 4 / 3;
+    for now in [0, 1, offset] {
+        new_test_ext().execute_with(|| {
+            AnnualEmission::set(40_000_000 * 1_000_000_000_000);
+            EmissionController::accrue(100 + YEAR_SECONDS);
+            AnnualEmission::set(30_000_000 * 1_000_000_000_000);
+            StorageVersion::new(1).put::<EmissionController>();
+            System::set_block_number(now);
+            let issued = ScheduledIssued::<Test>::get();
+            let issuance = Balances::total_issuance();
+            let counters = [SubnetIssued::<Test>::get(0), SubnetIssued::<Test>::get(1)];
+            #[cfg(feature = "try-runtime")]
+            let pre = EmissionController::pre_upgrade().unwrap();
+            EmissionController::on_runtime_upgrade();
+            #[cfg(feature = "try-runtime")]
+            EmissionController::post_upgrade(pre).unwrap();
+            assert_eq!(
+                EmissionController::on_chain_storage_version(),
+                StorageVersion::new(2)
+            );
+            assert_eq!(StartAt::<Test>::get(), Some(0));
+            assert_eq!(ScheduledIssued::<Test>::get(), issued);
+            assert_eq!(
+                [SubnetIssued::<Test>::get(0), SubnetIssued::<Test>::get(1)],
+                counters
+            );
+            EmissionController::accrue(now);
+            assert_eq!(Balances::total_issuance(), issuance);
+            // At equality, the curve is already level with the counters.
+            // Below it, clamping cannot manufacture pre-epoch elapsed time.
+            EmissionController::accrue(offset + 1);
+            assert!(ScheduledIssued::<Test>::get() > issued);
+        });
+    }
 }
