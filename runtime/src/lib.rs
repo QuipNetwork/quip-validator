@@ -433,6 +433,7 @@ pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 pub type Migrations = (
     pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,
     InitializeReviveAccount,
+    configs::slashing::InitializeOffences,
 );
 
 /// Reproduces Revive's genesis-time pallet-account initialization when the
@@ -1742,4 +1743,8 @@ mod runtime {
     pub type MultiBlockElectionSigned = pallet_election_provider_multi_block::signed;
     #[runtime::pallet_index(29)]
     pub type Authorship = pallet_authorship;
+    #[runtime::pallet_index(30)]
+    pub type Offences = pallet_offences;
+    #[runtime::pallet_index(31)]
+    pub type ProtocolParams = pallet_protocol_params;
 }

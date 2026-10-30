@@ -8,6 +8,24 @@ pub mod weights;
 use scale_info::TypeInfo;
 pub use weights::WeightInfo;
 
+/// Why a governed Root call was refused before dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootCallError {
+    Denied,
+    DepthLimit,
+    CallLimit,
+}
+
+/// Runtime-owned call inspection, preserving distinct policy and resource-limit failures.
+pub trait RootCallPolicy<Call> {
+    fn check(call: &Call) -> Result<(), RootCallError>;
+}
+impl<Call> RootCallPolicy<Call> for frame_support::traits::Everything {
+    fn check(_: &Call) -> Result<(), RootCallError> {
+        Ok(())
+    }
+}
+
 /// Permissionless admission is reserved until objective eligibility is specified.
 /// No governance vote can substitute for those checks.
 pub trait Graduation {
@@ -56,6 +74,9 @@ pub mod pallet {
             + UnfilteredDispatchable<RuntimeOrigin = Self::RuntimeOrigin>;
         #[pallet::constant]
         type MaxAuthorities: Get<u32>;
+        /// Checked before Root dispatch, including nested calls in the runtime implementation.
+        type RootCallFilter: RootCallPolicy<Self::GovernanceCall>;
+        type RootCallFilterWeight: Get<Weight>;
         type Graduation: Graduation;
         type WeightInfo: WeightInfo;
     }
@@ -154,6 +175,9 @@ pub mod pallet {
         TooManyAuthorities,
         InvalidTransition,
         GraduationNotReady,
+        RootCallDenied,
+        RootCallTooDeep,
+        RootCallTooLarge,
     }
 
     #[pallet::call]
@@ -209,15 +233,20 @@ pub mod pallet {
             Self::deposit_event(Event::ModeAdvanced { mode });
             Ok(())
         }
-        /// The Foundation's explicit Root-equivalent path, including runtime upgrades.
+        /// The Foundation's filtered Root path, including runtime upgrades.
         /// The event carries inner failure; outer success alone is not proof of execution.
         #[pallet::call_index(3)]
-        #[pallet::weight((T::WeightInfo::dispatch_as_root().saturating_add(call.get_dispatch_info().call_weight), call.get_dispatch_info().class))]
+        #[pallet::weight((T::WeightInfo::dispatch_as_root().saturating_add(T::RootCallFilterWeight::get()).saturating_add(call.get_dispatch_info().call_weight), call.get_dispatch_info().class))]
         pub fn dispatch_as_root(
             origin: OriginFor<T>,
             call: Box<T::GovernanceCall>,
         ) -> DispatchResult {
             T::FoundationOrigin::ensure_origin(origin)?;
+            T::RootCallFilter::check(&call).map_err(|reason| match reason {
+                RootCallError::Denied => Error::<T>::RootCallDenied,
+                RootCallError::DepthLimit => Error::<T>::RootCallTooDeep,
+                RootCallError::CallLimit => Error::<T>::RootCallTooLarge,
+            })?;
             let result = call.dispatch_bypass_filter(frame_system::RawOrigin::Root.into());
             Self::deposit_event(Event::RootDispatched {
                 result: result.map(|_| ()).map_err(|e| e.error),

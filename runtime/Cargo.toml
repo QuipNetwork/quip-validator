@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 pallet-validator-admission.workspace = true
+pallet-protocol-params.workspace = true
 pallet-collective.workspace = true
 pallet-membership.workspace = true
 pallet-staking.workspace = true
@@ -37,6 +38,7 @@ frame-system-rpc-runtime-api.workspace = true
 frame-try-runtime = { optional = true, workspace = true }
 pallet-authorship.workspace = true
 pallet-babe.workspace = true
+pallet-offences.workspace = true
 pallet-balances.workspace = true
 pallet-evm-chain-id.workspace = true
 pallet-faucet-ops.workspace = true
@@ -79,6 +81,7 @@ sp-version = { features = ["serde"], workspace = true }
 sp-weights.workspace = true
 
 [dev-dependencies]
+finality-grandpa = "0.16.3"
 frame-metadata.workspace = true
 hex.workspace = true
 quip-transaction-crypto-core.workspace = true
@@ -96,6 +99,7 @@ std = [
   "pallet-election-provider-multi-block/std",
   "sp-npos-elections/std",
   "pallet-validator-admission/std",
+  "pallet-protocol-params/std",
   "pallet-collective/std",
   "pallet-membership/std",
   "pallet-staking/std",
@@ -114,6 +118,7 @@ std = [
   "frame-try-runtime?/std",
   "pallet-authorship/std",
   "pallet-babe/std",
+  "pallet-offences/std",
   "pallet-balances/std",
   "pallet-evm-chain-id/std",
   "pallet-faucet-ops/std",
@@ -156,8 +161,10 @@ std = [
   "substrate-wasm-builder",
 ]
 runtime-benchmarks = [
+  "pallet-offences/runtime-benchmarks",
   "pallet-election-provider-multi-block/runtime-benchmarks",
   "pallet-validator-admission/runtime-benchmarks",
+  "pallet-protocol-params/runtime-benchmarks",
   "pallet-collective/runtime-benchmarks",
   "pallet-membership/runtime-benchmarks",
   "pallet-staking/runtime-benchmarks",
@@ -187,6 +194,7 @@ runtime-benchmarks = [
 try-runtime = [
   "pallet-election-provider-multi-block/try-runtime",
   "pallet-validator-admission/try-runtime",
+  "pallet-protocol-params/try-runtime",
   "pallet-collective/try-runtime",
   "pallet-membership/try-runtime",
   "pallet-staking/try-runtime",
@@ -198,6 +206,7 @@ try-runtime = [
   "frame-try-runtime/try-runtime",
   "pallet-authorship/try-runtime",
   "pallet-babe/try-runtime",
+  "pallet-offences/try-runtime",
   "pallet-balances/try-runtime",
   "pallet-evm-chain-id/try-runtime",
   "pallet-faucet-ops/try-runtime",

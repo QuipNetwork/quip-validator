@@ -145,23 +145,33 @@ impl pallet_babe::Config for Runtime {
     type ExpectedBlockTime = ExpectedBlockTime;
     type EpochChangeTrigger = pallet_babe::ExternalTrigger;
     type DisabledValidators = ();
-    type WeightInfo = ();
+    type WeightInfo = slashing::EquivocationWeights;
     type MaxAuthorities = ConstU32<64>;
-    type MaxNominators = ConstU32<64>;
-    type KeyOwnerProof = sp_core::Void;
-    type EquivocationReportSystem = ();
+    type MaxNominators = election::MaxBackersPerWinnerFinal;
+    type KeyOwnerProof = sp_session::MembershipProof;
+    type EquivocationReportSystem = pallet_babe::EquivocationReportSystem<
+        Self,
+        slashing::ReportOffences,
+        crate::Historical,
+        slashing::ReportLongevity,
+    >;
 }
 
 impl pallet_grandpa::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
 
-    type WeightInfo = ();
+    type WeightInfo = slashing::EquivocationWeights;
     type MaxAuthorities = ConstU32<64>;
-    type MaxNominators = ConstU32<64>;
+    type MaxNominators = election::MaxBackersPerWinnerFinal;
     type MaxSetIdSessionEntries = validator_onboarding::SetIdSessionEntries;
 
-    type KeyOwnerProof = sp_core::Void;
-    type EquivocationReportSystem = ();
+    type KeyOwnerProof = sp_session::MembershipProof;
+    type EquivocationReportSystem = pallet_grandpa::EquivocationReportSystem<
+        Self,
+        slashing::ReportOffences,
+        crate::Historical,
+        slashing::ReportLongevity,
+    >;
 }
 
 /// Staking queues validators; historical roots start with the first rotation.
@@ -895,3 +905,5 @@ pub mod election;
 mod governance_matrix;
 pub mod staking_rewards;
 pub mod validator_onboarding;
+
+pub mod slashing;
