@@ -32,6 +32,7 @@ exclude = ["crates/transaction-crypto-py"]
 resolver = "2"
 
 [workspace.dependencies]
+log = { version = "0.4.29", default-features = false }
 pallet-collective = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-membership = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-staking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }

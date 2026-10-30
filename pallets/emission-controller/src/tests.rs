@@ -225,6 +225,8 @@ fn rate_reduction_rebases_paid_history_without_reminting_or_stalling() {
             assert_eq!(Balances::total_issuance(), issuance);
             EmissionController::accrue(now + 1);
             let delta = ScheduledIssued::<Test>::get() - issued;
+            assert!(SubnetIssued::<Test>::get(0) > counters[0]);
+            assert!(SubnetIssued::<Test>::get(1) > counters[1]);
             assert!(delta > 0);
             assert!(delta <= AnnualEmission::get() / u128::from(YEAR_SECONDS) + 2);
             assert_eq!(Balances::total_issuance() - issuance, delta);
@@ -298,4 +300,30 @@ fn rebase_clamps_to_epoch_without_reminting_when_clock_is_below_offset() {
             assert!(ScheduledIssued::<Test>::get() > issued);
         });
     }
+}
+
+#[test]
+fn invalid_rebase_is_defensive_and_preserves_state() {
+    use frame_support::traits::{GetStorageVersion, StorageVersion};
+    new_test_ext().execute_with(|| {
+        EmissionController::accrue(100 + YEAR_SECONDS);
+        let issued = ScheduledIssued::<Test>::get();
+        let issuance = Balances::total_issuance();
+        StorageVersion::new(1).put::<EmissionController>();
+        // Fault injection after genesis: integrity checks reject this configuration.
+        AnnualEmission::set(0);
+        #[cfg(feature = "try-runtime")]
+        assert!(EmissionController::pre_upgrade().is_err());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            EmissionController::on_runtime_upgrade,
+        ));
+        assert_eq!(result.is_err(), cfg!(debug_assertions));
+        assert_eq!(
+            EmissionController::on_chain_storage_version(),
+            StorageVersion::new(1)
+        );
+        assert_eq!(StartAt::<Test>::get(), Some(100));
+        assert_eq!(ScheduledIssued::<Test>::get(), issued);
+        assert_eq!(Balances::total_issuance(), issuance);
+    });
 }

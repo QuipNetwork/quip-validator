@@ -247,11 +247,16 @@ pub mod pallet {
             // avoids a silent stall when the annual rate drops from 40M to 30M.
             // Unconfigured/disabled chains remain closed; unanchored genesis
             // still waits for the first consensus timestamp.
-            let Ok(start) = Self::rebased_start() else {
-                sp_runtime::print(
-                    "EmissionController: invalid rebase; storage version not advanced",
-                );
-                return T::DbWeight::get().reads(5);
+            let start = match Self::rebased_start() {
+                Ok(start) => start,
+                Err(error) => {
+                    log::error!(
+                        target: "runtime::emission-controller",
+                        "Invalid rebase: {error}; storage version not advanced",
+                    );
+                    frame_support::defensive!("invalid emission-controller rebase", error);
+                    return T::DbWeight::get().reads(5);
+                }
             };
             StartAt::<T>::set(start);
             VERSION.put::<Pallet<T>>();
