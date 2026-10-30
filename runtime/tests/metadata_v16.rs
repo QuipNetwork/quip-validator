@@ -382,9 +382,14 @@ fn runtime_identity_rejects_cross_network_upgrades() {
 
 mod unchecked_upgrade_tests {
     use super::*;
-    use frame_support::{assert_ok, assert_storage_noop};
-    use quip_protocol_runtime::{configs::RUNTIME_IDENTITY_MISMATCH, RuntimeOrigin, VERSION};
+    use frame_support::assert_ok;
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    use frame_support::assert_storage_noop;
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    use quip_protocol_runtime::configs::RUNTIME_IDENTITY_MISMATCH;
+    use quip_protocol_runtime::{RuntimeOrigin, VERSION};
     use sp_core::storage::well_known_keys::CODE;
+    #[cfg(not(feature = "runtime-benchmarks"))]
     use sp_runtime::{traits::Hash as _, DispatchError};
 
     fn ext() -> sp_io::TestExternalities {
@@ -400,6 +405,7 @@ mod unchecked_upgrade_tests {
         ext
     }
 
+    #[cfg(not(feature = "runtime-benchmarks"))]
     fn foreign_name() -> &'static str {
         match VERSION.spec_name.as_ref() {
             "quip" => "quip-testnet",
@@ -421,6 +427,7 @@ mod unchecked_upgrade_tests {
         sp_version::embed::embed_runtime_version(&wasm, version).unwrap()
     }
 
+    #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
     fn unchecked_foreign_upgrade_rejects_without_changing_code() {
         let code = candidate(foreign_name(), VERSION.spec_version + 1);
@@ -451,6 +458,7 @@ mod unchecked_upgrade_tests {
         }
     }
 
+    #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
     fn authorized_foreign_upgrade_rejects_and_retains_authorization() {
         let code = candidate(foreign_name(), VERSION.spec_version + 1);
