@@ -203,7 +203,16 @@ cargo-test:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
-    - cargo build --release -p quip-protocol-runtime
+    - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+
+# Both runtime trees must stay identical outside the approved network values.
+runtime-parity:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  script:
+    - bash scripts/check-runtime-parity.sh
 
 # Node-level suites that need a running chain and the PQ signer. Kept separate
 # from cargo-test because they additionally install Node and the pinned

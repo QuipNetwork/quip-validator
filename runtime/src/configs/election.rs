@@ -210,7 +210,7 @@ impl ElectionScheduler {
             .saturating_mul(EpochDuration::get());
         assert!(
             (round_blocks as u64).saturating_add(MinimumElectionSlack::get() as u64) <= window,
-            "election phases do not leave two hours of planning slack"
+            "election phases do not leave the required planning slack"
         );
     }
 
@@ -535,13 +535,23 @@ mod tests {
         ElectionScheduler::integrity_test();
         assert_eq!(PlanningSession::get(), 3);
         assert_eq!(validator_onboarding::SessionsPerEra::get() - 1, 5);
-        assert_eq!(EpochDuration::get(), 2_400);
+        assert_eq!(
+            EpochDuration::get(),
+            crate::network_params::EPOCH_DURATION_SLOTS
+        );
+        let round = Pages::get()
+            + 1
+            + SignedPhase::get()
+            + SignedValidationPhase::get()
+            + UnsignedPhase::get();
+        assert_eq!(round, 302);
+        assert!(u64::from(round + MinimumElectionSlack::get()) <= 2 * EpochDuration::get());
     }
 
     #[test]
-    #[should_panic(expected = "election phases do not leave two hours of planning slack")]
+    #[should_panic(expected = "election phases do not leave the required planning slack")]
     fn scheduler_integrity_rejects_an_overlong_round() {
-        ElectionScheduler::assert_planning_window(4_800);
+        ElectionScheduler::assert_planning_window((2 * EpochDuration::get()) as u32);
     }
 
     #[cfg(not(feature = "runtime-benchmarks"))]

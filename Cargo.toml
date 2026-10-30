@@ -24,6 +24,7 @@ members = [
   "pallets/template",
   "pallets/xqvm",
   "runtime",
+  "runtime-testnet",
 ]
 # `transaction-crypto-py` is a PyO3 `extension-module` cdylib. It is excluded so
 # its macOS `dynamic_lookup` link requirement (injected by maturin) never
@@ -45,6 +46,7 @@ sp-staking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "8
 pallet-slash-policy = { path = "./pallets/slash-policy", default-features = false }
 pallet-validator-admission = { path = "./pallets/validator-admission", default-features = false }
 quip-protocol-runtime = { path = "./runtime", default-features = false }
+quip-testnet-runtime = { path = "./runtime-testnet", default-features = false }
 pallet-emission-controller = { path = "./pallets/emission-controller", default-features = false }
 pallet-evm-chain-id = { path = "./pallets/evm-chain-id", default-features = false }
 pallet-faucet-ops = { path = "./pallets/faucet-ops", default-features = false }

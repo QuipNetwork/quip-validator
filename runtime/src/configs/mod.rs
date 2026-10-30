@@ -135,7 +135,7 @@ impl frame_system::Config for Runtime {
 
 parameter_types! {
     // BABE epochs are defined in slots. One epoch is one staking session (ShouldEndSession = Babe),
-    // so a 4h session with SessionsPerEra = 6 gives a 24h era.
+    // so six sessions give a 24h mainnet era or a 6h testnet era.
     pub const EpochDuration: u64 = crate::network_params::EPOCH_DURATION_SLOTS;
     pub const ExpectedBlockTime: u64 = SLOT_DURATION;
 }
@@ -749,12 +749,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn era_clock_is_four_hour_sessions_and_day_long_eras() {
-        assert_eq!(EpochDuration::get(), 4 * crate::HOURS as u64);
+    fn network_clock_and_lifecycle_use_the_approved_durations() {
+        use frame_support::traits::Get;
+
+        let (session_hours, era_hours, slack, longevity) =
+            match crate::network_params::EPOCH_DURATION_SLOTS {
+                2_400 => (4, 24, 1_200, 403_200),
+                600 => (1, 6, 300, 100_800),
+                other => panic!("unapproved epoch duration: {other}"),
+            };
+        assert_eq!(crate::SLOT_DURATION, 6_000);
+        assert_eq!(EpochDuration::get(), session_hours * crate::HOURS as u64);
+        assert_eq!(validator_onboarding::SessionsPerEra::get(), 6);
+        assert_eq!(6 * EpochDuration::get(), era_hours * crate::HOURS as u64);
+        assert_eq!(election::MinimumElectionSlack::get(), slack);
+        assert_eq!(validator_onboarding::BondingDuration::get(), 28);
         assert_eq!(
-            validator_onboarding::SessionsPerEra::get() as u64 * EpochDuration::get(),
-            crate::DAYS as u64
+            <<Runtime as pallet_staking::Config>::SlashDeferDuration as Get<u32>>::get(),
+            27
         );
+        assert_eq!(
+            <<Runtime as pallet_staking::Config>::HistoryDepth as Get<u32>>::get(),
+            84
+        );
+        assert_eq!(validator_onboarding::SetIdSessionEntries::get(), 168);
+        assert_eq!(slashing::ReportLongevity::get(), longevity);
     }
 
     #[test]

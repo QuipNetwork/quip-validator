@@ -240,10 +240,19 @@ mod tests {
             for _ in 0..6 {
                 next_session();
             }
+            let era_millis = super::super::EpochDuration::get()
+                * u64::from(super::super::validator_onboarding::SessionsPerEra::get())
+                * crate::SLOT_DURATION;
+            let eras_per_year = MILLISECONDS_PER_YEAR / era_millis;
+            assert_eq!(MILLISECONDS_PER_YEAR % era_millis, 0);
+            assert!(matches!(
+                (era_millis, eras_per_year),
+                (86_400_000, 365) | (21_600_000, 1_460)
+            ));
             let budget = pallet_staking::ErasValidatorReward::<Runtime>::get(era).unwrap();
             assert_eq!(
                 budget,
-                Payout::era_payout(3_000 * UNIT, issuance, DAY_MILLIS).0
+                Payout::era_payout(3_000 * UNIT, issuance, era_millis).0
             );
             assert_eq!(Balances::total_issuance(), issuance); // Budget calculation does not mint.
             assert_ok!(Staking::payout_stakers(
@@ -297,9 +306,9 @@ mod tests {
             EmissionController::accrue(
                 <Timestamp as frame_support::traits::UnixTime>::now().as_secs(),
             );
-            // Continue through 365 actual 24-hour eras, claiming every reward.
+            // Claim a full accounting year: 365 daily eras or 1460 six-hour eras.
             // Payees use Stash, so rewards do not alter the exposure ratios.
-            for _ in 1..365 {
+            for _ in 1..eras_per_year {
                 let era = pallet_staking::ActiveEra::<Runtime>::get().unwrap().index;
                 note_author(&validator);
                 for _ in 0..6 {
@@ -314,8 +323,9 @@ mod tests {
                     <Timestamp as frame_support::traits::UnixTime>::now().as_secs(),
                 );
             }
-            let controller = EmissionController::entitlement(365 * DAY_MILLIS / 1_000).unwrap();
-            let entitled = controller + 365 * budget;
+            let controller =
+                EmissionController::entitlement(MILLISECONDS_PER_YEAR / 1_000).unwrap();
+            let entitled = controller + u128::from(eras_per_year) * budget;
             let minted = Balances::total_issuance() - issuance;
             assert_eq!(
                 pallet_emission_controller::ScheduledIssued::<Runtime>::get(),

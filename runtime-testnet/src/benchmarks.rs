@@ -1,0 +1,52 @@
+// This is free and unencumbered software released into the public domain.
+//
+// Anyone is free to copy, modify, publish, use, compile, sell, or
+// distribute this software, either in source code form or as a compiled
+// binary, for any purpose, commercial or non-commercial, and by any
+// means.
+//
+// In jurisdictions that recognize copyright laws, the author or authors
+// of this software dedicate any and all copyright interest in the
+// software to the public domain. We make this dedication for the benefit
+// of the public at large and to the detriment of our heirs and
+// successors. We intend this dedication to be an overt act of
+// relinquishment in perpetuity of all present and future rights to this
+// software under copyright law.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+// OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+// ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+// OTHER DEALINGS IN THE SOFTWARE.
+//
+// For more information, please refer to <http://unlicense.org>
+
+frame_benchmarking::define_benchmarks!(
+    [frame_benchmarking, BaselineBench::<Runtime>]
+    [frame_system, SystemBench::<Runtime>]
+    [frame_system_extensions, SystemExtensionsBench::<Runtime>]
+    [pallet_balances, Balances]
+    [pallet_validator_admission, ValidatorAdmission]
+    [pallet_slash_policy, SlashPolicy]
+    [pallet_collective, Foundation]
+    [pallet_membership, FoundationMembership]
+    [pallet_staking, Staking]
+    [pallet_election_provider_multi_block, MultiBlockElection]
+    [pallet_election_provider_multi_block::verifier, MultiBlockElectionVerifier]
+    [pallet_election_provider_multi_block::unsigned, MultiBlockElectionUnsigned]
+    [pallet_election_provider_multi_block::signed, MultiBlockElectionSigned]
+    [pallet_faucet_ops, FaucetOps]
+    [pallet_emission_controller, EmissionController]
+    [pallet_miner_registry, MinerRegistry]
+    [pallet_multisig, Multisig]
+    [pallet_proxy, Proxy]
+    [pallet_quantum_compute_mempool, QuantumComputeMempool]
+    [pallet_quantum_pow, QuantumPow]
+    [pallet_revive, Revive]
+    [pallet_timestamp, Timestamp]
+    [pallet_template, Template]
+    [pallet_utility, Utility]
+    [pallet_xqvm, Xqvm]
+);

@@ -1,0 +1,928 @@
+// This is free and unencumbered software released into the public domain.
+//
+// Anyone is free to copy, modify, publish, use, compile, sell, or
+// distribute this software, either in source code form or as a compiled
+// binary, for any purpose, commercial or non-commercial, and by any
+// means.
+//
+// In jurisdictions that recognize copyright laws, the author or authors
+// of this software dedicate any and all copyright interest in the
+// software to the public domain. We make this dedication for the benefit
+// of the public at large and to the detriment of our heirs and
+// successors. We intend this dedication to be an overt act of
+// relinquishment in perpetuity of all present and future rights to this
+// software under copyright law.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+// OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+// ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+// OTHER DEALINGS IN THE SOFTWARE.
+//
+// For more information, please refer to <http://unlicense.org>
+
+// Substrate and Polkadot dependencies
+use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+use frame_support::{
+    derive_impl,
+    dispatch::DispatchClass,
+    parameter_types,
+    traits::{
+        ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Get, InstanceFilter, VariantCountOf,
+    },
+    weights::{
+        constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
+        IdentityFee, Weight,
+    },
+};
+use frame_system::limits::{BlockLength, BlockWeights};
+use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
+use sp_core::crypto::Ss58Codec;
+use sp_runtime::{
+    traits::{BlakeTwo256, ConvertInto, One, OpaqueKeys},
+    FixedU128, Perbill,
+};
+use sp_version::RuntimeVersion;
+
+use pallet_xqvm::WeightInfo as _;
+
+// Local module imports
+use super::{
+    AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, BoxedSessionKeys,
+    EthExtraImpl, Hash, Nonce, OriginCaller, PalletInfo, Runtime, RuntimeCall, RuntimeEvent,
+    RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys, Signature,
+    System, Timestamp, EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
+};
+use crate::weights::{BlockExecutionWeight, ExtrinsicBaseWeight};
+
+const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+const AVERAGE_ON_INITIALIZE_RATIO: Perbill = Perbill::from_percent(10);
+
+parameter_types! {
+    pub const BlockHashCount: BlockNumber = 2400;
+    pub const Version: RuntimeVersion = VERSION;
+
+    /// We allow for 2 seconds of compute with a 6 second average block time.
+    pub RuntimeBlockWeights: BlockWeights = {
+        let max_block = Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX);
+        let normal_max = NORMAL_DISPATCH_RATIO * max_block;
+
+        BlockWeights::builder()
+            .base_block(BlockExecutionWeight::get())
+            .for_class(DispatchClass::all(), |weights| {
+                weights.base_extrinsic = ExtrinsicBaseWeight::get();
+            })
+            .for_class(DispatchClass::Normal, |weights| {
+                weights.max_total = Some(normal_max);
+            })
+            .for_class(DispatchClass::Operational, |weights| {
+                weights.max_total = Some(max_block);
+                weights.reserved = Some(max_block - normal_max);
+            })
+            .avg_block_initialization(AVERAGE_ON_INITIALIZE_RATIO)
+            .build_or_panic()
+    };
+    // Replacement for the now-deprecated `BlockLength::max_with_normal_ratio` —
+    // reconstruct the same shape via the builder: max = 5 MiB for all dispatch
+    // classes, but the Normal class is scaled down by `NORMAL_DISPATCH_RATIO`.
+    pub RuntimeBlockLength: BlockLength = BlockLength::builder()
+        .max_length(5 * 1024 * 1024)
+        .modify_max_length_for_class(frame_support::dispatch::DispatchClass::Normal, |len| {
+            *len = NORMAL_DISPATCH_RATIO * (5u32 * 1024 * 1024);
+        })
+        .build();
+    pub const SS58Prefix: u8 = 42;
+}
+
+/// All migrations of the runtime, aside from the ones declared in the pallets.
+///
+/// This can be a tuple of types, each implementing `OnRuntimeUpgrade`.
+#[allow(unused_parens)]
+type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
+
+/// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
+/// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
+/// but overridden as needed.
+#[derive_impl(frame_system::config_preludes::SolochainDefaultConfig)]
+impl frame_system::Config for Runtime {
+    /// The block type for the runtime.
+    type Block = Block;
+    /// Block & extrinsics weights: base values and limits.
+    type BlockWeights = RuntimeBlockWeights;
+    /// The maximum length of a block (in bytes).
+    type BlockLength = RuntimeBlockLength;
+    /// The identifier used to distinguish between accounts.
+    type AccountId = AccountId;
+    /// The type for storing how many extrinsics an account has signed.
+    type Nonce = Nonce;
+    /// The type for hashing blocks and tries.
+    type Hash = Hash;
+    /// Maximum number of block number to block hash mappings to keep (oldest pruned first).
+    type BlockHashCount = BlockHashCount;
+    /// The weight of database operations that the runtime can invoke.
+    type DbWeight = RocksDbWeight;
+    /// Version of the runtime.
+    type Version = Version;
+    /// The data to be stored in an account.
+    type AccountData = pallet_balances::AccountData<Balance>;
+    /// This is used as an identifier of the chain. 42 is the generic substrate prefix.
+    type SS58Prefix = SS58Prefix;
+    type MaxConsumers = frame_support::traits::ConstU32<16>;
+    type SingleBlockMigrations = SingleBlockMigrations;
+}
+
+parameter_types! {
+    // BABE epochs are defined in slots. One epoch is one staking session (ShouldEndSession = Babe),
+    // so six sessions give a 24h mainnet era or a 6h testnet era.
+    pub const EpochDuration: u64 = crate::network_params::EPOCH_DURATION_SLOTS;
+    pub const ExpectedBlockTime: u64 = SLOT_DURATION;
+}
+
+impl pallet_babe::Config for Runtime {
+    type EpochDuration = EpochDuration;
+    type ExpectedBlockTime = ExpectedBlockTime;
+    type EpochChangeTrigger = pallet_babe::ExternalTrigger;
+    type DisabledValidators = ();
+    type WeightInfo = slashing::EquivocationWeights;
+    type MaxAuthorities = ConstU32<64>;
+    type MaxNominators = election::MaxBackersPerWinnerFinal;
+    type KeyOwnerProof = sp_session::MembershipProof;
+    type EquivocationReportSystem = pallet_babe::EquivocationReportSystem<
+        Self,
+        slashing::ReportOffences,
+        crate::Historical,
+        slashing::ReportLongevity,
+    >;
+}
+
+impl pallet_grandpa::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+
+    type WeightInfo = slashing::EquivocationWeights;
+    type MaxAuthorities = ConstU32<64>;
+    type MaxNominators = election::MaxBackersPerWinnerFinal;
+    type MaxSetIdSessionEntries = validator_onboarding::SetIdSessionEntries;
+
+    type KeyOwnerProof = sp_session::MembershipProof;
+    type EquivocationReportSystem = pallet_grandpa::EquivocationReportSystem<
+        Self,
+        slashing::ReportOffences,
+        crate::Historical,
+        slashing::ReportLongevity,
+    >;
+}
+
+/// Staking queues validators; historical roots start with the first rotation.
+impl pallet_session::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type ValidatorId = <Self as frame_system::Config>::AccountId;
+    type ValidatorIdOf = ConvertInto;
+    type ShouldEndSession = Babe;
+    type NextSessionRotation = Babe;
+    type SessionManager = election::ElectionScheduler;
+    type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
+    type Keys = BoxedSessionKeys;
+    type DisablingStrategy = pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
+    type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+    type Currency = Balances;
+    type KeyDeposit = ();
+}
+
+impl pallet_timestamp::Config for Runtime {
+    /// A timestamp: milliseconds since the unix epoch.
+    type Moment = u64;
+    type OnTimestampSet = Babe;
+    type MinimumPeriod = ConstU64<{ SLOT_DURATION / 2 }>;
+    type WeightInfo = ();
+}
+
+impl pallet_balances::Config for Runtime {
+    type MaxLocks = ConstU32<50>;
+    // This limits only legacy named-reserve entries. Multisig and proxy use
+    // the aggregate plain reserve and do not consult this bound; 64 is a
+    // forward-looking cap for any future named-reserve users.
+    type MaxReserves = ConstU32<64>;
+    type ReserveIdentifier = [u8; 8];
+    /// The type for recording an account's balance.
+    type Balance = Balance;
+    /// The ubiquitous event type.
+    type RuntimeEvent = RuntimeEvent;
+    type DustRemoval = ();
+    type ExistentialDeposit = ConstU128<EXISTENTIAL_DEPOSIT>;
+    type AccountStore = System;
+    type WeightInfo = pallet_balances::weights::SubstrateWeight<Runtime>;
+    type FreezeIdentifier = RuntimeFreezeReason;
+    type MaxFreezes = VariantCountOf<RuntimeFreezeReason>;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type RuntimeFreezeReason = RuntimeFreezeReason;
+    type DoneSlashHandler = ();
+}
+
+parameter_types! {
+    /// Chain-wide price for one storage item.
+    pub const StorageDepositPerItem: Balance = 200 * MILLI_UNIT;
+    /// Chain-wide price for one byte of storage.
+    pub const StorageDepositPerByte: Balance = 10 * MICRO_UNIT;
+}
+
+// Keep the former Revive names as compatibility aliases for downstream runtime
+// assertions. Revive consumes the shared chain storage price directly below.
+pub type ReviveDepositPerItem = StorageDepositPerItem;
+pub type ReviveDepositPerByte = StorageDepositPerByte;
+
+parameter_types! {
+    // One minimum multisig state uses a 32-byte call-hash key plus 57 value
+    // bytes: Timepoint (8), Balance (16), depositor AccountId (32), and the
+    // approvals Vec compact-length prefix (1). At the chain storage price,
+    // this is 1 item + 89 bytes.
+    pub const MultisigDepositBase: Balance =
+        StorageDepositPerItem::get() + 89 * StorageDepositPerByte::get();
+    // Each threshold approval adds one encoded 32-byte AccountId.
+    pub const MultisigDepositFactor: Balance = 32 * StorageDepositPerByte::get();
+    /// Weight grows with the sorted signatory set. One hundred supports
+    /// institutional custody while remaining bounded; benchmark results may
+    /// justify tightening this before mainnet.
+    pub const MaxSignatories: u32 = 100;
+}
+
+impl pallet_multisig::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type Currency = Balances;
+    type DepositBase = MultisigDepositBase;
+    type DepositFactor = MultisigDepositFactor;
+    type MaxSignatories = MaxSignatories;
+    type WeightInfo = pallet_multisig::weights::SubstrateWeight<Runtime>;
+    type BlockNumberProvider = System;
+}
+
+impl pallet_utility::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type PalletsOrigin = OriginCaller;
+    type WeightInfo = pallet_utility::weights::SubstrateWeight<Runtime>;
+}
+
+/// Custody proxy permissions deliberately have only a full-access option and
+/// an asset-movement option. The latter admits the three signed balance
+/// transfer calls and rejects every administrative, contract, and nested call.
+#[derive(
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    Debug,
+    MaxEncodedLen,
+    scale_info::TypeInfo,
+)]
+pub enum ProxyType {
+    Any,
+    TransferOnly,
+}
+
+impl Default for ProxyType {
+    fn default() -> Self {
+        Self::Any
+    }
+}
+
+impl InstanceFilter<RuntimeCall> for ProxyType {
+    fn filter(&self, call: &RuntimeCall) -> bool {
+        match self {
+            Self::Any => true,
+            Self::TransferOnly => matches!(
+                call,
+                RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death { .. })
+                    | RuntimeCall::Balances(pallet_balances::Call::transfer_keep_alive { .. })
+                    | RuntimeCall::Balances(pallet_balances::Call::transfer_all { .. })
+            ),
+        }
+    }
+
+    fn is_superset(&self, other: &Self) -> bool {
+        self == &Self::Any || self == other
+    }
+}
+
+parameter_types! {
+    // Proxies is keyed by AccountId (32 bytes) and stores a Balance (16 bytes)
+    // before its vector entries: 1 item + 48 bytes at the chain storage price.
+    pub const ProxyDepositBase: Balance =
+        StorageDepositPerItem::get() + 48 * StorageDepositPerByte::get();
+    // Each ProxyDefinition encodes AccountId (32), ProxyType (1), and delay (4).
+    pub const ProxyDepositFactor: Balance = 37 * StorageDepositPerByte::get();
+    // Announcements has the same AccountId key and Balance base footprint.
+    pub const AnnouncementDepositBase: Balance =
+        StorageDepositPerItem::get() + 48 * StorageDepositPerByte::get();
+    // Each announcement encodes real AccountId (32), call hash (32), and block (4).
+    pub const AnnouncementDepositFactor: Balance = 68 * StorageDepositPerByte::get();
+}
+
+impl pallet_proxy::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type Currency = Balances;
+    type ProxyType = ProxyType;
+    type ProxyDepositBase = ProxyDepositBase;
+    type ProxyDepositFactor = ProxyDepositFactor;
+    type MaxProxies = ConstU32<32>;
+    type WeightInfo = pallet_proxy::weights::SubstrateWeight<Runtime>;
+    type MaxPending = ConstU32<32>;
+    type CallHasher = BlakeTwo256;
+    type AnnouncementDepositBase = AnnouncementDepositBase;
+    type AnnouncementDepositFactor = AnnouncementDepositFactor;
+    type BlockNumberProvider = System;
+}
+
+// `create_pure` intentionally stays available: a key-holding custodian can
+// spawn an otherwise inaccessible vault account controlled only through the
+// recorded proxy relationship, which is the standard pure-proxy custody flow.
+
+parameter_types! {
+    pub FeeMultiplier: Multiplier = Multiplier::one();
+}
+
+impl pallet_transaction_payment::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type OnChargeTransaction = FungibleAdapter<Balances, ()>;
+    type OperationalFeeMultiplier = ConstU8<5>;
+    type WeightToFee = pallet_revive::evm::fees::BlockRatioFee<1, 1, Runtime, Balance>;
+    type LengthToFee = IdentityFee<Balance>;
+    type FeeMultiplierUpdate = ConstFeeMultiplier<FeeMultiplier>;
+    type WeightInfo = pallet_transaction_payment::weights::SubstrateWeight<Runtime>;
+}
+
+parameter_types! {
+    pub const ReviveDepositPerChildTrieItem: Balance = 2 * MILLI_UNIT;
+    pub ReviveCodeHashLockupDepositPercent: Perbill = Perbill::from_percent(30);
+    pub const ReviveMaxEthExtrinsicWeight: FixedU128 = FixedU128::from_rational(9, 10);
+    /// One native 12-decimal plank equals 10^6 Ethereum 18-decimal units.
+    pub const ReviveNativeToEthRatio: u32 = 1_000_000;
+}
+
+impl pallet_evm_chain_id::Config for Runtime {}
+
+impl pallet_revive::Config for Runtime {
+    type Time = Timestamp;
+    type Balance = Balance;
+    type Currency = Balances;
+    type OnBurn = ();
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type RuntimeOrigin = RuntimeOrigin;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type WeightInfo = pallet_revive::weights::SubstrateWeight<Runtime>;
+    type Precompiles = ();
+    type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Runtime, Babe>;
+    type DepositPerByte = StorageDepositPerByte;
+    type DepositPerItem = StorageDepositPerItem;
+    type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
+    type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
+    type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;
+    type AllowEVMBytecode = ConstBool<true>;
+    type UploadOrigin = frame_system::EnsureSigned<AccountId>;
+    type InstantiateOrigin = frame_system::EnsureSigned<AccountId>;
+    type RuntimeMemory = ConstU32<{ 128 * 1024 * 1024 }>;
+    type PVFMemory = ConstU32<{ 512 * 1024 * 1024 }>;
+    type ChainId = pallet_evm_chain_id::ChainId<Runtime>;
+    type NativeToEthRatio = ReviveNativeToEthRatio;
+    type FeeInfo = pallet_revive::evm::fees::Info<Address, Signature, EthExtraImpl>;
+    type MaxEthExtrinsicWeight = ReviveMaxEthExtrinsicWeight;
+    type DebugEnabled = ConstBool<false>;
+    type GasScale = ConstU32<1_000>;
+}
+
+/// Configure the pallet-template in pallets/template.
+impl pallet_template::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
+}
+
+parameter_types! {
+    pub const ControllerAnnualEmission: Balance =
+        pallet_emission_controller::CONTROLLER_ANNUAL_EMISSION_QUIP.saturating_mul(UNIT);
+    pub const EmissionPotId: frame_support::PalletId = frame_support::PalletId(*b"qp/emiss");
+}
+impl pallet_emission_controller::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type Clock = Timestamp;
+    type Unit = ConstU128<UNIT>;
+    type AnnualEmission = ControllerAnnualEmission;
+    type PotId = EmissionPotId;
+    type MaxSubnets = ConstU32<32>;
+    type WeightInfo = pallet_emission_controller::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_faucet_ops::Config for Runtime {
+    type MintOrigin = frame_support::traits::EitherOfDiverse<
+        pallet_faucet_ops::EnsureFaucetAuthority<Runtime>,
+        validator_onboarding::FoundationOrigin,
+    >;
+    type AuthorityOrigin = validator_onboarding::FoundationOrigin;
+    type Emissions = crate::EmissionController;
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type WeightInfo = pallet_faucet_ops::weights::SubstrateWeight<Runtime>;
+}
+
+parameter_types! {
+    pub const MaxProgramSize: u32 = 65_536;
+    /// Maximum basic blocks in a stored program, counted as the verifier's
+    /// CFG builder counts them: the entry, every `TARGET`, and the position
+    /// after every jump, `RANGE`, `ITER` and `NEXT`.
+    ///
+    /// This bounds the verifier's memory, which the byte limit does not.
+    /// Measured natively, decode plus verify of a pure `TARGET` sled peaks
+    /// at ~3 KiB per block: 14 MiB at 4,096 blocks and 200 MiB at the
+    /// 65,520 blocks a `MaxProgramSize` program can hold. The reference
+    /// machine's benchmark run exhausted the 128 MiB runtime heap at about
+    /// 28,000 blocks, so the Wasm allocator costs roughly 2.4x the native
+    /// figure. A failed allocation traps the runtime; it is not a dispatch
+    /// error anyone can report or pay for.
+    ///
+    /// 2,048 blocks is ~7 MiB native, ~17 MiB in Wasm: the same one-eighth
+    /// share of the heap the VM itself gets through `MaxVmMemory`. It is
+    /// also far past any real program -- the toolchain's conformance
+    /// vectors are tens of instructions -- so the ceiling binds abuse, not
+    /// use. The bound is priced separately: `store_program` pre-charges
+    /// verification at this many blocks and refunds to the actual count.
+    pub const MaxProgramBlocks: u32 = 2_048;
+    /// Maximum static loop nesting in a stored program.
+    ///
+    /// The verifier's loop check walks each region's blocks once per
+    /// enclosing loop, so its time is blocks times depth; without a depth
+    /// bound the block bound alone leaves verification quadratic in program
+    /// length, and the cost is spent before the verifier reports anything.
+    /// Measured natively: 2,048 bare nested `RANGE`/`NEXT` pairs take
+    /// 255 ms, 16,384 take 20 s.
+    ///
+    /// At 2,048 blocks, 32 levels cost ~2.7 ms native over the flat case
+    /// (~40 ns per block visit), which the per-block weight is measured
+    /// with. Real programs nest two or three deep; the VM's own dynamic
+    /// loop-stack limit is 8,192, which is a different resource.
+    pub const MaxLoopDepth: u32 = 32;
+    pub const MaxCallDataLen: u32 = 256;
+    pub const MaxOutputSlots: u32 = 256;
+    /// Weight charged per executed XQVM step, measured rather than assumed.
+    ///
+    /// Taken as the slope of the `execute_step` benchmark -- the marginal cost
+    /// of one more step on the reference machine -- multiplied by a safety
+    /// factor. Deriving it from the generated weights means regeneration keeps
+    /// it honest; the previous hand-set 1 ns was roughly 13x below the
+    /// measured cost of the *cheapest* opcode in the ISA.
+    ///
+    /// The safety factor covers the spread between one-step opcodes. A step
+    /// is calibrated upstream as one `NOP` dispatch, while the benchmark
+    /// exercises `NEXT`, which is dearer and still charges a single step; the
+    /// slope therefore already sits above the unit cost, and the factor of 2
+    /// leaves headroom for register and vector opcodes the benchmark does not
+    /// reach.
+    ///
+    /// Since xqvm 0.4.0 it also covers opcodes whose cost scales with their
+    /// operands, which a flat per-step price could not be made sound for
+    /// before (QUI-1056). Those opcodes now charge additional steps for the
+    /// work they are about to do -- `ENERGY` one per model term, the
+    /// constraint expansions one per coefficient written, the grid scans one
+    /// per cell -- so `WeightPerStep * steps` tracks work rather than
+    /// instruction count. The unit counts are normative and specified in the
+    /// toolchain's `spec/xqvm/METERING.md`; the pallet prices them, it does
+    /// not restate them.
+    pub XqvmWeightPerStep: Weight = {
+        const STEP_WEIGHT_SAFETY_FACTOR: u64 = 2;
+        let slope = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0));
+        slope.saturating_mul(STEP_WEIGHT_SAFETY_FACTOR)
+    };
+
+    /// Maximum bytes a single `execute` may allocate inside the VM.
+    ///
+    /// Sized against the Wasm runtime's heap rather than the block's weight
+    /// budget, because that is the resource it protects. The executor's
+    /// default is `DEFAULT_HEAP_ALLOC_PAGES` (2048) 64 KiB pages -- 128 MiB
+    /// -- shared by everything the block does: the storage overlay, decoded
+    /// extrinsics, and every other pallet in the same block. 16 MiB gives the
+    /// VM an eighth of that at the absolute bound and leaves the rest alone.
+    ///
+    /// It is not derived from `MaxStepLimit`, and must not be. The step
+    /// budget bounds allocation only incidentally, through whatever the
+    /// allocating opcodes happen to charge: a sample costs one step per
+    /// element and eight bytes per element, so the step limit alone would
+    /// permit an allocation well past the heap. That incidental coupling is
+    /// what this constant replaces with a stated bound.
+    ///
+    /// 16 MiB is 2,097,152 XQMX variables, orders of magnitude above any
+    /// problem the toolchain's own examples encode, so the ceiling binds
+    /// abuse rather than use.
+    pub const MaxVmMemory: u64 = 16 * 1024 * 1024;
+
+    /// Derived from block weight budget so a single execute call always
+    /// fits in one block.  Uses 50 % of the normal dispatch budget to
+    /// leave room for other extrinsics in the same block.
+    ///
+    /// Falls automatically as the per-step price rises: with the price
+    /// measured rather than assumed, this is roughly an order of magnitude
+    /// below the ~750M steps the hand-set constant used to permit. That is the
+    /// point -- the old limit allowed a single extrinsic to run for over ten
+    /// seconds against a two-second block budget.
+    pub MaxStepLimit: u64 = {
+        let normal = RuntimeBlockWeights::get()
+            .get(frame_support::dispatch::DispatchClass::Normal)
+            .max_total
+            .unwrap_or(RuntimeBlockWeights::get().max_block);
+        // Reserve half for other extrinsics.
+        let budget = normal.ref_time() / 2;
+        // Subtract the worst-case decode overhead, then divide by per-step cost.
+        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+            .ref_time();
+        let per_step = XqvmWeightPerStep::get().ref_time().max(1);
+        budget.saturating_sub(base) / per_step
+    };
+}
+
+/// Configure the XQVM pallet for on-chain bytecode execution.
+impl pallet_xqvm::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    // A stored program is priced at the chain storage price like Revive's
+    // code blobs: one item for the program plus its bytes. At `MaxProgramSize`
+    // the per-byte part is 0.655 UNIT, so a full 64 KiB program locks up
+    // roughly 0.855 UNIT in total, returned when the program is removed.
+    type DepositBase = StorageDepositPerItem;
+    type DepositPerByte = StorageDepositPerByte;
+    type MaxProgramSize = MaxProgramSize;
+    type MaxProgramBlocks = MaxProgramBlocks;
+    type MaxLoopDepth = MaxLoopDepth;
+    type MaxCallDataLen = MaxCallDataLen;
+    type MaxOutputSlots = MaxOutputSlots;
+    type MaxStepLimit = MaxStepLimit;
+    type MaxVmMemory = MaxVmMemory;
+    type WeightPerStep = XqvmWeightPerStep;
+    type WeightInfo = pallet_xqvm::SubstrateWeight<Runtime>;
+}
+
+parameter_types! {
+    pub const QuantumMaxNodes: u32 = 5_000;
+    pub const QuantumMaxEdges: u32 = 50_000;
+    pub const QuantumMaxSolutions: u32 = 20;
+    pub const QuantumMaxBidMiners: u32 = 16;
+    pub const QuantumMaxOrdersPerProposer: u32 = 32;
+    pub const QuantumMaxDeadlineBlocks: BlockNumber = 1_000;
+    pub const QuantumMaxBlockWait: BlockNumber = 100;
+    pub const QuantumMinReward: Balance = UNIT;
+    pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
+    pub const QuantumPowMaxNodes: u32 = 5_000;
+    pub const QuantumPowMaxEdges: u32 = 50_000;
+    pub const QuantumPowMaxSolutions: u32 = 32;
+    pub const QuantumPowMinNodes: u32 = 16;
+    /// Decay rate unit. The threshold stays fixed for the first 100 chain
+    /// blocks after a qblock, then eases continuously at 4.9375% of the
+    /// remaining gap to the easy bound per 100 overdue blocks (subject to
+    /// the one-energy-unit floor per epoch). The gate is set separately by
+    /// `TARGET_PROOF_BLOCKS` in pallet-quantum-pow; retune both together.
+    pub const QuantumPowEpochLength: BlockNumber = 100;
+    pub const QuantumPowMinerDeposit: Balance = UNIT;
+    pub const QuantumPowBlockReward: Balance = UNIT;
+    /// Inclusive bounds for the council-settable qblock reward. The floor keeps
+    /// a win worth more than the miner's deposit; the ceiling bounds what one
+    /// subnet pot can pay out before the emission budget is re-planned.
+    pub const QuantumPowMinBlockReward: Balance = UNIT / 10;
+    pub const QuantumPowMaxBlockReward: Balance = 100 * UNIT;
+    /// Round-length target for the difficulty controller, in blocks (~10 min at
+    /// 6s blocks), and the council's allowed range. The floor sits above the
+    /// fast-proof anchor (60 blocks) so the hardening band keeps an interior.
+    pub const QuantumPowTargetProofBlocks: u32 = 100;
+    pub const QuantumPowMinTargetProofBlocks: u32 = 80;
+    pub const QuantumPowMaxTargetProofBlocks: u32 = 400;
+    pub const QuantumPowMaxProofsPerBlock: u32 = 8;
+    /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
+    /// and `allowed_spin_values` per registered topology. Set well above the
+    /// expected real-world maximum (the legacy ternary spec uses 3 for h; the
+    /// Advantage2_system1 zero-field spin-glass spec uses 1 for h, 2 for j,
+    /// 2 for spin) so future hardware-spec changes don't force a runtime
+    /// upgrade.
+    pub const QuantumPowMaxAllowedValues: u32 = 32;
+    /// Energy-curve calibration: per-mille `c` values that define the
+    /// `(max_energy, knee_energy, min_energy)` triple via
+    /// `expected_gse` on the default topology and its h/J value
+    /// specs. Defaults `(0.700, 0.725, 0.750)` keep the hard edge difficult
+    /// without pushing the threshold into the known-impossible range.
+    pub const QuantumPowCurveCEasyMilli: u32 = 700;
+    pub const QuantumPowCurveCKneeMilli: u32 = 725;
+    pub const QuantumPowCurveCHardMilli: u32 = 750;
+
+    pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
+    pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
+    pub const MinerRegistryMaxPublicHostBytes: u32 = 253;
+    pub const MinerRegistryMaxRpcEndpointBytes: u32 = 256;
+    pub const MinerRegistryMaxRpcEndpoints: u32 = 8;
+    pub const MinerRegistryMaxMinerSpecs: u32 = 16;
+    pub const MinerRegistryMaxMinerLabelBytes: u32 = 64;
+    pub const MinerRegistryMaxMinerBackendBytes: u32 = 32;
+    pub const MinerRegistryMaxMinerDeviceIdBytes: u32 = 128;
+    // schema-v2 `system_info` bounds, sized off measured payloads (worst-case
+    // 8-GPU survey ~787 B), leaving generous headroom.
+    pub const MinerRegistryMaxOsStringBytes: u32 = 64;
+    pub const MinerRegistryMaxCpuBrandBytes: u32 = 96;
+    pub const MinerRegistryMaxArchBytes: u32 = 16;
+    pub const MinerRegistryMaxGpuVendorBytes: u32 = 16;
+    pub const MinerRegistryMaxGpuNameBytes: u32 = 96;
+    pub const MinerRegistryMaxGpus: u32 = 16;
+    // schema-v2 `runtime` block: version strings run ~16 B; image refs with a
+    // registry path + digest can reach ~120 B.
+    pub const MinerRegistryMaxRuntimeVersionBytes: u32 = 48;
+    pub const MinerRegistryMaxDockerImageBytes: u32 = 256;
+    pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
+    pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
+}
+
+/// Account attributed as the builder for migration-inserted default job specs.
+///
+/// Genesis presets can record each preset's actual root account directly, but
+/// runtime migrations need one chain-independent account baked into the
+/// runtime. This is operator 1's account on quip-testnet; note that spec 120
+/// removed `pallet-sudo`, so the attribution no longer implies any sudo key.
+pub const QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58: &str =
+    "5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi";
+
+pub struct QuantumDefaultJobSpecBuilder;
+
+impl Get<AccountId> for QuantumDefaultJobSpecBuilder {
+    fn get() -> AccountId {
+        AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
+            .expect("default job spec builder SS58 address is valid")
+    }
+}
+
+impl pallet_quantum_compute_mempool::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type MaxNodes = QuantumMaxNodes;
+    type MaxEdges = QuantumMaxEdges;
+    type MaxSolutions = QuantumMaxSolutions;
+    type MaxBidMiners = QuantumMaxBidMiners;
+    type MaxOrdersPerProposer = QuantumMaxOrdersPerProposer;
+    type MaxDeadlineBlocks = QuantumMaxDeadlineBlocks;
+    type MaxBlockWait = QuantumMaxBlockWait;
+    type MinReward = QuantumMinReward;
+    type ResultTtlBlocks = QuantumResultTtlBlocks;
+    type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
+    type DefaultJobSpecBuilder = QuantumDefaultJobSpecBuilder;
+    type VM = pallet_quantum_compute_mempool::xqvm::NoOpVm;
+    type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_quantum_pow::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type MaxNodes = QuantumPowMaxNodes;
+    type MaxEdges = QuantumPowMaxEdges;
+    type MaxSolutions = QuantumPowMaxSolutions;
+    type MinNodes = QuantumPowMinNodes;
+    type EpochLength = QuantumPowEpochLength;
+    type MinerDeposit = QuantumPowMinerDeposit;
+    type BlockReward = QuantumPowBlockReward;
+    type MinBlockReward = QuantumPowMinBlockReward;
+    type MaxBlockReward = QuantumPowMaxBlockReward;
+    // QBlock reward and round-length changes are council business (2/3
+    // motion), not Root.
+    type AdminOrigin = validator_onboarding::FoundationOrRoot;
+    type TargetProofBlocks = QuantumPowTargetProofBlocks;
+    type MinTargetProofBlocks = QuantumPowMinTargetProofBlocks;
+    type MaxTargetProofBlocks = QuantumPowMaxTargetProofBlocks;
+    type RewardPayment = pallet_emission_controller::SubnetRewards<
+        Runtime,
+        { pallet_emission_controller::ISING_SUBNET },
+    >;
+    type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
+    type MaxAllowedValues = QuantumPowMaxAllowedValues;
+    type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
+    type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
+    type CurveCHardMilli = QuantumPowCurveCHardMilli;
+    type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
+}
+
+pub struct RuntimeQBlockIds;
+
+impl pallet_miner_registry::QBlockIdProvider for RuntimeQBlockIds {
+    fn latest_qblock_id() -> Option<u64> {
+        pallet_quantum_pow::Pallet::<Runtime>::latest_qblock_id()
+    }
+}
+
+impl pallet_miner_registry::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type QBlockIds = RuntimeQBlockIds;
+    type MaxNodeIdBytes = MinerRegistryMaxNodeIdBytes;
+    type MaxNodeNameBytes = MinerRegistryMaxNodeNameBytes;
+    type MaxPublicHostBytes = MinerRegistryMaxPublicHostBytes;
+    type MaxRpcEndpointBytes = MinerRegistryMaxRpcEndpointBytes;
+    type MaxRpcEndpoints = MinerRegistryMaxRpcEndpoints;
+    type MaxMinerSpecs = MinerRegistryMaxMinerSpecs;
+    type MaxMinerLabelBytes = MinerRegistryMaxMinerLabelBytes;
+    type MaxMinerBackendBytes = MinerRegistryMaxMinerBackendBytes;
+    type MaxMinerDeviceIdBytes = MinerRegistryMaxMinerDeviceIdBytes;
+    type MaxOsStringBytes = MinerRegistryMaxOsStringBytes;
+    type MaxCpuBrandBytes = MinerRegistryMaxCpuBrandBytes;
+    type MaxArchBytes = MinerRegistryMaxArchBytes;
+    type MaxGpuVendorBytes = MinerRegistryMaxGpuVendorBytes;
+    type MaxGpuNameBytes = MinerRegistryMaxGpuNameBytes;
+    type MaxGpus = MinerRegistryMaxGpus;
+    type MaxRuntimeVersionBytes = MinerRegistryMaxRuntimeVersionBytes;
+    type MaxDockerImageBytes = MinerRegistryMaxDockerImageBytes;
+    type DescriptorDepositBase = MinerRegistryDescriptorDepositBase;
+    type DescriptorDepositPerByte = MinerRegistryDescriptorDepositPerByte;
+    type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_clock_and_lifecycle_use_the_approved_durations() {
+        use frame_support::traits::Get;
+
+        let (session_hours, era_hours, slack, longevity) =
+            match crate::network_params::EPOCH_DURATION_SLOTS {
+                2_400 => (4, 24, 1_200, 403_200),
+                600 => (1, 6, 300, 100_800),
+                other => panic!("unapproved epoch duration: {other}"),
+            };
+        assert_eq!(crate::SLOT_DURATION, 6_000);
+        assert_eq!(EpochDuration::get(), session_hours * crate::HOURS as u64);
+        assert_eq!(validator_onboarding::SessionsPerEra::get(), 6);
+        assert_eq!(6 * EpochDuration::get(), era_hours * crate::HOURS as u64);
+        assert_eq!(election::MinimumElectionSlack::get(), slack);
+        assert_eq!(validator_onboarding::BondingDuration::get(), 28);
+        assert_eq!(
+            <<Runtime as pallet_staking::Config>::SlashDeferDuration as Get<u32>>::get(),
+            27
+        );
+        assert_eq!(
+            <<Runtime as pallet_staking::Config>::HistoryDepth as Get<u32>>::get(),
+            84
+        );
+        assert_eq!(validator_onboarding::SetIdSessionEntries::get(), 168);
+        assert_eq!(slashing::ReportLongevity::get(), longevity);
+    }
+
+    #[test]
+    fn runtime_block_weights_use_benchmarked_overhead() {
+        let weights = RuntimeBlockWeights::get();
+
+        assert_eq!(weights.base_block, BlockExecutionWeight::get());
+        for class in DispatchClass::all() {
+            assert_eq!(
+                weights.get(*class).base_extrinsic,
+                ExtrinsicBaseWeight::get(),
+                "unexpected base extrinsic weight for {class:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_block_weight_limits_preserve_sensible_defaults() {
+        let weights = RuntimeBlockWeights::get();
+        let max_block = Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX);
+        let normal_max = NORMAL_DISPATCH_RATIO * max_block;
+
+        assert_eq!(weights.max_block, max_block);
+        assert_eq!(
+            weights.get(DispatchClass::Normal).max_total,
+            Some(normal_max)
+        );
+        assert_eq!(
+            weights.get(DispatchClass::Operational).max_total,
+            Some(max_block)
+        );
+        assert_eq!(
+            weights.get(DispatchClass::Operational).reserved,
+            Some(max_block - normal_max)
+        );
+        let initialization = AVERAGE_ON_INITIALIZE_RATIO * max_block;
+        assert_eq!(
+            weights.get(DispatchClass::Normal).max_extrinsic,
+            Some(normal_max - initialization - ExtrinsicBaseWeight::get())
+        );
+        assert_eq!(
+            weights.get(DispatchClass::Operational).max_extrinsic,
+            Some(max_block - initialization - ExtrinsicBaseWeight::get())
+        );
+        assert_eq!(weights.get(DispatchClass::Mandatory).max_total, None);
+    }
+
+    #[test]
+    fn runtime_block_weights_validate() {
+        RuntimeBlockWeights::get()
+            .validate()
+            .expect("runtime block weights must be internally consistent");
+    }
+
+    /// Catches typos and silent address drift in the hardcoded SS58 string.
+    /// Without this, a malformed constant would only surface as a panic inside
+    /// `on_runtime_upgrade` on a live chain — a chain-bricking failure mode.
+    #[test]
+    fn default_job_spec_builder_ss58_decodes() {
+        let parsed = AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
+            .expect("hardcoded SS58 must decode");
+        assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
+    }
+}
+
+#[cfg(test)]
+mod xqvm_weights {
+    use super::*;
+
+    /// The VM's allocation budget must stay well under the Wasm runtime's
+    /// heap.
+    ///
+    /// `MaxVmMemory` is hand-set rather than derived, so nothing else would
+    /// notice it being raised past the heap it is sized against. The failure
+    /// it guards is not a rejected extrinsic: an allocation the heap cannot
+    /// satisfy traps the whole runtime execution, which no dispatch error can
+    /// report.
+    #[test]
+    fn vm_memory_budget_stays_under_the_runtime_heap() {
+        /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB
+        /// pages. Restated rather than imported -- it is a client-side
+        /// constant and the runtime does not depend on the executor.
+        const RUNTIME_HEAP_BYTES: u64 = 2048 * 64 * 1024;
+        /// The VM may claim at most this share of the heap at its bound, so
+        /// the storage overlay and every other pallet in the block keep room.
+        /// An eighth, as the `MaxVmMemory` doc promises: 16 MiB of 128 MiB.
+        const MAX_HEAP_SHARE: u64 = 8;
+
+        assert!(
+            MaxVmMemory::get() <= RUNTIME_HEAP_BYTES / MAX_HEAP_SHARE,
+            "MaxVmMemory is {} bytes against a {} byte heap",
+            MaxVmMemory::get(),
+            RUNTIME_HEAP_BYTES,
+        );
+    }
+
+    /// A single `execute` at the maximum step limit must fit inside the budget
+    /// the limit was derived from.
+    ///
+    /// This is the invariant the old hand-set `WeightPerStep` violated: it
+    /// admitted ~750M steps priced at 0.75 s that took over ten seconds to run,
+    /// against a two-second block. Both constants are now derived from the
+    /// generated weights, so this holds by construction -- the test is here to
+    /// catch a regeneration or a refactor that quietly breaks the derivation.
+    #[test]
+    fn max_step_limit_fits_the_reserved_budget() {
+        let normal = RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_total
+            .unwrap_or(RuntimeBlockWeights::get().max_block)
+            .ref_time();
+        let reserved = normal / 2;
+
+        let worst_case = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+            .ref_time()
+            .saturating_add(
+                XqvmWeightPerStep::get()
+                    .ref_time()
+                    .saturating_mul(MaxStepLimit::get()),
+            );
+
+        assert!(
+            worst_case <= reserved,
+            "worst-case execute is {worst_case} ps against {reserved} ps reserved",
+        );
+    }
+
+    /// The per-step price must stay above the measured marginal cost of a step.
+    ///
+    /// Derived from the same benchmark rather than a copied number, so it
+    /// tracks regeneration instead of going stale.
+    #[test]
+    fn per_step_price_exceeds_measured_cost() {
+        let measured = pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(1)
+            .saturating_sub(pallet_xqvm::SubstrateWeight::<Runtime>::execute_step(0))
+            .ref_time();
+
+        assert!(
+            XqvmWeightPerStep::get().ref_time() > measured,
+            "priced {} ps/step is not above the measured {measured} ps/step",
+            XqvmWeightPerStep::get().ref_time(),
+        );
+    }
+}
+
+pub mod election;
+#[cfg(test)]
+mod governance_matrix;
+pub mod staking_rewards;
+pub mod validator_onboarding;
+
+pub mod slashing;

@@ -1,0 +1,240 @@
+[package]
+name = "quip-testnet-runtime"
+description = "A solochain runtime for Quip protocol built with Substrate."
+version = { workspace = true }
+license = "Unlicense"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[dependencies]
+pallet-validator-admission.workspace = true
+pallet-slash-policy.workspace = true
+pallet-collective.workspace = true
+pallet-membership.workspace = true
+pallet-staking.workspace = true
+frame-election-provider-support.workspace = true
+pallet-election-provider-multi-block.workspace = true
+# MBE verifier genesis serializes ElectionScore in no_std builds too.
+sp-npos-elections = { workspace = true, features = ["serde"] }
+sp-staking.workspace = true
+pallet-emission-controller.workspace = true
+codec = { features = ["derive"], workspace = true }
+frame-benchmarking = { optional = true, workspace = true }
+frame-executive.workspace = true
+frame-metadata-hash-extension.workspace = true
+frame-support = { features = ["experimental"], workspace = true }
+frame-system.workspace = true
+frame-system-benchmarking = { optional = true, workspace = true }
+frame-system-rpc-runtime-api.workspace = true
+frame-try-runtime = { optional = true, workspace = true }
+pallet-authorship.workspace = true
+pallet-babe.workspace = true
+pallet-offences.workspace = true
+pallet-balances.workspace = true
+pallet-evm-chain-id.workspace = true
+pallet-faucet-ops.workspace = true
+pallet-grandpa.workspace = true
+pallet-miner-registry.workspace = true
+pallet-multisig.workspace = true
+pallet-proxy.workspace = true
+pallet-quantum-compute-mempool.workspace = true
+pallet-quantum-pow.workspace = true
+pallet-revive.workspace = true
+quantum-validation.workspace = true
+pallet-session = { workspace = true, features = ["historical"] }
+pallet-template.workspace = true
+pallet-xqvm.workspace = true
+pallet-timestamp.workspace = true
+pallet-transaction-payment.workspace = true
+pallet-transaction-payment-rpc-runtime-api.workspace = true
+pallet-utility.workspace = true
+quip-crypto-primitives = { workspace = true, default-features = false }
+quip-transaction-crypto = { workspace = true, default-features = false }
+scale-info = { features = ["derive", "serde"], workspace = true }
+serde.workspace = true
+serde_json = { workspace = true, default-features = false, features = [
+  "alloc",
+] }
+sp-api.workspace = true
+sp-block-builder.workspace = true
+sp-consensus-babe = { features = ["serde"], workspace = true }
+sp-consensus-grandpa = { features = ["serde"], workspace = true }
+sp-core = { features = ["serde"], workspace = true }
+sp-genesis-builder.workspace = true
+sp-inherents.workspace = true
+sp-keyring.workspace = true
+sp-offchain.workspace = true
+sp-runtime = { features = ["serde"], workspace = true }
+sp-session.workspace = true
+sp-storage.workspace = true
+sp-transaction-pool.workspace = true
+sp-version = { features = ["serde"], workspace = true }
+sp-weights.workspace = true
+
+[dev-dependencies]
+finality-grandpa = "0.16.3"
+frame-metadata.workspace = true
+hex.workspace = true
+quip-transaction-crypto-core.workspace = true
+sc-executor = { workspace = true, default-features = true }
+sc-executor-common = { workspace = true, default-features = true }
+sp-io.workspace = true
+subxt-core.workspace = true
+
+[build-dependencies]
+substrate-wasm-builder = { optional = true, workspace = true, default-features = true }
+
+[features]
+default = ["std"]
+std = [
+  "pallet-election-provider-multi-block/std",
+  "sp-npos-elections/std",
+  "pallet-validator-admission/std",
+  "pallet-slash-policy/std",
+  "pallet-collective/std",
+  "pallet-membership/std",
+  "pallet-staking/std",
+  "frame-election-provider-support/std",
+  "sp-staking/std",
+
+  "pallet-emission-controller/std",
+  "codec/std",
+  "frame-benchmarking?/std",
+  "frame-executive/std",
+  "frame-metadata-hash-extension/std",
+  "frame-support/std",
+  "frame-system-benchmarking?/std",
+  "frame-system-rpc-runtime-api/std",
+  "frame-system/std",
+  "frame-try-runtime?/std",
+  "pallet-authorship/std",
+  "pallet-babe/std",
+  "pallet-offences/std",
+  "pallet-balances/std",
+  "pallet-evm-chain-id/std",
+  "pallet-faucet-ops/std",
+  "pallet-grandpa/std",
+  "pallet-miner-registry/std",
+  "pallet-multisig/std",
+  "pallet-proxy/std",
+  "pallet-quantum-compute-mempool/std",
+  "pallet-quantum-pow/std",
+  "pallet-revive/std",
+  "quantum-validation/std",
+  "pallet-session/std",
+  "pallet-template/std",
+  "pallet-timestamp/std",
+  "pallet-transaction-payment-rpc-runtime-api/std",
+  "pallet-transaction-payment/std",
+  "pallet-utility/std",
+  "pallet-xqvm/std",
+  "quip-crypto-primitives/std",
+  "quip-transaction-crypto/std",
+  "scale-info/std",
+  "serde/std",
+  "serde_json/std",
+  "sp-api/std",
+  "sp-block-builder/std",
+  "sp-consensus-babe/std",
+  "sp-consensus-grandpa/std",
+  "sp-core/std",
+  "sp-genesis-builder/std",
+  "sp-inherents/std",
+  "sp-io/std",
+  "sp-keyring/std",
+  "sp-offchain/std",
+  "sp-runtime/std",
+  "sp-session/std",
+  "sp-storage/std",
+  "sp-transaction-pool/std",
+  "sp-version/std",
+  "sp-weights/std",
+  "substrate-wasm-builder",
+]
+runtime-benchmarks = [
+  "pallet-offences/runtime-benchmarks",
+  "pallet-election-provider-multi-block/runtime-benchmarks",
+  "pallet-validator-admission/runtime-benchmarks",
+  "pallet-slash-policy/runtime-benchmarks",
+  "pallet-collective/runtime-benchmarks",
+  "pallet-membership/runtime-benchmarks",
+  "pallet-staking/runtime-benchmarks",
+  "frame-election-provider-support/runtime-benchmarks",
+
+  "pallet-emission-controller/runtime-benchmarks",
+  "pallet-faucet-ops/runtime-benchmarks",
+  "frame-benchmarking/runtime-benchmarks",
+  "frame-support/runtime-benchmarks",
+  "frame-system-benchmarking/runtime-benchmarks",
+  "frame-system/runtime-benchmarks",
+  "pallet-balances/runtime-benchmarks",
+  "pallet-grandpa/runtime-benchmarks",
+  "pallet-miner-registry/runtime-benchmarks",
+  "pallet-multisig/runtime-benchmarks",
+  "pallet-proxy/runtime-benchmarks",
+  "pallet-quantum-compute-mempool/runtime-benchmarks",
+  "pallet-quantum-pow/runtime-benchmarks",
+  "pallet-revive/runtime-benchmarks",
+  "pallet-template/runtime-benchmarks",
+  "pallet-timestamp/runtime-benchmarks",
+  "pallet-transaction-payment/runtime-benchmarks",
+  "pallet-utility/runtime-benchmarks",
+  "pallet-xqvm/runtime-benchmarks",
+  "sp-runtime/runtime-benchmarks",
+]
+try-runtime = [
+  "pallet-election-provider-multi-block/try-runtime",
+  "pallet-validator-admission/try-runtime",
+  "pallet-slash-policy/try-runtime",
+  "pallet-collective/try-runtime",
+  "pallet-membership/try-runtime",
+  "pallet-staking/try-runtime",
+
+  "pallet-emission-controller/try-runtime",
+  "frame-executive/try-runtime",
+  "frame-support/try-runtime",
+  "frame-system/try-runtime",
+  "frame-try-runtime/try-runtime",
+  "pallet-authorship/try-runtime",
+  "pallet-babe/try-runtime",
+  "pallet-offences/try-runtime",
+  "pallet-balances/try-runtime",
+  "pallet-evm-chain-id/try-runtime",
+  "pallet-faucet-ops/try-runtime",
+  "pallet-grandpa/try-runtime",
+  "pallet-miner-registry/try-runtime",
+  "pallet-multisig/try-runtime",
+  "pallet-proxy/try-runtime",
+  "pallet-quantum-compute-mempool/try-runtime",
+  "pallet-quantum-pow/try-runtime",
+  "pallet-revive/try-runtime",
+  "pallet-session/try-runtime",
+  "pallet-template/try-runtime",
+  "pallet-timestamp/try-runtime",
+  "pallet-transaction-payment/try-runtime",
+  "pallet-utility/try-runtime",
+  "pallet-xqvm/try-runtime",
+  "sp-runtime/try-runtime",
+]
+
+# Enable the metadata hash generation.
+#
+# This is hidden behind a feature because it increases the compile time.
+# The wasm binary needs to be compiled twice, once to fetch the metadata,
+# generate the metadata hash and then a second time with the
+# `RUNTIME_METADATA_HASH` environment variable set for the `CheckMetadataHash`
+# extension.
+metadata-hash = ["substrate-wasm-builder/metadata-hash"]
+
+# A convenience feature for enabling things when doing a build
+# for an on-chain release.
+on-chain-release-build = ["metadata-hash", "sp-api/disable-logging"]
