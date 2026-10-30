@@ -81,12 +81,17 @@ Depth above eight produces `RootCallTooDeep`; more than 256 inspected calls
 produces `RootCallTooLarge`. Policy-denied leaves produce `RootCallDenied`.
 Presets, node wiring, and the governance matrix have no raw-storage dependency.
 
-Code-upgrade paths remain open, including `set_code_without_checks` and
-`authorize_upgrade_without_checks`. Governance policy is to make no change to
-these hard limits **without a spec-versioned runtime upgrade**. This versioning
-requirement is a governance rule: the explicitly allowed unchecked paths do
-not enforce a version bump, and a non-increasing version can skip migration
-hooks. The filter enforces a code-change boundary, not unconditional versioning.
+Changing these hard limits requires a **runtime code upgrade**. Governance is
+expected to use a **spec-versioned** upgrade; the explicitly allowed emergency
+paths (`set_code_without_checks`, `authorize_upgrade_without_checks`) do not
+enforce a version bump, and using them for parameter changes is a process
+violation, not a supported route.
+
+The unchecked upgrade path is reserved for emergency halt/recovery; using it
+to change a capped parameter is an incident. If no version increase is supplied,
+the audit trail shows an unchecked code swap with no spec bump, and migration
+hooks can be skipped. The filter enforces a code-change boundary; the versioning
+and emergency-use requirements are governance policy.
 
 ## Appeal, application, and removal
 

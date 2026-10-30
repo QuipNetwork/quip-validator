@@ -144,6 +144,12 @@ parameter_types! {
 
 /// Check nested dispatch calls because Root dispatch bypasses BaseCallFilter.
 /// Limit both recursion and work; overly large motions can be split by governance.
+///
+/// Changing these hard limits requires a runtime code upgrade. Governance is expected
+/// to use a spec-versioned upgrade; the explicitly allowed emergency paths
+/// (`set_code_without_checks`, `authorize_upgrade_without_checks`) do not enforce a
+/// version bump, and using them for parameter changes is a process violation, not a
+/// supported route.
 pub struct CouncilRootCalls;
 impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilRootCalls {
     fn check(call: &crate::RuntimeCall) -> Result<(), pallet_validator_admission::RootCallError> {
