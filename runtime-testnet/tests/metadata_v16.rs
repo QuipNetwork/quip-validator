@@ -331,3 +331,51 @@ fn stock_subxt_decodes_mixed_v5_bare_and_v4_signed_extrinsics() {
     assert_eq!(transfer.pallet_name().unwrap(), "Balances");
     assert_eq!(transfer.variant_name().unwrap(), "transfer_allow_death");
 }
+
+// Pin the network identity and exercise FRAME's ordinary upgrade guard with a
+// higher-version candidate, so rejection cannot be caused by a stale version.
+// FRAME intentionally bypasses these version guards in benchmark builds.
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn runtime_identity_rejects_cross_network_upgrades() {
+    let (expected_name, other_name) = match env!("CARGO_PKG_NAME") {
+        "quip-protocol-runtime" => ("quip", "quip-testnet"),
+        "quip-testnet-runtime" => ("quip-testnet", "quip"),
+        other => panic!("unexpected runtime package: {other}"),
+    };
+    let current = quip_testnet_runtime::VERSION;
+    assert_eq!(current.spec_name, expected_name);
+    let Some(wasm) = quip_testnet_runtime::WASM_BINARY else {
+        eprintln!("skipping upgrade guard: runtime wasm binary not built (SKIP_WASM_BUILD)");
+        return;
+    };
+    let wasm = sc_executor_common::runtime_blob::RuntimeBlob::uncompress_if_needed(wasm)
+        .unwrap()
+        .serialize();
+    let mut candidate = current;
+    candidate.spec_version += 1;
+    let same_network = sp_version::embed::embed_runtime_version(&wasm, candidate.clone()).unwrap();
+    candidate.spec_name = other_name.into();
+    let other_network = sp_version::embed::embed_runtime_version(&wasm, candidate).unwrap();
+    let mut ext =
+        sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+    ext.register_extension(sp_core::traits::ReadRuntimeVersionExt::new(
+        sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build(),
+    ));
+    ext.execute_with(|| {
+        assert!(System::can_set_code(&same_network, true)
+            .into_result()
+            .is_ok());
+        frame_support::assert_storage_noop!({
+            let error =
+                System::set_code(quip_testnet_runtime::RuntimeOrigin::root(), other_network)
+                    .unwrap_err()
+                    .error;
+            assert_eq!(
+                error,
+                frame_system::Error::<Runtime>::InvalidSpecName.into()
+            );
+            println!("{expected_name} rejects {other_name} at higher spec version: {error:?}");
+        });
+    });
+}

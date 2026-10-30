@@ -135,7 +135,7 @@ mod boxed_session_keys_tests {
 // https://docs.substrate.io/main-docs/build/upgrade#runtime-versioning
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
-    spec_name: alloc::borrow::Cow::Borrowed("quip"),
+    spec_name: alloc::borrow::Cow::Borrowed("quip-testnet"),
     impl_name: alloc::borrow::Cow::Borrowed("quip"),
     authoring_version: 1,
     // The version of the runtime specification. A full node will not attempt to use its native

@@ -213,6 +213,7 @@ runtime-parity:
   interruptible: true
   script:
     - bash scripts/check-runtime-parity.sh
+    - bash scripts/test-runtime-parity.sh
 
 # Node-level suites that need a running chain and the PQ signer. Kept separate
 # from cargo-test because they additionally install Node and the pinned

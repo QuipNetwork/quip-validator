@@ -17,6 +17,8 @@ import_paths = {
 
 
 def files(tree):
+    if tree.is_symlink():
+        raise ValueError(f"unexpected tree-root symlink: {tree}")
     if not tree.is_dir():
         raise ValueError(f"missing runtime tree: {tree}")
     result = {}
@@ -36,7 +38,7 @@ def replace_once(text, pattern, replacement, label):
 
 
 def normalize(path, data, testnet):
-    if path not in import_paths | {"Cargo.toml", "src/network_params.rs"}:
+    if path not in import_paths | {"Cargo.toml", "src/network_params.rs", "src/lib.rs"}:
         return data
     text = data.decode("utf-8")
     if path == "Cargo.toml":
@@ -44,6 +46,12 @@ def normalize(path, data, testnet):
         text = replace_once(
             text, rf'\A\[package\]\nname = "{name}"$',
             '[package]\nname = "NETWORK_RUNTIME"', path,
+        )
+    elif path == "src/lib.rs":
+        name = "quip-testnet" if testnet else "quip"
+        text = replace_once(
+            text, rf'^    spec_name: alloc::borrow::Cow::Borrowed\("{name}"\),$',
+            '    spec_name: alloc::borrow::Cow::Borrowed("NETWORK_SPEC"),', path,
         )
     elif path == "src/network_params.rs":
         for name, kind, value in [
