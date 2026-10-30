@@ -1,8 +1,9 @@
 # W3 slashing operations
 
-This branch introduces automatic BABE/GRANDPA equivocation reports and a bounded
-council discretionary slash route. Runtime versions and release activation are
-owned by the integration release; do not deploy the unreviewed W3 branch.
+This work introduces automatic BABE/GRANDPA equivocation reports and a bounded
+council discretionary slash route. It is merged and reviewed, but runtime
+versions and release activation are owned by the integration release (W6), so
+mainnet deployment still waits on the gates listed at the end of this document.
 
 ## What a report does
 
