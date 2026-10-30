@@ -134,7 +134,7 @@ impl pallet_staking::Config for Runtime {
     type MaxExposurePageSize = ConstU32<64>;
     type NextNewSession = Session;
     #[cfg(not(feature = "runtime-benchmarks"))]
-    type ElectionProvider = AdmissionElection;
+    type ElectionProvider = super::election::AdmissionMultiBlockElection;
     #[cfg(not(feature = "runtime-benchmarks"))]
     type GenesisElectionProvider = AdmissionElection;
     #[cfg(feature = "runtime-benchmarks")]
@@ -1145,15 +1145,8 @@ pub(super) mod tests {
                     .next()
                     .is_none()
             );
-            for i in 1..=8 {
-                System::set_block_number(i * 100);
-                pallet_babe::CurrentSlot::<Runtime>::put(sp_consensus_babe::Slot::from(
-                    u64::from(i) * 100,
-                ));
-                pallet_babe::Initialized::<Runtime>::put(
-                    None::<sp_consensus_babe::digests::PreDigest>,
-                );
-                Session::rotate_session();
+            for _ in 0..8 {
+                rotate();
             }
             assert_eq!(Session::validators().len(), 2);
             let era = pallet_staking::CurrentEra::<Runtime>::get().unwrap();
@@ -1166,7 +1159,19 @@ pub(super) mod tests {
     }
     fn rotate() {
         let i = pallet_session::CurrentIndex::<Runtime>::get() + 1;
-        System::set_block_number(i * 100);
+        // Drive MBE between the abbreviated sessions used by these tests.
+        while <System as sp_runtime::traits::BlockNumberProvider>::current_block_number() < i * 100
+        {
+            let now =
+                <System as sp_runtime::traits::BlockNumberProvider>::current_block_number() + 1;
+            System::set_block_number(now);
+            let mut meter = frame_support::weights::WeightMeter::with_limit(
+                RuntimeBlockWeights::get().max_block,
+            );
+            <crate::MultiBlockElection as frame_support::traits::Hooks<BlockNumber>>::on_poll(
+                now, &mut meter,
+            );
+        }
         pallet_babe::CurrentSlot::<Runtime>::put(sp_consensus_babe::Slot::from(u64::from(i) * 100));
         pallet_babe::Initialized::<Runtime>::put(None::<sp_consensus_babe::digests::PreDigest>);
         Session::rotate_session();
