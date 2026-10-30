@@ -1,7 +1,8 @@
 //! FoundationOnly governance and bounded, admission-first elections.
 use super::*;
 use crate::{Foundation, Session, Staking};
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BinaryHeap, vec, vec::Vec};
+use core::cmp::Reverse;
 use frame_election_provider_support::{
     bounds::{DataProviderBounds, ElectionBounds, ElectionBoundsBuilder},
     data_provider, onchain, BoundedSupportsOf, ElectionDataProvider, ElectionProvider, PageIndex,
@@ -29,6 +30,7 @@ impl pallet_collective::DefaultVote for AbstentionsAlwaysNo {
     }
 }
 parameter_types! {
+    pub const MaxAdmittedAuthorities: u32 = 64;
     /// V0 validator-set cap (50, council-configurable later). Distinct from the
     /// 64-wide authority and election bounds, which are headroom above it.
     pub const MaxValidatorSetCap: u32 = 50;
@@ -37,10 +39,11 @@ parameter_types! {
     pub const SetIdSessionEntries: u64 = 28 * 6;
     pub const FoundationMotionDuration: BlockNumber = 24 * super::super::HOURS;
     pub FoundationProposalWeight: Weight = RuntimeBlockWeights::get().max_block / 2;
-    // The voter ceiling covers approved self-votes plus nominators. MBE removes
-    // this single-page snapshot limit; until then it caps the election.
+    // Both genesis and MBE fallback must fit every admitted candidate and the
+    // configured nominator ceiling in their single page.
     pub ElectionBoundsConfig: ElectionBounds = ElectionBoundsBuilder::default()
-        .voters_count(256.into()).targets_count(64.into()).build();
+        .voters_count(super::election::VoterSnapshotPerBlock::get().into())
+        .targets_count(super::election::TargetSnapshotPerBlock::get().into()).build();
 }
 impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
     type RuntimeOrigin = RuntimeOrigin;
@@ -80,7 +83,7 @@ impl pallet_membership::Config<pallet_membership::Instance1> for Runtime {
 impl pallet_validator_admission::Config for Runtime {
     type FoundationOrigin = FoundationOrigin;
     type GovernanceCall = RuntimeCall;
-    type MaxAuthorities = ConstU32<64>;
+    type MaxAuthorities = MaxAdmittedAuthorities;
     type Graduation = ();
     type WeightInfo = pallet_validator_admission::weights::SubstrateWeight<Runtime>;
 }
@@ -159,8 +162,8 @@ impl pallet_staking::Config for Runtime {
 
 /// Iterate the bounded admission set FIRST. Filtering an already truncated
 /// staking snapshot lets unapproved intents crowd approved validators out.
-/// Staking remains the source of candidacy and voting stake; no nominators are
-/// admitted in this phase. TargetList itself stays invariant-compatible.
+/// Staking remains the source of candidacy and voting stake. Nominations are
+/// restricted to these same electable targets. TargetList stays unchanged.
 pub struct AdmissionData;
 impl AdmissionData {
     fn candidates() -> Vec<AccountId> {
@@ -216,6 +219,22 @@ impl ElectionDataProvider for AdmissionData {
             })
             .filter(|(_, stake, _)| *stake > 0)
             .collect();
+        let mut eligible = voters.len() as u32;
+        // The runtime ceiling applies even when a caller supplies no bound.
+        let limit = bounds
+            .count
+            .map_or(super::election::VoterSnapshotPerBlock::get(), |bound| {
+                bound.0.min(super::election::VoterSnapshotPerBlock::get())
+            }) as usize;
+        // Self-votes are the admission floor, even for an undersized caller
+        // bound. Production bounds reserve room for all admitted targets.
+        let self_votes = voters.len();
+        let nominator_slots = limit.saturating_sub(self_votes);
+        // Keep only the best candidates while scanning: memory stays bounded
+        // even if council raises MaxNominatorsCount above the snapshot ceiling.
+        // The worst retained voter is at the heap root. AccountId breaks equal
+        // stakes deterministically, preferring the lower AccountId.
+        let mut nominated = BinaryHeap::new();
         // Nominators are read by scanning the whole `Nominators` map, so charge for it.
         let nominators = pallet_staking::Nominators::<Runtime>::count();
         System::register_extra_weight_unchecked(
@@ -233,17 +252,53 @@ impl ElectionDataProvider for AdmissionData {
                 .into_iter()
                 .filter(|target| targets.contains(target))
                 .collect();
+            if votes.is_empty() {
+                continue;
+            }
             let stake = Staking::weight_of(&nominator);
-            if votes.is_empty() || stake == 0 {
+            if stake == 0 {
                 continue;
             }
             let votes = votes
                 .try_into()
                 .map_err(|_| "nomination exceeds the vote bound")?;
-            voters.push((nominator, stake, votes));
+            eligible = eligible.saturating_add(1);
+            if nominator_slots > 0 {
+                nominated.push((Reverse(stake), nominator, votes));
+                if nominated.len() > nominator_slots {
+                    nominated.pop();
+                }
+            }
         }
-        if bounds.slice_exhausted(&voters) {
-            return Err("approved voter snapshot exceeds bounds");
+        voters.extend(
+            nominated
+                .into_sorted_vec()
+                .into_iter()
+                .map(|(Reverse(stake), nominator, votes)| (nominator, stake, votes)),
+        );
+        // Retain a prefix, so self-votes still precede stake-ranked nominators.
+        // Account for SCALE's compact length prefix without repeatedly encoding
+        // the full snapshot while removing voters from the tail.
+        if let Some(size) = bounds.size {
+            let mut payload_size = voters.iter().fold(0usize, |total, voter| {
+                total.saturating_add(voter.encoded_size())
+            });
+            while voters.len() > self_votes
+                && payload_size.saturating_add(codec::Compact(voters.len() as u32).encoded_size())
+                    > size.0 as usize
+            {
+                let Some(voter) = voters.pop() else { break };
+                payload_size = payload_size.saturating_sub(voter.encoded_size());
+            }
+        }
+        let retained = voters.len() as u32;
+        if retained < eligible {
+            System::deposit_event(
+                pallet_validator_admission::Event::<Runtime>::ElectionVotersTruncated {
+                    eligible,
+                    retained,
+                },
+            );
         }
         Ok(voters)
     }
@@ -252,7 +307,9 @@ impl ElectionDataProvider for AdmissionData {
         if desired > MaxValidatorSetCap::get() {
             return Err("requested validator count exceeds the admitted validator set cap");
         }
-        Ok(desired)
+        // The MBE verifier requires exactly this many winners, including when
+        // admission removal leaves fewer candidates than the configured target.
+        Ok(desired.min(Self::candidates().len() as u32))
     }
     fn next_election_prediction(now: BlockNumber) -> BlockNumber {
         <Staking as ElectionDataProvider>::next_election_prediction(now)
@@ -266,8 +323,8 @@ impl onchain::Config for OnChainConfig {
     type DataProvider = AdmissionData;
     type WeightInfo = frame_election_provider_support::weights::SubstrateWeight<Runtime>;
     type Bounds = ElectionBoundsConfig;
-    type MaxBackersPerWinner = ConstU32<64>;
-    type MaxWinnersPerPage = ConstU32<64>;
+    type MaxBackersPerWinner = super::election::MaxBackersPerWinner;
+    type MaxWinnersPerPage = super::election::MaxWinnersPerPage;
 }
 // The SDK map has an unimplemented benchmark score-update hook. Delegate all
 // actual list operations to that same map; it has no score-dependent ordering,
@@ -369,9 +426,9 @@ impl ElectionProvider for AdmissionElection {
     type AccountId = AccountId;
     type BlockNumber = BlockNumber;
     type Error = <FilteredElection as ElectionProvider>::Error;
-    type MaxWinnersPerPage = ConstU32<64>;
-    type MaxBackersPerWinner = ConstU32<64>;
-    type MaxBackersPerWinnerFinal = ConstU32<64>;
+    type MaxWinnersPerPage = super::election::MaxWinnersPerPage;
+    type MaxBackersPerWinner = super::election::MaxBackersPerWinner;
+    type MaxBackersPerWinnerFinal = super::election::MaxBackersPerWinnerFinal;
     type Pages = ConstU32<1>;
     type DataProvider = Staking;
     fn elect(page: PageIndex) -> Result<BoundedSupportsOf<Self>, Self::Error> {
@@ -411,7 +468,7 @@ impl frame_support::traits::OnRuntimeUpgrade for InitializeStakingLimits {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::{FoundationMembership, RuntimeGenesisConfig, ValidatorAdmission};
     use frame_support::{
@@ -422,7 +479,7 @@ mod tests {
         BuildStorage,
     };
 
-    fn ext() -> sp_io::TestExternalities {
+    pub(crate) fn ext() -> sp_io::TestExternalities {
         fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
             match (target, patch) {
                 (serde_json::Value::Object(t), serde_json::Value::Object(p)) => {
@@ -824,6 +881,194 @@ mod tests {
             assert!(!votes.contains(&unapproved));
         });
     }
+    fn nominate_with_stake(who: AccountId, stake: Balance, targets: Vec<AccountId>) {
+        use frame_support::traits::Currency;
+        let _ = Balances::make_free_balance_be(&who, stake + UNIT);
+        assert_ok!(Staking::bond(
+            RuntimeOrigin::signed(who.clone()),
+            stake,
+            pallet_staking::RewardDestination::Staked
+        ));
+        assert_ok!(Staking::nominate(
+            RuntimeOrigin::signed(who),
+            targets.into_iter().map(crate::Address::Id).collect()
+        ));
+    }
+
+    #[test]
+    fn voter_truncation_preserves_self_votes_and_ranks_eligible_nominators() {
+        ext().execute_with(|| {
+            let targets = AdmissionData::electable_targets(Default::default(), 0).unwrap();
+            let unapproved = AccountId::new([185; 32]);
+            bond(unapproved.clone());
+            // The highest nominal stake backs only an unapproved target; it
+            // must not displace any eligible nominator. Equal valid stakes use
+            // AccountId order, independently of storage iteration order.
+            for (id, stake) in [(180, 100), (183, 3_000), (182, 5_000), (181, 3_000)] {
+                nominate_with_stake(AccountId::new([id; 32]), stake * UNIT, targets.clone());
+            }
+            nominate_with_stake(AccountId::new([184; 32]), 20_000 * UNIT, vec![unapproved]);
+            let voters = AdmissionData::electing_voters(
+                DataProviderBounds {
+                    count: Some(4.into()),
+                    size: None,
+                },
+                0,
+            )
+            .unwrap();
+            let expected = targets
+                .into_iter()
+                .chain([AccountId::new([182; 32]), AccountId::new([181; 32])])
+                .collect::<Vec<_>>();
+            assert_eq!(
+                voters.iter().map(|v| v.0.clone()).collect::<Vec<_>>(),
+                expected
+            );
+            System::assert_last_event(
+                pallet_validator_admission::Event::<Runtime>::ElectionVotersTruncated {
+                    eligible: 6,
+                    retained: 4,
+                }
+                .into(),
+            );
+            assert_eq!(
+                AdmissionData::electing_voters(
+                    DataProviderBounds {
+                        count: Some(0.into()),
+                        size: None
+                    },
+                    0
+                )
+                .unwrap(),
+                voters[..2]
+            );
+            System::assert_last_event(
+                pallet_validator_admission::Event::<Runtime>::ElectionVotersTruncated {
+                    eligible: 6,
+                    retained: 2,
+                }
+                .into(),
+            );
+        });
+    }
+
+    #[test]
+    fn voter_byte_bounds_truncate_without_failure() {
+        ext().execute_with(|| {
+            let targets = AdmissionData::electable_targets(Default::default(), 0).unwrap();
+            for id in 180..183 {
+                nominate_with_stake(AccountId::new([id; 32]), 100 * UNIT, targets.clone());
+            }
+            let event_count = System::events().len();
+            let full = AdmissionData::electing_voters(Default::default(), 0).unwrap();
+            assert_eq!(System::events().len(), event_count); // Nothing dropped.
+            for keep in 2..full.len() {
+                let size = full[..keep].encoded_size() as u32;
+                let bounds = DataProviderBounds {
+                    count: None,
+                    size: Some(size.into()),
+                };
+                let selected = AdmissionData::electing_voters(bounds, 0).unwrap();
+                assert_eq!(selected, full[..keep]);
+                assert!(!bounds.slice_exhausted(&selected));
+                System::assert_last_event(
+                    pallet_validator_admission::Event::<Runtime>::ElectionVotersTruncated {
+                        eligible: 5,
+                        retained: keep as u32,
+                    }
+                    .into(),
+                );
+            }
+            // Even a caller bound below the admission floor retains self-votes.
+            assert_eq!(
+                AdmissionData::electing_voters(
+                    DataProviderBounds {
+                        count: None,
+                        size: Some(0.into())
+                    },
+                    0,
+                )
+                .unwrap(),
+                full[..2],
+            );
+        });
+    }
+
+    #[test]
+    fn raising_nominator_limit_above_ceiling_preserves_snapshot_and_fallback() {
+        use frame_support::traits::Hooks;
+        use sp_runtime::traits::BlockNumberProvider;
+        ext().execute_with(|| {
+            use pallet_staking::ConfigOp::{Noop, Set};
+            let config_call = RuntimeCall::Staking(pallet_staking::Call::set_staking_configs {
+                min_nominator_bond: Noop,
+                min_validator_bond: Noop,
+                max_nominator_count: Set(1_101),
+                max_validator_count: Noop,
+                chill_threshold: Noop,
+                min_commission: Noop,
+                max_staked_rewards: Noop,
+            });
+            assert_ok!(ValidatorAdmission::dispatch_as_root(
+                foundation(),
+                alloc::boxed::Box::new(config_call)
+            ));
+            let targets = AdmissionData::electable_targets(Default::default(), 0).unwrap();
+            for i in 0u32..1_101 {
+                let mut bytes = [0; 32];
+                bytes[..4].copy_from_slice(&i.to_le_bytes());
+                nominate_with_stake(
+                    AccountId::new(bytes),
+                    (10 + Balance::from(i)) * UNIT,
+                    targets.clone(),
+                );
+            }
+            let voters = AdmissionData::electing_voters(Default::default(), 0).unwrap();
+            assert_eq!(voters.len(), 1_100);
+            assert_eq!(
+                voters[..2].iter().map(|v| v.0.clone()).collect::<Vec<_>>(),
+                targets
+            );
+            assert!(voters[2..].windows(2).all(|pair| pair[0].1 >= pair[1].1));
+            System::assert_last_event(
+                pallet_validator_admission::Event::<Runtime>::ElectionVotersTruncated {
+                    eligible: 1_103,
+                    retained: 1_100,
+                }
+                .into(),
+            );
+            // Exercise the SCALE length-prefix boundary as well as the count bound.
+            for keep in [63, 64] {
+                let bounds = DataProviderBounds {
+                    count: None,
+                    size: Some((voters[..keep].encoded_size() as u32).into()),
+                };
+                assert_eq!(
+                    AdmissionData::electing_voters(bounds, 0).unwrap(),
+                    voters[..keep]
+                );
+            }
+            assert_ok!(crate::MultiBlockElection::start());
+            for _ in 0..2 {
+                let now = System::current_block_number() + 1;
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            }
+            let round = pallet_election_provider_multi_block::Round::<Runtime>::get();
+            assert_eq!(
+                pallet_election_provider_multi_block::PagedVoterSnapshot::<Runtime>::get(round, 0)
+                    .unwrap()
+                    .len(),
+                1_100
+            );
+            // No solution was queued: the actual MBE export must use fallback.
+            assert_eq!(crate::MultiBlockElection::elect(0).unwrap().len(), 2);
+        });
+    }
+
     #[test]
     fn nominator_bounds_stay_within_their_ceilings() {
         // `MaxNominators` bounds the proof-verification nominator count, so it

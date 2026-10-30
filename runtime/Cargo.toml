@@ -21,6 +21,9 @@ pallet-collective.workspace = true
 pallet-membership.workspace = true
 pallet-staking.workspace = true
 frame-election-provider-support.workspace = true
+pallet-election-provider-multi-block.workspace = true
+# MBE verifier genesis serializes ElectionScore in no_std builds too.
+sp-npos-elections = { workspace = true, features = ["serde"] }
 sp-staking.workspace = true
 pallet-emission-controller.workspace = true
 codec = { features = ["derive"], workspace = true }
@@ -89,6 +92,8 @@ substrate-wasm-builder = { optional = true, workspace = true, default-features =
 [features]
 default = ["std"]
 std = [
+  "pallet-election-provider-multi-block/std",
+  "sp-npos-elections/std",
   "pallet-validator-admission/std",
   "pallet-collective/std",
   "pallet-membership/std",
@@ -149,6 +154,7 @@ std = [
   "substrate-wasm-builder",
 ]
 runtime-benchmarks = [
+  "pallet-election-provider-multi-block/runtime-benchmarks",
   "pallet-validator-admission/runtime-benchmarks",
   "pallet-collective/runtime-benchmarks",
   "pallet-membership/runtime-benchmarks",
@@ -177,6 +183,7 @@ runtime-benchmarks = [
   "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [
+  "pallet-election-provider-multi-block/try-runtime",
   "pallet-validator-admission/try-runtime",
   "pallet-collective/try-runtime",
   "pallet-membership/try-runtime",

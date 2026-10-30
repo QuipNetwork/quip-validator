@@ -439,6 +439,24 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
                 }
             }
 
+            // The pinned MBE fixtures require signed phases, >=2 pages, or a
+            // multi-value page range. Those assumptions do not hold here. Keep
+            // production constants and the conservative upstream weights; expose
+            // only fixtures that run on this single-page, unsigned-only runtime.
+            // Regenerating the remaining weights needs adapted upstream fixtures.
+            for pallet in &mut list {
+                match pallet.pallet.as_slice() {
+                    b"pallet_election_provider_multi_block" => pallet.benchmarks
+                        .retain(|benchmark| benchmark.name == b"per_block_nothing"),
+                    b"pallet_election_provider_multi_block::unsigned" => pallet.benchmarks
+                        .retain(|benchmark| benchmark.name != b"mine_solution"),
+                    b"pallet_election_provider_multi_block::signed" |
+                    b"pallet_election_provider_multi_block::verifier" => pallet.benchmarks.clear(),
+                    _ => {},
+                }
+            }
+            list.retain(|pallet| !pallet.benchmarks.is_empty());
+
             let storage_info = AllPalletsWithSystem::storage_info();
 
             (list, storage_info)

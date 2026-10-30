@@ -128,10 +128,23 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        Approved { who: T::AccountId },
-        Removed { who: T::AccountId },
-        ModeAdvanced { mode: AdmissionMode },
-        RootDispatched { result: DispatchResult },
+        Approved {
+            who: T::AccountId,
+        },
+        Removed {
+            who: T::AccountId,
+        },
+        ModeAdvanced {
+            mode: AdmissionMode,
+        },
+        RootDispatched {
+            result: DispatchResult,
+        },
+        /// Eligible voters exceeded the election snapshot's count or byte bound.
+        ElectionVotersTruncated {
+            eligible: u32,
+            retained: u32,
+        },
     }
     #[pallet::error]
     pub enum Error<T> {

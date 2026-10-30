@@ -194,8 +194,11 @@ fn testnet_genesis(
     // SDK benchmark setups require low-bond validators and nominators. Keep
     // the production chainspec limits unchanged in every non-benchmark build.
     #[cfg(not(feature = "runtime-benchmarks"))]
-    let (max_nominator_count, min_validator_bond, min_nominator_bond) =
-        (Some(1024u32), 2_000 * crate::UNIT, 10 * crate::UNIT);
+    let (max_nominator_count, min_validator_bond, min_nominator_bond) = (
+        Some(crate::configs::election::MaxNominators::get()),
+        2_000 * crate::UNIT,
+        10 * crate::UNIT,
+    );
     #[cfg(feature = "runtime-benchmarks")]
     let (max_nominator_count, min_validator_bond, min_nominator_bond) = (None::<u32>, 0u128, 0u128);
     build_struct_json_patch!(RuntimeGenesisConfig {

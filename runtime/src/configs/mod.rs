@@ -887,6 +887,7 @@ mod xqvm_weights {
     }
 }
 
+pub mod election;
 #[cfg(test)]
 mod governance_matrix;
 pub mod validator_onboarding;

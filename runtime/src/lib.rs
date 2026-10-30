@@ -1732,4 +1732,12 @@ mod runtime {
     pub type Staking = pallet_staking;
     #[runtime::pallet_index(24)]
     pub type Historical = pallet_session::historical;
+    #[runtime::pallet_index(25)]
+    pub type MultiBlockElection = pallet_election_provider_multi_block;
+    #[runtime::pallet_index(26)]
+    pub type MultiBlockElectionVerifier = pallet_election_provider_multi_block::verifier;
+    #[runtime::pallet_index(27)]
+    pub type MultiBlockElectionUnsigned = pallet_election_provider_multi_block::unsigned;
+    #[runtime::pallet_index(28)]
+    pub type MultiBlockElectionSigned = pallet_election_provider_multi_block::signed;
 }
