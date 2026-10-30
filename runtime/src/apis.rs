@@ -25,8 +25,10 @@
 
 // External crates imports
 use alloc::{vec, vec::Vec};
+use codec::Encode;
 use frame_support::{
     genesis_builder_helper::{build_state, get_preset},
+    traits::KeyOwnerProofSystem,
     weights::Weight,
 };
 use pallet_grandpa::AuthorityId as GrandpaId;
@@ -42,8 +44,8 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, Hash, InherentDataExt,
-    MinerRegistry, Nonce, QuantumComputeMempool, QuantumPow, Runtime, RuntimeCall,
+    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, Hash, Historical,
+    InherentDataExt, MinerRegistry, Nonce, QuantumComputeMempool, QuantumPow, Runtime, RuntimeCall,
     RuntimeGenesisConfig, SessionKeys, System, TransactionPayment, BABE_GENESIS_EPOCH_CONFIG,
     VERSION,
 };
@@ -175,16 +177,22 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
 
         fn generate_key_ownership_proof(
             _slot: sp_consensus_babe::Slot,
-            _authority_id: sp_consensus_babe::AuthorityId,
+            authority_id: sp_consensus_babe::AuthorityId,
         ) -> Option<sp_consensus_babe::OpaqueKeyOwnershipProof> {
-            None
+            Historical::prove((sp_consensus_babe::KEY_TYPE, authority_id))
+                .map(|proof| sp_consensus_babe::OpaqueKeyOwnershipProof::new(proof.encode()))
         }
 
         fn submit_report_equivocation_unsigned_extrinsic(
-            _equivocation_proof: sp_consensus_babe::EquivocationProof<<Block as BlockT>::Header>,
-            _key_owner_proof: sp_consensus_babe::OpaqueKeyOwnershipProof,
+            equivocation_proof: sp_consensus_babe::EquivocationProof<<Block as BlockT>::Header>,
+            key_owner_proof: sp_consensus_babe::OpaqueKeyOwnershipProof,
         ) -> Option<()> {
-            None
+            let key_owner_proof: sp_session::MembershipProof = key_owner_proof.decode()?;
+            // Share has_pending_slash_bucket with the authoritative reporter; this is preflight only.
+            if !crate::configs::slashing::has_pending_slash_bucket(key_owner_proof.session) {
+                return None;
+            }
+            Babe::submit_unsigned_equivocation_report(equivocation_proof, key_owner_proof)
         }
     }
 
@@ -210,23 +218,26 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
         }
 
         fn submit_report_equivocation_unsigned_extrinsic(
-            _equivocation_proof: sp_consensus_grandpa::EquivocationProof<
+            equivocation_proof: sp_consensus_grandpa::EquivocationProof<
                 <Block as BlockT>::Hash,
                 NumberFor<Block>,
             >,
-            _key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
+            key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
         ) -> Option<()> {
-            None
+            let key_owner_proof: sp_session::MembershipProof = key_owner_proof.decode()?;
+            // Share has_pending_slash_bucket with the authoritative reporter; this is preflight only.
+            if !crate::configs::slashing::has_pending_slash_bucket(key_owner_proof.session) {
+                return None;
+            }
+            Grandpa::submit_unsigned_equivocation_report(equivocation_proof, key_owner_proof)
         }
 
         fn generate_key_ownership_proof(
             _set_id: sp_consensus_grandpa::SetId,
-            _authority_id: GrandpaId,
+            authority_id: GrandpaId,
         ) -> Option<sp_consensus_grandpa::OpaqueKeyOwnershipProof> {
-            // NOTE: this is the only implementation possible since we've
-            // defined our key owner proof type as a bottom type (i.e. a type
-            // with no values).
-            None
+            Historical::prove((sp_consensus_grandpa::KEY_TYPE, authority_id))
+                .map(|proof| sp_consensus_grandpa::OpaqueKeyOwnershipProof::new(proof.encode()))
         }
     }
 

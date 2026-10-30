@@ -15,6 +15,7 @@ members = [
   "node",
   "pallets/emission-controller",
   "pallets/validator-admission",
+  "pallets/slash-policy",
   "pallets/evm-chain-id",
   "pallets/faucet-ops",
   "pallets/miner-registry",
@@ -41,6 +42,7 @@ sp-npos-elections = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", r
 pallet-election-provider-multi-block = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 sp-staking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 
+pallet-slash-policy = { path = "./pallets/slash-policy", default-features = false }
 pallet-validator-admission = { path = "./pallets/validator-admission", default-features = false }
 quip-protocol-runtime = { path = "./runtime", default-features = false }
 pallet-emission-controller = { path = "./pallets/emission-controller", default-features = false }
@@ -119,6 +121,7 @@ frame-system-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-
 frame-try-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+pallet-offences = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-multisig = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }

@@ -11,7 +11,7 @@
 //! | `FoundationMembership::add/swap/reset` | council 2/3                  |
 //! | `FoundationMembership::remove`         | council 4/5                  |
 //! | `Staking::set_staking_configs`         | Root only, i.e. via `dispatch_as_root` |
-//! | `Staking::cancel_deferred_slash` etc.  | council 2/3 (`AdminOrigin`)  |
+//! | `Staking::cancel_deferred_slash` etc.  | Root only, i.e. via `dispatch_as_root` |
 //!
 //! At the V0 size of six seats, 2/3 is exactly four votes and 4/5 is five.
 
@@ -245,10 +245,10 @@ mod tests {
         });
     }
 
-    /// `AdminOrigin`-gated staking calls (discretionary slashing, commission
-    /// floor) are ordinary council business: 2/3, not Root and not 4/5.
+    /// The council retains commission-floor authority at 2/3 through the
+    /// audited Root path; direct council origins no longer satisfy `AdminOrigin`.
     #[test]
-    fn staking_admin_calls_accept_the_council() {
+    fn staking_admin_calls_go_through_root() {
         use sp_runtime::Perbill;
 
         new_test_ext().execute_with(|| {
@@ -256,9 +256,17 @@ mod tests {
                 crate::Staking::set_min_commission(council_origin(3), Perbill::from_percent(10)),
                 DispatchError::BadOrigin
             );
-            assert_ok!(crate::Staking::set_min_commission(
+            assert_noop!(
+                crate::Staking::set_min_commission(council_origin(4), Perbill::from_percent(10)),
+                DispatchError::BadOrigin
+            );
+            assert_ok!(ValidatorAdmission::dispatch_as_root(
                 council_origin(4),
-                Perbill::from_percent(10)
+                Box::new(RuntimeCall::Staking(
+                    pallet_staking::Call::set_min_commission {
+                        new: Perbill::from_percent(10),
+                    }
+                ))
             ));
             assert_eq!(
                 pallet_staking::MinCommission::<Runtime>::get(),

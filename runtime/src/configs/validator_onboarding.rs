@@ -85,11 +85,14 @@ impl pallet_validator_admission::Config for Runtime {
     type GovernanceCall = RuntimeCall;
     type MaxAuthorities = MaxAdmittedAuthorities;
     type Graduation = ();
+    type RootCallFilter = super::slashing::CouncilRootCalls;
+    type RootCallFilterWeight = super::slashing::RootFilterWeight;
     type WeightInfo = pallet_validator_admission::weights::SubstrateWeight<Runtime>;
 }
 impl pallet_session::historical::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type FullIdentification = sp_staking::Exposure<AccountId, Balance>;
+    // Membership proves identity with default exposure; staking re-reads the offence-era exposure.
     type FullIdentificationOf = pallet_staking::DefaultExposureOf<Runtime>;
 }
 pub struct StakingBenchmarkConfig;
@@ -112,8 +115,9 @@ impl pallet_staking::Config for Runtime {
     type Reward = ();
     type SessionsPerEra = SessionsPerEra;
     type BondingDuration = BondingDuration;
-    type SlashDeferDuration = ConstU32<0>;
-    type AdminOrigin = FoundationOrRoot;
+    // Fixed while queued slashes exist: the SDK derives unlocking eligibility at application.
+    type SlashDeferDuration = ConstU32<{ super::slashing::SLASH_DEFER_ERAS }>;
+    type AdminOrigin = frame_system::EnsureRoot<AccountId>;
     type SessionInterface = Self;
     // V0 fixes staking at 10M QUIP per 365-day accounting year, prorated by era duration.
     // Staking mints claims through its normal exposure/commission machinery;
