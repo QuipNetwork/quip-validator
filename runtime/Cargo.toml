@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 pallet-validator-admission.workspace = true
-pallet-protocol-params.workspace = true
+pallet-slash-policy.workspace = true
 pallet-collective.workspace = true
 pallet-membership.workspace = true
 pallet-staking.workspace = true
@@ -99,7 +99,7 @@ std = [
   "pallet-election-provider-multi-block/std",
   "sp-npos-elections/std",
   "pallet-validator-admission/std",
-  "pallet-protocol-params/std",
+  "pallet-slash-policy/std",
   "pallet-collective/std",
   "pallet-membership/std",
   "pallet-staking/std",
@@ -164,7 +164,7 @@ runtime-benchmarks = [
   "pallet-offences/runtime-benchmarks",
   "pallet-election-provider-multi-block/runtime-benchmarks",
   "pallet-validator-admission/runtime-benchmarks",
-  "pallet-protocol-params/runtime-benchmarks",
+  "pallet-slash-policy/runtime-benchmarks",
   "pallet-collective/runtime-benchmarks",
   "pallet-membership/runtime-benchmarks",
   "pallet-staking/runtime-benchmarks",
@@ -194,7 +194,7 @@ runtime-benchmarks = [
 try-runtime = [
   "pallet-election-provider-multi-block/try-runtime",
   "pallet-validator-admission/try-runtime",
-  "pallet-protocol-params/try-runtime",
+  "pallet-slash-policy/try-runtime",
   "pallet-collective/try-runtime",
   "pallet-membership/try-runtime",
   "pallet-staking/try-runtime",

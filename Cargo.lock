@@ -7490,23 +7490,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-protocol-params"
-version = "0.4.0"
-dependencies = [
- "frame-benchmarking",
- "frame-election-provider-support",
- "frame-support",
- "frame-system",
- "pallet-balances",
- "pallet-staking",
- "parity-scale-codec",
- "scale-info",
- "serde",
- "sp-io",
- "sp-runtime",
-]
-
-[[package]]
 name = "pallet-proxy"
 version = "46.0.0"
 source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=845eb9986c7131056b077d14ad7249f9d65ca111#845eb9986c7131056b077d14ad7249f9d65ca111"
@@ -7684,6 +7667,23 @@ dependencies = [
  "rand 0.8.5",
  "sp-runtime",
  "sp-session",
+]
+
+[[package]]
+name = "pallet-slash-policy"
+version = "0.4.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-election-provider-support",
+ "frame-support",
+ "frame-system",
+ "pallet-balances",
+ "pallet-staking",
+ "parity-scale-codec",
+ "scale-info",
+ "serde",
+ "sp-io",
+ "sp-runtime",
 ]
 
 [[package]]
@@ -9335,12 +9335,12 @@ dependencies = [
  "pallet-miner-registry",
  "pallet-multisig",
  "pallet-offences",
- "pallet-protocol-params",
  "pallet-proxy",
  "pallet-quantum-compute-mempool",
  "pallet-quantum-pow",
  "pallet-revive",
  "pallet-session",
+ "pallet-slash-policy",
  "pallet-staking",
  "pallet-template",
  "pallet-timestamp",

@@ -1,5 +1,5 @@
 [package]
-name = "pallet-protocol-params"
+name = "pallet-slash-policy"
 description = "Bounded council discretionary slashing parameters and dispatch."
 version = { workspace = true }
 license.workspace = true

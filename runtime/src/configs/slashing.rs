@@ -214,8 +214,8 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
     }
 }
 
-impl pallet_protocol_params::Config for Runtime {
+impl pallet_slash_policy::Config for Runtime {
     type CouncilOrigin = super::validator_onboarding::FoundationOrRoot;
     type MaxBudgetWindow = <Runtime as pallet_staking::Config>::HistoryDepth;
-    type SlashWeightInfo = pallet_protocol_params::weights::SubstrateWeight<Runtime>;
+    type SlashWeightInfo = pallet_slash_policy::weights::SubstrateWeight<Runtime>;
 }

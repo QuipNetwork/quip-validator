@@ -15,7 +15,7 @@ fn defaults_and_parameter_bounds_are_enforced() {
         );
         assert_eq!(BudgetWindow::<Test>::get(), 28);
         assert_noop!(
-            ProtocolParams::discretionary_slash(
+            SlashPolicy::discretionary_slash(
                 RuntimeOrigin::signed(1),
                 1,
                 1,
@@ -32,13 +32,13 @@ fn defaults_and_parameter_bounds_are_enforced() {
             (MAX_PER_MOTION, Perbill::from_percent(4)),
         ] {
             assert_noop!(
-                ProtocolParams::set_limits(RuntimeOrigin::root(), motion, cumulative, 28),
+                SlashPolicy::set_limits(RuntimeOrigin::root(), motion, cumulative, 28),
                 Error::<Test>::InvalidFraction
             );
         }
         for window in [27, 85] {
             assert_noop!(
-                ProtocolParams::set_limits(
+                SlashPolicy::set_limits(
                     RuntimeOrigin::root(),
                     DEFAULT_PER_MOTION,
                     DEFAULT_CUMULATIVE,
@@ -47,13 +47,13 @@ fn defaults_and_parameter_bounds_are_enforced() {
                 Error::<Test>::InvalidWindow
             );
         }
-        assert_ok!(ProtocolParams::set_limits(
+        assert_ok!(SlashPolicy::set_limits(
             RuntimeOrigin::root(),
             MIN_PER_MOTION,
             MIN_CUMULATIVE,
             28
         ));
-        assert_ok!(ProtocolParams::set_limits(
+        assert_ok!(SlashPolicy::set_limits(
             RuntimeOrigin::root(),
             MAX_PER_MOTION,
             MAX_CUMULATIVE,
@@ -65,14 +65,14 @@ fn defaults_and_parameter_bounds_are_enforced() {
 #[test]
 fn no_op_is_rolled_back_and_has_no_success_event_or_budget_charge() {
     ext().execute_with(|| {
-        assert_ok!(ProtocolParams::discretionary_slash(
+        assert_ok!(SlashPolicy::discretionary_slash(
             RuntimeOrigin::root(),
             1,
             1,
             Perbill::from_percent(1)
         ));
         assert_noop!(
-            ProtocolParams::discretionary_slash(
+            SlashPolicy::discretionary_slash(
                 RuntimeOrigin::root(),
                 1,
                 1,
@@ -100,7 +100,7 @@ fn no_op_is_rolled_back_and_has_no_success_event_or_budget_charge() {
 #[test]
 fn fractions_are_cumulative_across_spans_and_cancel_does_not_refund_budget() {
     ext().execute_with(|| {
-        assert_ok!(ProtocolParams::discretionary_slash(
+        assert_ok!(SlashPolicy::discretionary_slash(
             RuntimeOrigin::root(),
             1,
             1,
@@ -113,7 +113,7 @@ fn fractions_are_cumulative_across_spans_and_cancel_does_not_refund_budget() {
         ));
         for era in 2..=4 {
             set_era(era);
-            assert_ok!(ProtocolParams::discretionary_slash(
+            assert_ok!(SlashPolicy::discretionary_slash(
                 RuntimeOrigin::root(),
                 1,
                 era,
@@ -132,17 +132,12 @@ fn fractions_are_cumulative_across_spans_and_cancel_does_not_refund_budget() {
         );
         set_era(5);
         assert_noop!(
-            ProtocolParams::discretionary_slash(
-                RuntimeOrigin::root(),
-                1,
-                5,
-                Perbill::from_percent(1)
-            ),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 1, 5, Perbill::from_percent(1)),
             Error::<Test>::BudgetExceeded
         );
         set_era(28);
         assert_noop!(
-            ProtocolParams::discretionary_slash(
+            SlashPolicy::discretionary_slash(
                 RuntimeOrigin::root(),
                 1,
                 28,
@@ -151,7 +146,7 @@ fn fractions_are_cumulative_across_spans_and_cancel_does_not_refund_budget() {
             Error::<Test>::BudgetExceeded
         );
         set_era(29);
-        assert_ok!(ProtocolParams::discretionary_slash(
+        assert_ok!(SlashPolicy::discretionary_slash(
             RuntimeOrigin::root(),
             1,
             29,
@@ -165,44 +160,24 @@ fn invalid_era_zero_exposure_and_invalid_fraction_are_rejected() {
     ext().execute_with(|| {
         pallet_staking::CurrentEra::<Test>::put(2);
         assert_noop!(
-            ProtocolParams::discretionary_slash(
-                RuntimeOrigin::root(),
-                1,
-                2,
-                Perbill::from_percent(1)
-            ),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 1, 2, Perbill::from_percent(1)),
             Error::<Test>::InvalidEra
         );
         assert_noop!(
-            ProtocolParams::discretionary_slash(
-                RuntimeOrigin::root(),
-                2,
-                1,
-                Perbill::from_percent(1)
-            ),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 2, 1, Perbill::from_percent(1)),
             Error::<Test>::NoExposure
         );
         assert_noop!(
-            ProtocolParams::discretionary_slash(RuntimeOrigin::root(), 1, 1, Perbill::zero()),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 1, 1, Perbill::zero()),
             Error::<Test>::InvalidFraction
         );
         assert_noop!(
-            ProtocolParams::discretionary_slash(
-                RuntimeOrigin::root(),
-                1,
-                1,
-                Perbill::from_percent(2)
-            ),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 1, 1, Perbill::from_percent(2)),
             Error::<Test>::InvalidFraction
         );
         set_era(29);
         assert_noop!(
-            ProtocolParams::discretionary_slash(
-                RuntimeOrigin::root(),
-                1,
-                1,
-                Perbill::from_percent(1)
-            ),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 1, 1, Perbill::from_percent(1)),
             Error::<Test>::InvalidEra
         );
     });
@@ -213,7 +188,7 @@ fn increasing_window_still_counts_retained_old_motions() {
     ext().execute_with(|| {
         for era in 1..=4 {
             set_era(era);
-            assert_ok!(ProtocolParams::discretionary_slash(
+            assert_ok!(SlashPolicy::discretionary_slash(
                 RuntimeOrigin::root(),
                 1,
                 era,
@@ -221,14 +196,14 @@ fn increasing_window_still_counts_retained_old_motions() {
             ));
         }
         set_era(29);
-        assert_ok!(ProtocolParams::set_limits(
+        assert_ok!(SlashPolicy::set_limits(
             RuntimeOrigin::root(),
             DEFAULT_PER_MOTION,
             DEFAULT_CUMULATIVE,
             84
         ));
         assert_noop!(
-            ProtocolParams::discretionary_slash(
+            SlashPolicy::discretionary_slash(
                 RuntimeOrigin::root(),
                 1,
                 29,
@@ -244,14 +219,14 @@ fn lowering_the_budget_does_not_erase_previous_charges() {
     ext().execute_with(|| {
         for era in 1..=2 {
             set_era(era);
-            assert_ok!(ProtocolParams::discretionary_slash(
+            assert_ok!(SlashPolicy::discretionary_slash(
                 RuntimeOrigin::root(),
                 1,
                 era,
                 DEFAULT_PER_MOTION
             ));
         }
-        assert_ok!(ProtocolParams::set_limits(
+        assert_ok!(SlashPolicy::set_limits(
             RuntimeOrigin::root(),
             DEFAULT_PER_MOTION,
             MIN_CUMULATIVE,
@@ -259,7 +234,7 @@ fn lowering_the_budget_does_not_erase_previous_charges() {
         ));
         set_era(3);
         assert_noop!(
-            ProtocolParams::discretionary_slash(RuntimeOrigin::root(), 1, 3, DEFAULT_PER_MOTION),
+            SlashPolicy::discretionary_slash(RuntimeOrigin::root(), 1, 3, DEFAULT_PER_MOTION),
             Error::<Test>::BudgetExceeded
         );
     });

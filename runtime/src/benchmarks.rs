@@ -29,7 +29,7 @@ frame_benchmarking::define_benchmarks!(
     [frame_system_extensions, SystemExtensionsBench::<Runtime>]
     [pallet_balances, Balances]
     [pallet_validator_admission, ValidatorAdmission]
-    [pallet_protocol_params, ProtocolParams]
+    [pallet_slash_policy, SlashPolicy]
     [pallet_collective, Foundation]
     [pallet_membership, FoundationMembership]
     [pallet_staking, Staking]

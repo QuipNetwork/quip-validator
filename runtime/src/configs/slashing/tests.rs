@@ -643,21 +643,21 @@ fn report_one_era_before_application_is_still_accepted_and_applied() {
 
 #[test]
 fn council_wrapper_defaults_schedule_and_root_path_can_cancel_then_force_unstake() {
-    use crate::{ProtocolParams, ValidatorAdmission};
+    use crate::{SlashPolicy, ValidatorAdmission};
     use frame_support::assert_noop;
     use sp_runtime::Perbill;
     ext().execute_with(|| {
         let stash = pallet_session::Validators::<Runtime>::get()[0].clone();
         assert_eq!(
-            pallet_protocol_params::MaxDiscretionarySlashPerMotion::<Runtime>::get(),
+            pallet_slash_policy::MaxDiscretionarySlashPerMotion::<Runtime>::get(),
             Perbill::from_percent(1)
         );
         assert_eq!(
-            pallet_protocol_params::MaxDiscretionarySlashCumulative::<Runtime>::get(),
+            pallet_slash_policy::MaxDiscretionarySlashCumulative::<Runtime>::get(),
             Perbill::from_percent(4)
         );
         assert_eq!(
-            pallet_protocol_params::BudgetWindow::<Runtime>::get(),
+            pallet_slash_policy::BudgetWindow::<Runtime>::get(),
             BondingDuration::get()
         );
         let minority: RuntimeOrigin = pallet_collective::RawOrigin::<
@@ -666,22 +666,17 @@ fn council_wrapper_defaults_schedule_and_root_path_can_cancel_then_force_unstake
         >::Members(3, 5)
         .into();
         assert_noop!(
-            ProtocolParams::discretionary_slash(
-                minority,
-                stash.clone(),
-                1,
-                Perbill::from_percent(1)
-            ),
+            SlashPolicy::discretionary_slash(minority, stash.clone(), 1, Perbill::from_percent(1)),
             sp_runtime::DispatchError::BadOrigin
         );
-        assert_ok!(ProtocolParams::discretionary_slash(
+        assert_ok!(SlashPolicy::discretionary_slash(
             council(),
             stash.clone(),
             1,
             Perbill::from_percent(1)
         ));
         crate::System::assert_last_event(
-            pallet_protocol_params::Event::SlashScheduled {
+            pallet_slash_policy::Event::SlashScheduled {
                 stash: stash.clone(),
                 offence_era: 1,
                 apply_era: 29,
@@ -708,7 +703,7 @@ fn council_wrapper_defaults_schedule_and_root_path_can_cancel_then_force_unstake
         );
         assert!(pallet_staking::UnappliedSlashes::<Runtime>::get(29).is_empty());
         assert_eq!(
-            pallet_protocol_params::SlashHistory::<Runtime>::get(&stash).as_slice(),
+            pallet_slash_policy::SlashHistory::<Runtime>::get(&stash).as_slice(),
             &[(1, Perbill::from_percent(1))]
         );
         let spans = pallet_staking::SlashingSpans::<Runtime>::get(&stash)
@@ -739,7 +734,7 @@ fn is_allowed(call: &RuntimeCall) -> bool {
 fn raw_storage_is_refused_bare_and_nested_without_changing_any_state() {
     use frame_support::assert_noop;
     ext().execute_with(|| {
-        let key = pallet_protocol_params::BudgetWindow::<Runtime>::hashed_key().to_vec();
+        let key = pallet_slash_policy::BudgetWindow::<Runtime>::hashed_key().to_vec();
         let calls = vec![
             RuntimeCall::System(frame_system::Call::set_storage {
                 items: vec![(key.clone(), 1u32.encode())],

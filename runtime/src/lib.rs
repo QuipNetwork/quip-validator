@@ -1746,5 +1746,5 @@ mod runtime {
     #[runtime::pallet_index(30)]
     pub type Offences = pallet_offences;
     #[runtime::pallet_index(31)]
-    pub type ProtocolParams = pallet_protocol_params;
+    pub type SlashPolicy = pallet_slash_policy;
 }

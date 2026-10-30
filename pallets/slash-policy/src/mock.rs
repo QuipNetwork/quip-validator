@@ -1,4 +1,4 @@
-use crate as pallet_protocol_params;
+use crate as pallet_slash_policy;
 use frame_support::{
     derive_impl,
     traits::{ConstU32, UnixTime},
@@ -9,7 +9,7 @@ frame_support::construct_runtime!(pub enum Test {
     System: frame_system,
     Balances: pallet_balances,
     Staking: pallet_staking,
-    ProtocolParams: pallet_protocol_params,
+    SlashPolicy: pallet_slash_policy,
 });
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
 impl frame_system::Config for Test {
