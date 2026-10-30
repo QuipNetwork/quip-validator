@@ -13,7 +13,7 @@ parameter_types! {
     pub const Pages: u32 = 1;
     /// Zero-based active-session offset within the planned staking era.
     pub const PlanningSession: u32 = 3;
-    pub const MinimumElectionSlack: BlockNumber = 1_200;
+    pub const MinimumElectionSlack: BlockNumber = crate::network_params::MINIMUM_ELECTION_SLACK_BLOCKS;
     // Admission can contain 64 candidates, even though only 50 may win.
     pub const MaxNominators: u32 = 1024;
     pub const VoterSnapshotPerBlock: u32 = 1_100;

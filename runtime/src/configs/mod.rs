@@ -136,7 +136,7 @@ impl frame_system::Config for Runtime {
 parameter_types! {
     // BABE epochs are defined in slots. One epoch is one staking session (ShouldEndSession = Babe),
     // so a 4h session with SessionsPerEra = 6 gives a 24h era.
-    pub const EpochDuration: u64 = 4 * super::HOURS as u64;
+    pub const EpochDuration: u64 = crate::network_params::EPOCH_DURATION_SLOTS;
     pub const ExpectedBlockTime: u64 = SLOT_DURATION;
 }
 
