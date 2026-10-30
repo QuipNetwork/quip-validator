@@ -188,6 +188,7 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
             key_owner_proof: sp_consensus_babe::OpaqueKeyOwnershipProof,
         ) -> Option<()> {
             let key_owner_proof: sp_session::MembershipProof = key_owner_proof.decode()?;
+            // Share has_pending_slash_bucket with the authoritative reporter; this is preflight only.
             if !crate::configs::slashing::has_pending_slash_bucket(key_owner_proof.session) {
                 return None;
             }
@@ -224,6 +225,7 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
             key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
         ) -> Option<()> {
             let key_owner_proof: sp_session::MembershipProof = key_owner_proof.decode()?;
+            // Share has_pending_slash_bucket with the authoritative reporter; this is preflight only.
             if !crate::configs::slashing::has_pending_slash_bucket(key_owner_proof.session) {
                 return None;
             }

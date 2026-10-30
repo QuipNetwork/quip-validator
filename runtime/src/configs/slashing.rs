@@ -54,6 +54,7 @@ pub(crate) fn has_pending_slash_bucket(session: sp_staking::SessionIndex) -> boo
 pub struct GuardedReports;
 impl<O: Offence<Identification>> ReportOffence<AccountId, Identification, O> for GuardedReports {
     fn report_offence(reporters: Vec<AccountId>, offence: O) -> Result<(), OffenceError> {
+        // Enforce has_pending_slash_bucket again here: API preflight cannot cover direct or delayed reports.
         if !has_pending_slash_bucket(offence.session_index()) {
             // The consensus pallets map reporter errors to their generic report error.
             return Err(OffenceError::Other(0));
