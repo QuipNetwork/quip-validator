@@ -9,11 +9,12 @@
 //! | `ValidatorAdmission::approve/remove`   | council 2/3                  |
 //! | `ValidatorAdmission::dispatch_as_root` | council 2/3 → `RawOrigin::Root` |
 //! | `FoundationMembership::add/swap/reset` | council 2/3                  |
-//! | `FoundationMembership::remove`         | council 4/5                  |
+//! | `FoundationMembership::remove`         | council 2/3                  |
 //! | `Staking::set_staking_configs`         | Root only, i.e. via `dispatch_as_root` |
 //! | `Staking::cancel_deferred_slash` etc.  | Root only, i.e. via `dispatch_as_root` |
 //!
-//! At the V0 size of six seats, 2/3 is exactly four votes and 4/5 is five.
+//! At the V0 size of six seats, 2/3 is exactly four votes. The council may
+//! remove its own members directly, through Root, or by resetting membership.
 
 #[cfg(test)]
 mod tests {
@@ -146,29 +147,18 @@ mod tests {
     }
 
     #[test]
-    fn membership_removal_needs_four_fifths() {
+    fn membership_removal_requires_two_thirds() {
         new_test_ext().execute_with(|| {
             let outgoing = council()[5].clone();
-
-            // Appointment is ordinary council business: 2/3 is enough.
             assert_noop!(
                 FoundationMembership::remove_member(
                     council_origin(3),
-                    into_member(council()[4].clone())
-                ),
-                DispatchError::BadOrigin
-            );
-            // Removing a seat needs 5 of 6; 4 of 6 (enough to appoint) is not
-            // enough to remove.
-            assert_noop!(
-                FoundationMembership::remove_member(
-                    council_origin(4),
                     into_member(outgoing.clone())
                 ),
                 DispatchError::BadOrigin
             );
             assert_ok!(FoundationMembership::remove_member(
-                council_origin(5),
+                council_origin(4),
                 into_member(outgoing.clone())
             ));
             assert!(!pallet_collective::Members::<Runtime, Instance1>::get().contains(&outgoing));
@@ -176,6 +166,48 @@ mod tests {
                 pallet_collective::Members::<Runtime, Instance1>::get().len(),
                 5
             );
+        });
+    }
+
+    #[test]
+    fn membership_removal_through_root_requires_two_thirds() {
+        new_test_ext().execute_with(|| {
+            let outgoing = council()[5].clone();
+            let call = Box::new(RuntimeCall::FoundationMembership(
+                pallet_membership::Call::remove_member {
+                    who: into_member(outgoing.clone()),
+                },
+            ));
+            assert_noop!(
+                ValidatorAdmission::dispatch_as_root(council_origin(3), call.clone()),
+                DispatchError::BadOrigin
+            );
+            assert_ok!(ValidatorAdmission::dispatch_as_root(
+                council_origin(4),
+                call
+            ));
+            // Check the inner dispatch took effect, not just the wrapper result.
+            assert!(!pallet_collective::Members::<Runtime, Instance1>::get().contains(&outgoing));
+            assert_eq!(
+                pallet_collective::Members::<Runtime, Instance1>::get().len(),
+                5
+            );
+        });
+    }
+
+    #[test]
+    fn membership_reset_requires_two_thirds() {
+        new_test_ext().execute_with(|| {
+            assert_noop!(
+                FoundationMembership::reset_members(council_origin(3), Vec::new()),
+                DispatchError::BadOrigin
+            );
+            assert_ok!(FoundationMembership::reset_members(
+                council_origin(4),
+                Vec::new()
+            ));
+            assert!(pallet_membership::Members::<Runtime, Instance1>::get().is_empty());
+            assert!(pallet_collective::Members::<Runtime, Instance1>::get().is_empty());
         });
     }
 

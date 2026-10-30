@@ -444,7 +444,7 @@ fn oldest_bonded_report_is_rejected_before_any_slash_accounting() {
 }
 
 fn council() -> RuntimeOrigin {
-    pallet_collective::RawOrigin::<crate::AccountId, pallet_collective::Instance1>::Members(4, 5)
+    pallet_collective::RawOrigin::<crate::AccountId, pallet_collective::Instance1>::Members(4, 6)
         .into()
 }
 

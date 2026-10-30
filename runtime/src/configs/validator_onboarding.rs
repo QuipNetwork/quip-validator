@@ -12,15 +12,11 @@ use frame_support::traits::{EitherOfDiverse, Nothing};
 
 pub type FoundationOrigin =
     pallet_collective::EnsureProportionAtLeast<AccountId, pallet_collective::Instance1, 2, 3>;
-/// Removing a council member needs a strictly stronger mandate than ordinary
-/// decisions: 4/5 of the seats. At the V0 size of six that is five votes, so a
-/// member can never be removed by the same threshold that appoints them, and a
-/// bare majority cannot clear a seat.
-pub type CouncilRemovalOrigin =
-    pallet_collective::EnsureProportionAtLeast<AccountId, pallet_collective::Instance1, 4, 5>;
+/// Council membership changes require 2/3: four of the six V0 seats. The
+/// council may remove its own members, directly or through `dispatch_as_root`.
+/// Root also accepts the council's 2/3 mandate, so a stronger direct removal
+/// threshold would not provide a stronger effective restriction.
 pub type FoundationOrRoot = EitherOfDiverse<frame_system::EnsureRoot<AccountId>, FoundationOrigin>;
-pub type CouncilRemovalOrRoot =
-    EitherOfDiverse<frame_system::EnsureRoot<AccountId>, CouncilRemovalOrigin>;
 /// Foundation privileges require actual affirmative votes. Neither the prime
 /// nor a simple majority may convert abstentions into approval at expiry.
 pub struct AbstentionsAlwaysNo;
@@ -68,10 +64,9 @@ impl pallet_collective::Config<pallet_collective::Instance1> for Runtime {
 impl pallet_membership::Config<pallet_membership::Instance1> for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type AddOrigin = FoundationOrRoot;
-    // Appointment, swap and reset stay at the ordinary 2/3 threshold; only
-    // removal is raised to 4/5 so a seat cannot be cleared by the body that
-    // filled it.
-    type RemoveOrigin = CouncilRemovalOrRoot;
+    // Appointment, removal, swap and reset share the 2/3 threshold: four of
+    // six seats may change the council's own membership.
+    type RemoveOrigin = FoundationOrRoot;
     type SwapOrigin = FoundationOrRoot;
     type ResetOrigin = FoundationOrRoot;
     type PrimeOrigin = FoundationOrRoot;
