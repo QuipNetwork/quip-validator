@@ -168,6 +168,8 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
                     | frame_system::Call::kill_storage { .. }
                     | frame_system::Call::kill_prefix { .. },
                 ) => Err(RootCallError::Denied),
+                // Proxy/Multisig require signed origins and do not manufacture Root.
+                // Inspect their call trees structurally; this does not imply Root propagation.
                 RuntimeCall::Proxy(
                     pallet_proxy::Call::proxy { call, .. }
                     | pallet_proxy::Call::proxy_announced { call, .. },
