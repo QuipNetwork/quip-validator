@@ -1740,4 +1740,6 @@ mod runtime {
     pub type MultiBlockElectionUnsigned = pallet_election_provider_multi_block::unsigned;
     #[runtime::pallet_index(28)]
     pub type MultiBlockElectionSigned = pallet_election_provider_multi_block::signed;
+    #[runtime::pallet_index(29)]
+    pub type Authorship = pallet_authorship;
 }

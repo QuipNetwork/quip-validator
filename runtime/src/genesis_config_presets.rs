@@ -283,13 +283,9 @@ fn testnet_genesis(
         emission_controller: pallet_emission_controller::GenesisConfig {
             enabled: true,
             start_at: None,
-            // TODO(v0-governance): add the staking route. V0 plan §5.1/§5.7 sets
-            // the staking emission share at 25% of the 40M QUIP/yr envelope
-            // (10M QUIP/yr), so mainnet routes become e.g. 37.5 / 37.5 / 25.
-            // The 25% is TBD: it must be calibrated against the final genesis
-            // supply (APR = share / staked) before launch. Do not add the route
-            // until pallet_staking has a real EraPayout, or the staking share
-            // would accrue into a pot nothing pays out of.
+            // Split the controller's 30M QUIP/year equally between these pots.
+            // Staking mints its separate 10M share on claims; adding a staking
+            // route here would double-count that share of the 40M envelope.
             routes: vec![
                 (
                     pallet_emission_controller::ISING_SUBNET,

@@ -35,6 +35,7 @@ frame-system.workspace = true
 frame-system-benchmarking = { optional = true, workspace = true }
 frame-system-rpc-runtime-api.workspace = true
 frame-try-runtime = { optional = true, workspace = true }
+pallet-authorship.workspace = true
 pallet-babe.workspace = true
 pallet-balances.workspace = true
 pallet-evm-chain-id.workspace = true
@@ -111,6 +112,7 @@ std = [
   "frame-system-rpc-runtime-api/std",
   "frame-system/std",
   "frame-try-runtime?/std",
+  "pallet-authorship/std",
   "pallet-babe/std",
   "pallet-balances/std",
   "pallet-evm-chain-id/std",
@@ -194,6 +196,7 @@ try-runtime = [
   "frame-support/try-runtime",
   "frame-system/try-runtime",
   "frame-try-runtime/try-runtime",
+  "pallet-authorship/try-runtime",
   "pallet-babe/try-runtime",
   "pallet-balances/try-runtime",
   "pallet-evm-chain-id/try-runtime",

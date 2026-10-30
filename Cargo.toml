@@ -116,6 +116,7 @@ frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev =
 frame-system-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 frame-system-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 frame-try-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+pallet-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }

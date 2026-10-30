@@ -21,8 +21,26 @@ use sp_runtime::{
     DispatchError, DispatchResult,
 };
 
-/// Seconds in the protocol's fixed 365-day accounting year (not a calendar year).
+/// The annual envelope is the protocol contract; the 75/25 split is V0 policy.
+/// Staking mints its share through pallet-staking claims, NOT a controller route.
+pub const ANNUAL_EMISSION_QUIP: u128 = 40_000_000;
+pub const CONTROLLER_SHARE_PERCENT: u128 = 75;
+pub const STAKING_SHARE_PERCENT: u128 = 25;
+pub const CONTROLLER_ANNUAL_EMISSION_QUIP: u128 = ANNUAL_EMISSION_QUIP
+    .saturating_mul(CONTROLLER_SHARE_PERCENT)
+    .saturating_div(100);
+pub const STAKING_ANNUAL_EMISSION_QUIP: u128 = ANNUAL_EMISSION_QUIP
+    .saturating_mul(STAKING_SHARE_PERCENT)
+    .saturating_div(100);
+/// Both budgets use the protocol's existing fixed 365-day accounting year.
 pub const YEAR_SECONDS: u64 = 365 * 24 * 60 * 60;
+pub const MILLISECONDS_PER_YEAR: u64 = YEAR_SECONDS * 1_000;
+const _: () = {
+    assert!(CONTROLLER_SHARE_PERCENT + STAKING_SHARE_PERCENT == 100);
+    assert!(CONTROLLER_ANNUAL_EMISSION_QUIP + STAKING_ANNUAL_EMISSION_QUIP == ANNUAL_EMISSION_QUIP);
+    assert!(STAKING_ANNUAL_EMISSION_QUIP * 4 == ANNUAL_EMISSION_QUIP);
+    assert!(CONTROLLER_ANNUAL_EMISSION_QUIP == STAKING_ANNUAL_EMISSION_QUIP * 3);
+};
 /// Ising and QVRF are distinct allocation buckets, not topology identifiers.
 pub const ISING_SUBNET: u32 = 0;
 /// Reserved QVRF bucket. No payout consumer exists in Phase 1.
@@ -93,7 +111,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_runtime::{DispatchResult, Perbill};
 
-    const VERSION: StorageVersion = StorageVersion::new(1);
+    const VERSION: StorageVersion = StorageVersion::new(2);
     #[pallet::pallet]
     #[pallet::storage_version(VERSION)]
     pub struct Pallet<T>(_);
@@ -105,6 +123,10 @@ pub mod pallet {
         type Clock: UnixTime;
         /// Base units per QUIP, fixed by the runtime (10^12).
         type Unit: Get<u128>;
+        /// Controller entitlement in base units per protocol accounting year.
+        /// Excludes staking, which mints its own share on reward claims.
+        #[pallet::constant]
+        type AnnualEmission: Get<u128>;
         type PotId: Get<PalletId>;
         #[pallet::constant]
         type MaxSubnets: Get<u32>;
@@ -155,8 +177,8 @@ pub mod pallet {
                 "invalid emission routes"
             );
             assert!(
-                T::Unit::get().checked_mul(40_000_000).is_some(),
-                "annual emission overflow"
+                T::AnnualEmission::get() > 0,
+                "annual emission must be nonzero"
             );
             assert_ne!(
                 self.start_at,
@@ -218,14 +240,73 @@ pub mod pallet {
             T::WeightInfo::accrue(T::MaxSubnets::get())
         }
         fn on_runtime_upgrade() -> Weight {
-            // No genesis execution on upgrade: old chains deliberately remain
-            // disabled until a separately reviewed activation migration.
-            if Pallet::<T>::on_chain_storage_version() < VERSION {
-                VERSION.put::<Pallet<T>>();
-                T::DbWeight::get().reads_writes(1, 1)
-            } else {
-                T::DbWeight::get().reads(1)
+            if Pallet::<T>::on_chain_storage_version() >= VERSION {
+                return T::DbWeight::get().reads(1);
             }
+            // Preserve all issued counters and balances. Moving the anchor
+            // avoids a silent stall when the annual rate drops from 40M to 30M.
+            // Unconfigured/disabled chains remain closed; unanchored genesis
+            // still waits for the first consensus timestamp.
+            let Ok(start) = Self::rebased_start() else {
+                sp_runtime::print(
+                    "EmissionController: invalid rebase; storage version not advanced",
+                );
+                return T::DbWeight::get().reads(5);
+            };
+            StartAt::<T>::set(start);
+            VERSION.put::<Pallet<T>>();
+            T::DbWeight::get().reads_writes(5, 2)
+        }
+        fn integrity_test() {
+            assert!(
+                T::AnnualEmission::get() > 0,
+                "annual emission must be nonzero"
+            );
+        }
+        #[cfg(feature = "try-runtime")]
+        fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+            Self::try_state(<frame_system::Pallet<T> as sp_runtime::traits::BlockNumberProvider>::current_block_number())?;
+            let start = if Pallet::<T>::on_chain_storage_version() < VERSION {
+                Self::rebased_start()?
+            } else {
+                StartAt::<T>::get()
+            };
+            let counters: Vec<_> = Routes::<T>::get()
+                .into_iter()
+                .map(|(subnet, _)| (subnet, SubnetIssued::<T>::get(subnet)))
+                .collect();
+            Ok((
+                start,
+                ScheduledIssued::<T>::get(),
+                T::Currency::total_issuance(),
+                counters,
+            )
+                .encode())
+        }
+        #[cfg(feature = "try-runtime")]
+        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+            let (start, issued, issuance, counters): (Option<u64>, u128, u128, Vec<(u32, u128)>) =
+                Decode::decode(&mut &state[..]).map_err(|_| "invalid rebase pre-state")?;
+            ensure!(
+                Pallet::<T>::on_chain_storage_version() == VERSION,
+                "rebase did not complete"
+            );
+            ensure!(StartAt::<T>::get() == start, "incorrect rebase anchor");
+            ensure!(
+                ScheduledIssued::<T>::get() == issued,
+                "rebase changed issued counter"
+            );
+            ensure!(
+                T::Currency::total_issuance() == issuance,
+                "rebase changed issuance"
+            );
+            for (subnet, amount) in counters {
+                ensure!(
+                    SubnetIssued::<T>::get(subnet) == amount,
+                    "rebase changed subnet counter"
+                );
+            }
+            Self::try_state(<frame_system::Pallet<T> as sp_runtime::traits::BlockNumberProvider>::current_block_number())
         }
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
@@ -274,9 +355,34 @@ pub mod pallet {
             }
             sum == 1_000_000_000
         }
+        /// Rebase only an enabled, anchored schedule with previously paid emissions.
+        /// ScheduledIssued is the sum of SubnetIssued, checked by try_state.
+        fn rebased_start() -> Result<Option<u64>, &'static str> {
+            let start = StartAt::<T>::get();
+            let issued = ScheduledIssued::<T>::get();
+            if !Enabled::<T>::get() || start.is_none() || issued == 0 {
+                return Ok(start);
+            }
+            let elapsed = sp_runtime::helpers_128bit::multiply_by_rational_with_rounding(
+                issued,
+                u128::from(YEAR_SECONDS),
+                T::AnnualEmission::get(),
+                sp_runtime::Rounding::Down,
+            )
+            .ok_or("rebase duration overflow or zero annual emission")?;
+            let elapsed = u64::try_from(elapsed).map_err(|_| "rebase duration exceeds u64")?;
+            let start = T::Clock::now()
+                .as_secs()
+                .checked_sub(elapsed)
+                .filter(|start| *start != 0)
+                .ok_or("rebase precedes Unix epoch")?;
+            // Flooring can leave less than one second of entitlement below the
+            // counters. It never remints; the next timestamp second resumes accrual.
+            Ok(Some(start))
+        }
         /// Cumulative entitlement avoids per-block rounding loss and handles gaps.
         pub fn entitlement(elapsed: u64) -> Option<u128> {
-            let annual = T::Unit::get().checked_mul(40_000_000)?;
+            let annual = T::AnnualEmission::get();
             let years = annual.checked_mul(u128::from(elapsed / YEAR_SECONDS))?;
             let fraction =
                 annual.checked_mul(u128::from(elapsed % YEAR_SECONDS))? / u128::from(YEAR_SECONDS);

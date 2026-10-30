@@ -9288,6 +9288,7 @@ dependencies = [
  "frame-system-rpc-runtime-api",
  "frame-try-runtime",
  "hex",
+ "pallet-authorship",
  "pallet-babe",
  "pallet-balances",
  "pallet-collective",

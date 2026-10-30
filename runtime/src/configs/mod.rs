@@ -396,6 +396,8 @@ impl pallet_template::Config for Runtime {
 }
 
 parameter_types! {
+    pub const ControllerAnnualEmission: Balance =
+        pallet_emission_controller::CONTROLLER_ANNUAL_EMISSION_QUIP.saturating_mul(UNIT);
     pub const EmissionPotId: frame_support::PalletId = frame_support::PalletId(*b"qp/emiss");
 }
 impl pallet_emission_controller::Config for Runtime {
@@ -403,6 +405,7 @@ impl pallet_emission_controller::Config for Runtime {
     type Currency = Balances;
     type Clock = Timestamp;
     type Unit = ConstU128<UNIT>;
+    type AnnualEmission = ControllerAnnualEmission;
     type PotId = EmissionPotId;
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = pallet_emission_controller::weights::SubstrateWeight<Runtime>;
@@ -890,4 +893,5 @@ mod xqvm_weights {
 pub mod election;
 #[cfg(test)]
 mod governance_matrix;
+pub mod staking_rewards;
 pub mod validator_onboarding;

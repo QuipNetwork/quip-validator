@@ -6,7 +6,7 @@ use sp_runtime::Perbill;
 fn fixed_schedule_is_proof_independent_and_perpetual() {
     new_test_ext().execute_with(|| {
         let initial = Balances::total_issuance();
-        let annual = 40_000_000 * 1_000_000_000_000u128;
+        let annual = 30_000_000 * 1_000_000_000_000u128;
         EmissionController::accrue(99);
         assert_eq!(ScheduledIssued::<Test>::get(), 0);
         EmissionController::accrue(100 + YEAR_SECONDS);
@@ -38,7 +38,7 @@ fn repeated_calls_clock_regression_and_rounding_do_not_remint() {
         EmissionController::accrue(100 + YEAR_SECONDS);
         assert_eq!(
             ScheduledIssued::<Test>::get(),
-            40_000_000 * 1_000_000_000_000u128
+            30_000_000 * 1_000_000_000_000u128
         );
     });
 }
@@ -170,5 +170,117 @@ fn failed_accrual_is_visible_and_does_not_consume_entitlement() {
             }
             .into(),
         );
+    });
+}
+
+#[test]
+fn rate_reduction_rebases_paid_history_without_reminting_or_stalling() {
+    use frame_support::traits::{GetStorageVersion, StorageVersion};
+    for elapsed in [1, 123_457, YEAR_SECONDS] {
+        new_test_ext().execute_with(|| {
+            let old_start = 1_800_000_000;
+            let now = old_start + elapsed;
+            StartAt::<Test>::put(old_start);
+            AnnualEmission::set(40_000_000 * 1_000_000_000_000);
+            EmissionController::accrue(now);
+            let issued = ScheduledIssued::<Test>::get();
+            let counters = [SubnetIssued::<Test>::get(0), SubnetIssued::<Test>::get(1)];
+            let balances = [
+                Balances::free_balance(EmissionController::pot(0)),
+                Balances::free_balance(EmissionController::pot(1)),
+            ];
+            let issuance = Balances::total_issuance();
+            StorageVersion::new(1).put::<EmissionController>();
+            AnnualEmission::set(30_000_000 * 1_000_000_000_000);
+            System::set_block_number(now);
+            #[cfg(feature = "try-runtime")]
+            let pre = EmissionController::pre_upgrade().unwrap();
+            EmissionController::on_runtime_upgrade();
+            #[cfg(feature = "try-runtime")]
+            EmissionController::post_upgrade(pre).unwrap();
+            assert_eq!(
+                EmissionController::on_chain_storage_version(),
+                StorageVersion::new(2)
+            );
+            let start = StartAt::<Test>::get().unwrap();
+            assert_eq!(
+                start,
+                now - (issued * u128::from(YEAR_SECONDS) / AnnualEmission::get()) as u64
+            );
+            assert!(start < old_start || elapsed == 1);
+            assert_eq!(ScheduledIssued::<Test>::get(), issued);
+            assert_eq!(
+                [SubnetIssued::<Test>::get(0), SubnetIssued::<Test>::get(1)],
+                counters
+            );
+            assert_eq!(
+                [
+                    Balances::free_balance(EmissionController::pot(0)),
+                    Balances::free_balance(EmissionController::pot(1))
+                ],
+                balances
+            );
+            assert_eq!(Balances::total_issuance(), issuance);
+            EmissionController::accrue(now);
+            assert_eq!(Balances::total_issuance(), issuance);
+            EmissionController::accrue(now + 1);
+            let delta = ScheduledIssued::<Test>::get() - issued;
+            assert!(delta > 0);
+            assert!(delta <= AnnualEmission::get() / u128::from(YEAR_SECONDS) + 2);
+            assert_eq!(Balances::total_issuance() - issuance, delta);
+            // The version guard must not reset the clock on another upgrade call.
+            System::set_block_number(now + 100);
+            EmissionController::on_runtime_upgrade();
+            assert_eq!(StartAt::<Test>::get(), Some(start));
+            assert_eq!(Balances::total_issuance() - issuance, delta);
+            #[cfg(feature = "try-runtime")]
+            EmissionController::try_state(now + 100).unwrap();
+        });
+    }
+}
+
+#[test]
+fn rebase_keeps_missing_and_disabled_schedules_closed() {
+    use frame_support::traits::StorageVersion;
+    new_test_ext().execute_with(|| {
+        StartAt::<Test>::kill();
+        StorageVersion::new(1).put::<EmissionController>();
+        let issuance = Balances::total_issuance();
+        EmissionController::on_runtime_upgrade();
+        assert_eq!(StartAt::<Test>::get(), None);
+        assert_eq!(Balances::total_issuance(), issuance);
+        EmissionController::accrue(1_800_000_000);
+        assert_eq!(ScheduledIssued::<Test>::get(), 0);
+        assert_eq!(StartAt::<Test>::get(), Some(1_800_000_000));
+        Enabled::<Test>::kill();
+        StorageVersion::new(0).put::<EmissionController>();
+        EmissionController::on_runtime_upgrade();
+        assert!(!Enabled::<Test>::get());
+        assert_eq!(StartAt::<Test>::get(), Some(1_800_000_000));
+        assert_eq!(Balances::total_issuance(), issuance);
+    });
+}
+
+#[test]
+fn invalid_rebase_does_not_change_state_or_mark_upgrade_complete() {
+    use frame_support::traits::{GetStorageVersion, StorageVersion};
+    new_test_ext().execute_with(|| {
+        // A clock before the required virtual anchor cannot represent the rebase.
+        AnnualEmission::set(40_000_000 * 1_000_000_000_000);
+        EmissionController::accrue(100 + YEAR_SECONDS);
+        AnnualEmission::set(30_000_000 * 1_000_000_000_000);
+        StorageVersion::new(1).put::<EmissionController>();
+        let issued = ScheduledIssued::<Test>::get();
+        let issuance = Balances::total_issuance();
+        #[cfg(feature = "try-runtime")]
+        assert!(EmissionController::pre_upgrade().is_err());
+        EmissionController::on_runtime_upgrade();
+        assert_eq!(
+            EmissionController::on_chain_storage_version(),
+            StorageVersion::new(1)
+        );
+        assert_eq!(StartAt::<Test>::get(), Some(100));
+        assert_eq!(ScheduledIssued::<Test>::get(), issued);
+        assert_eq!(Balances::total_issuance(), issuance);
     });
 }

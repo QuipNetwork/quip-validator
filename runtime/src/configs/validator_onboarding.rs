@@ -115,22 +115,11 @@ impl pallet_staking::Config for Runtime {
     type SlashDeferDuration = ConstU32<0>;
     type AdminOrigin = FoundationOrRoot;
     type SessionInterface = Self;
-    // Validators earn network fees plus emissions (MR !2 roles table), but the
-    // validator share of 40M QUIP/year is not allocated in the companion spec.
-    // Phase 0 #3 is open: mint nothing until specified; any nonzero payout needs
-    // plan §6.4 reservation/accounting for delayed claims and era remainders.
-    //
-    // TODO(v0-governance): staking rewards. V0 plan §5.1 fixes the staking
-    // emission share at 25% of the 40M QUIP/yr envelope (10M QUIP/yr), added as
-    // a third emission route alongside ISING_SUBNET and QVRF_SUBNET (currently
-    // 50/50, and `valid_routes` requires the shares to sum to 100%). The 25% is
-    // TBD pending calibration against the final genesis supply: the payout is a
-    // fixed annual amount, so APR = share / staked, which is ~2%/yr at 10M/yr
-    // against 500M staked. EraPayout must then draw that share
-    // (pallet_staking::inflation::compute_total_payout, min 2.5% / max 10% /
-    // ideal stake 50% / falloff 5%) with RewardRemainder returning to the same
-    // pot, and the routes need a migration.
-    type EraPayout = ();
+    // V0 fixes staking at 10M QUIP per 365-day accounting year, prorated by era duration.
+    // Staking mints claims through its normal exposure/commission machinery;
+    // the controller separately accrues 30M, with no staking route or pot.
+    // The min 2.5% / max 10% / ideal 50% / falloff 5% curve is deferred to V1.
+    type EraPayout = super::staking_rewards::FixedStakingPayout;
     type MaxExposurePageSize = ConstU32<64>;
     type NextNewSession = Session;
     #[cfg(not(feature = "runtime-benchmarks"))]
@@ -1412,18 +1401,6 @@ pub(super) mod tests {
             }
             assert_eq!(Session::validators(), before);
             assert_eq!(pallet_grandpa::Authorities::<Runtime>::get().len(), 2);
-        });
-    }
-    #[test]
-    fn zero_payout_does_not_mint() {
-        ext().execute_with(|| {
-            use pallet_staking::EraPayout;
-            let before = Balances::total_issuance();
-            assert_eq!(
-                <() as EraPayout<Balance>>::era_payout(100 * UNIT, before, 60_000),
-                (0, 0)
-            );
-            assert_eq!(Balances::total_issuance(), before);
         });
     }
 }
