@@ -76,10 +76,11 @@ fraction for the same offence era can be a no-op and is rolled back instead.
 Council can raise configured limits through `set_limits` within the 5% per-dispatch
 and 10% cumulative hard ceilings. Changing those ceilings requires new runtime code.
 
-A `SlashScheduled` event includes remaining budget and means a new staking queue entry was created. It does not
-mean funds have already been burned. Equal/lower repeat fractions, invulnerable
-validators, and other SDK no-ops must not produce this event or consume budget.
-The wrapper rolls back the call when no queue entry is added.
+A `SlashScheduled` event includes remaining budget and means a new staking queue
+entry contains a positive validator or nominator amount. It does not mean funds
+have already been burned. The call is rolled back unless it adds a non-zero queue
+entry. A repeat on another era of an already-slashed span can add a zero-value
+entry; that call is refused without emitting `SlashScheduled` or charging budget.
 
 Direct `Staking::manual_slash` is Root-only. The council Root-dispatch entry point
 rejects it, including nested Utility, Proxy, and Multisig calls. Root remains available to runtime

@@ -189,8 +189,11 @@ pub mod pallet {
                 era,
                 fraction,
             )?;
+            let queued = pallet_staking::UnappliedSlashes::<T>::get(apply_era);
             ensure!(
-                pallet_staking::UnappliedSlashes::<T>::decode_len(apply_era).unwrap_or(0) > before,
+                queued.get(before).is_some_and(|slash| {
+                    !slash.own.is_zero() || slash.others.iter().any(|(_, amount)| !amount.is_zero())
+                }),
                 Error::<T>::NoSlashScheduled
             );
             SlashHistory::<T>::insert(&stash, history);
