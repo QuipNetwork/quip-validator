@@ -445,6 +445,51 @@ fn validate_session_keys(authorities: &[(AccountId, BabeId, GrandpaId)]) -> Resu
     Ok(())
 }
 
+/// Mainnet validators must not reuse identities from the live testnet or the
+/// public dev keyring. Consensus signatures do not bind themselves to a chain.
+fn validate_mainnet_network_keys(
+    authorities: &[(AccountId, BabeId, GrandpaId)],
+) -> Result<(), String> {
+    // Legacy presets use to_seed() (e.g. //AliceStash). Also cover the SDK's
+    // canonical Pair derivation (//Alice//stash), which is a different key.
+    let dev_seeds: BTreeSet<_> = Sr25519Keyring::iter()
+        .flat_map(|key| [key.to_seed(), format!("//{}", <&'static str>::from(key))])
+        .collect();
+    let forbidden = quip_testnet_authorities()
+        .into_iter()
+        .map(|keys| ("testnet operator", keys))
+        .chain(dev_seeds.iter().map(|seed| {
+            (
+                "standard dev keyring",
+                (
+                    tx_account_from_seed(seed),
+                    babe_authority_from_seed(seed),
+                    grandpa_authority_from_seed(seed),
+                ),
+            )
+        }));
+    for (source, (forbidden_stash, forbidden_babe, forbidden_grandpa)) in forbidden {
+        for (index, (stash, babe, grandpa)) in authorities.iter().enumerate() {
+            let collision = if stash == &forbidden_stash {
+                Some("stash")
+            } else if babe == &forbidden_babe {
+                Some("BABE key")
+            } else if grandpa == &forbidden_grandpa {
+                Some("GRANDPA key")
+            } else {
+                None
+            };
+            if let Some(kind) = collision {
+                return Err(format!(
+                    "mainnet genesis blocked: Validator {} {kind} is reused from {source}",
+                    index + 1
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_mainnet_funding(
     funding: &GenesisFunding,
     validators: &[AccountId],
@@ -488,6 +533,13 @@ fn validate_mainnet_funding(
                 .into(),
         );
     }
+    funding
+        .balances
+        .iter()
+        .try_fold(crate::EXISTENTIAL_DEPOSIT, |total, (_, amount)| {
+            total.checked_add(*amount)
+        })
+        .ok_or_else(|| String::from("mainnet genesis blocked: total issuance overflows"))?;
     if funding.faucet.state != pallet_faucet_ops::FaucetState::PermanentlyDisabled
         || funding.faucet.authority.is_some()
         || funding.faucet_budget != 0
@@ -580,6 +632,7 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
         faucet_budget: 0,
     };
     validate_mainnet_funding(&funding, &validators, &inputs.council, &inputs.spec_builder)?;
+    validate_mainnet_network_keys(&authorities)?;
     Ok(network_genesis(
         authorities,
         funding,
@@ -1192,19 +1245,22 @@ mod tests {
         }
     }
 
-    // Fixture-only operating floats and keys. Never a production fallback.
+    // Fixture-only operating floats and keys, in a separate derivation domain
+    // from every legacy/dev preset. Never a production fallback or real keys.
     fn ready_mainnet_fixture() -> MainnetInputs {
         MainnetInputs {
             council: (40..46).map(|i| AccountId::new([i; 32])).collect(),
             council_placeholders: vec![],
-            validators: ["//Alice", "//Bob", "//Charlie", "//Dave", "//Eve"]
-                .iter()
-                .map(|seed| MainnetValidator {
-                    stash: tx_account_from_seed(seed),
-                    session_keys: Some((
-                        babe_authority_from_seed(seed),
-                        grandpa_authority_from_seed(seed),
-                    )),
+            validators: (1..=5)
+                .map(|index| {
+                    let seed = format!("//QUI2083//MainnetFixture//Validator{index}");
+                    MainnetValidator {
+                        stash: tx_account_from_seed(&seed),
+                        session_keys: Some((
+                            babe_authority_from_seed(&seed),
+                            grandpa_authority_from_seed(&seed),
+                        )),
+                    }
                 })
                 .collect(),
             spec_builder: AccountId::new([90; 32]),
@@ -1427,6 +1483,130 @@ mod tests {
         assert!(funding.faucet.authority.is_none());
         assert_eq!(funding.faucet_budget, 0);
         assert_launch_storage(patch, 20_049, 5, 6);
+    }
+
+    #[test]
+    fn mainnet_rejects_aggregate_allocation_overflow() {
+        let mut inputs = ready_mainnet_fixture();
+        inputs.validator_float = Some(7 * crate::UNIT);
+        inputs.council_float = Some(u128::MAX / 2);
+        inputs.spec_builder_float = Some(13 * crate::UNIT);
+        // Each allocation fits; the six council allocations together do not.
+        assert!(VALIDATOR_BOND
+            .checked_add(inputs.validator_float.unwrap())
+            .is_some());
+        assert!(inputs.council_float.unwrap().checked_mul(6).is_none());
+        assert_eq!(
+            mainnet_genesis(inputs).err().as_deref(),
+            Some("mainnet genesis blocked: total issuance overflows")
+        );
+    }
+
+    #[test]
+    fn mainnet_rejects_aggregate_overflow_from_revive_deposit() {
+        let mut inputs = ready_mainnet_fixture();
+        let funding = funding_from_patch(&mainnet_genesis(inputs.clone()).unwrap());
+        let other_allocations = funding
+            .balances
+            .iter()
+            .filter(|(account, _)| account != &inputs.spec_builder)
+            .try_fold(0u128, |total, (_, amount)| total.checked_add(*amount))
+            .unwrap();
+        let builder_float = u128::MAX.checked_sub(other_allocations).unwrap();
+        // The explicit allocations sum to MAX exactly. Only the separately
+        // minted revive ED makes total issuance unrepresentable.
+        let explicit_sum = other_allocations.checked_add(builder_float).unwrap();
+        assert_eq!(explicit_sum, u128::MAX);
+        assert!(explicit_sum
+            .checked_add(crate::EXISTENTIAL_DEPOSIT)
+            .is_none());
+        inputs.spec_builder_float = Some(builder_float);
+        assert_eq!(
+            mainnet_genesis(inputs).err().as_deref(),
+            Some("mainnet genesis blocked: total issuance overflows")
+        );
+    }
+
+    fn assert_mainnet_network_key_collisions_rejected(component: usize) {
+        let fixture = ready_mainnet_fixture();
+        // Spell these independently of the gate's keyring iteration, covering
+        // both legacy to_seed() and canonical SDK stash derivation forms.
+        let seeds = [
+            "//Alice",
+            "//Bob",
+            "//Charlie",
+            "//Dave",
+            "//Eve",
+            "//Ferdie",
+            "//AliceStash",
+            "//BobStash",
+            "//CharlieStash",
+            "//DaveStash",
+            "//EveStash",
+            "//FerdieStash",
+            "//One",
+            "//Two",
+            "//Alice//stash",
+            "//Bob//stash",
+            "//Charlie//stash",
+            "//Dave//stash",
+            "//Eve//stash",
+            "//Ferdie//stash",
+        ];
+        let cases = quip_testnet_authorities()
+            .into_iter()
+            .map(|keys| ("testnet operator", keys))
+            .chain(seeds.iter().map(|seed| {
+                (
+                    "standard dev keyring",
+                    (
+                        tx_account_from_seed(seed),
+                        babe_authority_from_seed(seed),
+                        grandpa_authority_from_seed(seed),
+                    ),
+                )
+            }));
+        for (source, (stash, babe, grandpa)) in cases {
+            let mut inputs = fixture.clone();
+            // Alter only one field on the last validator, leaving all earlier
+            // readiness, funding and within-network uniqueness checks valid.
+            let validator = inputs.validators.last_mut().unwrap();
+            let kind = match component {
+                0 => {
+                    validator.stash = stash;
+                    "stash"
+                }
+                1 => {
+                    validator.session_keys.as_mut().unwrap().0 = babe;
+                    "BABE key"
+                }
+                _ => {
+                    validator.session_keys.as_mut().unwrap().1 = grandpa;
+                    "GRANDPA key"
+                }
+            };
+            let expected =
+                format!("mainnet genesis blocked: Validator 5 {kind} is reused from {source}");
+            assert_eq!(
+                mainnet_genesis(inputs).err().as_deref(),
+                Some(expected.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn mainnet_rejects_cross_network_stash() {
+        assert_mainnet_network_key_collisions_rejected(0);
+    }
+
+    #[test]
+    fn mainnet_rejects_cross_network_babe_key() {
+        assert_mainnet_network_key_collisions_rejected(1);
+    }
+
+    #[test]
+    fn mainnet_rejects_cross_network_grandpa_key() {
+        assert_mainnet_network_key_collisions_rejected(2);
     }
 
     #[test]
