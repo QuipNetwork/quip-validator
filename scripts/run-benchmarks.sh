@@ -20,7 +20,8 @@ set -euo pipefail
 #      one (frame_system, pallet_balances, ...) use upstream SubstrateWeight
 #      and are skipped.
 #   4. Measures the runtime-specific empty-block and System::remark overhead
-#      into runtime/src/weights/ using compiled Wasm.
+#      into runtime/src/weights/ using compiled Wasm, then mirrors those
+#      measurements into runtime-testnet/src/weights/ for runtime parity.
 #
 # Environment overrides:
 #   STEPS / REPEAT   benchmark resolution (default 50 / 20, the settings the
@@ -240,12 +241,20 @@ echo "== Benchmarking runtime execution overhead -> runtime/src/weights =="
   --repeat "$OVERHEAD_REPEAT" \
   --weight-path runtime/src/weights
 
+# The runtime parity gate requires the same base-cost measurements, including
+# generated headers, in both runtimes. Do not benchmark these independently.
+cp runtime/src/weights/block_weights.rs runtime-testnet/src/weights/block_weights.rs
+cp runtime/src/weights/extrinsic_weights.rs runtime-testnet/src/weights/extrinsic_weights.rs
+
+echo "== Running 'cargo fmt'"
+cargo fmt
+bash scripts/check-runtime-parity.sh
+
 echo "== Done. Regenerated files: =="
 git diff --stat -- \
   'pallets/*/src/weights.rs' \
   'pallets/*/src/benchmark_weights.rs' \
   'runtime/src/weights/block_weights.rs' \
-  'runtime/src/weights/extrinsic_weights.rs' || true
-
-echo "== Running 'cargo fmt'"
-cargo fmt
+  'runtime/src/weights/extrinsic_weights.rs' \
+  'runtime-testnet/src/weights/block_weights.rs' \
+  'runtime-testnet/src/weights/extrinsic_weights.rs' || true
