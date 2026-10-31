@@ -15,8 +15,8 @@ Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
 
 | Flag | Preset | Network | EIP-155 |
 |------|--------|---------|--------:|
-| (omit `--chain`) | `quip-testnet` | live public testnet | 20033 |
-| `--chain=quip-testnet` | `quip-testnet` | live public testnet | 20033 |
+| (omit `--chain`) | pinned spec | live public testnet | 20033 |
+| `--chain=quip-testnet` | pinned spec | live public testnet | 20033 |
 | `--dev` or `--chain=dev` | Development | Alice-only local | 1337 |
 | `--chain=local` | Local Testnet | Alice and Bob local | 1337 |
 | `--chain=local3` | Local Testnet (3 Validators) | Alice, Bob, and Charlie local | 1337 |
