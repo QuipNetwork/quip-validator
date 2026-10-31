@@ -218,6 +218,7 @@ trap 'rm -rf "$OUTPUT_DIR"' EXIT
 
 LIST_FILE="$OUTPUT_DIR/benchmarks.csv"
 "$BIN" benchmark pallet --list > "$LIST_FILE"
+python3 scripts/check-vesting-weights.py --inventory "$LIST_FILE"
 
 mapfile -t pallets < <(
   awk -F', ' '/^[a-z0-9_]+, / && $1 != "pallet" {print $1}' "$LIST_FILE" \

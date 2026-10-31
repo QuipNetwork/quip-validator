@@ -175,10 +175,15 @@ cargo build --release --features runtime-benchmarks -p quip-network-node
 BIN="${CARGO_TARGET_DIR:-target}/release/quip-network-node"
 
 # `benchmark pallet --list` prints CSV rows of "<pallet>, <benchmark>".
+# Check the complete inventory before any measurement, even if a pallet is skipped.
+LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/quip-benchmarks.XXXXXX")"
+trap 'rm -f "$LIST_FILE"' EXIT
+"$BIN" benchmark pallet --list > "$LIST_FILE"
+python3 scripts/check-vesting-weights.py --inventory "$LIST_FILE"
+
 # First column, deduplicated, header dropped.
 mapfile -t pallets < <(
-  "$BIN" benchmark pallet --list \
-    | awk -F', ' '/^[a-z0-9_]+, /{print $1}' \
+  awk -F', ' '/^[a-z0-9_]+, /{print $1}' "$LIST_FILE" \
     | grep -v '^pallet$' \
     | sort -u
 )

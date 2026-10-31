@@ -225,6 +225,39 @@ template and note the following:
   macro, which is part of the [core FRAME pallet
   library](https://docs.substrate.io/reference/frame-pallets/#system-pallets).
 
+### Custody vesting
+
+Both runtimes include stock vesting at pallet index 32. Mainnet allocation
+amounts, custody identity, recipients and tranche terms remain unresolved and
+block mainnet export. Genesis creates no vesting schedules; later signed
+multisig custody transfers issue one schedule per tranche.
+
+Vesting constrains the recipient's **total balance**, including held stake:
+ordinary transfers preserve `total >= frozen`. Held stake discounts the amount
+that must stay free, so a pre-bonded account with enough held stake can transfer
+a new grant immediately, even before its vesting start. Both initial `bond`
+and `bond_extra` from vested funds are intentionally allowed. Guaranteeing that
+the grant itself stays illiquid requires a new owner decision and a hold-based
+design; the current pallet does not provide that guarantee.
+
+The minimum vested transfer is `100 * EXISTENTIAL_DEPOSIT` (0.1 QUIP). This raises
+the cost of filling an account's 28 schedule slots: at the former ED floor,
+28 × ED (0.028 QUIP) could fill them, while council Root force-remove is denied.
+The higher floor prices this attack; it does not prevent it. Completed schedules
+can be cleaned up with `vest`/`vest_other`; merging requires the recipient.
+
+The immutable pre-vesting evidence is in
+[`tests/fixtures/pre-vesting/manifest.json`](tests/fixtures/pre-vesting/manifest.json).
+The original `f7da5ec` post-vesting capture is preserved in
+[`tests/fixtures/post-vesting-f7da5ec/manifest.json`](tests/fixtures/post-vesting-f7da5ec/manifest.json);
+its validation claims predate the review corrections above. The corrected
+100×ED capture is recorded separately in
+[`tests/fixtures/post-vesting-fix/manifest.json`](tests/fixtures/post-vesting-fix/manifest.json).
+SDK weights remain provisional until the reference-machine run and final
+metadata/storage/signing review tracked by
+[QUI-2101](https://linear.app/quip-network/issue/QUI-2101/vesting-release-gate-reference-machine-weights-and-metadata-re),
+owned by `roman@postquant.xyz`.
+
 ### Pallets
 
 The runtime in this project is constructed using many FRAME pallets that ship

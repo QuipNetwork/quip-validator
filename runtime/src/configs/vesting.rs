@@ -11,7 +11,8 @@ pub const DEFAULT_TRANCHE_CADENCE_MONTHS: u32 = 3; // quarterly; twelve issues o
 pub const DEFAULT_MAX_VESTING_SCHEDULES: u32 = 28;
 
 parameter_types! {
-    pub const MinVestedTransfer: Balance = EXISTENTIAL_DEPOSIT;
+    // Raise the cost of filling 28 schedule slots; council force-remove is denied.
+    pub const MinVestedTransfer: Balance = 100 * EXISTENTIAL_DEPOSIT;
     pub UnvestedFundsAllowedWithdrawReasons: WithdrawReasons = WithdrawReasons::empty();
 }
 
@@ -26,7 +27,9 @@ impl pallet_vesting::Config for Runtime {
     const MAX_VESTING_SCHEDULES: u32 = DEFAULT_MAX_VESTING_SCHEDULES;
 }
 
-// Staking intentionally permits frozen funds using Fortitude::Force. Do not
-// add a staking Filter or require allocation recipients to be non-stakers.
+// The freeze constrains total balance: held stake discounts the free-balance
+// restriction. A stash with enough held stake can transfer a new grant at once.
+// Staking frozen funds via Fortitude::Force is intentional. A guarantee that
+// grants themselves stay illiquid needs a new owner decision and hold-based design.
 #[cfg(test)]
 mod tests;

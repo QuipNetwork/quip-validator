@@ -102,7 +102,7 @@ impl MainnetAllocation {
             if tranche.issue_at == 0
                 || schedule.starting_block() < tranche.issue_at
                 || !schedule.is_valid()
-                || schedule.locked() < EXISTENTIAL_DEPOSIT
+                || schedule.locked() < <Runtime as pallet_vesting::Config>::MinVestedTransfer::get()
             {
                 return Err(fail(
                     "allocation tranche has unusable amount, rate or start",
@@ -306,6 +306,18 @@ mod tests {
         terms.tranches.push(second);
         rejected(x, "allocation tranche total overflows");
     }
+    #[test]
+    fn tranche_floor_matches_the_runtime_transfer_floor() {
+        let minimum = <Runtime as pallet_vesting::Config>::MinVestedTransfer::get();
+        let mut x = fixture();
+        x.terms.as_mut().unwrap().tranches[0].schedule =
+            Schedule::new(minimum - 1, minimum - 1, 10);
+        rejected(x, "allocation tranche has unusable amount, rate or start");
+        let mut x = fixture();
+        x.terms.as_mut().unwrap().tranches[0].schedule = Schedule::new(minimum, minimum, 10);
+        assert!(x.validate(&[]).is_ok());
+    }
+
     #[test]
     fn plan_respects_28_schedule_limit_without_changing_it_for_cadence() {
         let mut x = fixture();

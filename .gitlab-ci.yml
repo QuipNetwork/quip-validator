@@ -343,6 +343,7 @@ benchmark-preflight:
     - ./scripts/run-benchmarks.sh --verify-regenerated-mempool pallets/quantum-compute-mempool/src/benchmark_weights.rs
     - ./scripts/run-benchmarks.sh --check-output-resolver
     - ./scripts/check-benchmark-preflight.sh --check-wrapper-guard
+    - python3 scripts/test-vesting-benchmark-inventory.py
     - ./scripts/check-benchmark-preflight.sh
 
 # Warns when a merge request changes a pallet's benchmarkable surface without
