@@ -25,6 +25,25 @@ class InventoryGate(unittest.TestCase):
         cases["duplicate-name"] = valid + "pallet_vesting, vest_locked\n"
         cases["format-indented-pallet"] = valid.replace("pallet_vesting, ", " pallet_vesting, ", 1)
         cases["format-quoted-pallet"] = valid.replace("pallet_vesting, ", '"pallet_vesting", ', 1)
+        cases["format-multiline-unexpected"] = valid + 'frame_system, "remark\npallet_vesting, unexpected\n"\n'
+        cases["format-multiline-duplicate"] = valid + 'frame_system, "remark\npallet_vesting, vest_locked\n"\n'
+        cases["format-unterminated-pallet-quote"] = valid + '"pallet_vesting, unexpected\n'
+        cases["format-unterminated-multiline-quote"] = valid + 'frame_system, "remark\npallet_vesting, unexpected\n'
+        cases["format-unterminated-benchmark-quote"] = valid + 'pallet_vesting, "unexpected\n'
+        cases["format-extra-fields"] = valid + "frame_system, remark, extra\n"
+        cases["format-quoted-other-pallet"] = valid + '"frame_system", remark\n'
+        cases["format-indented-other-pallet"] = valid + " frame_system, remark\n"
+        cases["format-uppercase-pallet"] = valid + "Frame_system, remark\n"
+        cases["format-missing-delimiter-space"] = valid + "frame_system,remark\n"
+        cases["format-tab-delimiter"] = valid + "frame_system,\tremark\n"
+        cases["format-blank-row"] = valid + "\n"
+        cases["format-carriage-return"] = valid.replace("\n", "\r\n")
+        cases["format-non-lf-separator"] = valid + "frame_system, remark\vpallet_vesting, unexpected\n"
+        cases["exact-cli-header"] = valid.replace("pallet, benchmark", "pallet, extrinsic")
+        cases["exact-qualified-pallet"] = valid + (
+            "pallet_election_provider_multi_block::unsigned, submit_unsigned\n"
+            "pallet_election_provider_multi_block::unsigned, validate_unsigned\n"
+        )
         cases["exact-inventory"] = valid
         cases["failed-list-command"] = valid
         with tempfile.TemporaryDirectory(prefix="quip-vesting-inventory-") as directory:
@@ -50,7 +69,7 @@ class InventoryGate(unittest.TestCase):
 import os, sys
 from pathlib import Path
 if "--list" in sys.argv:
-    print(Path(os.environ["INVENTORY_FIXTURE"]).read_text(), end="")
+    sys.stdout.buffer.write(Path(os.environ["INVENTORY_FIXTURE"]).read_bytes())
     sys.exit(17 if os.environ["FAIL_LIST"] == "1" else 0)
 Path(os.environ["MEASUREMENT_MARKER"]).write_text("measurement reached")
 sys.exit(73)
@@ -64,28 +83,35 @@ sys.exit(73)
             marker = root / "measurement"
             env.update(INVENTORY_FIXTURE=str(fixture), MEASUREMENT_MARKER=str(marker))
             for driver in DRIVERS:
-                for case, inventory in cases.items():
-                    with self.subTest(driver=driver, case=case):
-                        fixture.write_text(inventory)
-                        marker.unlink(missing_ok=True)
-                        env["FAIL_LIST"] = "1" if case == "failed-list-command" else "0"
-                        result = subprocess.run(
-                            ["bash", str(root / "scripts" / driver)], cwd=root, env=env,
-                            capture_output=True, text=True, check=False,
-                        )
-                        output = result.stdout + result.stderr
-                        if case == "exact-inventory":
-                            self.assertEqual(result.returncode, 73, output)
-                            self.assertTrue(marker.exists(), output)
-                            self.assertIn("Vesting inventory gate: PASS", output)
-                        else:
-                            self.assertNotEqual(result.returncode, 0, output)
-                            self.assertFalse(marker.exists(), output)
-                            if case.startswith("format-"):
-                                self.assertIn("malformed pallet_vesting benchmark row", output)
-                            elif case != "failed-list-command":
-                                self.assertIn("expected exactly nine pallet_vesting benchmarks", output)
-                        print(f"{driver}: {case}: PASS")
+                for skip in ("", "pallet_vesting"):
+                    env["SKIP_PALLETS"] = skip
+                    for case, inventory in cases.items():
+                        with self.subTest(driver=driver, skip=skip, case=case):
+                            fixture.write_text(inventory)
+                            marker.unlink(missing_ok=True)
+                            env["FAIL_LIST"] = "1" if case == "failed-list-command" else "0"
+                            result = subprocess.run(
+                                ["bash", str(root / "scripts" / driver)], cwd=root, env=env,
+                                capture_output=True, text=True, check=False,
+                            )
+                            output = result.stdout + result.stderr
+                            if case.startswith("exact-"):
+                                self.assertEqual(result.returncode, 73, output)
+                                self.assertTrue(marker.exists(), output)
+                                self.assertIn("Vesting inventory gate: PASS", output)
+                                if case == "exact-qualified-pallet":
+                                    if driver == "run-benchmarks.sh":
+                                        self.assertIn("frame_system pallet_election_provider_multi_block::unsigned pallet_vesting", output)
+                                    else:
+                                        self.assertIn("Discovered 12 benchmarks across 3 pallets", output)
+                            else:
+                                self.assertNotEqual(result.returncode, 0, output)
+                                self.assertFalse(marker.exists(), output)
+                                if case.startswith("format-"):
+                                    self.assertIn("malformed", output)
+                                elif case != "failed-list-command":
+                                    self.assertIn("expected exactly nine pallet_vesting benchmarks", output)
+                            print(f"{driver}: skip={skip or 'none'}: {case}: PASS")
 
 
 if __name__ == "__main__":

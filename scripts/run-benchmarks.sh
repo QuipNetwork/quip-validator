@@ -183,7 +183,7 @@ python3 scripts/check-vesting-weights.py --inventory "$LIST_FILE"
 
 # First column, deduplicated, header dropped.
 mapfile -t pallets < <(
-  awk -F', ' '/^[a-z0-9_]+, /{print $1}' "$LIST_FILE" \
+  awk -F', ' '/^[a-z0-9_]+(::[a-z0-9_]+)*, /{print $1}' "$LIST_FILE" \
     | grep -v '^pallet$' \
     | sort -u
 )

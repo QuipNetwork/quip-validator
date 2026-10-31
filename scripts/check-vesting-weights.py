@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Check the exact vesting benchmark inventory and generated weight signatures."""
-import csv
-import io
 import re
 import sys
 from pathlib import Path
@@ -15,15 +13,22 @@ NAMES = {
 
 def validate_inventory(text):
     names = []
-    lines = text.splitlines()
-    reader = csv.reader(io.StringIO(text), skipinitialspace=True)
-    for row in reader:
-        if row and row[0].strip() == "pallet_vesting":
-            # Match the drivers' CSV format; otherwise their awk could skip a
-            # row that a more permissive CSV parser accepted here.
-            if len(row) != 2 or lines[reader.line_num - 1] != f"pallet_vesting, {row[1]}":
-                raise ValueError("malformed pallet_vesting benchmark row")
-            names.append(row[1].strip())
+    # The drivers use awk -F', ' over LF-delimited physical rows, not CSV
+    # records. Require that flat format for EVERY row, including other pallets:
+    # quoting must never hide a Vesting row inside another pallet's record.
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()  # A single final LF terminates the last row.
+    for number, line in enumerate(lines, 1):
+        row = re.fullmatch(r"([a-z0-9_]+(?:::[a-z0-9_]+)*), ([^\s,\"']+)", line)
+        if row is None:
+            raise ValueError(f"malformed benchmark inventory row {number}: expected 'pallet, benchmark'")
+        pallet, benchmark = row.groups()
+        if pallet == "pallet":
+            if number != 1 or benchmark not in ("extrinsic", "benchmark"):
+                raise ValueError(f"malformed benchmark inventory header at row {number}")
+        elif pallet == "pallet_vesting":
+            names.append(benchmark)
     if len(names) != len(NAMES) or set(names) != NAMES:
         raise ValueError(
             "expected exactly nine pallet_vesting benchmarks; "
@@ -52,6 +57,13 @@ def self_test():
     invalid_inventories += [inventory.replace(f"pallet_vesting, {name}\n", "") for name in sorted(NAMES)]
     invalid_inventories += [inventory + "pallet_vesting, unexpected\n", inventory + "pallet_vesting, vest_locked\n"]
     invalid_inventories += [inventory.replace("pallet_vesting, ", " pallet_vesting, ", 1)]
+    invalid_inventories += [inventory + suffix for suffix in (
+        'frame_system, "remark\npallet_vesting, unexpected\n"\n',
+        'frame_system, "remark\npallet_vesting, vest_locked\n"\n',
+        '"pallet_vesting, unexpected\n',
+        "frame_system, remark, extra\n",
+        "\n",
+    )]
     for invalid in invalid_inventories:
         try:
             validate_inventory(invalid)
@@ -76,7 +88,9 @@ def self_test():
 if __name__ == "__main__":
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--inventory":
-            validate_inventory(Path(sys.argv[2]).read_text())
+            # Preserve CR and other characters: awk sees the original file too.
+            with Path(sys.argv[2]).open(newline="") as inventory:
+                validate_inventory(inventory.read())
             print("Vesting inventory gate: PASS (exactly nine benchmarks)")
         elif sys.argv[1:] == ["--self-test"]:
             self_test()

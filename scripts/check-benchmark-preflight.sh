@@ -221,12 +221,12 @@ LIST_FILE="$OUTPUT_DIR/benchmarks.csv"
 python3 scripts/check-vesting-weights.py --inventory "$LIST_FILE"
 
 mapfile -t pallets < <(
-  awk -F', ' '/^[a-z0-9_]+, / && $1 != "pallet" {print $1}' "$LIST_FILE" \
+  awk -F', ' '/^[a-z0-9_]+(::[a-z0-9_]+)*, / && $1 != "pallet" {print $1}' "$LIST_FILE" \
     | sort -u
 )
 
 benchmark_count="$(
-  awk -F', ' '/^[a-z0-9_]+, / && $1 != "pallet" {count++} END {print count + 0}' \
+  awk -F', ' '/^[a-z0-9_]+(::[a-z0-9_]+)*, / && $1 != "pallet" {count++} END {print count + 0}' \
     "$LIST_FILE"
 )"
 
