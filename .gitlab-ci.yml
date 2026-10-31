@@ -203,7 +203,23 @@ cargo-test:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
+    - cargo build -p quip-network-node
+    - python3 scripts/smoke-live-testnet-spec.py "$CARGO_TARGET_DIR/debug/quip-network-node" --log-dir live-testnet-smoke-logs
     - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+  artifacts:
+    when: always
+    paths:
+      - live-testnet-smoke-logs/
+
+# Pin the existing public network independently of current runtime builds.
+live-testnet-spec:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  script:
+    - python3 scripts/check-live-testnet-spec.py
+    - python3 scripts/test-live-testnet-spec.py
 
 # Both runtime trees must stay identical outside the approved network values.
 runtime-parity:

@@ -41,11 +41,11 @@ use sp_keyring::Sr25519Keyring;
 pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
 pub const REHEARSAL_RUNTIME_PRESET: &str = "validator_rehearsal";
 
-/// Identifier for the public quip-testnet genesis preset.
+/// Identifier for the historical public testnet policy preset, kept for auditing.
 ///
-/// The raw chain spec exported from this preset is the canonical
-/// `aglais-network.json` published by `nodes.quip.network`. The preset itself
-/// is kept in the binary so the genesis can be re-derived and audited.
+/// Its output uses the caller's runtime artifact; rebuilding it does not reproduce
+/// the published live genesis. The node's live aliases instead load the exact
+/// byte-pinned `chain-specs/aglais-network.json`, including its historical runtime.
 pub const QUIP_TESTNET_RUNTIME_PRESET: &str = "quip_testnet";
 
 fn babe_authority_from_seed(seed: &str) -> BabeId {
