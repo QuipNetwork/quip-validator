@@ -342,7 +342,7 @@ fn network_genesis(
     })
 }
 
-/// Mainnet export is deliberately blocked until QUI-2080 provisions real keys and floats.
+/// Mainnet export remains blocked until QUI-2080 provisions real accounts and session keys.
 pub const QUIP_MAINNET_RUNTIME_PRESET: &str = "quip-mainnet";
 pub const MAINNET_CHAIN_ID: u64 = 20_049;
 const VALIDATOR_BOND: crate::Balance = 2_000 * crate::UNIT;
@@ -360,10 +360,18 @@ const MAINNET_VALIDATOR_LABELS: [&str; 5] = [
     "Validator 4",
     "Validator 5",
 ];
-/// TBD is a blocking absence, never a default or a zero allocation.
-pub const MAINNET_VALIDATOR_FLOAT_TBD: Option<crate::Balance> = None;
-pub const MAINNET_COUNCIL_FLOAT_TBD: Option<crate::Balance> = None;
-pub const MAINNET_SPEC_BUILDER_FLOAT_TBD: Option<crate::Balance> = None;
+// Ten QUIP per account is an operating fee budget, not an economic allocation.
+// BlockRatioFee<1, 1, ..> maps each picosecond of reference time to one base
+// unit; UNIT = 10^12, so a 25 us reference-time component is 25,000,000 base
+// units (0.000025 QUIP). Ten QUIP covers 400,000 such components, not 400,000
+// complete extrinsics: actual fees also include base/length fees and can be
+// higher for proof size. This budget is intended to exceed routine governance
+// needs while remaining negligible against the 40M QUIP/year emission envelope.
+// Council Consideration = () reserves no motion deposit, leaving only fees for
+// council motions. Keep Option so an unset or unusable float still blocks export.
+pub const MAINNET_VALIDATOR_FLOAT: Option<crate::Balance> = Some(10 * crate::UNIT);
+pub const MAINNET_COUNCIL_FLOAT: Option<crate::Balance> = Some(10 * crate::UNIT);
+pub const MAINNET_SPEC_BUILDER_FLOAT: Option<crate::Balance> = Some(10 * crate::UNIT);
 
 #[derive(Clone)]
 struct MainnetValidator {
@@ -420,9 +428,9 @@ fn mainnet_inputs() -> MainnetInputs {
             })
             .collect(),
         spec_builder: mainnet_placeholder("spec-builder", "Ising"),
-        validator_float: MAINNET_VALIDATOR_FLOAT_TBD,
-        council_float: MAINNET_COUNCIL_FLOAT_TBD,
-        spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT_TBD,
+        validator_float: MAINNET_VALIDATOR_FLOAT,
+        council_float: MAINNET_COUNCIL_FLOAT,
+        spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
     }
 }
 
@@ -607,10 +615,10 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     validate_session_keys(&authorities)?;
-    let validator_float = resolved_float(inputs.validator_float, "MAINNET_VALIDATOR_FLOAT_TBD")?;
-    let council_float = resolved_float(inputs.council_float, "MAINNET_COUNCIL_FLOAT_TBD")?;
+    let validator_float = resolved_float(inputs.validator_float, "MAINNET_VALIDATOR_FLOAT")?;
+    let council_float = resolved_float(inputs.council_float, "MAINNET_COUNCIL_FLOAT")?;
     let spec_builder_float =
-        resolved_float(inputs.spec_builder_float, "MAINNET_SPEC_BUILDER_FLOAT_TBD")?;
+        resolved_float(inputs.spec_builder_float, "MAINNET_SPEC_BUILDER_FLOAT")?;
     let stash_balance = VALIDATOR_BOND.checked_add(validator_float).ok_or_else(|| {
         String::from("mainnet genesis blocked: validator bond plus float overflows")
     })?;
@@ -1245,8 +1253,9 @@ mod tests {
         }
     }
 
-    // Fixture-only operating floats and keys, in a separate derivation domain
-    // from every legacy/dev preset. Never a production fallback or real keys.
+    // Fixture-only identities, in a separate derivation domain from every
+    // legacy/dev preset. Never a production fallback or real keys. The floats
+    // use the approved mainnet policy; negative tests override them explicitly.
     fn ready_mainnet_fixture() -> MainnetInputs {
         MainnetInputs {
             council: (40..46).map(|i| AccountId::new([i; 32])).collect(),
@@ -1264,9 +1273,9 @@ mod tests {
                 })
                 .collect(),
             spec_builder: AccountId::new([90; 32]),
-            validator_float: Some(crate::UNIT),
-            council_float: Some(2 * crate::UNIT),
-            spec_builder_float: Some(3 * crate::UNIT),
+            validator_float: MAINNET_VALIDATOR_FLOAT,
+            council_float: MAINNET_COUNCIL_FLOAT,
+            spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
         }
     }
 
@@ -1467,11 +1476,9 @@ mod tests {
         assert_eq!(funding.balances.len(), 12);
         for (who, amount) in &funding.balances {
             let expected = if validators.contains(who) {
-                2_001 * crate::UNIT
-            } else if inputs.council.contains(who) {
-                2 * crate::UNIT
+                2_010 * crate::UNIT
             } else {
-                3 * crate::UNIT
+                10 * crate::UNIT
             };
             assert_eq!(*amount, expected);
             assert_ne!(*amount, 1u128 << 60);
@@ -1482,6 +1489,17 @@ mod tests {
         );
         assert!(funding.faucet.authority.is_none());
         assert_eq!(funding.faucet_budget, 0);
+        let explicit_issuance = funding
+            .balances
+            .iter()
+            .map(|(_, amount)| amount)
+            .sum::<u128>();
+        assert_eq!(explicit_issuance, 10_120 * crate::UNIT);
+        assert_eq!(
+            explicit_issuance.checked_add(crate::EXISTENTIAL_DEPOSIT),
+            Some(10_120 * crate::UNIT + crate::UNIT / 1_000)
+        );
+        // This also checks actual TotalIssuance and the named Revive account.
         assert_launch_storage(patch, 20_049, 5, 6);
     }
 
@@ -1621,18 +1639,18 @@ mod tests {
             hex_encode(&sp_core::blake2_256(&accounts.encode())),
             "b6e46344fd96bb4deee3a025c407e7a9d502b8c40ad962a535ceb0160c2d9da2"
         );
-        assert_eq!(MAINNET_VALIDATOR_FLOAT_TBD, None);
-        assert_eq!(MAINNET_COUNCIL_FLOAT_TBD, None);
-        assert_eq!(MAINNET_SPEC_BUILDER_FLOAT_TBD, None);
+        assert_eq!(MAINNET_VALIDATOR_FLOAT, Some(10 * crate::UNIT));
+        assert_eq!(MAINNET_COUNCIL_FLOAT, Some(10 * crate::UNIT));
+        assert_eq!(MAINNET_SPEC_BUILDER_FLOAT, Some(10 * crate::UNIT));
         assert!(mainnet_inputs()
             .validators
             .iter()
             .all(|v| v.session_keys.is_none()));
         assert!(preset_names().contains(&PresetId::from("quip-mainnet")));
         let reason = quip_mainnet_config_genesis().unwrap_err();
-        assert!(reason.contains(
-            "unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"
-        ));
+        assert_eq!(reason,
+            "mainnet genesis blocked: unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"
+        );
         let panic =
             std::panic::catch_unwind(|| get_preset(&PresetId::from("quip-mainnet"))).unwrap_err();
         assert_eq!(panic.downcast_ref::<String>().unwrap(), &reason);
@@ -1680,29 +1698,46 @@ mod tests {
             let name = match field {
                 0 => {
                     input.validator_float = None;
-                    "MAINNET_VALIDATOR_FLOAT_TBD"
+                    "MAINNET_VALIDATOR_FLOAT"
                 }
                 1 => {
                     input.council_float = None;
-                    "MAINNET_COUNCIL_FLOAT_TBD"
+                    "MAINNET_COUNCIL_FLOAT"
                 }
                 _ => {
                     input.spec_builder_float = None;
-                    "MAINNET_SPEC_BUILDER_FLOAT_TBD"
+                    "MAINNET_SPEC_BUILDER_FLOAT"
                 }
             };
-            assert!(mainnet_genesis(input).unwrap_err().contains(name));
+            let expected = format!("mainnet genesis blocked: {name} is TBD");
+            assert_eq!(
+                mainnet_genesis(input).err().as_deref(),
+                Some(expected.as_str())
+            );
         }
-        for field in 0..3 {
-            let mut input = fixture.clone();
-            match field {
-                0 => input.validator_float = Some(0),
-                1 => input.council_float = Some(0),
-                _ => input.spec_builder_float = Some(0),
+        for value in [0, crate::EXISTENTIAL_DEPOSIT - 1] {
+            for (field, name) in [
+                "MAINNET_VALIDATOR_FLOAT",
+                "MAINNET_COUNCIL_FLOAT",
+                "MAINNET_SPEC_BUILDER_FLOAT",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let mut input = fixture.clone();
+                match field {
+                    0 => input.validator_float = Some(value),
+                    1 => input.council_float = Some(value),
+                    _ => input.spec_builder_float = Some(value),
+                }
+                let expected = format!(
+                    "mainnet genesis blocked: {name} must fund a usable operational account"
+                );
+                assert_eq!(
+                    mainnet_genesis(input).err().as_deref(),
+                    Some(expected.as_str())
+                );
             }
-            assert!(mainnet_genesis(input)
-                .unwrap_err()
-                .contains("usable operational account"));
         }
         let mut input = fixture.clone();
         input.validator_float = Some(u128::MAX);
