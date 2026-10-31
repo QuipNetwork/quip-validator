@@ -397,7 +397,12 @@ genesis requires fresh databases; this change does not activate a relaunch.
 
 CI also starts a non-validator against a temporary copy with **only bootnodes
 removed**, checks its genesis over RPC, and restarts the same genesis-only DB.
-It disables peer discovery and ordinary peers and rejects outbound dial logs.
+Isolation relies on empty bootnodes and reserved-peer lists, disabled mDNS,
+and disabled ordinary peers. The pinned litep2p backend still runs periodic
+Kademlia queries. The smoke test therefore verifies empty bootnodes before
+launch, observes at least ten seconds after RPC readiness, requires a Kademlia
+query log marker, and rejects outbound dial logs across the full run. Missing
+discovery logging fails the smoke test instead of silently shortening coverage.
 This smoke test checks startup and DB reopen, not the shipped peer list, live
 sync, consensus, or compatibility with an existing production DB.
 
