@@ -509,3 +509,106 @@ mod unchecked_upgrade_tests {
         });
     }
 }
+
+// Immutable metadata captured from integration parent ba20b1e, before Vesting.
+// Both metadata-hash builds matched their real Wasm APIs; provenance is in the
+// shared fixture manifest. Deliberate later metadata changes need reviewed
+// baseline evidence rather than an automatic snapshot update.
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[path = "support/vesting_metadata_delta.rs"]
+mod vesting_metadata_delta;
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+fn before_vesting_metadata() -> RuntimeMetadataV16 {
+    let bytes: &[u8] = if quip_protocol_runtime::VERSION.spec_name.as_ref() == "quip" {
+        include_bytes!("../../tests/fixtures/pre-vesting/quip.scale")
+    } else {
+        include_bytes!("../../tests/fixtures/pre-vesting/quip-testnet.scale")
+    };
+    match RuntimeMetadataPrefixed::decode(&mut &bytes[..]).unwrap().1 {
+        RuntimeMetadata::V16(metadata) => metadata,
+        _ => panic!("baseline must be V16"),
+    }
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn vesting_is_the_only_semantic_delta_from_the_pre_vesting_metadata() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let after = serde_json::to_value(metadata_v16()).unwrap();
+    vesting_metadata_delta::check(&before, &after).unwrap();
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn vesting_metadata_comparison_rejects_unrelated_changes() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let after = serde_json::to_value(metadata_v16()).unwrap();
+    vesting_metadata_delta::check(&before, &after).unwrap();
+    let mut wrong = after.clone();
+    wrong["pallets"][0]["index"] = serde_json::json!(99);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after.clone();
+    let old_calls = wrong["pallets"][0]["calls"]["ty"].as_u64().unwrap() as usize;
+    let old_index = wrong["types"]["types"][old_calls]["type"]["def"]["variant"]["variants"][0]
+        ["index"]
+        .as_u64()
+        .unwrap();
+    wrong["types"]["types"][old_calls]["type"]["def"]["variant"]["variants"][0]["index"] =
+        serde_json::json!(old_index ^ 1);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after.clone();
+    let vesting = wrong["pallets"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["name"] == "Vesting")
+        .unwrap();
+    vesting["index"] = serde_json::json!(33);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after.clone();
+    wrong["extrinsic"]["transaction_extensions"][0]["identifier"] =
+        serde_json::json!("unexpected-extension");
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after;
+    let constant = &mut wrong["pallets"][0]["constants"][0]["value"];
+    let byte = constant[0].as_u64().unwrap();
+    constant[0] = serde_json::json!(byte ^ 1);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn empty_vesting_genesis_adds_only_its_version_keys() {
+    use sp_runtime::BuildStorage;
+    let baseline = if quip_protocol_runtime::VERSION.spec_name.as_ref() == "quip" {
+        include_str!("../../tests/fixtures/pre-vesting/quip-storage.json")
+    } else {
+        include_str!("../../tests/fixtures/pre-vesting/quip-testnet-storage.json")
+    };
+    let before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
+    let mut after = quip_protocol_runtime::RuntimeGenesisConfig::default()
+        .build_storage()
+        .unwrap()
+        .top;
+    // The stock genesis builder writes this release marker even without schedules.
+    let release = frame_support::storage::storage_prefix(b"Vesting", b"StorageVersion");
+    assert_eq!(
+        after.remove(release.as_slice()).unwrap(),
+        pallet_vesting::Releases::V1.encode()
+    );
+    // FRAME writes an independent default pallet version under its colon-delimited key.
+    let frame_version = frame_support::storage::storage_prefix(
+        b"Vesting",
+        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
+    );
+    assert_eq!(
+        after.remove(frame_version.as_slice()).unwrap(),
+        0u16.encode()
+    );
+    let after: Vec<_> = after
+        .iter()
+        .map(|(k, v)| (hex::encode(k), hex::encode(v)))
+        .collect();
+    assert_eq!(after, before);
+}

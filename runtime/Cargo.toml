@@ -45,6 +45,7 @@ pallet-faucet-ops.workspace = true
 pallet-grandpa.workspace = true
 pallet-miner-registry.workspace = true
 pallet-multisig.workspace = true
+pallet-vesting.workspace = true
 pallet-proxy.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
@@ -125,6 +126,7 @@ std = [
   "pallet-grandpa/std",
   "pallet-miner-registry/std",
   "pallet-multisig/std",
+  "pallet-vesting/std",
   "pallet-proxy/std",
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
@@ -180,6 +182,7 @@ runtime-benchmarks = [
   "pallet-grandpa/runtime-benchmarks",
   "pallet-miner-registry/runtime-benchmarks",
   "pallet-multisig/runtime-benchmarks",
+  "pallet-vesting/runtime-benchmarks",
   "pallet-proxy/runtime-benchmarks",
   "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-quantum-pow/runtime-benchmarks",
@@ -213,6 +216,7 @@ try-runtime = [
   "pallet-grandpa/try-runtime",
   "pallet-miner-registry/try-runtime",
   "pallet-multisig/try-runtime",
+  "pallet-vesting/try-runtime",
   "pallet-proxy/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",

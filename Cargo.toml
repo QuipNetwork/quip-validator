@@ -127,6 +127,7 @@ pallet-offences = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev
 pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-multisig = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
+pallet-vesting = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-proxy = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-revive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }
 pallet-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", rev = "845eb9986c7131056b077d14ad7249f9d65ca111", default-features = false }

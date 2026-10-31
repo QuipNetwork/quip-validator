@@ -15,6 +15,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod mainnet_allocation;
+use mainnet_allocation::MainnetAllocation;
+
 use crate::{
     AccountId, BalancesConfig, QuantumComputeMempoolConfig, RuntimeGenesisConfig, SessionConfig,
     SessionKeys, BABE_GENESIS_EPOCH_CONFIG,
@@ -388,6 +391,7 @@ struct MainnetInputs {
     validator_float: Option<crate::Balance>,
     council_float: Option<crate::Balance>,
     spec_builder_float: Option<crate::Balance>,
+    allocation: MainnetAllocation,
 }
 
 /// Hash an account ID, not a signing seed. No key pair is generated or provisioned.
@@ -410,6 +414,7 @@ fn reserved_mainnet_accounts() -> Vec<AccountId> {
             "spec-builder",
             "Ising",
         )))
+        .chain(core::iter::once(mainnet_allocation::custody_placeholder()))
         .collect()
 }
 
@@ -431,6 +436,7 @@ fn mainnet_inputs() -> MainnetInputs {
         validator_float: MAINNET_VALIDATOR_FLOAT,
         council_float: MAINNET_COUNCIL_FLOAT,
         spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
+        allocation: MainnetAllocation::unresolved(),
     }
 }
 
@@ -503,19 +509,31 @@ fn validate_mainnet_funding(
     validators: &[AccountId],
     council: &[AccountId],
     builder: &AccountId,
+    custody: &AccountId,
+    allocation_total: crate::Balance,
 ) -> Result<(), String> {
     let expected: BTreeSet<_> = validators
         .iter()
         .chain(council)
         .chain(core::iter::once(builder))
+        .chain(core::iter::once(custody))
         .collect();
     let actual: BTreeSet<_> = funding
         .balances
         .iter()
         .map(|(account, _)| account)
         .collect();
-    if expected.len() != 12 || actual.len() != funding.balances.len() || actual != expected {
-        return Err("mainnet genesis blocked: endowments must be exactly five validators, six council seats and one dedicated spec builder".into());
+    if expected.len() != 13 || actual.len() != funding.balances.len() || actual != expected {
+        return Err("mainnet genesis blocked: endowments must be exactly five validators, six council seats, one dedicated spec builder and one custody account".into());
+    }
+    if funding
+        .balances
+        .iter()
+        .any(|(who, amount)| who == custody && *amount != allocation_total)
+    {
+        return Err(
+            "mainnet genesis blocked: custody endowment must equal the allocation total".into(),
+        );
     }
     let reserved = reserved_mainnet_accounts();
     if funding
@@ -622,6 +640,13 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
     let stash_balance = VALIDATOR_BOND.checked_add(validator_float).ok_or_else(|| {
         String::from("mainnet genesis blocked: validator bond plus float overflows")
     })?;
+    let operational: Vec<_> = validators
+        .iter()
+        .chain(&inputs.council)
+        .chain(core::iter::once(&inputs.spec_builder))
+        .cloned()
+        .collect();
+    let allocation_total = inputs.allocation.validate(&operational)?;
     let funding = GenesisFunding {
         balances: validators
             .iter()
@@ -632,6 +657,10 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
                 inputs.spec_builder.clone(),
                 spec_builder_float,
             )))
+            .chain(core::iter::once((
+                inputs.allocation.custody.clone(),
+                allocation_total,
+            )))
             .collect(),
         faucet: pallet_faucet_ops::GenesisConfig {
             state: pallet_faucet_ops::FaucetState::PermanentlyDisabled,
@@ -639,7 +668,14 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
         },
         faucet_budget: 0,
     };
-    validate_mainnet_funding(&funding, &validators, &inputs.council, &inputs.spec_builder)?;
+    validate_mainnet_funding(
+        &funding,
+        &validators,
+        &inputs.council,
+        &inputs.spec_builder,
+        &inputs.allocation.custody,
+        allocation_total,
+    )?;
     validate_mainnet_network_keys(&authorities)?;
     Ok(network_genesis(
         authorities,
@@ -1276,6 +1312,7 @@ mod tests {
             validator_float: MAINNET_VALIDATOR_FLOAT,
             council_float: MAINNET_COUNCIL_FLOAT,
             spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
+            allocation: mainnet_allocation::fixture(),
         }
     }
 
@@ -1398,6 +1435,11 @@ mod tests {
                 let account = frame_system::Account::<crate::Runtime>::get(who);
                 assert_eq!(account.data.free + account.data.reserved, *amount);
             }
+            assert_eq!(pallet_vesting::Vesting::<crate::Runtime>::iter().count(), 0);
+            assert_eq!(
+                pallet_vesting::StorageVersion::<crate::Runtime>::get(),
+                pallet_vesting::Releases::V1
+            );
             // SDK 845eb99 frame/revive/src/lib.rs:791-800 mints one ED
             // into this named pallet account. This is the only technical
             // genesis deposit outside the explicit operational allocations.
@@ -1471,12 +1513,21 @@ mod tests {
         let patch = mainnet_genesis(inputs.clone()).unwrap();
         let funding = funding_from_patch(&patch);
         let validators: Vec<_> = inputs.validators.iter().map(|v| v.stash.clone()).collect();
-        validate_mainnet_funding(&funding, &validators, &inputs.council, &inputs.spec_builder)
-            .unwrap();
-        assert_eq!(funding.balances.len(), 12);
+        validate_mainnet_funding(
+            &funding,
+            &validators,
+            &inputs.council,
+            &inputs.spec_builder,
+            &inputs.allocation.custody,
+            inputs.allocation.total.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(funding.balances.len(), 13);
         for (who, amount) in &funding.balances {
             let expected = if validators.contains(who) {
                 2_010 * crate::UNIT
+            } else if who == &inputs.allocation.custody {
+                100 * crate::UNIT
             } else {
                 10 * crate::UNIT
             };
@@ -1494,13 +1545,79 @@ mod tests {
             .iter()
             .map(|(_, amount)| amount)
             .sum::<u128>();
-        assert_eq!(explicit_issuance, 10_120 * crate::UNIT);
+        // Approved operational funds plus the synthetic 100-UNIT custody fixture.
+        assert_eq!(explicit_issuance, 10_220 * crate::UNIT);
         assert_eq!(
             explicit_issuance.checked_add(crate::EXISTENTIAL_DEPOSIT),
-            Some(10_120 * crate::UNIT + crate::UNIT / 1_000)
+            Some(10_220 * crate::UNIT + crate::UNIT / 1_000)
         );
         // This also checks actual TotalIssuance and the named Revive account.
         assert_launch_storage(patch, 20_049, 5, 6);
+    }
+
+    #[test]
+    fn mainnet_allocation_readiness_is_enforced_by_genesis() {
+        for case in 0..7 {
+            let mut input = ready_mainnet_fixture();
+            let expected = match case {
+                0 => {
+                    input.allocation.total = None;
+                    "MAINNET_ALLOCATION_TOTAL is TBD"
+                }
+                1 => {
+                    input.allocation.custody = mainnet_allocation::custody_placeholder();
+                    "unresolved mainnet custody placeholder"
+                }
+                2 => {
+                    input.allocation.recipients = None;
+                    "MAINNET_ALLOCATION_RECIPIENTS is TBD"
+                }
+                3 => {
+                    input.allocation.terms = None;
+                    "MAINNET_ALLOCATION_TERMS is TBD"
+                }
+                4 => {
+                    input.allocation.custody = input.validators[0].stash.clone();
+                    "custody must be a dedicated account"
+                }
+                5 => {
+                    input.allocation.terms.as_mut().unwrap().cadence_blocks = 0;
+                    "positive cadence"
+                }
+                _ => {
+                    input.allocation.total = Some(crate::UNIT);
+                    "exceed custody funding"
+                }
+            };
+            assert!(
+                mainnet_genesis(input).unwrap_err().contains(expected),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn mainnet_allocation_funds_only_custody_and_allows_validator_recipients() {
+        let mut input = ready_mainnet_fixture();
+        let recipient = input.allocation.recipients.as_ref().unwrap()[0].clone();
+        let funding = funding_from_patch(&mainnet_genesis(input.clone()).unwrap());
+        assert!(!funding.balances.iter().any(|(who, _)| who == &recipient));
+        let stash = input.validators[0].stash.clone();
+        input.allocation.recipients = Some(vec![stash.clone()]);
+        input.allocation.terms.as_mut().unwrap().tranches[0].recipient = stash.clone();
+        let patch = mainnet_genesis(input).unwrap();
+        assert_eq!(funding_from_patch(&patch).balances, funding.balances);
+        assert_launch_storage(patch, 20_049, 5, 6);
+    }
+
+    #[test]
+    fn mainnet_custody_is_included_in_checked_total_issuance() {
+        let mut input = ready_mainnet_fixture();
+        input.allocation.total = Some(u128::MAX);
+        assert_eq!(
+            mainnet_genesis(input).unwrap_err(),
+            "mainnet genesis blocked: total issuance overflows"
+        );
     }
 
     #[test]
@@ -1634,9 +1751,13 @@ mod tests {
             ["Rick", "Colton", "Vik", "Roman", "David", "BVI Admin"]
         );
         let accounts = reserved_mainnet_accounts();
-        assert_eq!(accounts.iter().collect::<BTreeSet<_>>().len(), 12);
+        assert_eq!(accounts.iter().collect::<BTreeSet<_>>().len(), 13);
         assert_eq!(
-            hex_encode(&sp_core::blake2_256(&accounts.encode())),
+            accounts.last(),
+            Some(&mainnet_allocation::custody_placeholder())
+        );
+        assert_eq!(
+            hex_encode(&sp_core::blake2_256(&accounts[..12].to_vec().encode())),
             "b6e46344fd96bb4deee3a025c407e7a9d502b8c40ad962a535ceb0160c2d9da2"
         );
         assert_eq!(MAINNET_VALIDATOR_FLOAT, Some(10 * crate::UNIT));
@@ -1785,7 +1906,7 @@ mod tests {
         let input = ready_mainnet_fixture();
         let validators: Vec<_> = input.validators.iter().map(|v| v.stash.clone()).collect();
         let patch = mainnet_genesis(input.clone()).unwrap();
-        for case in 0..9 {
+        for case in 0..10 {
             let mut funding = funding_from_patch(&patch);
             match case {
                 0 => funding.balances[0].1 = VALIDATOR_BOND,
@@ -1796,14 +1917,24 @@ mod tests {
                 5 => funding.faucet_budget = 1,
                 6 => funding.faucet.state = pallet_faucet_ops::FaucetState::Paused,
                 7 => funding.faucet.state = pallet_faucet_ops::FaucetState::Enabled,
-                _ => funding.faucet.authority = Some(input.spec_builder.clone()),
+                8 => funding.faucet.authority = Some(input.spec_builder.clone()),
+                _ => {
+                    funding
+                        .balances
+                        .iter_mut()
+                        .find(|(who, _)| who == &input.allocation.custody)
+                        .unwrap()
+                        .1 += crate::UNIT
+                }
             }
             assert!(
                 validate_mainnet_funding(
                     &funding,
                     &validators,
                     &input.council,
-                    &input.spec_builder
+                    &input.spec_builder,
+                    &input.allocation.custody,
+                    input.allocation.total.unwrap()
                 )
                 .is_err(),
                 "case {case}"

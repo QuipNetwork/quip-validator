@@ -949,3 +949,4 @@ pub mod staking_rewards;
 pub mod validator_onboarding;
 
 pub mod slashing;
+pub mod vesting;

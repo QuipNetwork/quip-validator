@@ -7814,6 +7814,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-vesting"
+version = "46.0.0"
+source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?rev=845eb9986c7131056b077d14ad7249f9d65ca111#845eb9986c7131056b077d14ad7249f9d65ca111"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-xqvm"
 version = "0.4.0"
 dependencies = [
@@ -9348,6 +9362,7 @@ dependencies = [
  "pallet-transaction-payment-rpc-runtime-api",
  "pallet-utility",
  "pallet-validator-admission",
+ "pallet-vesting",
  "pallet-xqvm",
  "parity-scale-codec",
  "quantum-validation",
@@ -9423,6 +9438,7 @@ dependencies = [
  "pallet-transaction-payment-rpc-runtime-api",
  "pallet-utility",
  "pallet-validator-admission",
+ "pallet-vesting",
  "pallet-xqvm",
  "parity-scale-codec",
  "quantum-validation",

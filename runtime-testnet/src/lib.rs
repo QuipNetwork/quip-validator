@@ -1748,4 +1748,7 @@ mod runtime {
     pub type Offences = pallet_offences;
     #[runtime::pallet_index(31)]
     pub type SlashPolicy = pallet_slash_policy;
+
+    #[runtime::pallet_index(32)]
+    pub type Vesting = pallet_vesting;
 }

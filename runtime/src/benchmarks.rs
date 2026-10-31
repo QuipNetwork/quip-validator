@@ -41,6 +41,7 @@ frame_benchmarking::define_benchmarks!(
     [pallet_emission_controller, EmissionController]
     [pallet_miner_registry, MinerRegistry]
     [pallet_multisig, Multisig]
+    [pallet_vesting, Vesting]
     [pallet_proxy, Proxy]
     [pallet_quantum_compute_mempool, QuantumComputeMempool]
     [pallet_quantum_pow, QuantumPow]

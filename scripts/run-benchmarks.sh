@@ -18,7 +18,8 @@ set -euo pipefail
 #   3. Regenerates weights for every listed pallet that has a matching in-repo
 #      crate directory (pallet_foo_bar -> pallets/foo-bar). Pallets without
 #      one (frame_system, pallet_balances, ...) use upstream SubstrateWeight
-#      and are skipped.
+#      and are skipped, except pallet_vesting: its runtime-owned table is
+#      generated with the CLI runtime template and mirrored into both runtimes.
 #   4. Measures the runtime-specific empty-block and System::remark overhead
 #      into runtime/src/weights/ using compiled Wasm, then mirrors those
 #      measurements into runtime-testnet/src/weights/ for runtime parity.
@@ -197,6 +198,17 @@ for pallet in "${pallets[@]}"; do
       ;;
   esac
 
+  if [ "$pallet" = "pallet_vesting" ]; then
+    # SDK pallet, runtime-owned table: use the CLI's runtime-style template.
+    output="runtime/src/weights/pallet_vesting.rs"
+    "$BIN" benchmark pallet --pallet "$pallet" --extrinsic '*' \
+      --steps "$STEPS" --repeat "$REPEAT" --output "$output"
+    python3 scripts/check-vesting-weights.py "$output"
+    # The parity gate requires the same measured table, including its header.
+    cp "$output" runtime-testnet/src/weights/pallet_vesting.rs
+    continue
+  fi
+
   dir="pallets/$(echo "${pallet#pallet_}" | tr '_' '-')"
   if [ ! -d "$dir" ]; then
     echo "-- $pallet: no in-repo crate at $dir, skipping (upstream weights)"
@@ -257,4 +269,6 @@ git diff --stat -- \
   'runtime/src/weights/block_weights.rs' \
   'runtime/src/weights/extrinsic_weights.rs' \
   'runtime-testnet/src/weights/block_weights.rs' \
-  'runtime-testnet/src/weights/extrinsic_weights.rs' || true
+  'runtime-testnet/src/weights/extrinsic_weights.rs' \
+  'runtime/src/weights/pallet_vesting.rs' \
+  'runtime-testnet/src/weights/pallet_vesting.rs' || true

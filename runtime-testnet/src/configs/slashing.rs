@@ -168,7 +168,13 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
             }
             *remaining = remaining.saturating_sub(1);
             match call {
-                RuntimeCall::Staking(pallet_staking::Call::manual_slash { .. })
+                // Grant administration is signed custody only. Root must not
+                // bypass a recipient curve or issue from an arbitrary source.
+                RuntimeCall::Vesting(
+                    pallet_vesting::Call::force_vested_transfer { .. }
+                    | pallet_vesting::Call::force_remove_vesting_schedule { .. },
+                )
+                | RuntimeCall::Staking(pallet_staking::Call::manual_slash { .. })
                 | RuntimeCall::System(
                     frame_system::Call::set_storage { .. }
                     | frame_system::Call::kill_storage { .. }

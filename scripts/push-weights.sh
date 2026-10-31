@@ -28,7 +28,9 @@ if git diff --quiet -- \
   'runtime/src/weights/block_weights.rs' \
   'runtime/src/weights/extrinsic_weights.rs' \
   'runtime-testnet/src/weights/block_weights.rs' \
-  'runtime-testnet/src/weights/extrinsic_weights.rs'; then
+  'runtime-testnet/src/weights/extrinsic_weights.rs' \
+  'runtime/src/weights/pallet_vesting.rs' \
+  'runtime-testnet/src/weights/pallet_vesting.rs'; then
   echo "No weight changes — nothing to push."
   exit 0
 fi
@@ -64,7 +66,9 @@ git add \
   'runtime/src/weights/block_weights.rs' \
   'runtime/src/weights/extrinsic_weights.rs' \
   'runtime-testnet/src/weights/block_weights.rs' \
-  'runtime-testnet/src/weights/extrinsic_weights.rs'
+  'runtime-testnet/src/weights/extrinsic_weights.rs' \
+  'runtime/src/weights/pallet_vesting.rs' \
+  'runtime-testnet/src/weights/pallet_vesting.rs'
 git commit -m "chore: regenerate weights on reference machine"
 
 git push \
