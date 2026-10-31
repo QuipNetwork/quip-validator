@@ -675,22 +675,8 @@ pub fn local_three_validator_config_genesis() -> Value {
     )
 }
 
-/// Return the public quip-testnet genesis config preset.
-///
-/// Each authority slot is held by an independent operator who generated their
-/// own libp2p node-key and hybrid BABE/GRANDPA keys offline (see
-/// `scripts/derive-operator-keys.sh`). Only the
-/// public bytes are committed in this repository; private material lives on
-/// each operator's host.
-///
-/// Fresh spec-119 genesis gives all three operators Foundation membership.
-/// Operator 1 is also faucet authority and Ising spec builder until ops
-/// provisions separate role accounts; this preset does not migrate live state.
-///
-/// Spec 120 drops `pallet_sudo` entirely, so no preset carries a sudo key. The
-/// council reaches Root through `ValidatorAdmission::dispatch_as_root` behind a
-/// 2/3 collective motion instead of a single-key escape hatch.
-pub fn quip_testnet_config_genesis() -> Value {
+/// Existing operator public material, shared by the live and relaunch presets.
+fn quip_testnet_authorities() -> Vec<(AccountId, BabeId, GrandpaId)> {
     let op1_babe = babe_authority_from_public_hex(
         include_str!("genesis_quip_testnet/operator_1_babe.hex"),
         "genesis_quip_testnet/operator_1_babe.hex",
@@ -729,31 +715,114 @@ pub fn quip_testnet_config_genesis() -> Value {
         "operator_3 tx_account_hex literal",
     );
 
+    vec![
+        (op1_account, op1_babe, op1_grandpa),
+        (op2_account, op2_babe, op2_grandpa),
+        (op3_account, op3_babe, op3_grandpa),
+    ]
+}
+
+/// Return the public quip-testnet genesis config preset.
+///
+/// Each authority slot is held by an independent operator who generated their
+/// own libp2p node-key and hybrid BABE/GRANDPA keys offline (see
+/// `scripts/derive-operator-keys.sh`). Only the
+/// public bytes are committed in this repository; private material lives on
+/// each operator's host.
+///
+/// Fresh spec-119 genesis gives all three operators Foundation membership.
+/// Operator 1 is also faucet authority and Ising spec builder until ops
+/// provisions separate role accounts; this preset does not migrate live state.
+///
+/// Spec 120 drops `pallet_sudo` entirely, so no preset carries a sudo key. The
+/// council reaches Root through `ValidatorAdmission::dispatch_as_root` behind a
+/// 2/3 collective motion instead of a single-key escape hatch.
+pub fn quip_testnet_config_genesis() -> Value {
+    let authorities = quip_testnet_authorities();
+    let accounts: Vec<_> = authorities
+        .iter()
+        .map(|(account, _, _)| account.clone())
+        .collect();
+    let op1 = accounts[0].clone();
     testnet_genesis(
-        vec![
-            (op1_account.clone(), op1_babe, op1_grandpa),
-            (op2_account.clone(), op2_babe, op2_grandpa),
-            (op3_account.clone(), op3_babe, op3_grandpa),
-        ],
-        vec![
-            op1_account.clone(),
-            op2_account.clone(),
-            op3_account.clone(),
-        ],
+        authorities,
+        accounts.clone(),
         GenesisRoles {
-            foundation_members: vec![op1_account.clone(), op2_account, op3_account],
-            // TODO(ops): derive and commit a dedicated faucet public account before
-            // changing this genesis default. Post-genesis, rotate via
-            // faucetOps.set_authority before faucet deployment.
-            faucet_authority: op1_account.clone(),
-            ising_spec_builder: op1_account,
-            // The public testnet predates V0 governance: council seats are the
-            // three operators, which mainnet must not repeat (W6 / QUI-2065).
+            foundation_members: accounts,
+            // This is the existing live preset. QUI-2080 selects the new
+            // disjoint-council relaunch explicitly instead of rewriting it.
+            faucet_authority: op1.clone(),
+            ising_spec_builder: op1,
             require_council_disjoint: false,
         },
         pallet_evm_chain_id::TESTNET_CHAIN_ID,
         3,
     )
+}
+
+/// QUI-2080 selects this fresh genesis explicitly; the live preset is unchanged.
+pub const QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET: &str = "quip-testnet-relaunch";
+/// QUI-2080 must supply three real, independently held council account IDs.
+pub const TESTNET_RELAUNCH_COUNCIL_TBD: Option<[AccountId; 3]> = None;
+/// Finite test-currency budget, intentionally the same as the legacy testnet.
+pub const TESTNET_RELAUNCH_FAUCET_BUDGET: u128 = 1_000_000_000 * crate::UNIT;
+
+fn testnet_relaunch_genesis(council: Option<[AccountId; 3]>) -> Result<Value, String> {
+    let council = council.ok_or_else(|| String::from(
+        "testnet relaunch genesis blocked: TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs provisioned through QUI-2080",
+    ))?.to_vec();
+    if council.iter().collect::<BTreeSet<_>>().len() != 3 {
+        return Err(
+            "testnet relaunch genesis blocked: three distinct council seats are required".into(),
+        );
+    }
+    if council
+        .iter()
+        .any(|account| reserved_mainnet_accounts().contains(account))
+    {
+        return Err(
+            "testnet relaunch genesis blocked: reserved placeholder council account".into(),
+        );
+    }
+    let authorities = quip_testnet_authorities();
+    validate_session_keys(&authorities)?;
+    let operators: Vec<_> = authorities
+        .iter()
+        .map(|(account, _, _)| account.clone())
+        .collect();
+    assert_council_disjoint(&council, &operators, true)
+        .map_err(|reason| format!("testnet relaunch genesis blocked: {reason}"))?;
+    let op1 = operators[0].clone();
+    let funding = GenesisFunding {
+        balances: operators
+            .iter()
+            .chain(&council)
+            .cloned()
+            .map(|a| (a, TEST_CURRENCY_ENDOWMENT))
+            .collect(),
+        faucet: pallet_faucet_ops::GenesisConfig {
+            state: pallet_faucet_ops::FaucetState::Enabled,
+            authority: Some(op1.clone()),
+        },
+        faucet_budget: TESTNET_RELAUNCH_FAUCET_BUDGET,
+    };
+    Ok(network_genesis(
+        authorities,
+        funding,
+        GenesisRoles {
+            foundation_members: council,
+            faucet_authority: op1.clone(),
+            ising_spec_builder: op1,
+            require_council_disjoint: true,
+        },
+        pallet_evm_chain_id::TESTNET_CHAIN_ID,
+        3,
+    ))
+}
+
+/// Refuse export until the deferred council is supplied; no placeholder fallback.
+pub fn quip_testnet_relaunch_config_genesis() -> Result<Value, String> {
+    testnet_relaunch_genesis(TESTNET_RELAUNCH_COUNCIL_TBD)
 }
 
 /// Four-validator rehearsal with a safety floor of four; dev seeds are not
@@ -818,6 +887,8 @@ pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
         QUIP_MAINNET_RUNTIME_PRESET => {
             quip_mainnet_config_genesis().unwrap_or_else(|reason| refuse_preset_export(reason))
         }
+        QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET => quip_testnet_relaunch_config_genesis()
+            .unwrap_or_else(|reason| refuse_preset_export(reason)),
         REHEARSAL_RUNTIME_PRESET => rehearsal_config_genesis(),
         _ => return None,
     };
@@ -836,6 +907,7 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
         PresetId::from(QUIP_TESTNET_RUNTIME_PRESET),
         PresetId::from(QUIP_MAINNET_RUNTIME_PRESET),
+        PresetId::from(QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET),
         PresetId::from(REHEARSAL_RUNTIME_PRESET),
     ]
 }
@@ -1527,7 +1599,7 @@ mod tests {
     // opaquely or omit the preset name. Run with an actual non-benchmark Wasm.
     #[cfg(not(feature = "runtime-benchmarks"))]
     #[test]
-    fn wasm_preset_api_lists_mainnet_and_reports_why_export_is_blocked() {
+    fn wasm_preset_api_lists_new_networks_and_reports_why_export_is_blocked() {
         use codec::Decode;
         use sp_core::traits::{CallContext, CodeExecutor, RuntimeCode, WrappedRuntimeCode};
         let wasm = crate::WASM_BINARY.expect("this test requires a real runtime Wasm build");
@@ -1550,6 +1622,21 @@ mod tests {
         assert!(!native);
         let names = Vec::<String>::decode(&mut &names.unwrap()[..]).unwrap();
         assert!(names.iter().any(|name| name == "quip-mainnet"));
+        assert!(names.iter().any(|name| name == "quip-testnet-relaunch"));
+        let args = Some(PresetId::from("quip-testnet-relaunch")).encode();
+        let (result, native) = executor.call(
+            &mut ext.ext(),
+            &code,
+            "GenesisBuilder_get_preset",
+            &args,
+            CallContext::Offchain,
+        );
+        assert!(!native);
+        let reason = result.unwrap_err().to_string();
+        assert!(
+            reason.contains("TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs"),
+            "{reason}"
+        );
         let args = Some(PresetId::from("quip-mainnet")).encode();
         let (result, native) = executor.call(
             &mut ext.ext(),
@@ -1561,5 +1648,105 @@ mod tests {
         assert!(!native);
         let reason = result.unwrap_err().to_string();
         assert!(reason.contains("mainnet genesis blocked: unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"), "{reason}");
+    }
+    #[test]
+    fn relaunch_council_is_deferred_and_export_is_blocked() {
+        assert_eq!(TESTNET_RELAUNCH_COUNCIL_TBD, None);
+        assert!(preset_names().contains(&PresetId::from("quip-testnet-relaunch")));
+        assert!(preset_names().contains(&PresetId::from("quip-mainnet")));
+        let reason = quip_testnet_relaunch_config_genesis().unwrap_err();
+        assert!(
+            reason.contains("TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs")
+        );
+        let panic =
+            std::panic::catch_unwind(|| get_preset(&PresetId::from("quip-testnet-relaunch")))
+                .unwrap_err();
+        assert_eq!(panic.downcast_ref::<String>().unwrap(), &reason);
+    }
+
+    #[test]
+    fn relaunch_fixture_builds_disjoint_council_and_preserves_operators() {
+        // Fixture-only account IDs, not a claim of provisioned council keys.
+        let council = [
+            AccountId::new([50; 32]),
+            AccountId::new([51; 32]),
+            AccountId::new([52; 32]),
+        ];
+        let patch = testnet_relaunch_genesis(Some(council.clone())).unwrap();
+        let legacy = quip_testnet_config_genesis();
+        let expected_operators: Vec<AccountId> = [
+            "c5c1e685e181d2939fddaf43e61455c0f00a99d2716d59b1f90674e5c0292510",
+            "40f5f2aeab073dfa95c96e48eba57b4afbdd2d118ff4acf60987a8c8bf8bf32b",
+            "d88854de054c7534450cddace65332a98d12ba06ff3adb39f9ad40f129b37aa7",
+        ]
+        .iter()
+        .map(|hex| tx_account_from_hex(hex, "pinned testnet operator"))
+        .collect();
+        assert_eq!(
+            patch["validatorAdmission"]["approved"],
+            serde_json::to_value(&expected_operators).unwrap()
+        );
+        assert_eq!(patch["session"], legacy["session"]);
+        assert_eq!(patch["staking"], legacy["staking"]);
+        assert_eq!(
+            patch["foundationMembership"]["members"],
+            serde_json::to_value(&council).unwrap()
+        );
+        let funding = funding_from_patch(&patch);
+        assert_eq!(funding.balances.len(), 6);
+        assert_eq!(
+            funding
+                .balances
+                .iter()
+                .map(|(a, _)| a)
+                .collect::<BTreeSet<_>>(),
+            expected_operators.iter().chain(&council).collect()
+        );
+        assert!(funding
+            .balances
+            .iter()
+            .all(|(_, amount)| *amount == 1u128 << 60));
+        assert_eq!(
+            funding.faucet.state,
+            pallet_faucet_ops::FaucetState::Enabled
+        );
+        assert_eq!(
+            funding.faucet.authority,
+            Some(expected_operators[0].clone())
+        );
+        assert_eq!(funding.faucet_budget, 1_000_000_000 * crate::UNIT);
+        assert_eq!(
+            patch["quantumComputeMempool"]["defaultIsingSpecBuilder"],
+            serde_json::to_value(&expected_operators[0]).unwrap()
+        );
+        assert_launch_storage(patch, 20_033, 3, 3);
+    }
+
+    #[test]
+    fn relaunch_rejects_duplicate_operator_and_placeholder_council_seats() {
+        let council = [
+            AccountId::new([50; 32]),
+            AccountId::new([51; 32]),
+            AccountId::new([52; 32]),
+        ];
+        let mut duplicate = council.clone();
+        duplicate[1] = duplicate[0].clone();
+        assert!(testnet_relaunch_genesis(Some(duplicate))
+            .unwrap_err()
+            .contains("distinct council seats"));
+        for (operator, _, _) in quip_testnet_authorities() {
+            let mut overlapping = council.clone();
+            overlapping[0] = operator;
+            assert!(testnet_relaunch_genesis(Some(overlapping))
+                .unwrap_err()
+                .contains("also a validator operator"));
+        }
+        for sentinel in reserved_mainnet_accounts() {
+            let mut unresolved = council.clone();
+            unresolved[0] = sentinel;
+            assert!(testnet_relaunch_genesis(Some(unresolved))
+                .unwrap_err()
+                .contains("reserved placeholder council account"));
+        }
     }
 }
