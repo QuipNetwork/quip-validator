@@ -1,0 +1,2 @@
+# The live chain spec is pinned byte-for-byte, including line endings.
+chain-specs/aglais-network.json -text

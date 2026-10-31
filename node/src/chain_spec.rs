@@ -56,46 +56,11 @@ pub fn validator_rehearsal_chain_spec() -> Result<ChainSpec, String> {
     .build())
 }
 
-/// Canonical public quip-testnet chain spec.
+/// The byte-pinned public testnet artifact, including its historical runtime.
 ///
-/// The raw export of this builder (`quip-network-node export-chain-spec
-/// --chain quip-testnet --raw`) is what `nodes.quip.network` publishes as
-/// `chain-specs/aglais-network.json`. The hosted JSON is the long-term source
-/// of truth; this in-binary preset exists so the genesis is auditable and
-/// can be re-derived from source.
+/// All live aliases load this file. Rebuilding a runtime preset with the current
+/// WASM_BINARY cannot reproduce the published live genesis. The runtime's
+/// `quip_testnet` preset remains registered for policy auditing only.
 pub fn quip_testnet_chain_spec() -> Result<ChainSpec, String> {
-    let properties = {
-        let mut p = sc_service::Properties::new();
-        p.insert("tokenSymbol".into(), "AGLS".into());
-        p.insert("tokenDecimals".into(), 12.into());
-        p.insert("ss58Format".into(), 42.into());
-        p
-    };
-
-    let boot_nodes = vec![
-        "/dns4/bootnode-1.aglais.quip.network/tcp/30333/p2p/12D3KooWBdhB4xGX6hfFsNufqQsG99kekiH9kJhLSiui3RgatnpE"
-            .parse()
-            .expect("operator-1 testnet bootnode multiaddr is well-formed"),
-        "/dns4/bootnode-2.aglais.quip.network/tcp/30333/p2p/12D3KooWPJAHo45AA94u3fYS3tXvyKouZnWihQnXWPHAzikXLfPW"
-            .parse()
-            .expect("operator-2 testnet bootnode multiaddr is well-formed"),
-        "/dns4/bootnode-3.aglais.quip.network/tcp/30333/p2p/12D3KooWM6n7wYvett975UnLYXrvnBGqLk2DLJoCRoFxgXTkptWe"
-            .parse()
-            .expect("operator-3 testnet bootnode multiaddr is well-formed"),
-    ];
-
-    Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Testnet wasm not available".to_string())?,
-        None,
-    )
-    .with_name("AGLS (Quip Testnet)")
-    .with_id("quip_testnet")
-    .with_chain_type(ChainType::Live)
-    .with_protocol_id("agls-network")
-    .with_genesis_config_preset_name(
-        quip_protocol_runtime::genesis_config_presets::QUIP_TESTNET_RUNTIME_PRESET,
-    )
-    .with_properties(properties)
-    .with_boot_nodes(boot_nodes)
-    .build())
+    ChainSpec::from_json_bytes(include_bytes!("../../chain-specs/aglais-network.json").as_slice())
 }

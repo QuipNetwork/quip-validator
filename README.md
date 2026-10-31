@@ -340,41 +340,66 @@ Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 ## Public testnet
 
 `quip-testnet` is the live public testnet ("AGLS" tokens, 12 decimals,
-EIP-155 `20033`). Omitting `--chain` selects this preset. The canonical
-genesis is baked into the `v0.3.0+` binary and also published as a raw JSON
-file at `nodes.quip.network/chain-specs/aglais-network.json`.
+EIP-155 `20033`). Omitting `--chain`, or using `quip-testnet`, `quip_testnet`
+or `testnet`, loads the exact raw artifact embedded from
+[`chain-specs/aglais-network.json`](chain-specs/aglais-network.json).
+Its historical runtime and genesis storage are independent of the runtime
+compiled into a new node binary.
 
-### Quickstart (Docker)
+The file is copied byte-for-byte from the
+[published raw spec](https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/aglais-network.json).
+Its pinned SHA-256 is
+`0aeeddaf5b546a491d96c35fd636614c6ab42d4e5d9724126182b52c8c694ad4`;
+its genesis hash is
+`0x542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecb`.
+The blocking `live-testnet-spec` CI job checks the file's exact bytes,
+including formatting. Node tests check all four aliases and the genesis hash.
+
+The registered runtime `quip_testnet` preset remains available through
+GenesisBuilder for policy auditing. Exporting that preset with a newly
+compiled runtime does **not** reproduce the published live genesis.
+`dev`, `local`, `local3` and `rehearsal` continue to use their runtime builders.
+The unfinished `quip-mainnet` and `quip-testnet-relaunch` presets have no
+built-in node chain aliases.
+
+### Quickstart (built node)
 
 ```sh
-# Pull the matching release image
-docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0
-
-# Live public testnet (EIP-155 20033). Omit --chain for the same preset.
-docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
-  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0 \
-  --chain=quip-testnet --base-path=/data \
-  --name="my-quip-node"
+cargo build --release -p quip-network-node
+# Live public testnet (EIP-155 20033). Omit --chain for the same artifact.
+./target/release/quip-network-node --chain=quip-testnet --base-path=./quip-data
 ```
 
 The three canonical bootnodes (`bootnode-{1,2,3}.aglais.quip.network`) are
-embedded in the chain spec, so peer discovery happens automatically.
+embedded in the raw file, with the live protocol ID `agls-network` and AGLS
+properties unchanged.
 
-### Using the hosted raw chain spec
+### Using the raw file with an existing image
 
-Alternatively, fetch the published JSON spec from `nodes.quip.network` and
-pass its path to `--chain`. That file is the live public testnet
-(EIP-155 `20033`).
+Explicit file loading also works with existing images; those images do not
+acquire this new embedded-artifact behavior merely because this repository
+changed. Validate the checked-out artifact before using its path:
 
 ```sh
-curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/aglais-network.json \
-    -o aglais-network.json
+python3 scripts/check-live-testnet-spec.py
 
-# Live public testnet JSON (EIP-155 20033)
-docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
+docker run --rm -v "$PWD/chain-specs:/spec:ro" -v quip-data:/data \
+  -p 9944:9944 -p 30333:30333 \
   registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0 \
   --chain=/spec/aglais-network.json --base-path=/data
 ```
+
+The vendored path represents the public network currently selected by the
+four aliases. A future approved relaunch must replace the artifact and update
+its checksum, genesis-hash tests and provenance in the same reviewed activation
+commit. The old artifact remains in Git history and release provenance. A new
+genesis requires fresh databases; this change does not activate a relaunch.
+
+CI also starts a non-validator against a temporary copy with **only bootnodes
+removed**, checks its genesis over RPC, and restarts the same genesis-only DB.
+It disables peer discovery and ordinary peers and rejects outbound dial logs.
+This smoke test checks startup and DB reopen, not the shipped peer list, live
+sync, consensus, or compatibility with an existing production DB.
 
 ### Running a validator
 
