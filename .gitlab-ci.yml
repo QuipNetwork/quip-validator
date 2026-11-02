@@ -55,6 +55,11 @@
 #   registry.gitlab.com/quip.network/quip-validator/quip-network-node:<tag>
 #   registry.gitlab.com/quip.network/quip-validator/quip-network-evm-sidecar:<tag>
 
+include:
+  - project: quip.network/ci-templates
+    ref: v1.1.2
+    file: templates/dependency-gate.yml
+
 stages:
   # The images this repo runs its own jobs on are built here, ahead of every
   # stage that consumes them. Both stages are empty and skipped unless a CI
@@ -488,7 +493,7 @@ benchmark-weights:
 benchmark-quantum-pow-sweeps:
   extends: .revive-benchmark-tooling
   stage: bench
-  needs: []
+  needs: [{job: dependency-gate, optional: true}]
   image: $TOOLCHAIN_IMAGE
   tags: [bench]
   resource_group: reference-machine
@@ -535,7 +540,7 @@ benchmark-quantum-pow-sweeps:
 # at baseline) and memory (~110%) are the drift signals that matter.
 benchmark-machine:
   stage: bench
-  needs: []
+  needs: [{job: dependency-gate, optional: true}]
   image:
     name: $IMAGE:v0.2.1
     entrypoint: [""]
@@ -575,7 +580,7 @@ benchmark-machine:
 # (:<tag>-<arch>) is pushed here; consumer-facing tags are assembled later.
 .kaniko-build:
   stage: build
-  needs: []
+  needs: [{job: dependency-gate, optional: true}]
   # The executor runs from a project-owned mirror of the upstream
   # gcr.io/kaniko-project/executor image. Rationale: digest-pinning a mirror
   # we control avoids gcr.io availability/rate-limit surprises and guarantees
@@ -712,7 +717,7 @@ ci-image-toolchain:
   tags: [docker, amd64]
   interruptible: true
   rules: !reference [.ci-image-rules, rules]
-  needs: [ci-image-toolchain-amd64, ci-image-toolchain-arm64]
+  needs: [{job: dependency-gate, optional: true}, ci-image-toolchain-amd64, ci-image-toolchain-arm64]
   script:
     - |
       manifest-tool \
@@ -806,7 +811,7 @@ kaniko-build-evm-sidecar-arm64:
 # shallow tip. FLOATING_TAGS is space-separated (empty when none apply).
 resolve-floating-tag:
   stage: build
-  needs: []
+  needs: [{job: dependency-gate, optional: true}]
   rules: !reference [.publish-rules, rules]
   image:
     name: alpine/git:latest
@@ -866,13 +871,15 @@ resolve-floating-tag:
 
 manifest:
   extends: .manifest-publish
-  needs: [kaniko-build-amd64, kaniko-build-arm64, resolve-floating-tag]
+  needs: [{job: dependency-gate, optional: true}, kaniko-build-amd64, kaniko-build-arm64, resolve-floating-tag]
   variables:
     MANIFEST_IMAGE: $IMAGE
 
 manifest-evm-sidecar:
   extends: .manifest-publish
   needs:
+    - job: dependency-gate
+      optional: true
     - kaniko-build-evm-sidecar-amd64
     - kaniko-build-evm-sidecar-arm64
     - resolve-floating-tag
@@ -995,6 +1002,8 @@ manifest-evm-sidecar:
   interruptible: true
   timeout: 15m
   needs:
+    - job: dependency-gate
+      optional: true
     - release:build-pypi
 
 # Publish base: mint the OIDC token and upload the prebuilt dist/. Like smoke it
@@ -1009,6 +1018,8 @@ manifest-evm-sidecar:
   interruptible: false
   timeout: 15m
   needs:
+    - job: dependency-gate
+      optional: true
     - release:build-pypi
     - release:smoke-pypi-amd64
     - release:smoke-pypi-arm64

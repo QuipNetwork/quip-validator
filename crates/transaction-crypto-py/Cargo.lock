@@ -576,9 +576,9 @@ dependencies = [
 
 [[package]]
 name = "pqhybridsign"
-version = "0.0.0-rc9"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f372f042590c68330e61de50d72d251cde2b21fea64838c93e709075da79b927"
+checksum = "6451af32d85eac7827d3d03eb2319579051bc891394c994316a8db33b66a16ab"
 dependencies = [
  "ed25519-zebra",
  "fips204",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "quip-transaction-crypto-py"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "pyo3",
  "quip-transaction-crypto-core",
