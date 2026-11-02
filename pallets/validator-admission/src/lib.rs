@@ -8,6 +8,41 @@ pub mod weights;
 use scale_info::TypeInfo;
 pub use weights::WeightInfo;
 
+/// Why a governed Root call was refused before dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootCallError {
+    Denied,
+    DepthLimit,
+    CallLimit,
+}
+
+/// Runtime-owned call inspection, preserving distinct policy and resource-limit failures.
+pub trait RootCallPolicy<Call> {
+    fn check(call: &Call) -> Result<(), RootCallError>;
+}
+impl<Call> RootCallPolicy<Call> for frame_support::traits::Everything {
+    fn check(_: &Call) -> Result<(), RootCallError> {
+        Ok(())
+    }
+}
+
+/// Runtime cleanup after Approved shrinks. Future removal paths must invoke
+/// this hook too, after updating Approved and before emitting success.
+/// Errors roll back the removal and cleanup in the dispatch storage layer.
+pub trait OnAdmissionRemoval {
+    fn on_removal() -> DispatchResult;
+    /// Upper bound charged in addition to the pallet's own removal weight.
+    fn weight() -> Weight;
+}
+impl OnAdmissionRemoval for () {
+    fn on_removal() -> DispatchResult {
+        Ok(())
+    }
+    fn weight() -> Weight {
+        Weight::zero()
+    }
+}
+
 /// Permissionless admission is reserved until objective eligibility is specified.
 /// No governance vote can substitute for those checks.
 pub trait Graduation {
@@ -56,7 +91,11 @@ pub mod pallet {
             + UnfilteredDispatchable<RuntimeOrigin = Self::RuntimeOrigin>;
         #[pallet::constant]
         type MaxAuthorities: Get<u32>;
+        /// Checked before Root dispatch, including nested calls in the runtime implementation.
+        type RootCallFilter: RootCallPolicy<Self::GovernanceCall>;
+        type RootCallFilterWeight: Get<Weight>;
         type Graduation: Graduation;
+        type OnRemoval: OnAdmissionRemoval;
         type WeightInfo: WeightInfo;
     }
     #[pallet::pallet]
@@ -104,7 +143,12 @@ pub mod pallet {
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn integrity_test() {
-            assert!(T::MaxAuthorities::get() > 0 && T::MaxAuthorities::get() <= 32);
+            // `Approved` is a `BoundedBTreeSet<_, MaxAuthorities>`, so this bound must
+            // hold at least the whole admitted validator set and must not exceed the
+            // session authority bound (Babe/Grandpa `MaxAuthorities`), or an admitted
+            // validator could never hold a session key.
+            let max = T::MaxAuthorities::get();
+            assert!(max > 0 && max <= 64);
         }
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
@@ -123,10 +167,23 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        Approved { who: T::AccountId },
-        Removed { who: T::AccountId },
-        ModeAdvanced { mode: AdmissionMode },
-        RootDispatched { result: DispatchResult },
+        Approved {
+            who: T::AccountId,
+        },
+        Removed {
+            who: T::AccountId,
+        },
+        ModeAdvanced {
+            mode: AdmissionMode,
+        },
+        RootDispatched {
+            result: DispatchResult,
+        },
+        /// Eligible voters exceeded the election snapshot's count or byte bound.
+        ElectionVotersTruncated {
+            eligible: u32,
+            retained: u32,
+        },
     }
     #[pallet::error]
     pub enum Error<T> {
@@ -136,6 +193,9 @@ pub mod pallet {
         TooManyAuthorities,
         InvalidTransition,
         GraduationNotReady,
+        RootCallDenied,
+        RootCallTooDeep,
+        RootCallTooLarge,
     }
 
     #[pallet::call]
@@ -158,7 +218,7 @@ pub mod pallet {
             Ok(())
         }
         #[pallet::call_index(1)]
-        #[pallet::weight(T::WeightInfo::remove())]
+        #[pallet::weight(T::WeightInfo::remove().saturating_add(T::OnRemoval::weight()))]
         pub fn remove(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
             T::FoundationOrigin::ensure_origin(origin)?;
             ensure!(
@@ -169,6 +229,7 @@ pub mod pallet {
                 ensure!(set.remove(&who), Error::<T>::NotApproved);
                 Ok(())
             })?;
+            T::OnRemoval::on_removal()?;
             Self::deposit_event(Event::Removed { who });
             Ok(())
         }
@@ -191,15 +252,20 @@ pub mod pallet {
             Self::deposit_event(Event::ModeAdvanced { mode });
             Ok(())
         }
-        /// The Foundation's explicit Root-equivalent path, including runtime upgrades.
+        /// The Foundation's filtered Root path, including runtime upgrades.
         /// The event carries inner failure; outer success alone is not proof of execution.
         #[pallet::call_index(3)]
-        #[pallet::weight((T::WeightInfo::dispatch_as_root().saturating_add(call.get_dispatch_info().call_weight), call.get_dispatch_info().class))]
+        #[pallet::weight((T::WeightInfo::dispatch_as_root().saturating_add(T::RootCallFilterWeight::get()).saturating_add(call.get_dispatch_info().call_weight), call.get_dispatch_info().class))]
         pub fn dispatch_as_root(
             origin: OriginFor<T>,
             call: Box<T::GovernanceCall>,
         ) -> DispatchResult {
             T::FoundationOrigin::ensure_origin(origin)?;
+            T::RootCallFilter::check(&call).map_err(|reason| match reason {
+                RootCallError::Denied => Error::<T>::RootCallDenied,
+                RootCallError::DepthLimit => Error::<T>::RootCallTooDeep,
+                RootCallError::CallLimit => Error::<T>::RootCallTooLarge,
+            })?;
             let result = call.dispatch_bypass_filter(frame_system::RawOrigin::Root.into());
             Self::deposit_event(Event::RootDispatched {
                 result: result.map(|_| ()).map_err(|e| e.error),

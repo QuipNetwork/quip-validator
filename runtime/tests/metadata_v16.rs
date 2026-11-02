@@ -331,3 +331,327 @@ fn stock_subxt_decodes_mixed_v5_bare_and_v4_signed_extrinsics() {
     assert_eq!(transfer.pallet_name().unwrap(), "Balances");
     assert_eq!(transfer.variant_name().unwrap(), "transfer_allow_death");
 }
+
+// Pin the network identity and exercise FRAME's ordinary upgrade guard with a
+// higher-version candidate, so rejection cannot be caused by a stale version.
+// FRAME intentionally bypasses these version guards in benchmark builds.
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn runtime_identity_rejects_cross_network_upgrades() {
+    let (expected_name, other_name) = match env!("CARGO_PKG_NAME") {
+        "quip-protocol-runtime" => ("quip", "quip-testnet"),
+        "quip-testnet-runtime" => ("quip-testnet", "quip"),
+        other => panic!("unexpected runtime package: {other}"),
+    };
+    let current = quip_protocol_runtime::VERSION;
+    assert_eq!(current.spec_name, expected_name);
+    let Some(wasm) = quip_protocol_runtime::WASM_BINARY else {
+        eprintln!("skipping upgrade guard: runtime wasm binary not built (SKIP_WASM_BUILD)");
+        return;
+    };
+    let wasm = sc_executor_common::runtime_blob::RuntimeBlob::uncompress_if_needed(wasm)
+        .unwrap()
+        .serialize();
+    let mut candidate = current;
+    candidate.spec_version += 1;
+    let same_network = sp_version::embed::embed_runtime_version(&wasm, candidate.clone()).unwrap();
+    candidate.spec_name = other_name.into();
+    let other_network = sp_version::embed::embed_runtime_version(&wasm, candidate).unwrap();
+    let mut ext =
+        sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+    ext.register_extension(sp_core::traits::ReadRuntimeVersionExt::new(
+        sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build(),
+    ));
+    ext.execute_with(|| {
+        assert!(System::can_set_code(&same_network, true)
+            .into_result()
+            .is_ok());
+        frame_support::assert_storage_noop!({
+            let error =
+                System::set_code(quip_protocol_runtime::RuntimeOrigin::root(), other_network)
+                    .unwrap_err()
+                    .error;
+            assert_eq!(
+                error,
+                frame_system::Error::<Runtime>::InvalidSpecName.into()
+            );
+            println!("{expected_name} rejects {other_name} at higher spec version: {error:?}");
+        });
+    });
+}
+
+mod unchecked_upgrade_tests {
+    use super::*;
+    use frame_support::assert_ok;
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    use frame_support::assert_storage_noop;
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    use quip_protocol_runtime::configs::RUNTIME_IDENTITY_MISMATCH;
+    use quip_protocol_runtime::{RuntimeOrigin, VERSION};
+    use sp_core::storage::well_known_keys::CODE;
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    use sp_runtime::{traits::Hash as _, DispatchError};
+
+    fn ext() -> sp_io::TestExternalities {
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.register_extension(sp_core::traits::ReadRuntimeVersionExt::new(
+            sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build(),
+        ));
+        ext.execute_with(|| {
+            System::set_block_number(1);
+            sp_io::storage::set(CODE, b"previous code");
+        });
+        ext
+    }
+
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    fn foreign_name() -> &'static str {
+        match VERSION.spec_name.as_ref() {
+            "quip" => "quip-testnet",
+            "quip-testnet" => "quip",
+            other => panic!("unexpected runtime identity: {other}"),
+        }
+    }
+
+    // Synthetic future candidate, not a separately built production runtime.
+    fn candidate(name: &str, spec_version: u32) -> Vec<u8> {
+        let wasm = quip_protocol_runtime::WASM_BINARY
+            .expect("upgrade integration tests require a build without SKIP_WASM_BUILD");
+        let wasm = sc_executor_common::runtime_blob::RuntimeBlob::uncompress_if_needed(wasm)
+            .unwrap()
+            .serialize();
+        let mut version = VERSION;
+        version.spec_name = name.to_owned().into();
+        version.spec_version = spec_version;
+        sp_version::embed::embed_runtime_version(&wasm, version).unwrap()
+    }
+
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    #[test]
+    fn unchecked_foreign_upgrade_rejects_without_changing_code() {
+        let code = candidate(foreign_name(), VERSION.spec_version + 1);
+        ext().execute_with(|| {
+            let before = sp_io::storage::get(CODE);
+            assert_storage_noop!({
+                let error = System::set_code_without_checks(RuntimeOrigin::root(), code)
+                    .unwrap_err()
+                    .error;
+                assert_eq!(error, DispatchError::Other(RUNTIME_IDENTITY_MISMATCH));
+                println!("{} unchecked foreign upgrade: {error:?}", VERSION.spec_name);
+            });
+            assert_eq!(sp_io::storage::get(CODE), before);
+        });
+    }
+
+    #[test]
+    fn unchecked_same_network_upgrade_preserves_version_number_bypass() {
+        for spec_version in [VERSION.spec_version + 1, VERSION.spec_version] {
+            let code = candidate(VERSION.spec_name.as_ref(), spec_version);
+            ext().execute_with(|| {
+                assert_ok!(System::set_code_without_checks(
+                    RuntimeOrigin::root(),
+                    code.clone()
+                ));
+                assert_eq!(sp_io::storage::get(CODE).unwrap().to_vec(), code);
+            });
+        }
+    }
+
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    #[test]
+    fn authorized_foreign_upgrade_rejects_and_retains_authorization() {
+        let code = candidate(foreign_name(), VERSION.spec_version + 1);
+        let hash = <Runtime as frame_system::Config>::Hashing::hash(&code);
+        ext().execute_with(|| {
+            assert_ok!(System::authorize_upgrade_without_checks(
+                RuntimeOrigin::root(),
+                hash
+            ));
+            // The SDK storage type is private; read its verified key and public value type.
+            let authorization_key =
+                frame_support::storage::storage_prefix(b"System", b"AuthorizedUpgrade");
+            let before_authorization = frame_support::storage::unhashed::get::<
+                frame_system::CodeUpgradeAuthorization<Runtime>,
+            >(&authorization_key)
+            .unwrap();
+            assert_eq!(*before_authorization.code_hash(), hash);
+            let before_code = sp_io::storage::get(CODE);
+            let error = System::apply_authorized_upgrade(RuntimeOrigin::none(), code)
+                .unwrap_err()
+                .error;
+            assert_eq!(error, DispatchError::Other(RUNTIME_IDENTITY_MISMATCH));
+            // The dispatchable's storage layer rolls back its earlier authorization kill.
+            let retained = frame_support::storage::unhashed::get::<
+                frame_system::CodeUpgradeAuthorization<Runtime>,
+            >(&authorization_key)
+            .expect("rejected apply must retain the authorization");
+            assert_eq!(*retained.code_hash(), hash);
+            assert_eq!(retained.encode(), before_authorization.encode());
+            assert_eq!(sp_io::storage::get(CODE), before_code);
+            println!(
+                "{} authorized foreign upgrade: {error:?}; authorization retained",
+                VERSION.spec_name
+            );
+        });
+    }
+
+    #[test]
+    fn unchecked_upgrade_preserves_extraction_failure_delegation() {
+        let code = b"not a Wasm runtime".to_vec();
+        ext().execute_with(|| {
+            assert!(sp_io::misc::runtime_version(&code).is_none());
+            assert_ok!(System::set_code_without_checks(
+                RuntimeOrigin::root(),
+                code.clone()
+            ));
+            assert_eq!(sp_io::storage::get(CODE).unwrap().to_vec(), code);
+        });
+    }
+}
+
+// Immutable metadata captured from integration parent ba20b1e, before Vesting.
+// Both metadata-hash builds matched their real Wasm APIs; provenance is in the
+// shared fixture manifest. Later changes need reviewed, enumerated deltas;
+// the captured baseline is never automatically updated.
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[path = "support/vesting_metadata_delta.rs"]
+mod vesting_metadata_delta;
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+fn before_vesting_metadata() -> RuntimeMetadataV16 {
+    let bytes: &[u8] = if quip_protocol_runtime::VERSION.spec_name.as_ref() == "quip" {
+        include_bytes!("../../tests/fixtures/pre-vesting/quip.scale")
+    } else {
+        include_bytes!("../../tests/fixtures/pre-vesting/quip-testnet.scale")
+    };
+    match RuntimeMetadataPrefixed::decode(&mut &bytes[..]).unwrap().1 {
+        RuntimeMetadata::V16(metadata) => metadata,
+        _ => panic!("baseline must be V16"),
+    }
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn vesting_and_regenerated_weights_are_the_only_semantic_metadata_deltas() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let after = serde_json::to_value(metadata_v16()).unwrap();
+    vesting_metadata_delta::check(&before, &after).unwrap();
+    // Two-sided contract: restoring ANY declared weight value to the baseline
+    // must fail too, so the list describes the exact changed set, not a subset.
+    let mut baseline = before.clone();
+    for &(pallet, constant) in vesting_metadata_delta::REGENERATED_WEIGHT_VALUES {
+        let mut wrong = after.clone();
+        *vesting_metadata_delta::constant_value(&mut wrong, pallet, constant).unwrap() =
+            vesting_metadata_delta::constant_value(&mut baseline, pallet, constant)
+                .unwrap()
+                .clone();
+        assert_eq!(
+            vesting_metadata_delta::check(&before, &wrong),
+            Err(format!(
+                "missing required regenerated-weight delta: {pallet}.{constant}.value"
+            ))
+        );
+    }
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn vesting_metadata_comparison_rejects_unrelated_changes() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let after = serde_json::to_value(metadata_v16()).unwrap();
+    vesting_metadata_delta::check(&before, &after).unwrap();
+    let mut wrong = after.clone();
+    wrong["pallets"][0]["index"] = serde_json::json!(99);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after.clone();
+    let old_calls = wrong["pallets"][0]["calls"]["ty"].as_u64().unwrap() as usize;
+    let old_index = wrong["types"]["types"][old_calls]["type"]["def"]["variant"]["variants"][0]
+        ["index"]
+        .as_u64()
+        .unwrap();
+    wrong["types"]["types"][old_calls]["type"]["def"]["variant"]["variants"][0]["index"] =
+        serde_json::json!(old_index ^ 1);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after.clone();
+    let vesting = wrong["pallets"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["name"] == "Vesting")
+        .unwrap();
+    vesting["index"] = serde_json::json!(33);
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after.clone();
+    wrong["extrinsic"]["transaction_extensions"][0]["identifier"] =
+        serde_json::json!("unexpected-extension");
+    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    let mut wrong = after;
+    // BlockHashCount is not derived from benchmark weights. Mutate a scratch
+    // candidate by NAME, not the first constant (which is now an allowed delta).
+    let constant =
+        vesting_metadata_delta::constant_value(&mut wrong, "System", "BlockHashCount").unwrap();
+    let byte = constant[0].as_u64().unwrap();
+    constant[0] = serde_json::json!(byte ^ 1);
+    let error = vesting_metadata_delta::check(&before, &wrong).unwrap_err();
+    assert_eq!(
+        error,
+        "metadata.pallets[0].constants[2].value[0]: metadata value changed"
+    );
+    eprintln!("System.BlockHashCount mutation rejected: {error}");
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn vesting_metadata_comparison_rejects_out_of_bounds_call_type() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let mut after = serde_json::to_value(metadata_v16()).unwrap();
+    let invalid_call_type = after["types"]["types"].as_array().unwrap().len() + 1;
+    let vesting = after["pallets"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["name"] == "Vesting")
+        .unwrap();
+    vesting["calls"]["ty"] = serde_json::json!(invalid_call_type);
+    assert_eq!(
+        vesting_metadata_delta::check(&before, &after),
+        Err("Vesting call type is outside candidate registry".into())
+    );
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn empty_vesting_genesis_adds_only_its_version_keys() {
+    use sp_runtime::BuildStorage;
+    let baseline = if quip_protocol_runtime::VERSION.spec_name.as_ref() == "quip" {
+        include_str!("../../tests/fixtures/pre-vesting/quip-storage.json")
+    } else {
+        include_str!("../../tests/fixtures/pre-vesting/quip-testnet-storage.json")
+    };
+    let before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
+    let mut after = quip_protocol_runtime::RuntimeGenesisConfig::default()
+        .build_storage()
+        .unwrap()
+        .top;
+    // The stock genesis builder writes this release marker even without schedules.
+    let release = frame_support::storage::storage_prefix(b"Vesting", b"StorageVersion");
+    assert_eq!(
+        after.remove(release.as_slice()).unwrap(),
+        pallet_vesting::Releases::V1.encode()
+    );
+    // FRAME writes an independent default pallet version under its colon-delimited key.
+    let frame_version = frame_support::storage::storage_prefix(
+        b"Vesting",
+        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
+    );
+    assert_eq!(
+        after.remove(frame_version.as_slice()).unwrap(),
+        0u16.encode()
+    );
+    let after: Vec<_> = after
+        .iter()
+        .map(|(k, v)| (hex::encode(k), hex::encode(v)))
+        .collect();
+    assert_eq!(after, before);
+}

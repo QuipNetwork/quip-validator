@@ -1,0 +1,16 @@
+{
+  "production": {
+    "development": "788363c319089abb258d59e887532fe99c115475120815081076d1750da16a24",
+    "local_testnet": "8a079dcf2fce58b487182ebe5362db09a43f8cd7fd1be7bf70d9c3f5525423e9",
+    "local_three_validator": "8c928df847b3b073516f9885a2652f54fea83ab8ee7ec07709a639033de5045c",
+    "quip_testnet": "857e891381fda018736c26748ff45d07935735220832982b2c8d7eab1f767134",
+    "validator_rehearsal": "5487b688d47bee06464390cfcd9f951ce156d942225024893b7dffd21119d4d1"
+  },
+  "benchmark": {
+    "development": "8ed08d35ed3e47ce4a0bb6915a71cce7f251a29366c9b0a02edb141879a5e281",
+    "local_testnet": "ebb39026923dbdc930ae0084907643c71ef77138b71621e636edb3a651f61641",
+    "local_three_validator": "c495037711582f712fe54fca50a20f24278103902f1a0a448309e6cc98d83789",
+    "quip_testnet": "3477e112a9e17db80a8d4afebe9f45d095d2807d3da40030bf1c8765d5b93b45",
+    "validator_rehearsal": "cacea995d0a2d4642389866d01f902ebe4e906adc6e946170e214d635074596d"
+  }
+}

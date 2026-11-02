@@ -1,0 +1,53 @@
+{
+  "base_commit": "ba20b1e104dce9809c4e939673adcef1b5a884d7",
+  "features": [
+    "default",
+    "metadata-hash"
+  ],
+  "native_wasm_metadata_equal": true,
+  "capture_command": "cargo test --offline --locked -p quip-protocol-runtime -p quip-testnet-runtime --features metadata-hash --test vesting_capture",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+  "cargo_lock_sha256": "116a128bc537b9a9b0cda84fbd3f06206284b6dda0945a2852d83368f523fdf7",
+  "files": {
+    "quip.scale": {
+      "sha256": "ea62e9559b9e04a926a512fbff44909130aa9be883849dc4044f61adbd545bad",
+      "bytes": 255697
+    },
+    "quip.json": {
+      "sha256": "550eadbe0cd54a3c95a98038fba9da7b09b94c0ca56719d154063064dec585f8",
+      "bytes": 1291881
+    },
+    "quip.wasm": {
+      "sha256": "f074ad50e32eb316d6209fc7219f9df197bb564cdfcd10bf9d9a0016c4851ce6",
+      "bytes": 8832761
+    },
+    "quip-storage.json": {
+      "sha256": "d9804ef133ff655f3a256245f1949b46c50928954353d3d637032138b6fc2c9c",
+      "bytes": 9354
+    },
+    "quip-version.scale": {
+      "sha256": "6c72d33b9622db0e1d6eaa31cfa79f66da2e535dec622b5157dbd95ad115a933",
+      "bytes": 232
+    },
+    "quip-testnet.scale": {
+      "sha256": "739dd67eaefae4218f83260c868187e0ae1ea2b53e6953733b860844d874d0bb",
+      "bytes": 255694
+    },
+    "quip-testnet.json": {
+      "sha256": "d965771b7b501986d69aee6612d6a5745d7808154d07b7b9c24a8fd62ce84267",
+      "bytes": 1292037
+    },
+    "quip-testnet.wasm": {
+      "sha256": "3bd519fb5af5e21be32055944d68ecf44b348167e2f8572fe661e1d9a330032a",
+      "bytes": 8829897
+    },
+    "quip-testnet-storage.json": {
+      "sha256": "c2e64e5d669cb05eac2f64f0b91ab9c766f07892bf1be0b98a5f74fd93e75c60",
+      "bytes": 9370
+    },
+    "quip-testnet-version.scale": {
+      "sha256": "2941413390b8deaefb4b535ba499c122090b6993c779f67f5b44e0ed85583f7e",
+      "bytes": 240
+    }
+  }
+}

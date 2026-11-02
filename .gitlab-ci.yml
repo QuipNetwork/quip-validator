@@ -203,7 +203,33 @@ cargo-test:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
-    - cargo build --release -p quip-protocol-runtime
+    - cargo build -p quip-network-node
+    - python3 scripts/smoke-live-testnet-spec.py "$CARGO_TARGET_DIR/debug/quip-network-node" --log-dir live-testnet-smoke-logs
+    - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+  artifacts:
+    when: always
+    paths:
+      - live-testnet-smoke-logs/
+
+# Pin the existing public network independently of current runtime builds.
+live-testnet-spec:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  script:
+    - python3 scripts/check-live-testnet-spec.py
+    - python3 scripts/test-live-testnet-spec.py
+
+# Both runtime trees must stay identical outside the approved network values.
+runtime-parity:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  script:
+    - bash scripts/check-runtime-parity.sh
+    - bash scripts/test-runtime-parity.sh
 
 # Node-level suites that need a running chain and the PQ signer. Kept separate
 # from cargo-test because they additionally install Node and the pinned
@@ -317,6 +343,7 @@ benchmark-preflight:
     - ./scripts/run-benchmarks.sh --verify-regenerated-mempool pallets/quantum-compute-mempool/src/benchmark_weights.rs
     - ./scripts/run-benchmarks.sh --check-output-resolver
     - ./scripts/check-benchmark-preflight.sh --check-wrapper-guard
+    - python3 scripts/test-vesting-benchmark-inventory.py
     - ./scripts/check-benchmark-preflight.sh
 
 # Warns when a merge request changes a pallet's benchmarkable surface without

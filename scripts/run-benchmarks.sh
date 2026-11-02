@@ -18,9 +18,11 @@ set -euo pipefail
 #   3. Regenerates weights for every listed pallet that has a matching in-repo
 #      crate directory (pallet_foo_bar -> pallets/foo-bar). Pallets without
 #      one (frame_system, pallet_balances, ...) use upstream SubstrateWeight
-#      and are skipped.
+#      and are skipped, except pallet_vesting: its runtime-owned table is
+#      generated with the CLI runtime template and mirrored into both runtimes.
 #   4. Measures the runtime-specific empty-block and System::remark overhead
-#      into runtime/src/weights/ using compiled Wasm.
+#      into runtime/src/weights/ using compiled Wasm, then mirrors those
+#      measurements into runtime-testnet/src/weights/ for runtime parity.
 #
 # Environment overrides:
 #   STEPS / REPEAT   benchmark resolution (default 50 / 20, the settings the
@@ -173,10 +175,15 @@ cargo build --release --features runtime-benchmarks -p quip-network-node
 BIN="${CARGO_TARGET_DIR:-target}/release/quip-network-node"
 
 # `benchmark pallet --list` prints CSV rows of "<pallet>, <benchmark>".
+# Check the complete inventory before any measurement, even if a pallet is skipped.
+LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/quip-benchmarks.XXXXXX")"
+trap 'rm -f "$LIST_FILE"' EXIT
+"$BIN" benchmark pallet --list > "$LIST_FILE"
+python3 scripts/check-vesting-weights.py --inventory "$LIST_FILE"
+
 # First column, deduplicated, header dropped.
 mapfile -t pallets < <(
-  "$BIN" benchmark pallet --list \
-    | awk -F', ' '/^[a-z0-9_]+, /{print $1}' \
+  awk -F', ' '/^[a-z0-9_]+(::[a-z0-9_]+)*, /{print $1}' "$LIST_FILE" \
     | grep -v '^pallet$' \
     | sort -u
 )
@@ -195,6 +202,17 @@ for pallet in "${pallets[@]}"; do
       continue
       ;;
   esac
+
+  if [ "$pallet" = "pallet_vesting" ]; then
+    # SDK pallet, runtime-owned table: use the CLI's runtime-style template.
+    output="runtime/src/weights/pallet_vesting.rs"
+    "$BIN" benchmark pallet --pallet "$pallet" --extrinsic '*' \
+      --steps "$STEPS" --repeat "$REPEAT" --output "$output"
+    python3 scripts/check-vesting-weights.py "$output"
+    # The parity gate requires the same measured table, including its header.
+    cp "$output" runtime-testnet/src/weights/pallet_vesting.rs
+    continue
+  fi
 
   dir="pallets/$(echo "${pallet#pallet_}" | tr '_' '-')"
   if [ ! -d "$dir" ]; then
@@ -240,12 +258,22 @@ echo "== Benchmarking runtime execution overhead -> runtime/src/weights =="
   --repeat "$OVERHEAD_REPEAT" \
   --weight-path runtime/src/weights
 
+# The runtime parity gate requires the same base-cost measurements, including
+# generated headers, in both runtimes. Do not benchmark these independently.
+cp runtime/src/weights/block_weights.rs runtime-testnet/src/weights/block_weights.rs
+cp runtime/src/weights/extrinsic_weights.rs runtime-testnet/src/weights/extrinsic_weights.rs
+
+echo "== Running 'cargo fmt'"
+cargo fmt
+bash scripts/check-runtime-parity.sh
+
 echo "== Done. Regenerated files: =="
 git diff --stat -- \
   'pallets/*/src/weights.rs' \
   'pallets/*/src/benchmark_weights.rs' \
   'runtime/src/weights/block_weights.rs' \
-  'runtime/src/weights/extrinsic_weights.rs' || true
-
-echo "== Running 'cargo fmt'"
-cargo fmt
+  'runtime/src/weights/extrinsic_weights.rs' \
+  'runtime-testnet/src/weights/block_weights.rs' \
+  'runtime-testnet/src/weights/extrinsic_weights.rs' \
+  'runtime/src/weights/pallet_vesting.rs' \
+  'runtime-testnet/src/weights/pallet_vesting.rs' || true

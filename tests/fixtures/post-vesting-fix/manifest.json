@@ -1,0 +1,141 @@
+{
+  "capture_parent": "f7da5ec7c9d48e96977738811bb843c6653e844b",
+  "source_state": "Uncommitted consolidated review fix. source_inputs_sha256 records the capture snapshot; post_capture_test_only_changes records subsequent test edits. Non-test runtime code is unchanged.",
+  "original_baseline": "../pre-vesting/manifest.json",
+  "original_post_vesting": "../post-vesting-f7da5ec/manifest.json",
+  "capture_command": "cargo test --offline --locked -p quip-protocol-runtime -p quip-testnet-runtime --features metadata-hash --test vesting_capture --test metadata_v16 --test signing_fixture; SKIP_WASM_BUILD unset",
+  "capture_probe_sha256": "7a292cdd05d95128d81e37ba79b25b958248b3c8d191f03b06f06040280ac785",
+  "features": [
+    "default",
+    "metadata-hash"
+  ],
+  "native_wasm_metadata_equal": true,
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+  "source_inputs_sha256": {
+    "runtime/src/apis.rs": "71afcfc17fdd149b386c51099be60ff8601e2c0bc85bd687991bf8aa4f546ca2",
+    "runtime/src/benchmarks.rs": "c8e90fcd4d1923303684a8294596d13c00880f5f3cbb6af852ca2704d058d725",
+    "runtime/src/configs/election.rs": "ee99f2f018d13e143311636837bac32290b1425e0d85a99f46678139005305ee",
+    "runtime/src/configs/governance_matrix.rs": "d905ed691b31062148009a71ed2f14106ae304c4c9fd1a0526a933be00824e95",
+    "runtime/src/configs/mod.rs": "c123a99918bd8ddaa5a7abf18e716584e93d4e07c98c6fc8b3186a42273a29e9",
+    "runtime/src/configs/slashing/tests.rs": "b4282507145b22524317648989634062ab61435a8dbd760298a6aa002eb27b33",
+    "runtime/src/configs/slashing.rs": "e1f8584212af561dd8bf1898b4450cdc24f34753b01b0575be88cb4635a12c22",
+    "runtime/src/configs/staking_rewards.rs": "04c25ea8aeb17607f2e3d2cf32baab629d5833534c99d380244926c8e2c84972",
+    "runtime/src/configs/validator_onboarding.rs": "c2952e1543dadf3fdb3709845b4a15ca0a058a4625fb2ead9c51ffdc4414c4cd",
+    "runtime/src/configs/vesting/tests.rs": "daddf53f73e9a39ff5708ea59690fe9bd3450168e17653e4a23a6721f66eeb82",
+    "runtime/src/configs/vesting.rs": "0492a39b53cd1d5f2d6069038e70337938ad062aba03af530b7bee5ebe8f9108",
+    "runtime/src/genesis_config_presets/mainnet_allocation.rs": "d02d89c4547443f06591ae51e23898d367be9d5190b0d65d23d97ddbd197095e",
+    "runtime/src/genesis_config_presets.rs": "d101fd3cde52a3bfb9df41728188436cc313815edd149bf5a92aa6ed343be1e9",
+    "runtime/src/lib.rs": "8abd4aa083a3efebdfda02e3c7a339858671e435681d95cf7e9246f03568894e",
+    "runtime/src/network_params.rs": "6686c9aed9ceef7b31a1b570014ac3a06e867ca6867d31ecaf73851e17ea93db",
+    "runtime/src/weights/block_weights.rs": "d0c9bdff8d81f79aa37cce8c25fcfd13e3d0e4f69ef37df3755097a5a799f11f",
+    "runtime/src/weights/extrinsic_weights.rs": "36fe2430556a6d7e8deef2100470a4e2868bd891e03b39221396b11c476a8123",
+    "runtime/src/weights/mod.rs": "60283c1a4d6399ba7b86dca081c3776dc4e79019dfe1ed4275dfe02a94be9b8c",
+    "runtime/src/weights/pallet_vesting.rs": "5a67eaf39739a3c2d842e328f5e570fe8c4e6ed942228614c73b96763d571acb",
+    "runtime/Cargo.toml": "a87e82bf6388809783d016565ef90d442b1fb8c829d32f0b80dfa3838ef5e8e6",
+    "runtime/build.rs": "4fd495856ecf66bf2b44224e0bbda6c35710b009a3fe47fd866cc5e0caed97a4",
+    "runtime-testnet/src/apis.rs": "71afcfc17fdd149b386c51099be60ff8601e2c0bc85bd687991bf8aa4f546ca2",
+    "runtime-testnet/src/benchmarks.rs": "c8e90fcd4d1923303684a8294596d13c00880f5f3cbb6af852ca2704d058d725",
+    "runtime-testnet/src/configs/election.rs": "ee99f2f018d13e143311636837bac32290b1425e0d85a99f46678139005305ee",
+    "runtime-testnet/src/configs/governance_matrix.rs": "d905ed691b31062148009a71ed2f14106ae304c4c9fd1a0526a933be00824e95",
+    "runtime-testnet/src/configs/mod.rs": "c123a99918bd8ddaa5a7abf18e716584e93d4e07c98c6fc8b3186a42273a29e9",
+    "runtime-testnet/src/configs/slashing/tests.rs": "b4282507145b22524317648989634062ab61435a8dbd760298a6aa002eb27b33",
+    "runtime-testnet/src/configs/slashing.rs": "e1f8584212af561dd8bf1898b4450cdc24f34753b01b0575be88cb4635a12c22",
+    "runtime-testnet/src/configs/staking_rewards.rs": "04c25ea8aeb17607f2e3d2cf32baab629d5833534c99d380244926c8e2c84972",
+    "runtime-testnet/src/configs/validator_onboarding.rs": "c2952e1543dadf3fdb3709845b4a15ca0a058a4625fb2ead9c51ffdc4414c4cd",
+    "runtime-testnet/src/configs/vesting/tests.rs": "daddf53f73e9a39ff5708ea59690fe9bd3450168e17653e4a23a6721f66eeb82",
+    "runtime-testnet/src/configs/vesting.rs": "0492a39b53cd1d5f2d6069038e70337938ad062aba03af530b7bee5ebe8f9108",
+    "runtime-testnet/src/genesis_config_presets/mainnet_allocation.rs": "d02d89c4547443f06591ae51e23898d367be9d5190b0d65d23d97ddbd197095e",
+    "runtime-testnet/src/genesis_config_presets.rs": "d101fd3cde52a3bfb9df41728188436cc313815edd149bf5a92aa6ed343be1e9",
+    "runtime-testnet/src/lib.rs": "c18564652ff515b9af70a4467cb34ed3d2615a60a49b46ad9e64d946fc11e806",
+    "runtime-testnet/src/network_params.rs": "5c449772798e6e2256b002d594bd097d6213784bf57b362d18e92f3d02c4d717",
+    "runtime-testnet/src/weights/block_weights.rs": "d0c9bdff8d81f79aa37cce8c25fcfd13e3d0e4f69ef37df3755097a5a799f11f",
+    "runtime-testnet/src/weights/extrinsic_weights.rs": "36fe2430556a6d7e8deef2100470a4e2868bd891e03b39221396b11c476a8123",
+    "runtime-testnet/src/weights/mod.rs": "60283c1a4d6399ba7b86dca081c3776dc4e79019dfe1ed4275dfe02a94be9b8c",
+    "runtime-testnet/src/weights/pallet_vesting.rs": "5a67eaf39739a3c2d842e328f5e570fe8c4e6ed942228614c73b96763d571acb",
+    "runtime-testnet/Cargo.toml": "a59179b3f413801707b147409e45546e5b383c7633b91a33f96c0d268c4ad8b2",
+    "runtime-testnet/build.rs": "4fd495856ecf66bf2b44224e0bbda6c35710b009a3fe47fd866cc5e0caed97a4",
+    "Cargo.toml": "527147fb848264f39aa242b0ca1ea5d3120701c6258775bf0deef7bee065ec44",
+    "Cargo.lock": "c22905985774531f9dc6900959c9d1de314d6370b0813467a1662491f0125f7b"
+  },
+  "files": {
+    "quip.scale": {
+      "sha256": "4d578f6fbd10890ff7e4b3a8fe7d9229cc884b749b66baa338d3e65c1b4dfc23",
+      "bytes": 260702
+    },
+    "quip.json": {
+      "sha256": "9fa16024de9da4fd918547ccd7aed1a3037fb577d0e41f46331ec55884354707",
+      "bytes": 1311367
+    },
+    "quip.wasm": {
+      "sha256": "8383413217dfb1194f3e951895d1f41917e5afb970d24bba25c2858332581a97",
+      "bytes": 8937330
+    },
+    "quip-storage.json": {
+      "sha256": "3ddbbe91c5bf6b121dff91e9ff0ea709580f9f3ec897572148a4c7b26f741fdd",
+      "bytes": 9536
+    },
+    "quip-version.scale": {
+      "sha256": "6c72d33b9622db0e1d6eaa31cfa79f66da2e535dec622b5157dbd95ad115a933",
+      "bytes": 232
+    },
+    "quip-testnet.scale": {
+      "sha256": "cca460fe1358540462d7c33094978104e1755341621720f49d518dbfd9e6bda5",
+      "bytes": 260699
+    },
+    "quip-testnet.json": {
+      "sha256": "bad329671dbd2420d2749630bb37e843af9f5b3fc1bbd47ea10d348d2379ecc0",
+      "bytes": 1311523
+    },
+    "quip-testnet.wasm": {
+      "sha256": "eaa865c3d99b9b18b202e8e782a281f2d206468ef7bff623d5910f89c6d4af84",
+      "bytes": 8939076
+    },
+    "quip-testnet-storage.json": {
+      "sha256": "f11769691ac79e10bf4ede5bab9e398b9f720cd750925c4f04a8c2074d72cd4e",
+      "bytes": 9552
+    },
+    "quip-testnet-version.scale": {
+      "sha256": "2941413390b8deaefb4b535ba499c122090b6993c779f67f5b44e0ed85583f7e",
+      "bytes": 240
+    }
+  },
+  "deltas": {
+    "quip": {
+      "metadata": "Only Vesting.MinVestedTransfer value changes, 1_000_000_000 -> 100_000_000_000 base units. All other decoded metadata, including portable IDs, is equal to f7da5ec.",
+      "default_genesis_storage": "Identical to f7da5ec; excludes :code. Relative to pre-vesting ba20b1e there are only the two documented Vesting version keys.",
+      "runtime_version_scale": "Unchanged: spec 120, transaction 7."
+    },
+    "quip-testnet": {
+      "metadata": "Only Vesting.MinVestedTransfer value changes, 1_000_000_000 -> 100_000_000_000 base units. All other decoded metadata, including portable IDs, is equal to f7da5ec.",
+      "default_genesis_storage": "Identical to f7da5ec; excludes :code. Relative to pre-vesting ba20b1e there are only the two documented Vesting version keys.",
+      "runtime_version_scale": "Unchanged: spec 120, transaction 7."
+    }
+  },
+  "retention": "SCALE metadata, default storage and version bytes are committed beside this manifest. Decoded JSON and Wasm blobs retained in vesting-evidence/post-f7da5ec-fix-final; hashes recorded here.",
+  "release_gate": {
+    "issue": "QUI-2101",
+    "owner": "roman@postquant.xyz",
+    "weights": "Provisional SDK 845eb99, not reference-machine measurements. Reference calibration and final release review are pending."
+  },
+  "post_capture_test_only_changes": {
+    "reason": "Two block-number assertions use the explicit BlockNumberProvider API per repository policy. The below-minimum tranche fixture uses a valid duration so only the amount gate can reject it. These edits are cfg(test)-only; all captured artifact hashes are unchanged.",
+    "files": {
+      "runtime/src/configs/vesting/tests.rs": {
+        "capture_sha256": "daddf53f73e9a39ff5708ea59690fe9bd3450168e17653e4a23a6721f66eeb82",
+        "final_sha256": "cd368948ac1365820bbbb85692340a4cf4a087ddc71b0c407742c4639ed0f96f"
+      },
+      "runtime/src/genesis_config_presets/mainnet_allocation.rs": {
+        "capture_sha256": "d02d89c4547443f06591ae51e23898d367be9d5190b0d65d23d97ddbd197095e",
+        "final_sha256": "ce779848024ec4a98ef5171ad68d623efd514aada9f2c7971fee4e7061dd9e3c"
+      },
+      "runtime-testnet/src/configs/vesting/tests.rs": {
+        "capture_sha256": "daddf53f73e9a39ff5708ea59690fe9bd3450168e17653e4a23a6721f66eeb82",
+        "final_sha256": "cd368948ac1365820bbbb85692340a4cf4a087ddc71b0c407742c4639ed0f96f"
+      },
+      "runtime-testnet/src/genesis_config_presets/mainnet_allocation.rs": {
+        "capture_sha256": "d02d89c4547443f06591ae51e23898d367be9d5190b0d65d23d97ddbd197095e",
+        "final_sha256": "ce779848024ec4a98ef5171ad68d623efd514aada9f2c7971fee4e7061dd9e3c"
+      }
+    }
+  }
+}

@@ -8,6 +8,7 @@ pub mod apis;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarks;
 pub mod configs;
+mod network_params;
 pub mod weights;
 
 extern crate alloc;
@@ -265,7 +266,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // with an index-building migration, and `ResultReady` plus `OrderResults`
     // move from `claim_reward` to expiry. Call encodings are unchanged, so
     // `transaction_version` stays at 7.
-    spec_version: 119,
+    // Bumped to 120 for V0 governance. `pallet-sudo` (index 6) is removed, so
+    // Root is reachable only through the council's
+    // `ValidatorAdmission::dispatch_as_root`; pallet index 6 is retired and
+    // must not be reused. Membership changes, including removal of the
+    // council's own members, require 2/3. No call encoding changes, so
+    // `transaction_version` stays at 7.
+    spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,
@@ -427,6 +434,7 @@ pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 pub type Migrations = (
     pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,
     InitializeReviveAccount,
+    configs::slashing::InitializeOffences,
 );
 
 /// Reproduces Revive's genesis-time pallet-account initialization when the
@@ -1672,8 +1680,10 @@ mod runtime {
     #[runtime::pallet_index(5)]
     pub type TransactionPayment = pallet_transaction_payment;
 
-    #[runtime::pallet_index(6)]
-    pub type Sudo = pallet_sudo;
+    // Pallet index 6 is retired. Spec 120 removed `pallet-sudo` so that Root is
+    // reachable only through the council: a 2/3 motion dispatching via
+    // `ValidatorAdmission::dispatch_as_root`. Never reuse index 6 for a new
+    // pallet — its index is part of every stored storage key and extrinsic.
 
     // Include the custom logic from the pallet-template in the runtime.
     #[runtime::pallet_index(7)]
@@ -1724,4 +1734,21 @@ mod runtime {
     pub type Staking = pallet_staking;
     #[runtime::pallet_index(24)]
     pub type Historical = pallet_session::historical;
+    #[runtime::pallet_index(25)]
+    pub type MultiBlockElection = pallet_election_provider_multi_block;
+    #[runtime::pallet_index(26)]
+    pub type MultiBlockElectionVerifier = pallet_election_provider_multi_block::verifier;
+    #[runtime::pallet_index(27)]
+    pub type MultiBlockElectionUnsigned = pallet_election_provider_multi_block::unsigned;
+    #[runtime::pallet_index(28)]
+    pub type MultiBlockElectionSigned = pallet_election_provider_multi_block::signed;
+    #[runtime::pallet_index(29)]
+    pub type Authorship = pallet_authorship;
+    #[runtime::pallet_index(30)]
+    pub type Offences = pallet_offences;
+    #[runtime::pallet_index(31)]
+    pub type SlashPolicy = pallet_slash_policy;
+
+    #[runtime::pallet_index(32)]
+    pub type Vesting = pallet_vesting;
 }

@@ -72,6 +72,11 @@ parameter_types! {
     pub const EpochLength: u64 = 20;
     pub const MinerDeposit: Balance = 100;
     pub const BlockReward: Balance = 50;
+    pub const MinBlockReward: Balance = 1;
+    pub const MaxBlockReward: Balance = 1_000;
+    pub const TargetProofBlocks: u32 = 100;
+    pub const MinTargetProofBlocks: u32 = 80;
+    pub const MaxTargetProofBlocks: u32 = 400;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
 }
@@ -90,6 +95,12 @@ impl pallet_emission_controller::Config for Test {
     type Currency = Balances;
     type Clock = Clock;
     type Unit = ConstU128<1_000_000_000_000>;
+    type AnnualEmission = ConstU128<
+        {
+            pallet_emission_controller::CONTROLLER_ANNUAL_EMISSION_QUIP
+                .saturating_mul(1_000_000_000_000)
+        },
+    >;
     type PotId = PotId;
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = ();
@@ -105,6 +116,12 @@ impl pallet_quantum_pow::Config for Test {
     type EpochLength = EpochLength;
     type MinerDeposit = MinerDeposit;
     type BlockReward = BlockReward;
+    type MinBlockReward = MinBlockReward;
+    type MaxBlockReward = MaxBlockReward;
+    type AdminOrigin = frame_system::EnsureRoot<u64>;
+    type TargetProofBlocks = TargetProofBlocks;
+    type MinTargetProofBlocks = MinTargetProofBlocks;
+    type MaxTargetProofBlocks = MaxTargetProofBlocks;
     type MaxProofsPerBlock = MaxProofsPerBlock;
     type MaxAllowedValues = MaxAllowedValues;
     type CurveCEasyMilli = ConstU32<700>;
