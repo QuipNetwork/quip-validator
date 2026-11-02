@@ -14,6 +14,9 @@ impl Config for Test {
     type GovernanceCall = RuntimeCall;
     type MaxAuthorities = ConstU32<32>;
     type Graduation = ();
+    type OnRemoval = ();
+    type RootCallFilter = frame_support::traits::Everything;
+    type RootCallFilterWeight = ();
     type WeightInfo = ();
 }
 frame_support::parameter_types! { pub Foundation: Vec<u64> = vec![1]; }

@@ -1,0 +1,553 @@
+{
+  "base_commit": "ba20b1e104dce9809c4e939673adcef1b5a884d7",
+  "final_source_tree": "ab5ee794c07c2662e88a384c26c0aab98d9929cf",
+  "features": [
+    "default",
+    "metadata-hash"
+  ],
+  "native_wasm_metadata_equal": true,
+  "capture_command": "cargo test --offline --locked -p quip-protocol-runtime -p quip-testnet-runtime --features metadata-hash --lib --tests (temporary vesting_capture integration test in each runtime; removed before commit)",
+  "before_manifest": "/Users/lazycoder/projects/quip/vesting-evidence/pre-ba20b1e/manifest.json",
+  "capture_probe": "/Users/lazycoder/projects/quip/vesting-evidence/capture.rs",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+  "cargo_lock_sha256": "c22905985774531f9dc6900959c9d1de314d6370b0813467a1662491f0125f7b",
+  "files": {
+    "quip-storage.json": {
+      "sha256": "3ddbbe91c5bf6b121dff91e9ff0ea709580f9f3ec897572148a4c7b26f741fdd",
+      "bytes": 9536
+    },
+    "quip-testnet-storage.json": {
+      "sha256": "f11769691ac79e10bf4ede5bab9e398b9f720cd750925c4f04a8c2074d72cd4e",
+      "bytes": 9552
+    },
+    "quip-testnet-version.scale": {
+      "sha256": "2941413390b8deaefb4b535ba499c122090b6993c779f67f5b44e0ed85583f7e",
+      "bytes": 240
+    },
+    "quip-testnet.json": {
+      "sha256": "bd4953db70528b8cd136318540288f3d680605c4b08a22d7a20f539f2538fdca",
+      "bytes": 1311522
+    },
+    "quip-testnet.scale": {
+      "sha256": "4a2e4efcf14fc247aac8890c4ddf000e19ef4373a71a7fe31af3d33bcebb4502",
+      "bytes": 260699
+    },
+    "quip-testnet.wasm": {
+      "sha256": "81b7be5697b195122dcd3075800a197f68f88b923893dd548c041b4780a98c8b",
+      "bytes": 8939056
+    },
+    "quip-version.scale": {
+      "sha256": "6c72d33b9622db0e1d6eaa31cfa79f66da2e535dec622b5157dbd95ad115a933",
+      "bytes": 232
+    },
+    "quip.json": {
+      "sha256": "f267e465fd59d3fc7a3b469900fe20482f0f8998eabc923be479538caf38a0d9",
+      "bytes": 1311366
+    },
+    "quip.scale": {
+      "sha256": "b897b0045a8e279c515c047663dd7e795d2d0e3f26dd22cb80e8f29f1146a2ce",
+      "bytes": 260702
+    },
+    "quip.wasm": {
+      "sha256": "baf3c7fcd37799ce42ac7c555ab8d31afac811683678429c84a4d3ddc676b536",
+      "bytes": 8937293
+    }
+  },
+  "runtime_version_scale_unchanged": true,
+  "runtime_versions": {
+    "spec_version": 120,
+    "transaction_version": 7
+  },
+  "default_genesis_storage_delta": {
+    "quip": {
+      "added": {
+        "5f27b51b5ec208ee9cb25b55d8728243308ce9615de0775a82f8a94dc3d285a1": "01",
+        "5f27b51b5ec208ee9cb25b55d87282434e7b9012096b41c4eb3aaf947f6ea429": "0000"
+      },
+      "removed": [],
+      "changed_existing": [],
+      "scope": "RuntimeGenesisConfig::default().build_storage().top; excludes :code. New Wasm hashes are recorded separately."
+    },
+    "quip-testnet": {
+      "added": {
+        "5f27b51b5ec208ee9cb25b55d8728243308ce9615de0775a82f8a94dc3d285a1": "01",
+        "5f27b51b5ec208ee9cb25b55d87282434e7b9012096b41c4eb3aaf947f6ea429": "0000"
+      },
+      "removed": [],
+      "changed_existing": [],
+      "scope": "RuntimeGenesisConfig::default().build_storage().top; excludes :code. New Wasm hashes are recorded separately."
+    }
+  },
+  "semantic_delta": {
+    "quip": {
+      "new_pallet": {
+        "name": "Vesting",
+        "storage": {
+          "prefix": "Vesting",
+          "entries": [
+            {
+              "name": "Vesting",
+              "modifier": "Optional",
+              "ty": {
+                "Map": {
+                  "hashers": [
+                    "Blake2_128Concat"
+                  ],
+                  "key": 1,
+                  "value": 565
+                }
+              },
+              "default": [
+                0
+              ],
+              "docs": [
+                " Information regarding the vesting of a given account."
+              ],
+              "deprecation_info": "NotDeprecated"
+            },
+            {
+              "name": "StorageVersion",
+              "modifier": "Default",
+              "ty": {
+                "Plain": 567
+              },
+              "default": [
+                0
+              ],
+              "docs": [
+                " Storage version of the pallet.",
+                "",
+                " New networks start with latest version, as determined by the genesis build."
+              ],
+              "deprecation_info": "NotDeprecated"
+            }
+          ]
+        },
+        "calls": {
+          "ty": 263,
+          "deprecation_info": {}
+        },
+        "event": {
+          "ty": 348,
+          "deprecation_info": {}
+        },
+        "constants": [
+          {
+            "name": "MinVestedTransfer",
+            "ty": 52,
+            "value": [
+              0,
+              202,
+              154,
+              59,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "docs": [
+              " The minimum amount transferred to call `vested_transfer`."
+            ],
+            "deprecation_info": "NotDeprecated"
+          },
+          {
+            "name": "MaxVestingSchedules",
+            "ty": 14,
+            "value": [
+              28,
+              0,
+              0,
+              0
+            ],
+            "docs": [],
+            "deprecation_info": "NotDeprecated"
+          }
+        ],
+        "error": {
+          "ty": 568,
+          "deprecation_info": {}
+        },
+        "associated_types": [],
+        "view_functions": [],
+        "index": 32,
+        "docs": [],
+        "deprecation_info": "NotDeprecated"
+      },
+      "calls": [
+        {
+          "name": "vest",
+          "index": 0
+        },
+        {
+          "name": "vest_other",
+          "index": 1
+        },
+        {
+          "name": "vested_transfer",
+          "index": 2
+        },
+        {
+          "name": "force_vested_transfer",
+          "index": 3
+        },
+        {
+          "name": "merge_schedules",
+          "index": 4
+        },
+        {
+          "name": "force_remove_vesting_schedule",
+          "index": 5
+        }
+      ],
+      "events": [
+        {
+          "name": "VestingCreated",
+          "index": 0
+        },
+        {
+          "name": "VestingUpdated",
+          "index": 1
+        },
+        {
+          "name": "VestingCompleted",
+          "index": 2
+        }
+      ],
+      "errors": [
+        {
+          "name": "NotVesting",
+          "index": 0
+        },
+        {
+          "name": "AtMaxVestingSchedules",
+          "index": 1
+        },
+        {
+          "name": "AmountLow",
+          "index": 2
+        },
+        {
+          "name": "ScheduleIndexOutOfBounds",
+          "index": 3
+        },
+        {
+          "name": "InvalidScheduleParams",
+          "index": 4
+        }
+      ],
+      "outer_enums": "Vesting variant added at index 32 in RuntimeCall, RuntimeEvent, RuntimeError",
+      "existing_metadata": "Graph comparison passes with portable type ID mapping; all baseline registry types visited; existing pallets, calls, layouts, constants, storage and signed extension envelope unchanged."
+    },
+    "quip-testnet": {
+      "new_pallet": {
+        "name": "Vesting",
+        "storage": {
+          "prefix": "Vesting",
+          "entries": [
+            {
+              "name": "Vesting",
+              "modifier": "Optional",
+              "ty": {
+                "Map": {
+                  "hashers": [
+                    "Blake2_128Concat"
+                  ],
+                  "key": 1,
+                  "value": 565
+                }
+              },
+              "default": [
+                0
+              ],
+              "docs": [
+                " Information regarding the vesting of a given account."
+              ],
+              "deprecation_info": "NotDeprecated"
+            },
+            {
+              "name": "StorageVersion",
+              "modifier": "Default",
+              "ty": {
+                "Plain": 567
+              },
+              "default": [
+                0
+              ],
+              "docs": [
+                " Storage version of the pallet.",
+                "",
+                " New networks start with latest version, as determined by the genesis build."
+              ],
+              "deprecation_info": "NotDeprecated"
+            }
+          ]
+        },
+        "calls": {
+          "ty": 263,
+          "deprecation_info": {}
+        },
+        "event": {
+          "ty": 348,
+          "deprecation_info": {}
+        },
+        "constants": [
+          {
+            "name": "MinVestedTransfer",
+            "ty": 52,
+            "value": [
+              0,
+              202,
+              154,
+              59,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "docs": [
+              " The minimum amount transferred to call `vested_transfer`."
+            ],
+            "deprecation_info": "NotDeprecated"
+          },
+          {
+            "name": "MaxVestingSchedules",
+            "ty": 14,
+            "value": [
+              28,
+              0,
+              0,
+              0
+            ],
+            "docs": [],
+            "deprecation_info": "NotDeprecated"
+          }
+        ],
+        "error": {
+          "ty": 568,
+          "deprecation_info": {}
+        },
+        "associated_types": [],
+        "view_functions": [],
+        "index": 32,
+        "docs": [],
+        "deprecation_info": "NotDeprecated"
+      },
+      "calls": [
+        {
+          "name": "vest",
+          "index": 0
+        },
+        {
+          "name": "vest_other",
+          "index": 1
+        },
+        {
+          "name": "vested_transfer",
+          "index": 2
+        },
+        {
+          "name": "force_vested_transfer",
+          "index": 3
+        },
+        {
+          "name": "merge_schedules",
+          "index": 4
+        },
+        {
+          "name": "force_remove_vesting_schedule",
+          "index": 5
+        }
+      ],
+      "events": [
+        {
+          "name": "VestingCreated",
+          "index": 0
+        },
+        {
+          "name": "VestingUpdated",
+          "index": 1
+        },
+        {
+          "name": "VestingCompleted",
+          "index": 2
+        }
+      ],
+      "errors": [
+        {
+          "name": "NotVesting",
+          "index": 0
+        },
+        {
+          "name": "AtMaxVestingSchedules",
+          "index": 1
+        },
+        {
+          "name": "AmountLow",
+          "index": 2
+        },
+        {
+          "name": "ScheduleIndexOutOfBounds",
+          "index": 3
+        },
+        {
+          "name": "InvalidScheduleParams",
+          "index": 4
+        }
+      ],
+      "outer_enums": "Vesting variant added at index 32 in RuntimeCall, RuntimeEvent, RuntimeError",
+      "existing_metadata": "Graph comparison passes with portable type ID mapping; all baseline registry types visited; existing pallets, calls, layouts, constants, storage and signed extension envelope unchanged."
+    }
+  },
+  "validation": {
+    "normal_permanent_tests": 304,
+    "temporary_native_wasm_captures": 2,
+    "metadata_tests_after_final_negative_probe": 26,
+    "benchmark_feature_vesting_tests": 18,
+    "benchmark_feature_genesis_tests": 52,
+    "all_nine_compiled_wasm_vesting_benchmarks": true,
+    "clippy": "Both runtimes, all targets, -D warnings, normal metadata-hash and runtime-benchmarks; lint used SKIP_WASM_BUILD=1, real Wasm built and tested separately",
+    "parity": "34 files, no new exception",
+    "negative_probes": [
+      "Root force transfer gate removal",
+      "Root force remove gate removal",
+      "allocation validation bypass",
+      "vesting benchmark registration removal",
+      "unexpected genesis storage key",
+      "old pallet index",
+      "old call index",
+      "Vesting index",
+      "signed-extension identifier",
+      "old constant byte",
+      "weight signature/template/missing function",
+      "copy/parity workflow failure",
+      "testnet-only push staging"
+    ],
+    "not_run": [
+      "full workspace cargo test/clippy",
+      "all-pallet benchmark preflight",
+      "reference-machine regeneration",
+      "new candidate node live-spec boot/restart smoke",
+      "MR pipeline on candidate"
+    ]
+  },
+  "release_gate": {
+    "issue": "QUI-2101",
+    "url": "https://linear.app/quip-network/issue/QUI-2101/vesting-release-gate-reference-machine-weights-and-metadata-re",
+    "owner": "roman@postquant.xyz",
+    "pending": "Reference-machine weights at MaxLocks 50/schedules 28, final release metadata/storage/signing review; all real allocation terms remain unresolved."
+  },
+  "validation_evidence": {
+    "validation/quip-vesting-ba20b1e-mutations.log": {
+      "sha256": "9481fd9c8d50667d4293e061054bc7d144d726c18498fc38610f896e97c40fd9",
+      "bytes": 136
+    },
+    "validation/quip-vesting-baseline-ba20b1e.log": {
+      "sha256": "15c368c04e8a8b65ddeeb5304ce3d0fbeb523c4a6bf44888123fa99f4a2c0a05",
+      "bytes": 867
+    },
+    "validation/quip-vesting-benchmark-build.log": {
+      "sha256": "f2db5d19e35884d3c696d74ad600d0a60d7792b81d81d108d3aa3274cb5402c6",
+      "bytes": 2989
+    },
+    "validation/quip-vesting-benchmark-genesis.log": {
+      "sha256": "44ed755c65279ec8a74aa337df601500a3bcd03894d69045788071093ad705ec",
+      "bytes": 5520
+    },
+    "validation/quip-vesting-benchmark-mutation.py": {
+      "sha256": "224dba36357c63c7989d08859358643b2943fd27a17b359ff7c677546217a993",
+      "bytes": 1359
+    },
+    "validation/quip-vesting-benchmark-tests.log": {
+      "sha256": "ee8671c31a9eb3a477bec872ef92b74bcedfbdf68ea851d23d4d2ce3e1de61f7",
+      "bytes": 4238
+    },
+    "validation/quip-vesting-clippy-benchmarks.log": {
+      "sha256": "327a188b475dfa81ff5e0aa1dffbbf537e9146cc4549982fa75b86f6030aebfd",
+      "bytes": 3058
+    },
+    "validation/quip-vesting-final-metadata.log": {
+      "sha256": "ff515183e7b9eed5982a53f10c65a588bc82cb07941411b7b6063e7b8aa4c166",
+      "bytes": 2675
+    },
+    "validation/quip-vesting-final-review-clippy.log": {
+      "sha256": "d1cb5da73ebc2c14cc847956cddf19f0a5ad7576be65ca1153454d34cdc2d686",
+      "bytes": 291
+    },
+    "validation/quip-vesting-inherited-live-gates.log": {
+      "sha256": "eee5212074649ad4fac48de3fe007eff9210b2e39767d25ce1369e7173846dc0",
+      "bytes": 1383
+    },
+    "validation/quip-vesting-mutation-allocation.log": {
+      "sha256": "816fd95ee58c33a3aa506e06a4062ad6f709d2777b425121cd998006915b54ef",
+      "bytes": 19185
+    },
+    "validation/quip-vesting-mutation-benchmark-registration.log": {
+      "sha256": "63b3dc3c33456b0ff87cf65817f217f4ce4bce209324d608d2eb88daf5df88ed",
+      "bytes": 1048
+    },
+    "validation/quip-vesting-mutation-benchmark-restored.log": {
+      "sha256": "24ab2247fcdce370b292cbead65d706c18488f4d18a1acdd56bca03b7016ffcf",
+      "bytes": 515
+    },
+    "validation/quip-vesting-mutation-root-remove.log": {
+      "sha256": "4884dc999515ae3ddb455f29820c7e383fd486bc9f383b4ebca465294739ca1d",
+      "bytes": 1201
+    },
+    "validation/quip-vesting-mutation-root-transfer.log": {
+      "sha256": "fea150ee00f5d5a05a947da5a7a32f9950beff36ac8927311d7864c77009ec1a",
+      "bytes": 1201
+    },
+    "validation/quip-vesting-mutation-storage-restored.log": {
+      "sha256": "edf63fa22c58b81ac400218b8bf42d8d17d7eacf86424908b40476f3d9fcceb3",
+      "bytes": 484
+    },
+    "validation/quip-vesting-mutation-storage.log": {
+      "sha256": "f728ebf45bd01ab380994d28f1383f28db9c3eabaee2ec199b77b737aa6f49ca",
+      "bytes": 17652
+    },
+    "validation/quip-vesting-mutations.py": {
+      "sha256": "9c6440d3a3b0354449808f40273837c7d999d64fd8da6ef5a8b292f6c4442c47",
+      "bytes": 1822
+    },
+    "validation/quip-vesting-parity-negatives.log": {
+      "sha256": "e27408ccd14bfb3250a33203868a5ada5cc35ccaa3395c480f6df54c39c9c1e6",
+      "bytes": 965
+    },
+    "validation/quip-vesting-preflight.log": {
+      "sha256": "4c32dbd31a07b87af725c3e8739380036b20596987f7187c8110cc2708fe68af",
+      "bytes": 13896
+    },
+    "validation/quip-vesting-real-wasm-tests.log": {
+      "sha256": "669d5c69ccf293b2c5e065f4719023807aec2a84e8475f4b189cc85b9f6f3b83",
+      "bytes": 39328
+    },
+    "validation/quip-vesting-storage-mutation.py": {
+      "sha256": "780215dddde79d2f3843770aa261acd50ee78a12c02dcdb46ef83dbd3c7e4679",
+      "bytes": 1472
+    },
+    "validation/quip-vesting-weight-workflow.log": {
+      "sha256": "ff23a374463982779eaf101b455b1b25edbf401e33c7080dbb60bc30e8e0ed6e",
+      "bytes": 359
+    },
+    "validation/quip-vesting-weight-workflow.py": {
+      "sha256": "a07533941ed2565dbb87641a79392bcdbc67e829052df6a33ab1f97e84ff6913",
+      "bytes": 4807
+    }
+  }
+}

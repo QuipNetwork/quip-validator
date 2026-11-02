@@ -207,6 +207,8 @@ esac
 check_quantum_pow_wrapper pallets/quantum-pow/src/weights.rs
 check_quantum_compute_mempool_wrapper pallets/quantum-compute-mempool/src/weights.rs
 
+python3 scripts/check-vesting-weights.py --self-test
+
 echo "== Building debug node with runtime-benchmarks =="
 cargo build --features runtime-benchmarks -p quip-network-node
 
@@ -216,14 +218,15 @@ trap 'rm -rf "$OUTPUT_DIR"' EXIT
 
 LIST_FILE="$OUTPUT_DIR/benchmarks.csv"
 "$BIN" benchmark pallet --list > "$LIST_FILE"
+python3 scripts/check-vesting-weights.py --inventory "$LIST_FILE"
 
 mapfile -t pallets < <(
-  awk -F', ' '/^[a-z0-9_]+, / && $1 != "pallet" {print $1}' "$LIST_FILE" \
+  awk -F', ' '/^[a-z0-9_]+(::[a-z0-9_]+)*, / && $1 != "pallet" {print $1}' "$LIST_FILE" \
     | sort -u
 )
 
 benchmark_count="$(
-  awk -F', ' '/^[a-z0-9_]+, / && $1 != "pallet" {count++} END {print count + 0}' \
+  awk -F', ' '/^[a-z0-9_]+(::[a-z0-9_]+)*, / && $1 != "pallet" {count++} END {print count + 0}' \
     "$LIST_FILE"
 )"
 
@@ -236,6 +239,10 @@ echo "== Discovered $benchmark_count benchmarks across ${#pallets[@]} pallets ==
 
 for pallet in "${pallets[@]}"; do
   output="$OUTPUT_DIR/$pallet.rs"
+  template_args=(--template .maintain/frame-weight-template.hbs)
+  if [ "$pallet" = "pallet_vesting" ]; then
+    template_args=()
+  fi
   extra_args=()
   if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
     extra_args=(--extra)
@@ -247,11 +254,18 @@ for pallet in "${pallets[@]}"; do
     --steps "$STEPS" \
     --repeat "$REPEAT" \
     --min-duration 0 \
-    --template .maintain/frame-weight-template.hbs \
+    "${template_args[@]}" \
     --output "$output"
 
   if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
     bash scripts/run-benchmarks.sh --verify-regenerated-mempool "$output"
+  fi
+
+  if [ "$pallet" = "pallet_vesting" ]; then
+    # Check all nine external-trait signatures, including while the tracked
+    # module still aliases explicitly provisional upstream weights.
+    python3 scripts/check-vesting-weights.py "$output"
+    continue
   fi
 
   pallet_dir="pallets/$(echo "${pallet#pallet_}" | tr '_' '-')"

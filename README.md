@@ -225,6 +225,39 @@ template and note the following:
   macro, which is part of the [core FRAME pallet
   library](https://docs.substrate.io/reference/frame-pallets/#system-pallets).
 
+### Custody vesting
+
+Both runtimes include stock vesting at pallet index 32. Mainnet allocation
+amounts, custody identity, recipients and tranche terms remain unresolved and
+block mainnet export. Genesis creates no vesting schedules; later signed
+multisig custody transfers issue one schedule per tranche.
+
+Vesting constrains the recipient's **total balance**, including held stake:
+ordinary transfers preserve `total >= frozen`. Held stake discounts the amount
+that must stay free, so a pre-bonded account with enough held stake can transfer
+a new grant immediately, even before its vesting start. Both initial `bond`
+and `bond_extra` from vested funds are intentionally allowed. Guaranteeing that
+the grant itself stays illiquid requires a new owner decision and a hold-based
+design; the current pallet does not provide that guarantee.
+
+The minimum vested transfer is `100 * EXISTENTIAL_DEPOSIT` (0.1 QUIP). This raises
+the cost of filling an account's 28 schedule slots: at the former ED floor,
+28 × ED (0.028 QUIP) could fill them, while council Root force-remove is denied.
+The higher floor prices this attack; it does not prevent it. Completed schedules
+can be cleaned up with `vest`/`vest_other`; merging requires the recipient.
+
+The immutable pre-vesting evidence is in
+[`tests/fixtures/pre-vesting/manifest.json`](tests/fixtures/pre-vesting/manifest.json).
+The original `f7da5ec` post-vesting capture is preserved in
+[`tests/fixtures/post-vesting-f7da5ec/manifest.json`](tests/fixtures/post-vesting-f7da5ec/manifest.json);
+its validation claims predate the review corrections above. The corrected
+100×ED capture is recorded separately in
+[`tests/fixtures/post-vesting-fix/manifest.json`](tests/fixtures/post-vesting-fix/manifest.json).
+SDK weights remain provisional until the reference-machine run and final
+metadata/storage/signing review tracked by
+[QUI-2101](https://linear.app/quip-network/issue/QUI-2101/vesting-release-gate-reference-machine-weights-and-metadata-re),
+owned by `roman@postquant.xyz`.
+
 ### Pallets
 
 The runtime in this project is constructed using many FRAME pallets that ship
@@ -340,41 +373,77 @@ Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 ## Public testnet
 
 `quip-testnet` is the live public testnet ("AGLS" tokens, 12 decimals,
-EIP-155 `20033`). Omitting `--chain` selects this preset. The canonical
-genesis is baked into the `v0.3.0+` binary and also published as a raw JSON
-file at `nodes.quip.network/chain-specs/aglais-network.json`.
+EIP-155 `20033`). Omitting `--chain`, or using `quip-testnet`, `quip_testnet`
+or `testnet`, loads the exact raw artifact embedded from
+[`chain-specs/quip-testnet.json`](chain-specs/quip-testnet.json).
+Its historical runtime and genesis storage are independent of the runtime
+compiled into a new node binary.
 
-### Quickstart (Docker)
+The file is a byte-for-byte copy of the public testnet raw spec published as
+[`chain-specs/aglais-network.json`](https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/aglais-network.json)
+in the `nodes.quip.network` repository. It is vendored here as
+`quip-testnet.json` because the local filename identifies the network it
+serves; the upstream name refers to the same network under its older AGLS
+label. The upstream file's SHA-256 was verified against GitLab's reported
+content hash at upstream commit
+`d65ab5b7ad62dad2de603c2611c14a72b24c1537`.
+Its pinned SHA-256 is
+`0aeeddaf5b546a491d96c35fd636614c6ab42d4e5d9724126182b52c8c694ad4`;
+its genesis hash is
+`0x542a9915acf840b8940d35ca6de242f669a0c6e3b40f9a8d8c14b9bf7b8ebecb`.
+The blocking `live-testnet-spec` CI job checks the file's exact bytes,
+including formatting. Node tests check all four aliases and the genesis hash.
+
+The registered runtime `quip_testnet` preset remains available through
+GenesisBuilder for policy auditing. Exporting that preset with a newly
+compiled runtime does **not** reproduce the published live genesis.
+`dev`, `local`, `local3` and `rehearsal` continue to use their runtime builders.
+The unfinished `quip-mainnet` and `quip-testnet-relaunch` presets have no
+built-in node chain aliases.
+
+### Quickstart (built node)
 
 ```sh
-# Pull the matching release image
-docker pull registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0
-
-# Live public testnet (EIP-155 20033). Omit --chain for the same preset.
-docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
-  registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0 \
-  --chain=quip-testnet --base-path=/data \
-  --name="my-quip-node"
+cargo build --release -p quip-network-node
+# Live public testnet (EIP-155 20033). Omit --chain for the same artifact.
+./target/release/quip-network-node --chain=quip-testnet --base-path=./quip-data
 ```
 
 The three canonical bootnodes (`bootnode-{1,2,3}.aglais.quip.network`) are
-embedded in the chain spec, so peer discovery happens automatically.
+embedded in the raw file, with the live protocol ID `agls-network` and AGLS
+properties unchanged.
 
-### Using the hosted raw chain spec
+### Using the raw file with an existing image
 
-Alternatively, fetch the published JSON spec from `nodes.quip.network` and
-pass its path to `--chain`. That file is the live public testnet
-(EIP-155 `20033`).
+Explicit file loading also works with existing images; those images do not
+acquire this new embedded-artifact behavior merely because this repository
+changed. Validate the checked-out artifact before using its path:
 
 ```sh
-curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/aglais-network.json \
-    -o aglais-network.json
+python3 scripts/check-live-testnet-spec.py
 
-# Live public testnet JSON (EIP-155 20033)
-docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
+docker run --rm -v "$PWD/chain-specs:/spec:ro" -v quip-data:/data \
+  -p 9944:9944 -p 30333:30333 \
   registry.gitlab.com/quip.network/quip-validator/quip-network-node:v0.3.0 \
-  --chain=/spec/aglais-network.json --base-path=/data
+  --chain=/spec/quip-testnet.json --base-path=/data
 ```
+
+The vendored path represents the public network currently selected by the
+four aliases. A future approved relaunch must replace the artifact and update
+its checksum, genesis-hash tests and provenance in the same reviewed activation
+commit. The old artifact remains in Git history and release provenance. A new
+genesis requires fresh databases; this change does not activate a relaunch.
+
+CI also starts a non-validator against a temporary copy with **only bootnodes
+removed**, checks its genesis over RPC, and restarts the same genesis-only DB.
+Isolation relies on empty bootnodes and reserved-peer lists, disabled mDNS,
+and disabled ordinary peers. The pinned litep2p backend still runs periodic
+Kademlia queries. The smoke test therefore verifies empty bootnodes before
+launch, observes at least ten seconds after RPC readiness, requires a Kademlia
+query log marker, and rejects outbound dial logs across the full run. Missing
+discovery logging fails the smoke test instead of silently shortening coverage.
+This smoke test checks startup and DB reopen, not the shipped peer list, live
+sync, consensus, or compatibility with an existing production DB.
 
 ### Running a validator
 

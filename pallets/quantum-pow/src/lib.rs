@@ -150,6 +150,17 @@ pub mod pallet {
     #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
+    /// Council-set qblock reward. `None` keeps the runtime constant, so an
+    /// unset chain behaves exactly as it did before this storage existed.
+    #[pallet::storage]
+    pub type BlockRewardOverride<T: Config> = StorageValue<_, BalanceOf<T>, OptionQuery>;
+
+    /// Council-set round-length target, in blocks. `None` keeps the runtime
+    /// constant. Both the overdue decay gate and the hardening rate band read
+    /// it, so changing it retunes difficulty in both directions.
+    #[pallet::storage]
+    pub type TargetProofBlocksOverride<T: Config> = StorageValue<_, u32, OptionQuery>;
+
     #[pallet::config]
     pub trait Config: frame_system::Config + pallet_balances::Config {
         #[allow(deprecated)]
@@ -175,8 +186,29 @@ pub mod pallet {
         type EpochLength: Get<BlockNumberFor<Self>>;
         #[pallet::constant]
         type MinerDeposit: Get<BalanceOf<Self>>;
+        /// Reward paid for winning a qblock when no council override is set.
         #[pallet::constant]
         type BlockReward: Get<BalanceOf<Self>>;
+        /// Inclusive lower bound accepted by `set_block_reward`.
+        #[pallet::constant]
+        type MinBlockReward: Get<BalanceOf<Self>>;
+        /// Inclusive upper bound accepted by `set_block_reward`.
+        #[pallet::constant]
+        type MaxBlockReward: Get<BalanceOf<Self>>;
+        /// Origin allowed to change protocol parameters (the block reward and
+        /// the round-length target).
+        type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+        /// Round length the difficulty controller aims for, in blocks, when no
+        /// council override is set. Production uses 100.
+        #[pallet::constant]
+        type TargetProofBlocks: Get<u32>;
+        /// Inclusive lower bound accepted by `set_target_proof_blocks`. Must sit
+        /// above the fast-proof anchor, or the hardening band has no interior.
+        #[pallet::constant]
+        type MinTargetProofBlocks: Get<u32>;
+        /// Inclusive upper bound accepted by `set_target_proof_blocks`.
+        #[pallet::constant]
+        type MaxTargetProofBlocks: Get<u32>;
 
         /// Pays from a prefunded subnet pot; never mints outside the controller.
         type RewardPayment: MiningReward<Self::AccountId, BalanceOf<Self>>;
@@ -304,6 +336,18 @@ pub mod pallet {
             node_count: u32,
             edge_count: u32,
         },
+        /// The council changed the qblock reward. Carries both values so a
+        /// client can reconcile against `BlockRewardOverride` without a diff.
+        BlockRewardChanged {
+            old: BalanceOf<T>,
+            new: BalanceOf<T>,
+        },
+        /// The council changed the round-length target. Difficulty eased or
+        /// hardened under the old target until this block.
+        TargetProofBlocksChanged {
+            old: u32,
+            new: u32,
+        },
         DifficultyUpdated {
             /// The topology whose difficulty baseline changed. Difficulty is
             /// per-topology, so consumers need this to attribute the update.
@@ -346,6 +390,11 @@ pub mod pallet {
     #[pallet::error]
     pub enum Error<T> {
         MinerAlreadyRegistered,
+        /// The requested block reward is outside `MinBlockReward..=MaxBlockReward`.
+        BlockRewardOutOfBounds,
+        /// The requested round-length target is outside
+        /// `MinTargetProofBlocks..=MaxTargetProofBlocks`.
+        TargetProofBlocksOutOfBounds,
         MinerNotRegistered,
         TopologyAlreadyRegistered,
         TopologyNotRegistered,
@@ -557,12 +606,34 @@ pub mod pallet {
             Ok(())
         }
 
+        fn integrity_test() {
+            // The hardening band interpolates between the fast anchor and the
+            // target, so the target must leave room above the anchor; and the
+            // default must be reachable through the council bounds.
+            let min = T::MinTargetProofBlocks::get();
+            let max = T::MaxTargetProofBlocks::get();
+            let default = T::TargetProofBlocks::get();
+            assert!(
+                min as u64 > crate::difficulty::FAST_PROOF_BLOCKS,
+                "MinTargetProofBlocks must exceed FAST_PROOF_BLOCKS"
+            );
+            assert!(
+                min <= default && default <= max,
+                "default target out of bounds"
+            );
+            assert!(
+                T::MinBlockReward::get() <= T::BlockReward::get()
+                    && T::BlockReward::get() <= T::MaxBlockReward::get(),
+                "default block reward out of bounds"
+            );
+        }
+
         fn on_finalize(n: BlockNumberFor<T>) {
             let Some(record) = BlockBestProof::<T>::take() else {
                 return;
             };
 
-            let reward = T::RewardPayment::pay(&record.miner, T::BlockReward::get());
+            let reward = T::RewardPayment::pay(&record.miner, Self::block_reward());
 
             if let Some(mut miner) = Miners::<T>::get(&record.miner) {
                 miner.proofs_won = miner.proofs_won.saturating_add(1);
@@ -600,6 +671,7 @@ pub mod pallet {
                     mining_time_blocks,
                     curve,
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
+                    Self::target_proof_blocks(),
                 ),
                 None => {
                     frame_support::defensive!(
@@ -896,6 +968,48 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set the qblock reward paid to the winning miner.
+        ///
+        /// Council business, not Root: the payout is a protocol parameter with a
+        /// bounded range, and a runtime upgrade per tweak is too slow for
+        /// retuning. Bounds are `MinBlockReward..=MaxBlockReward`; the value is
+        /// paid on the next winning proof and never applies retroactively.
+        #[pallet::call_index(9)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
+        pub fn set_block_reward(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
+            T::AdminOrigin::ensure_origin(origin)?;
+            ensure!(
+                amount >= T::MinBlockReward::get() && amount <= T::MaxBlockReward::get(),
+                Error::<T>::BlockRewardOutOfBounds
+            );
+            let old = Self::block_reward();
+            BlockRewardOverride::<T>::put(amount);
+            Self::deposit_event(Event::BlockRewardChanged { old, new: amount });
+            Ok(())
+        }
+
+        /// Set the round length the difficulty controller aims for, in blocks.
+        ///
+        /// Two effects, both immediate on read: decay does not start until a
+        /// round has run `blocks` blocks, and the hardening band's slow anchor
+        /// moves with it. Raising it makes rounds slower and gentler, lowering
+        /// it makes them faster and harder. Bounds keep the target strictly
+        /// above the fast-proof anchor.
+        #[pallet::call_index(10)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(2, 2))]
+        pub fn set_target_proof_blocks(origin: OriginFor<T>, blocks: u32) -> DispatchResult {
+            T::AdminOrigin::ensure_origin(origin)?;
+            ensure!(
+                blocks >= T::MinTargetProofBlocks::get()
+                    && blocks <= T::MaxTargetProofBlocks::get(),
+                Error::<T>::TargetProofBlocksOutOfBounds
+            );
+            let old = Self::target_proof_blocks();
+            TargetProofBlocksOverride::<T>::put(blocks);
+            Self::deposit_event(Event::TargetProofBlocksChanged { old, new: blocks });
+            Ok(())
+        }
+
         #[pallet::call_index(4)]
         #[pallet::weight({
             // Calculate weight based on actual proof dimensions to prevent under-charging
@@ -1125,7 +1239,20 @@ pub mod pallet {
                 LastProofBlock::<T>::get().saturated_into::<u32>(),
                 T::EpochLength::get().saturated_into::<u32>(),
                 Self::energy_curve_for(topology_hash),
+                Self::target_proof_blocks(),
             )
+        }
+
+        /// Reward paid for winning a qblock: the council override when one is
+        /// set, otherwise the runtime constant.
+        pub fn block_reward() -> BalanceOf<T> {
+            BlockRewardOverride::<T>::get().unwrap_or_else(T::BlockReward::get)
+        }
+
+        /// Round-length target in blocks: the council override when one is set,
+        /// otherwise the runtime constant.
+        pub fn target_proof_blocks() -> u32 {
+            TargetProofBlocksOverride::<T>::get().unwrap_or_else(T::TargetProofBlocks::get)
         }
 
         pub fn latest_qblock_id() -> Option<u64> {

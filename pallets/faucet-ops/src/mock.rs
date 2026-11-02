@@ -74,6 +74,12 @@ impl pallet_emission_controller::Config for Test {
     type Currency = Balances;
     type Clock = Clock;
     type Unit = ConstU128<1_000_000_000_000>;
+    type AnnualEmission = ConstU128<
+        {
+            pallet_emission_controller::CONTROLLER_ANNUAL_EMISSION_QUIP
+                .saturating_mul(1_000_000_000_000)
+        },
+    >;
     type PotId = PotId;
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = ();

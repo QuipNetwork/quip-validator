@@ -15,11 +15,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod mainnet_allocation;
+use mainnet_allocation::MainnetAllocation;
+
 use crate::{
     AccountId, BalancesConfig, QuantumComputeMempoolConfig, RuntimeGenesisConfig, SessionConfig,
-    SessionKeys, SudoConfig, BABE_GENESIS_EPOCH_CONFIG,
+    SessionKeys, BABE_GENESIS_EPOCH_CONFIG,
 };
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeSet, format, string::String, vec, vec::Vec};
+use codec::Encode;
 use frame_support::build_struct_json_patch;
 use quip_crypto_primitives::substrate::ed25519_fndsa512::{
     Pair as HybridGrandpaPair, Public as HybridGrandpaPublic,
@@ -40,11 +44,11 @@ use sp_keyring::Sr25519Keyring;
 pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
 pub const REHEARSAL_RUNTIME_PRESET: &str = "validator_rehearsal";
 
-/// Identifier for the public quip-testnet genesis preset.
+/// Identifier for the historical public testnet policy preset, kept for auditing.
 ///
-/// The raw chain spec exported from this preset is the canonical
-/// `aglais-network.json` published by `nodes.quip.network`. The preset itself
-/// is kept in the binary so the genesis can be re-derived and audited.
+/// Its output uses the caller's runtime artifact; rebuilding it does not reproduce
+/// the published live genesis. The node's live aliases instead load the exact
+/// byte-pinned `chain-specs/quip-testnet.json`, including its historical runtime.
 pub const QUIP_TESTNET_RUNTIME_PRESET: &str = "quip_testnet";
 
 fn babe_authority_from_seed(seed: &str) -> BabeId {
@@ -116,8 +120,13 @@ fn tx_account_from_hex(hex: &str, source: &str) -> AccountId {
 struct GenesisRoles {
     foundation_members: Vec<AccountId>,
     faucet_authority: AccountId,
-    sudo_key: Option<AccountId>,
     ising_spec_builder: AccountId,
+    /// Reject a genesis where a council seat is also a validator operator.
+    /// Local presets keep the single-key convenience and leave this off; the
+    /// mainnet preset must turn it on — V0 governance exists to separate the
+    /// two roles, and a chain that starts with council == operators cannot
+    /// reach that state without a governance change.
+    require_council_disjoint: bool,
 }
 
 // Small local presets retain their single-key convenience. Rehearsal and the
@@ -127,14 +136,62 @@ fn development_roles() -> GenesisRoles {
     GenesisRoles {
         foundation_members: vec![alice.clone()],
         faucet_authority: alice.clone(),
-        sudo_key: Some(alice.clone()),
         ising_spec_builder: alice,
+        require_council_disjoint: false,
+    }
+}
+
+/// Council seats must not double as validator operators.
+fn assert_council_disjoint(
+    council: &[AccountId],
+    operators: &[AccountId],
+    require: bool,
+) -> Result<(), &'static str> {
+    if !require {
+        return Ok(());
+    }
+    match council.iter().find(|who| operators.contains(who)) {
+        Some(_) => Err("council member is also a validator operator"),
+        None => Ok(()),
     }
 }
 
 fn testnet_genesis(
     initial_authorities: Vec<(AccountId, BabeId, GrandpaId)>,
     endowed_accounts: Vec<AccountId>,
+    roles: GenesisRoles,
+    chain_id: u64,
+    minimum_validator_count: u32,
+) -> Value {
+    let funding = GenesisFunding {
+        balances: endowed_accounts
+            .into_iter()
+            .map(|a| (a, TEST_CURRENCY_ENDOWMENT))
+            .collect(),
+        faucet: pallet_faucet_ops::GenesisConfig {
+            state: pallet_faucet_ops::FaucetState::Enabled,
+            authority: Some(roles.faucet_authority.clone()),
+        },
+        faucet_budget: 1_000_000_000 * crate::UNIT,
+    };
+    network_genesis(
+        initial_authorities,
+        funding,
+        roles,
+        chain_id,
+        minimum_validator_count,
+    )
+}
+
+struct GenesisFunding {
+    balances: Vec<(AccountId, crate::Balance)>,
+    faucet: pallet_faucet_ops::GenesisConfig<crate::Runtime>,
+    faucet_budget: u128,
+}
+
+fn network_genesis(
+    initial_authorities: Vec<(AccountId, BabeId, GrandpaId)>,
+    funding: GenesisFunding,
     roles: GenesisRoles,
     chain_id: u64,
     minimum_validator_count: u32,
@@ -151,8 +208,21 @@ fn testnet_genesis(
     let unique: alloc::collections::BTreeSet<_> = approved.iter().collect();
     assert_eq!(unique.len(), approved.len(), "duplicate validator stash");
     assert!(
-        approved.iter().all(|who| endowed_accounts.contains(who)),
+        approved.iter().all(|who| funding
+            .balances
+            .iter()
+            .any(|(account, balance)| account == who && *balance > VALIDATOR_BOND)),
         "every validator must be endowed above its bond"
+    );
+    assert_eq!(
+        funding
+            .balances
+            .iter()
+            .map(|(a, _)| a)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        funding.balances.len(),
+        "duplicate endowed account"
     );
     assert!(
         !roles.foundation_members.is_empty(),
@@ -164,12 +234,23 @@ fn testnet_genesis(
         roles.foundation_members.len(),
         "duplicate Foundation member"
     );
+    if let Err(why) = assert_council_disjoint(
+        &roles.foundation_members,
+        &approved,
+        roles.require_council_disjoint,
+    ) {
+        panic!("{why}");
+    }
     // SDK benchmark setups require low-bond validators and nominators. Keep
     // the production chainspec limits unchanged in every non-benchmark build.
     #[cfg(not(feature = "runtime-benchmarks"))]
-    let (max_nominator_count, min_validator_bond) = (Some(0u32), 100 * crate::UNIT);
+    let (max_nominator_count, min_validator_bond, min_nominator_bond) = (
+        Some(crate::configs::election::MaxNominators::get()),
+        2_000 * crate::UNIT,
+        10 * crate::UNIT,
+    );
     #[cfg(feature = "runtime-benchmarks")]
-    let (max_nominator_count, min_validator_bond) = (None::<u32>, 0u128);
+    let (max_nominator_count, min_validator_bond, min_nominator_bond) = (None::<u32>, 0u128, 0u128);
     build_struct_json_patch!(RuntimeGenesisConfig {
         foundation_membership: pallet_membership::GenesisConfig {
             members: roles
@@ -188,12 +269,13 @@ fn testnet_genesis(
             max_validator_count: None,
             max_nominator_count: max_nominator_count,
             min_validator_bond: min_validator_bond,
+            min_nominator_bond: min_nominator_bond,
             stakers: approved
                 .iter()
                 .map(|who| (
                     who.clone(),
                     who.clone(),
-                    100 * crate::UNIT,
+                    2_000 * crate::UNIT,
                     pallet_staking::StakerStatus::Validator
                 ))
                 .collect(),
@@ -205,11 +287,7 @@ fn testnet_genesis(
             ..Default::default()
         },
         balances: BalancesConfig {
-            balances: endowed_accounts
-                .iter()
-                .cloned()
-                .map(|k| (k, 1u128 << 60))
-                .collect::<Vec<_>>(),
+            balances: funding.balances,
         },
         // The authority sets for BABE and GRANDPA are populated by
         // `pallet_session::GenesisConfig::build` via the registered
@@ -244,13 +322,13 @@ fn testnet_genesis(
         quantum_compute_mempool: QuantumComputeMempoolConfig {
             default_ising_spec_builder: Some(roles.ising_spec_builder),
         },
-        faucet_ops: pallet_faucet_ops::GenesisConfig {
-            state: pallet_faucet_ops::FaucetState::Enabled,
-            authority: Some(roles.faucet_authority),
-        },
+        faucet_ops: funding.faucet,
         emission_controller: pallet_emission_controller::GenesisConfig {
             enabled: true,
             start_at: None,
+            // Split the controller's 30M QUIP/year equally between these pots.
+            // Staking mints its separate 10M share on claims; adding a staking
+            // route here would double-count that share of the 40M envelope.
             routes: vec![
                 (
                     pallet_emission_controller::ISING_SUBNET,
@@ -261,14 +339,362 @@ fn testnet_genesis(
                     sp_runtime::Perbill::from_percent(50)
                 ),
             ],
-            // Test currency only; mainnet MUST use zero plus the disabled fuse.
-            faucet_budget: 1_000_000_000 * crate::UNIT,
+            faucet_budget: funding.faucet_budget,
             ..Default::default()
         },
-        sudo: SudoConfig {
-            key: roles.sudo_key
-        },
     })
+}
+
+/// Mainnet export remains blocked until QUI-2080 provisions real accounts and session keys.
+pub const QUIP_MAINNET_RUNTIME_PRESET: &str = "quip-mainnet";
+pub const MAINNET_CHAIN_ID: u64 = 20_049;
+const VALIDATOR_BOND: crate::Balance = 2_000 * crate::UNIT;
+const TEST_CURRENCY_ENDOWMENT: crate::Balance = 1u128 << 60;
+
+// Canonical labels also define the reserved sentinel set. Keep this independent
+// of the unresolved marker so clearing the marker cannot hide placeholder seats.
+const MAINNET_COUNCIL_LABELS: [&str; 6] = ["Rick", "Colton", "Vik", "Roman", "David", "BVI Admin"];
+pub const MAINNET_COUNCIL_PLACEHOLDERS: &[&str] =
+    &["Rick", "Colton", "Vik", "Roman", "David", "BVI Admin"];
+const MAINNET_VALIDATOR_LABELS: [&str; 5] = [
+    "Validator 1",
+    "Validator 2",
+    "Validator 3",
+    "Validator 4",
+    "Validator 5",
+];
+// Ten QUIP per account is an operating fee budget, not an economic allocation.
+// BlockRatioFee<1, 1, ..> maps each picosecond of reference time to one base
+// unit; UNIT = 10^12, so a 25 us reference-time component is 25,000,000 base
+// units (0.000025 QUIP). Ten QUIP covers 400,000 such components, not 400,000
+// complete extrinsics: actual fees also include base/length fees and can be
+// higher for proof size. This budget is intended to exceed routine governance
+// needs while remaining negligible against the 40M QUIP/year emission envelope.
+// Council Consideration = () reserves no motion deposit, leaving only fees for
+// council motions. Keep Option so an unset or unusable float still blocks export.
+pub const MAINNET_VALIDATOR_FLOAT: Option<crate::Balance> = Some(10 * crate::UNIT);
+pub const MAINNET_COUNCIL_FLOAT: Option<crate::Balance> = Some(10 * crate::UNIT);
+pub const MAINNET_SPEC_BUILDER_FLOAT: Option<crate::Balance> = Some(10 * crate::UNIT);
+
+#[derive(Clone)]
+struct MainnetValidator {
+    stash: AccountId,
+    session_keys: Option<(BabeId, GrandpaId)>,
+}
+
+#[derive(Clone)]
+struct MainnetInputs {
+    council: Vec<AccountId>,
+    council_placeholders: Vec<&'static str>,
+    validators: Vec<MainnetValidator>,
+    spec_builder: AccountId,
+    validator_float: Option<crate::Balance>,
+    council_float: Option<crate::Balance>,
+    spec_builder_float: Option<crate::Balance>,
+    allocation: MainnetAllocation,
+}
+
+/// Hash an account ID, not a signing seed. No key pair is generated or provisioned.
+fn mainnet_placeholder(role: &str, label: &str) -> AccountId {
+    AccountId::new(sp_core::blake2_256(
+        &("quip/genesis-placeholder/v1", "mainnet", role, label).encode(),
+    ))
+}
+
+fn reserved_mainnet_accounts() -> Vec<AccountId> {
+    MAINNET_COUNCIL_LABELS
+        .iter()
+        .map(|label| mainnet_placeholder("council", label))
+        .chain(
+            MAINNET_VALIDATOR_LABELS
+                .iter()
+                .map(|label| mainnet_placeholder("validator", label)),
+        )
+        .chain(core::iter::once(mainnet_placeholder(
+            "spec-builder",
+            "Ising",
+        )))
+        .chain(core::iter::once(mainnet_allocation::custody_placeholder()))
+        .collect()
+}
+
+fn mainnet_inputs() -> MainnetInputs {
+    MainnetInputs {
+        council: MAINNET_COUNCIL_LABELS
+            .iter()
+            .map(|label| mainnet_placeholder("council", label))
+            .collect(),
+        council_placeholders: MAINNET_COUNCIL_PLACEHOLDERS.to_vec(),
+        validators: MAINNET_VALIDATOR_LABELS
+            .iter()
+            .map(|label| MainnetValidator {
+                stash: mainnet_placeholder("validator", label),
+                session_keys: None, // QUI-2080: real operator-supplied H4 BABE and H2 GRANDPA public keys.
+            })
+            .collect(),
+        spec_builder: mainnet_placeholder("spec-builder", "Ising"),
+        validator_float: MAINNET_VALIDATOR_FLOAT,
+        council_float: MAINNET_COUNCIL_FLOAT,
+        spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
+        allocation: MainnetAllocation::unresolved(),
+    }
+}
+
+fn resolved_float(value: Option<crate::Balance>, name: &str) -> Result<crate::Balance, String> {
+    let value = value.ok_or_else(|| format!("mainnet genesis blocked: {name} is TBD"))?;
+    if value == 0 || value < crate::EXISTENTIAL_DEPOSIT {
+        return Err(format!(
+            "mainnet genesis blocked: {name} must fund a usable operational account"
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_session_keys(authorities: &[(AccountId, BabeId, GrandpaId)]) -> Result<(), String> {
+    let babe: BTreeSet<_> = authorities.iter().map(|(_, key, _)| key.encode()).collect();
+    let grandpa: BTreeSet<_> = authorities.iter().map(|(_, _, key)| key.encode()).collect();
+    if babe.len() != authorities.len() || grandpa.len() != authorities.len() {
+        return Err("genesis blocked: duplicate BABE or GRANDPA session key".into());
+    }
+    Ok(())
+}
+
+/// Mainnet validators must not reuse identities from the live testnet or the
+/// public dev keyring. Consensus signatures do not bind themselves to a chain.
+fn validate_mainnet_network_keys(
+    authorities: &[(AccountId, BabeId, GrandpaId)],
+) -> Result<(), String> {
+    // Legacy presets use to_seed() (e.g. //AliceStash). Also cover the SDK's
+    // canonical Pair derivation (//Alice//stash), which is a different key.
+    let dev_seeds: BTreeSet<_> = Sr25519Keyring::iter()
+        .flat_map(|key| [key.to_seed(), format!("//{}", <&'static str>::from(key))])
+        .collect();
+    let forbidden = quip_testnet_authorities()
+        .into_iter()
+        .map(|keys| ("testnet operator", keys))
+        .chain(dev_seeds.iter().map(|seed| {
+            (
+                "standard dev keyring",
+                (
+                    tx_account_from_seed(seed),
+                    babe_authority_from_seed(seed),
+                    grandpa_authority_from_seed(seed),
+                ),
+            )
+        }));
+    for (source, (forbidden_stash, forbidden_babe, forbidden_grandpa)) in forbidden {
+        for (index, (stash, babe, grandpa)) in authorities.iter().enumerate() {
+            let collision = if stash == &forbidden_stash {
+                Some("stash")
+            } else if babe == &forbidden_babe {
+                Some("BABE key")
+            } else if grandpa == &forbidden_grandpa {
+                Some("GRANDPA key")
+            } else {
+                None
+            };
+            if let Some(kind) = collision {
+                return Err(format!(
+                    "mainnet genesis blocked: Validator {} {kind} is reused from {source}",
+                    index + 1
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_mainnet_funding(
+    funding: &GenesisFunding,
+    validators: &[AccountId],
+    council: &[AccountId],
+    builder: &AccountId,
+    custody: &AccountId,
+    allocation_total: crate::Balance,
+) -> Result<(), String> {
+    let expected: BTreeSet<_> = validators
+        .iter()
+        .chain(council)
+        .chain(core::iter::once(builder))
+        .chain(core::iter::once(custody))
+        .collect();
+    let actual: BTreeSet<_> = funding
+        .balances
+        .iter()
+        .map(|(account, _)| account)
+        .collect();
+    if expected.len() != 13 || actual.len() != funding.balances.len() || actual != expected {
+        return Err("mainnet genesis blocked: endowments must be exactly five validators, six council seats, one dedicated spec builder and one custody account".into());
+    }
+    if funding
+        .balances
+        .iter()
+        .any(|(who, amount)| who == custody && *amount != allocation_total)
+    {
+        return Err(
+            "mainnet genesis blocked: custody endowment must equal the allocation total".into(),
+        );
+    }
+    let reserved = reserved_mainnet_accounts();
+    if funding
+        .balances
+        .iter()
+        .any(|(account, _)| reserved.contains(account))
+    {
+        return Err("mainnet genesis blocked: reserved placeholder account in endowments".into());
+    }
+    if funding
+        .balances
+        .iter()
+        .any(|(_, balance)| *balance == TEST_CURRENCY_ENDOWMENT)
+    {
+        return Err("mainnet genesis blocked: testnet-default endowment is forbidden".into());
+    }
+    if funding.balances.iter().any(|(account, balance)| {
+        *balance < crate::EXISTENTIAL_DEPOSIT
+            || (validators.contains(account) && *balance <= VALIDATOR_BOND)
+    }) {
+        return Err(
+            "mainnet genesis blocked: unusable float or validator endowment not above its bond"
+                .into(),
+        );
+    }
+    funding
+        .balances
+        .iter()
+        .try_fold(crate::EXISTENTIAL_DEPOSIT, |total, (_, amount)| {
+            total.checked_add(*amount)
+        })
+        .ok_or_else(|| String::from("mainnet genesis blocked: total issuance overflows"))?;
+    if funding.faucet.state != pallet_faucet_ops::FaucetState::PermanentlyDisabled
+        || funding.faucet.authority.is_some()
+        || funding.faucet_budget != 0
+    {
+        return Err("mainnet genesis blocked: faucet must be PermanentlyDisabled with no authority and zero budget".into());
+    }
+    Ok(())
+}
+
+fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
+    let actual_placeholders: BTreeSet<_> = MAINNET_COUNCIL_LABELS
+        .iter()
+        .copied()
+        .filter(|label| {
+            inputs
+                .council
+                .contains(&mainnet_placeholder("council", label))
+        })
+        .collect();
+    let declared: BTreeSet<_> = inputs.council_placeholders.iter().copied().collect();
+    if actual_placeholders != declared || declared.len() != inputs.council_placeholders.len() {
+        return Err("mainnet genesis blocked: MAINNET_COUNCIL_PLACEHOLDERS does not match the configured placeholder seats".into());
+    }
+    if !declared.is_empty() {
+        return Err(format!(
+            "mainnet genesis blocked: unresolved council placeholders: {}",
+            inputs.council_placeholders.join(", ")
+        ));
+    }
+    let validators: Vec<_> = inputs.validators.iter().map(|v| v.stash.clone()).collect();
+    if inputs.council.len() != 6
+        || inputs.council.iter().collect::<BTreeSet<_>>().len() != 6
+        || validators.len() != 5
+        || validators.iter().collect::<BTreeSet<_>>().len() != 5
+    {
+        return Err("mainnet genesis blocked: exactly six distinct council seats and five distinct validators are required".into());
+    }
+    assert_council_disjoint(&inputs.council, &validators, true).map_err(String::from)?;
+    if inputs.council.contains(&inputs.spec_builder) || validators.contains(&inputs.spec_builder) {
+        return Err(
+            "mainnet genesis blocked: Ising spec builder must be a dedicated account".into(),
+        );
+    }
+    let reserved = reserved_mainnet_accounts();
+    if validators
+        .iter()
+        .chain(&inputs.council)
+        .chain(core::iter::once(&inputs.spec_builder))
+        .any(|a| reserved.contains(a))
+    {
+        return Err("mainnet genesis blocked: unresolved validator, council or spec-builder placeholder account".into());
+    }
+    let authorities = inputs
+        .validators
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let (babe, grandpa) = v.session_keys.ok_or_else(|| {
+                format!(
+                    "mainnet genesis blocked: Validator {} BABE/GRANDPA session keys are TBD",
+                    i + 1
+                )
+            })?;
+            Ok((v.stash, babe, grandpa))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    validate_session_keys(&authorities)?;
+    let validator_float = resolved_float(inputs.validator_float, "MAINNET_VALIDATOR_FLOAT")?;
+    let council_float = resolved_float(inputs.council_float, "MAINNET_COUNCIL_FLOAT")?;
+    let spec_builder_float =
+        resolved_float(inputs.spec_builder_float, "MAINNET_SPEC_BUILDER_FLOAT")?;
+    let stash_balance = VALIDATOR_BOND.checked_add(validator_float).ok_or_else(|| {
+        String::from("mainnet genesis blocked: validator bond plus float overflows")
+    })?;
+    let operational: Vec<_> = validators
+        .iter()
+        .chain(&inputs.council)
+        .chain(core::iter::once(&inputs.spec_builder))
+        .cloned()
+        .collect();
+    let allocation_total = inputs.allocation.validate(&operational)?;
+    let funding = GenesisFunding {
+        balances: validators
+            .iter()
+            .cloned()
+            .map(|a| (a, stash_balance))
+            .chain(inputs.council.iter().cloned().map(|a| (a, council_float)))
+            .chain(core::iter::once((
+                inputs.spec_builder.clone(),
+                spec_builder_float,
+            )))
+            .chain(core::iter::once((
+                inputs.allocation.custody.clone(),
+                allocation_total,
+            )))
+            .collect(),
+        faucet: pallet_faucet_ops::GenesisConfig {
+            state: pallet_faucet_ops::FaucetState::PermanentlyDisabled,
+            authority: None,
+        },
+        faucet_budget: 0,
+    };
+    validate_mainnet_funding(
+        &funding,
+        &validators,
+        &inputs.council,
+        &inputs.spec_builder,
+        &inputs.allocation.custody,
+        allocation_total,
+    )?;
+    validate_mainnet_network_keys(&authorities)?;
+    Ok(network_genesis(
+        authorities,
+        funding,
+        GenesisRoles {
+            foundation_members: inputs.council,
+            faucet_authority: inputs.spec_builder.clone(), // Unused: the explicit faucet config has no authority.
+            ising_spec_builder: inputs.spec_builder,
+            require_council_disjoint: true,
+        },
+        MAINNET_CHAIN_ID,
+        3,
+    ))
+}
+
+/// Build mainnet only after all launch inputs are resolved. Raw-spec provenance
+/// and proof of key possession are separate QUI-2080 launch gates.
+pub fn quip_mainnet_config_genesis() -> Result<Value, String> {
+    mainnet_genesis(mainnet_inputs())
 }
 
 /// Return the development genesis config.
@@ -346,18 +772,8 @@ pub fn local_three_validator_config_genesis() -> Value {
     )
 }
 
-/// Return the public quip-testnet genesis config preset.
-///
-/// Each authority slot is held by an independent operator who generated their
-/// own libp2p node-key and hybrid BABE/GRANDPA keys offline (see
-/// `scripts/derive-operator-keys.sh`). Only the
-/// public bytes are committed in this repository; private material lives on
-/// each operator's host.
-///
-/// Fresh spec-119 genesis gives all three operators Foundation membership.
-/// Operator 1 remains sudo, faucet authority and Ising spec builder until ops
-/// provisions separate role accounts; this preset does not migrate live state.
-pub fn quip_testnet_config_genesis() -> Value {
+/// Existing operator public material, shared by the live and relaunch presets.
+fn quip_testnet_authorities() -> Vec<(AccountId, BabeId, GrandpaId)> {
     let op1_babe = babe_authority_from_public_hex(
         include_str!("genesis_quip_testnet/operator_1_babe.hex"),
         "genesis_quip_testnet/operator_1_babe.hex",
@@ -396,29 +812,114 @@ pub fn quip_testnet_config_genesis() -> Value {
         "operator_3 tx_account_hex literal",
     );
 
+    vec![
+        (op1_account, op1_babe, op1_grandpa),
+        (op2_account, op2_babe, op2_grandpa),
+        (op3_account, op3_babe, op3_grandpa),
+    ]
+}
+
+/// Return the public quip-testnet genesis config preset.
+///
+/// Each authority slot is held by an independent operator who generated their
+/// own libp2p node-key and hybrid BABE/GRANDPA keys offline (see
+/// `scripts/derive-operator-keys.sh`). Only the
+/// public bytes are committed in this repository; private material lives on
+/// each operator's host.
+///
+/// Fresh spec-119 genesis gives all three operators Foundation membership.
+/// Operator 1 is also faucet authority and Ising spec builder until ops
+/// provisions separate role accounts; this preset does not migrate live state.
+///
+/// Spec 120 drops `pallet_sudo` entirely, so no preset carries a sudo key. The
+/// council reaches Root through `ValidatorAdmission::dispatch_as_root` behind a
+/// 2/3 collective motion instead of a single-key escape hatch.
+pub fn quip_testnet_config_genesis() -> Value {
+    let authorities = quip_testnet_authorities();
+    let accounts: Vec<_> = authorities
+        .iter()
+        .map(|(account, _, _)| account.clone())
+        .collect();
+    let op1 = accounts[0].clone();
     testnet_genesis(
-        vec![
-            (op1_account.clone(), op1_babe, op1_grandpa),
-            (op2_account.clone(), op2_babe, op2_grandpa),
-            (op3_account.clone(), op3_babe, op3_grandpa),
-        ],
-        vec![
-            op1_account.clone(),
-            op2_account.clone(),
-            op3_account.clone(),
-        ],
+        authorities,
+        accounts.clone(),
         GenesisRoles {
-            foundation_members: vec![op1_account.clone(), op2_account, op3_account],
-            // TODO(ops): derive and commit a dedicated faucet public account and
-            // coordinate sudo multisig custody before changing these genesis defaults.
-            // Post-genesis, rotate via faucetOps.set_authority before faucet deployment.
-            faucet_authority: op1_account.clone(),
-            sudo_key: Some(op1_account.clone()),
-            ising_spec_builder: op1_account,
+            foundation_members: accounts,
+            // This is the existing live preset. QUI-2080 selects the new
+            // disjoint-council relaunch explicitly instead of rewriting it.
+            faucet_authority: op1.clone(),
+            ising_spec_builder: op1,
+            require_council_disjoint: false,
         },
         pallet_evm_chain_id::TESTNET_CHAIN_ID,
         3,
     )
+}
+
+/// QUI-2080 selects this fresh genesis explicitly; the live preset is unchanged.
+pub const QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET: &str = "quip-testnet-relaunch";
+/// QUI-2080 must supply three real, independently held council account IDs.
+pub const TESTNET_RELAUNCH_COUNCIL_TBD: Option<[AccountId; 3]> = None;
+/// Finite test-currency budget, intentionally the same as the legacy testnet.
+pub const TESTNET_RELAUNCH_FAUCET_BUDGET: u128 = 1_000_000_000 * crate::UNIT;
+
+fn testnet_relaunch_genesis(council: Option<[AccountId; 3]>) -> Result<Value, String> {
+    let council = council.ok_or_else(|| String::from(
+        "testnet relaunch genesis blocked: TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs provisioned through QUI-2080",
+    ))?.to_vec();
+    if council.iter().collect::<BTreeSet<_>>().len() != 3 {
+        return Err(
+            "testnet relaunch genesis blocked: three distinct council seats are required".into(),
+        );
+    }
+    if council
+        .iter()
+        .any(|account| reserved_mainnet_accounts().contains(account))
+    {
+        return Err(
+            "testnet relaunch genesis blocked: reserved placeholder council account".into(),
+        );
+    }
+    let authorities = quip_testnet_authorities();
+    validate_session_keys(&authorities)?;
+    let operators: Vec<_> = authorities
+        .iter()
+        .map(|(account, _, _)| account.clone())
+        .collect();
+    assert_council_disjoint(&council, &operators, true)
+        .map_err(|reason| format!("testnet relaunch genesis blocked: {reason}"))?;
+    let op1 = operators[0].clone();
+    let funding = GenesisFunding {
+        balances: operators
+            .iter()
+            .chain(&council)
+            .cloned()
+            .map(|a| (a, TEST_CURRENCY_ENDOWMENT))
+            .collect(),
+        faucet: pallet_faucet_ops::GenesisConfig {
+            state: pallet_faucet_ops::FaucetState::Enabled,
+            authority: Some(op1.clone()),
+        },
+        faucet_budget: TESTNET_RELAUNCH_FAUCET_BUDGET,
+    };
+    Ok(network_genesis(
+        authorities,
+        funding,
+        GenesisRoles {
+            foundation_members: council,
+            faucet_authority: op1.clone(),
+            ising_spec_builder: op1,
+            require_council_disjoint: true,
+        },
+        pallet_evm_chain_id::TESTNET_CHAIN_ID,
+        3,
+    ))
+}
+
+/// Refuse export until the deferred council is supplied; no placeholder fallback.
+pub fn quip_testnet_relaunch_config_genesis() -> Result<Value, String> {
+    testnet_relaunch_genesis(TESTNET_RELAUNCH_COUNCIL_TBD)
 }
 
 /// Four-validator rehearsal with a safety floor of four; dev seeds are not
@@ -430,13 +931,12 @@ pub fn rehearsal_config_genesis() -> Value {
         .map(|seed| tx_account_from_seed(seed))
         .collect();
     foundation_members.sort();
-    let sudo = crate::Multisig::multi_account_id(&foundation_members, 2);
     let faucet_authority = tx_account_from_seed("//Eve");
     let mut endowed_accounts: Vec<_> = seeds
         .iter()
         .map(|seed| tx_account_from_seed(seed))
         .collect();
-    endowed_accounts.extend([faucet_authority.clone(), sudo.clone()]);
+    endowed_accounts.push(faucet_authority.clone());
     testnet_genesis(
         seeds
             .iter()
@@ -452,12 +952,26 @@ pub fn rehearsal_config_genesis() -> Value {
         GenesisRoles {
             foundation_members,
             faucet_authority,
-            sudo_key: Some(sudo),
             ising_spec_builder: tx_account_from_seed("//Alice"),
+            require_council_disjoint: false,
         },
         pallet_evm_chain_id::LOCAL_CHAIN_ID,
         4,
     )
+}
+
+// The default SDK panic handler only logs its message before an opaque Wasm
+// trap. Register this deliberate refusal with the host so callers receive the
+// reason even when runtime logging is disabled in release builds.
+fn refuse_preset_export(reason: String) -> ! {
+    #[cfg(substrate_runtime)]
+    {
+        sp_io::panic_handler::abort_on_panic(&reason)
+    }
+    #[cfg(not(substrate_runtime))]
+    {
+        panic!("{reason}")
+    }
 }
 
 /// Provides the JSON representation of predefined genesis config for given `id`.
@@ -467,6 +981,11 @@ pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
         LOCAL_THREE_VALIDATOR_RUNTIME_PRESET => local_three_validator_config_genesis(),
         QUIP_TESTNET_RUNTIME_PRESET => quip_testnet_config_genesis(),
+        QUIP_MAINNET_RUNTIME_PRESET => {
+            quip_mainnet_config_genesis().unwrap_or_else(|reason| refuse_preset_export(reason))
+        }
+        QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET => quip_testnet_relaunch_config_genesis()
+            .unwrap_or_else(|reason| refuse_preset_export(reason)),
         REHEARSAL_RUNTIME_PRESET => rehearsal_config_genesis(),
         _ => return None,
     };
@@ -484,6 +1003,8 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
         PresetId::from(QUIP_TESTNET_RUNTIME_PRESET),
+        PresetId::from(QUIP_MAINNET_RUNTIME_PRESET),
+        PresetId::from(QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET),
         PresetId::from(REHEARSAL_RUNTIME_PRESET),
     ]
 }
@@ -547,8 +1068,12 @@ mod tests {
             .expect("default runtime genesis config serialises");
         let expected_faucet: Option<AccountId> =
             serde_json::from_value(patch["faucetOps"]["authority"].clone()).unwrap();
-        let expected_sudo: Option<AccountId> =
-            serde_json::from_value(patch["sudo"]["key"].clone()).unwrap();
+        // Spec 120 removed pallet-sudo: no preset may carry a sudo key, and a
+        // stray one must fail the genesis build rather than silently return.
+        assert!(
+            patch.get("sudo").is_none(),
+            "spec 120 genesis must not configure pallet_sudo"
+        );
         let mut expected_members: Vec<AccountId> =
             serde_json::from_value(patch["foundationMembership"]["members"].clone()).unwrap();
         expected_members.sort();
@@ -565,7 +1090,6 @@ mod tests {
                 pallet_faucet_ops::Authority::<crate::Runtime>::get(),
                 expected_faucet
             );
-            assert_eq!(pallet_sudo::Key::<crate::Runtime>::get(), expected_sudo);
             assert_eq!(
                 pallet_collective::Members::<crate::Runtime, pallet_collective::Instance1>::get(),
                 expected_members
@@ -574,11 +1098,15 @@ mod tests {
             {
                 assert_eq!(
                     pallet_staking::MaxNominatorsCount::<crate::Runtime>::get(),
-                    Some(0)
+                    Some(1024)
                 );
                 assert_eq!(
                     pallet_staking::MinValidatorBond::<crate::Runtime>::get(),
-                    100 * crate::UNIT
+                    2_000 * crate::UNIT
+                );
+                assert_eq!(
+                    pallet_staking::MinNominatorBond::<crate::Runtime>::get(),
+                    10 * crate::UNIT
                 );
             }
             #[cfg(feature = "runtime-benchmarks")]
@@ -628,18 +1156,27 @@ mod tests {
             patch["faucetOps"]["authority"],
             serde_json::to_value(&faucet).unwrap()
         );
-        let sudo = crate::Multisig::multi_account_id(&expected, 2);
-        assert_eq!(patch["sudo"]["key"], serde_json::to_value(&sudo).unwrap());
-        assert!(!members.contains(&sudo));
-        assert_ne!(sudo, faucet);
         let balances: Vec<(AccountId, crate::Balance)> =
             serde_json::from_value(patch["balances"]["balances"].clone()).unwrap();
-        for account in [faucet, sudo] {
-            assert!(balances
-                .iter()
-                .any(|(who, balance)| who == &account && *balance > 0));
-        }
+        assert!(balances
+            .iter()
+            .any(|(who, balance)| who == &faucet && *balance > 0));
         assert_preset_builds_storage_with_chain_id(patch, pallet_evm_chain_id::LOCAL_CHAIN_ID);
+    }
+
+    /// V0 governance exists to separate the council from the validator set.
+    /// The mainnet preset turns the requirement on; local presets keep the
+    /// single-key convenience.
+    #[test]
+    fn council_must_be_disjoint_from_operators_when_required() {
+        let seat = AccountId::from([7; 32]);
+        let other = AccountId::from([8; 32]);
+        assert_eq!(
+            assert_council_disjoint(&[seat.clone()], &[seat.clone()], true),
+            Err("council member is also a validator operator")
+        );
+        assert!(assert_council_disjoint(&[seat.clone()], &[seat], false).is_ok());
+        assert!(assert_council_disjoint(&[other], &[AccountId::from([9; 32])], true).is_ok());
     }
 
     #[test]
@@ -674,7 +1211,6 @@ mod tests {
         assert_eq!(members.len(), 3);
         assert_eq!(members, approved);
         assert!(members[0] != members[1] && members[0] != members[2] && members[1] != members[2]);
-        assert_eq!(patch["sudo"]["key"], members[0]);
         assert_eq!(patch["faucetOps"]["authority"], members[0]);
         assert_eq!(
             patch["quantumComputeMempool"]["defaultIsingSpecBuilder"],
@@ -728,5 +1264,835 @@ mod tests {
             "Alice's derived account id changed. If this is intentional, update \
              ALICE_PINNED_ACCOUNT_HEX above with the new value: {hex}",
         );
+    }
+    // Captured by running get_preset on unmodified 59a095c in both feature
+    // configurations. Comparing serialized bytes catches drift the parity gate
+    // cannot: the same accidental change in both runtime trees.
+    #[test]
+    fn legacy_preset_bytes_match_pre_launch_base() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("genesis_legacy_hashes.json")).unwrap();
+        let profile = if cfg!(feature = "runtime-benchmarks") {
+            "benchmark"
+        } else {
+            "production"
+        };
+        let expected = fixture[profile].as_object().unwrap();
+        assert_eq!(expected.len(), 5);
+        for (name, hash) in expected {
+            let bytes = get_preset(&PresetId::from(name.clone())).unwrap();
+            assert_eq!(
+                hex_encode(&sp_core::blake2_256(&bytes)),
+                hash.as_str().unwrap(),
+                "legacy preset changed: {name}"
+            );
+        }
+    }
+
+    // Fixture-only identities, in a separate derivation domain from every
+    // legacy/dev preset. Never a production fallback or real keys. The floats
+    // use the approved mainnet policy; negative tests override them explicitly.
+    fn ready_mainnet_fixture() -> MainnetInputs {
+        MainnetInputs {
+            council: (40..46).map(|i| AccountId::new([i; 32])).collect(),
+            council_placeholders: vec![],
+            validators: (1..=5)
+                .map(|index| {
+                    let seed = format!("//QUI2083//MainnetFixture//Validator{index}");
+                    MainnetValidator {
+                        stash: tx_account_from_seed(&seed),
+                        session_keys: Some((
+                            babe_authority_from_seed(&seed),
+                            grandpa_authority_from_seed(&seed),
+                        )),
+                    }
+                })
+                .collect(),
+            spec_builder: AccountId::new([90; 32]),
+            validator_float: MAINNET_VALIDATOR_FLOAT,
+            council_float: MAINNET_COUNCIL_FLOAT,
+            spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
+            allocation: mainnet_allocation::fixture(),
+        }
+    }
+
+    fn funding_from_patch(patch: &Value) -> GenesisFunding {
+        GenesisFunding {
+            balances: serde_json::from_value(patch["balances"]["balances"].clone()).unwrap(),
+            faucet: serde_json::from_value(patch["faucetOps"].clone()).unwrap(),
+            faucet_budget: serde_json::from_value(
+                patch["emissionController"]["faucetBudget"].clone(),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn assert_launch_storage(
+        patch: Value,
+        chain_id: u64,
+        validator_count: u32,
+        council_count: usize,
+    ) {
+        use frame_support::traits::Get;
+        let funding = funding_from_patch(&patch);
+        let mut full = serde_json::to_value(crate::RuntimeGenesisConfig::default()).unwrap();
+        assert!(patch.get("sudo").is_none());
+        assert_eq!(patch["staking"]["validatorCount"], validator_count);
+        assert_eq!(patch["staking"]["minimumValidatorCount"], 3);
+        assert_eq!(patch["emissionController"]["enabled"], true);
+        assert_eq!(patch["emissionController"]["startAt"], Value::Null);
+        let council: Vec<AccountId> =
+            serde_json::from_value(patch["foundationMembership"]["members"].clone()).unwrap();
+        let approved: Vec<AccountId> =
+            serde_json::from_value(patch["validatorAdmission"]["approved"].clone()).unwrap();
+        assert_eq!(council.len(), council_count);
+        assert_eq!(approved.len(), validator_count as usize);
+        assert!(assert_council_disjoint(&council, &approved, true).is_ok());
+        let builder: AccountId = serde_json::from_value(
+            patch["quantumComputeMempool"]["defaultIsingSpecBuilder"].clone(),
+        )
+        .unwrap();
+        let keys: Vec<(AccountId, AccountId, crate::BoxedSessionKeys)> =
+            serde_json::from_value(patch["session"]["keys"].clone()).unwrap();
+        assert_eq!(keys.len(), validator_count as usize);
+        merge_json(&mut full, patch);
+        sp_io::TestExternalities::new_empty().execute_with(|| {
+            build_state::<crate::RuntimeGenesisConfig>(serde_json::to_vec(&full).unwrap()).unwrap();
+            assert_eq!(
+                pallet_evm_chain_id::Eip155ChainId::<crate::Runtime>::get(),
+                chain_id
+            );
+            assert_eq!(
+                <pallet_evm_chain_id::ChainId<crate::Runtime> as Get<u64>>::get(),
+                chain_id
+            );
+            assert_eq!(
+                pallet_staking::ValidatorCount::<crate::Runtime>::get(),
+                validator_count
+            );
+            assert_eq!(
+                pallet_staking::MinimumValidatorCount::<crate::Runtime>::get(),
+                3
+            );
+            #[cfg(not(feature = "runtime-benchmarks"))]
+            {
+                assert_eq!(
+                    pallet_staking::MaxNominatorsCount::<crate::Runtime>::get(),
+                    Some(1024)
+                );
+                assert_eq!(
+                    pallet_staking::MinValidatorBond::<crate::Runtime>::get(),
+                    2_000 * crate::UNIT
+                );
+                assert_eq!(
+                    pallet_staking::MinNominatorBond::<crate::Runtime>::get(),
+                    10 * crate::UNIT
+                );
+            }
+            #[cfg(feature = "runtime-benchmarks")]
+            {
+                assert_eq!(
+                    pallet_staking::MaxNominatorsCount::<crate::Runtime>::get(),
+                    None
+                );
+                assert_eq!(pallet_staking::MinValidatorBond::<crate::Runtime>::get(), 0);
+                assert_eq!(pallet_staking::MinNominatorBond::<crate::Runtime>::get(), 0);
+            }
+            let actual_council =
+                pallet_collective::Members::<crate::Runtime, pallet_collective::Instance1>::get();
+            assert_eq!(
+                actual_council.iter().collect::<BTreeSet<_>>(),
+                council.iter().collect()
+            );
+            assert_eq!(
+                pallet_validator_admission::Mode::<crate::Runtime>::get(),
+                pallet_validator_admission::AdmissionMode::FoundationOnly
+            );
+            assert_eq!(
+                pallet_validator_admission::Approved::<crate::Runtime>::get()
+                    .iter()
+                    .collect::<BTreeSet<_>>(),
+                approved.iter().collect()
+            );
+            assert_eq!(
+                pallet_session::Validators::<crate::Runtime>::get()
+                    .iter()
+                    .collect::<BTreeSet<_>>(),
+                approved.iter().collect()
+            );
+            for (stash, controller, session_keys) in keys {
+                assert_eq!(stash, controller);
+                assert_eq!(
+                    pallet_session::NextKeys::<crate::Runtime>::get(&stash),
+                    Some(session_keys)
+                );
+                let ledger = pallet_staking::Ledger::<crate::Runtime>::get(&stash).unwrap();
+                assert_eq!(ledger.active, 2_000 * crate::UNIT);
+                assert_eq!(ledger.total, 2_000 * crate::UNIT);
+                assert_eq!(ledger.stash, stash);
+            }
+            for (who, amount) in &funding.balances {
+                let account = frame_system::Account::<crate::Runtime>::get(who);
+                assert_eq!(account.data.free + account.data.reserved, *amount);
+            }
+            assert_eq!(pallet_vesting::Vesting::<crate::Runtime>::iter().count(), 0);
+            assert_eq!(
+                pallet_vesting::StorageVersion::<crate::Runtime>::get(),
+                pallet_vesting::Releases::V1
+            );
+            // SDK 845eb99 frame/revive/src/lib.rs:791-800 mints one ED
+            // into this named pallet account. This is the only technical
+            // genesis deposit outside the explicit operational allocations.
+            let revive_account = pallet_revive::Pallet::<crate::Runtime>::account_id();
+            assert!(funding
+                .balances
+                .iter()
+                .all(|(who, _)| who != &revive_account));
+            let revive = frame_system::Account::<crate::Runtime>::get(&revive_account);
+            assert_eq!(revive.data.free, crate::EXISTENTIAL_DEPOSIT);
+            assert_eq!(revive.data.reserved, 0);
+            assert_eq!(
+                pallet_balances::TotalIssuance::<crate::Runtime>::get(),
+                funding
+                    .balances
+                    .iter()
+                    .map(|(_, amount)| amount)
+                    .sum::<u128>()
+                    .checked_add(crate::EXISTENTIAL_DEPOSIT)
+                    .unwrap()
+            );
+            assert_eq!(
+                pallet_faucet_ops::State::<crate::Runtime>::get(),
+                funding.faucet.state
+            );
+            assert_eq!(
+                pallet_faucet_ops::Authority::<crate::Runtime>::get(),
+                funding.faucet.authority
+            );
+            assert!(pallet_emission_controller::Enabled::<crate::Runtime>::get());
+            assert_eq!(
+                pallet_emission_controller::StartAt::<crate::Runtime>::get(),
+                None
+            );
+            assert_eq!(
+                pallet_emission_controller::FaucetBudget::<crate::Runtime>::get(),
+                funding.faucet_budget
+            );
+            assert_eq!(
+                pallet_emission_controller::FaucetIssued::<crate::Runtime>::get(),
+                0
+            );
+            assert_eq!(
+                pallet_emission_controller::Routes::<crate::Runtime>::get().to_vec(),
+                vec![
+                    (
+                        pallet_emission_controller::ISING_SUBNET,
+                        sp_runtime::Perbill::from_percent(50)
+                    ),
+                    (
+                        pallet_emission_controller::QVRF_SUBNET,
+                        sp_runtime::Perbill::from_percent(50)
+                    ),
+                ]
+            );
+            let spec_id =
+                <crate::Runtime as pallet_quantum_compute_mempool::Config>::DefaultIsingSpecId::get(
+                );
+            assert_eq!(
+                pallet_quantum_compute_mempool::JobSpecs::<crate::Runtime>::get(spec_id)
+                    .unwrap()
+                    .builder,
+                builder
+            );
+        });
+    }
+
+    #[test]
+    fn mainnet_fixture_builds_the_decided_policy() {
+        let inputs = ready_mainnet_fixture();
+        let patch = mainnet_genesis(inputs.clone()).unwrap();
+        let funding = funding_from_patch(&patch);
+        let validators: Vec<_> = inputs.validators.iter().map(|v| v.stash.clone()).collect();
+        validate_mainnet_funding(
+            &funding,
+            &validators,
+            &inputs.council,
+            &inputs.spec_builder,
+            &inputs.allocation.custody,
+            inputs.allocation.total.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(funding.balances.len(), 13);
+        for (who, amount) in &funding.balances {
+            let expected = if validators.contains(who) {
+                2_010 * crate::UNIT
+            } else if who == &inputs.allocation.custody {
+                100 * crate::UNIT
+            } else {
+                10 * crate::UNIT
+            };
+            assert_eq!(*amount, expected);
+            assert_ne!(*amount, 1u128 << 60);
+        }
+        assert_eq!(
+            funding.faucet.state,
+            pallet_faucet_ops::FaucetState::PermanentlyDisabled
+        );
+        assert!(funding.faucet.authority.is_none());
+        assert_eq!(funding.faucet_budget, 0);
+        let explicit_issuance = funding
+            .balances
+            .iter()
+            .map(|(_, amount)| amount)
+            .sum::<u128>();
+        // Approved operational funds plus the synthetic 100-UNIT custody fixture.
+        assert_eq!(explicit_issuance, 10_220 * crate::UNIT);
+        assert_eq!(
+            explicit_issuance.checked_add(crate::EXISTENTIAL_DEPOSIT),
+            Some(10_220 * crate::UNIT + crate::UNIT / 1_000)
+        );
+        // This also checks actual TotalIssuance and the named Revive account.
+        assert_launch_storage(patch, 20_049, 5, 6);
+    }
+
+    #[test]
+    fn mainnet_allocation_readiness_is_enforced_by_genesis() {
+        for case in 0..7 {
+            let mut input = ready_mainnet_fixture();
+            let expected = match case {
+                0 => {
+                    input.allocation.total = None;
+                    "MAINNET_ALLOCATION_TOTAL is TBD"
+                }
+                1 => {
+                    input.allocation.custody = mainnet_allocation::custody_placeholder();
+                    "unresolved mainnet custody placeholder"
+                }
+                2 => {
+                    input.allocation.recipients = None;
+                    "MAINNET_ALLOCATION_RECIPIENTS is TBD"
+                }
+                3 => {
+                    input.allocation.terms = None;
+                    "MAINNET_ALLOCATION_TERMS is TBD"
+                }
+                4 => {
+                    input.allocation.custody = input.validators[0].stash.clone();
+                    "custody must be a dedicated account"
+                }
+                5 => {
+                    input.allocation.terms.as_mut().unwrap().cadence_blocks = 0;
+                    "positive cadence"
+                }
+                _ => {
+                    input.allocation.total = Some(crate::UNIT);
+                    "exceed custody funding"
+                }
+            };
+            assert!(
+                mainnet_genesis(input).unwrap_err().contains(expected),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn mainnet_allocation_funds_only_custody_and_allows_validator_recipients() {
+        let mut input = ready_mainnet_fixture();
+        let recipient = input.allocation.recipients.as_ref().unwrap()[0].clone();
+        let funding = funding_from_patch(&mainnet_genesis(input.clone()).unwrap());
+        assert!(!funding.balances.iter().any(|(who, _)| who == &recipient));
+        let stash = input.validators[0].stash.clone();
+        input.allocation.recipients = Some(vec![stash.clone()]);
+        input.allocation.terms.as_mut().unwrap().tranches[0].recipient = stash.clone();
+        let patch = mainnet_genesis(input).unwrap();
+        assert_eq!(funding_from_patch(&patch).balances, funding.balances);
+        assert_launch_storage(patch, 20_049, 5, 6);
+    }
+
+    #[test]
+    fn mainnet_custody_is_included_in_checked_total_issuance() {
+        let mut input = ready_mainnet_fixture();
+        input.allocation.total = Some(u128::MAX);
+        assert_eq!(
+            mainnet_genesis(input).unwrap_err(),
+            "mainnet genesis blocked: total issuance overflows"
+        );
+    }
+
+    #[test]
+    fn mainnet_rejects_aggregate_allocation_overflow() {
+        let mut inputs = ready_mainnet_fixture();
+        inputs.validator_float = Some(7 * crate::UNIT);
+        inputs.council_float = Some(u128::MAX / 2);
+        inputs.spec_builder_float = Some(13 * crate::UNIT);
+        // Each allocation fits; the six council allocations together do not.
+        assert!(VALIDATOR_BOND
+            .checked_add(inputs.validator_float.unwrap())
+            .is_some());
+        assert!(inputs.council_float.unwrap().checked_mul(6).is_none());
+        assert_eq!(
+            mainnet_genesis(inputs).err().as_deref(),
+            Some("mainnet genesis blocked: total issuance overflows")
+        );
+    }
+
+    #[test]
+    fn mainnet_rejects_aggregate_overflow_from_revive_deposit() {
+        let mut inputs = ready_mainnet_fixture();
+        let funding = funding_from_patch(&mainnet_genesis(inputs.clone()).unwrap());
+        let other_allocations = funding
+            .balances
+            .iter()
+            .filter(|(account, _)| account != &inputs.spec_builder)
+            .try_fold(0u128, |total, (_, amount)| total.checked_add(*amount))
+            .unwrap();
+        let builder_float = u128::MAX.checked_sub(other_allocations).unwrap();
+        // The explicit allocations sum to MAX exactly. Only the separately
+        // minted revive ED makes total issuance unrepresentable.
+        let explicit_sum = other_allocations.checked_add(builder_float).unwrap();
+        assert_eq!(explicit_sum, u128::MAX);
+        assert!(explicit_sum
+            .checked_add(crate::EXISTENTIAL_DEPOSIT)
+            .is_none());
+        inputs.spec_builder_float = Some(builder_float);
+        assert_eq!(
+            mainnet_genesis(inputs).err().as_deref(),
+            Some("mainnet genesis blocked: total issuance overflows")
+        );
+    }
+
+    fn assert_mainnet_network_key_collisions_rejected(component: usize) {
+        let fixture = ready_mainnet_fixture();
+        // Spell these independently of the gate's keyring iteration, covering
+        // both legacy to_seed() and canonical SDK stash derivation forms.
+        let seeds = [
+            "//Alice",
+            "//Bob",
+            "//Charlie",
+            "//Dave",
+            "//Eve",
+            "//Ferdie",
+            "//AliceStash",
+            "//BobStash",
+            "//CharlieStash",
+            "//DaveStash",
+            "//EveStash",
+            "//FerdieStash",
+            "//One",
+            "//Two",
+            "//Alice//stash",
+            "//Bob//stash",
+            "//Charlie//stash",
+            "//Dave//stash",
+            "//Eve//stash",
+            "//Ferdie//stash",
+        ];
+        let cases = quip_testnet_authorities()
+            .into_iter()
+            .map(|keys| ("testnet operator", keys))
+            .chain(seeds.iter().map(|seed| {
+                (
+                    "standard dev keyring",
+                    (
+                        tx_account_from_seed(seed),
+                        babe_authority_from_seed(seed),
+                        grandpa_authority_from_seed(seed),
+                    ),
+                )
+            }));
+        for (source, (stash, babe, grandpa)) in cases {
+            let mut inputs = fixture.clone();
+            // Alter only one field on the last validator, leaving all earlier
+            // readiness, funding and within-network uniqueness checks valid.
+            let validator = inputs.validators.last_mut().unwrap();
+            let kind = match component {
+                0 => {
+                    validator.stash = stash;
+                    "stash"
+                }
+                1 => {
+                    validator.session_keys.as_mut().unwrap().0 = babe;
+                    "BABE key"
+                }
+                _ => {
+                    validator.session_keys.as_mut().unwrap().1 = grandpa;
+                    "GRANDPA key"
+                }
+            };
+            let expected =
+                format!("mainnet genesis blocked: Validator 5 {kind} is reused from {source}");
+            assert_eq!(
+                mainnet_genesis(inputs).err().as_deref(),
+                Some(expected.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn mainnet_rejects_cross_network_stash() {
+        assert_mainnet_network_key_collisions_rejected(0);
+    }
+
+    #[test]
+    fn mainnet_rejects_cross_network_babe_key() {
+        assert_mainnet_network_key_collisions_rejected(1);
+    }
+
+    #[test]
+    fn mainnet_rejects_cross_network_grandpa_key() {
+        assert_mainnet_network_key_collisions_rejected(2);
+    }
+
+    #[test]
+    fn mainnet_placeholders_are_pinned_and_export_is_blocked() {
+        assert_eq!(
+            MAINNET_COUNCIL_PLACEHOLDERS,
+            ["Rick", "Colton", "Vik", "Roman", "David", "BVI Admin"]
+        );
+        let accounts = reserved_mainnet_accounts();
+        assert_eq!(accounts.iter().collect::<BTreeSet<_>>().len(), 13);
+        assert_eq!(
+            accounts.last(),
+            Some(&mainnet_allocation::custody_placeholder())
+        );
+        assert_eq!(
+            hex_encode(&sp_core::blake2_256(&accounts[..12].to_vec().encode())),
+            "b6e46344fd96bb4deee3a025c407e7a9d502b8c40ad962a535ceb0160c2d9da2"
+        );
+        assert_eq!(MAINNET_VALIDATOR_FLOAT, Some(10 * crate::UNIT));
+        assert_eq!(MAINNET_COUNCIL_FLOAT, Some(10 * crate::UNIT));
+        assert_eq!(MAINNET_SPEC_BUILDER_FLOAT, Some(10 * crate::UNIT));
+        assert!(mainnet_inputs()
+            .validators
+            .iter()
+            .all(|v| v.session_keys.is_none()));
+        assert!(preset_names().contains(&PresetId::from("quip-mainnet")));
+        let reason = quip_mainnet_config_genesis().unwrap_err();
+        assert_eq!(reason,
+            "mainnet genesis blocked: unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"
+        );
+        let panic =
+            std::panic::catch_unwind(|| get_preset(&PresetId::from("quip-mainnet"))).unwrap_err();
+        assert_eq!(panic.downcast_ref::<String>().unwrap(), &reason);
+    }
+
+    #[test]
+    fn mainnet_gate_rejects_inconsistent_markers_and_each_missing_input() {
+        let fixture = ready_mainnet_fixture();
+        let mut input = mainnet_inputs();
+        input.council_placeholders.clear();
+        assert!(mainnet_genesis(input)
+            .unwrap_err()
+            .contains("does not match"));
+        let mut input = fixture.clone();
+        input.council_placeholders = MAINNET_COUNCIL_PLACEHOLDERS.to_vec();
+        assert!(mainnet_genesis(input)
+            .unwrap_err()
+            .contains("does not match"));
+        for case in 0..4 {
+            let mut input = fixture.clone();
+            match case {
+                0 => {
+                    input.council.pop();
+                }
+                1 => {
+                    input.validators.pop();
+                }
+                2 => input.council[1] = input.council[0].clone(),
+                _ => input.validators[1].stash = input.validators[0].stash.clone(),
+            }
+            assert!(mainnet_genesis(input)
+                .unwrap_err()
+                .contains("exactly six distinct council seats and five distinct validators"));
+        }
+        for index in 0..5 {
+            let mut input = fixture.clone();
+            input.validators[index].session_keys = None;
+            assert!(mainnet_genesis(input).unwrap_err().contains(&format!(
+                "Validator {} BABE/GRANDPA session keys are TBD",
+                index + 1
+            )));
+        }
+        for field in 0..3 {
+            let mut input = fixture.clone();
+            let name = match field {
+                0 => {
+                    input.validator_float = None;
+                    "MAINNET_VALIDATOR_FLOAT"
+                }
+                1 => {
+                    input.council_float = None;
+                    "MAINNET_COUNCIL_FLOAT"
+                }
+                _ => {
+                    input.spec_builder_float = None;
+                    "MAINNET_SPEC_BUILDER_FLOAT"
+                }
+            };
+            let expected = format!("mainnet genesis blocked: {name} is TBD");
+            assert_eq!(
+                mainnet_genesis(input).err().as_deref(),
+                Some(expected.as_str())
+            );
+        }
+        for value in [0, crate::EXISTENTIAL_DEPOSIT - 1] {
+            for (field, name) in [
+                "MAINNET_VALIDATOR_FLOAT",
+                "MAINNET_COUNCIL_FLOAT",
+                "MAINNET_SPEC_BUILDER_FLOAT",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let mut input = fixture.clone();
+                match field {
+                    0 => input.validator_float = Some(value),
+                    1 => input.council_float = Some(value),
+                    _ => input.spec_builder_float = Some(value),
+                }
+                let expected = format!(
+                    "mainnet genesis blocked: {name} must fund a usable operational account"
+                );
+                assert_eq!(
+                    mainnet_genesis(input).err().as_deref(),
+                    Some(expected.as_str())
+                );
+            }
+        }
+        let mut input = fixture.clone();
+        input.validator_float = Some(u128::MAX);
+        assert!(mainnet_genesis(input).unwrap_err().contains("overflows"));
+        let mut input = fixture.clone();
+        input.council[0] = input.validators[0].stash.clone();
+        assert!(mainnet_genesis(input)
+            .unwrap_err()
+            .contains("also a validator"));
+        let mut input = fixture.clone();
+        input.spec_builder = input.council[0].clone();
+        assert!(mainnet_genesis(input)
+            .unwrap_err()
+            .contains("dedicated account"));
+        for role in 0..3 {
+            let mut input = fixture.clone();
+            // Put a sentinel into a different role as well: role swapping must not bypass the gate.
+            let sentinel = mainnet_placeholder("validator", "Validator 1");
+            match role {
+                0 => input.council[0] = sentinel,
+                1 => input.validators[0].stash = sentinel,
+                _ => input.spec_builder = sentinel,
+            }
+            assert!(mainnet_genesis(input)
+                .unwrap_err()
+                .contains("placeholder account"));
+        }
+        for key_kind in 0..2 {
+            let mut input = fixture.clone();
+            let duplicate = input.validators[0].session_keys.clone().unwrap();
+            let keys = input.validators[1].session_keys.as_mut().unwrap();
+            if key_kind == 0 {
+                keys.0 = duplicate.0;
+            } else {
+                keys.1 = duplicate.1;
+            }
+            assert!(mainnet_genesis(input)
+                .unwrap_err()
+                .contains("duplicate BABE or GRANDPA"));
+        }
+    }
+
+    #[test]
+    fn mainnet_funding_rejects_wrong_allocations_and_faucet() {
+        let input = ready_mainnet_fixture();
+        let validators: Vec<_> = input.validators.iter().map(|v| v.stash.clone()).collect();
+        let patch = mainnet_genesis(input.clone()).unwrap();
+        for case in 0..10 {
+            let mut funding = funding_from_patch(&patch);
+            match case {
+                0 => funding.balances[0].1 = VALIDATOR_BOND,
+                1 => funding.balances[0].1 = VALIDATOR_BOND - 1,
+                2 => funding.balances[0].1 = TEST_CURRENCY_ENDOWMENT,
+                3 => funding.balances.push(funding.balances[0].clone()),
+                4 => funding.balances[0].0 = AccountId::new([99; 32]),
+                5 => funding.faucet_budget = 1,
+                6 => funding.faucet.state = pallet_faucet_ops::FaucetState::Paused,
+                7 => funding.faucet.state = pallet_faucet_ops::FaucetState::Enabled,
+                8 => funding.faucet.authority = Some(input.spec_builder.clone()),
+                _ => {
+                    funding
+                        .balances
+                        .iter_mut()
+                        .find(|(who, _)| who == &input.allocation.custody)
+                        .unwrap()
+                        .1 += crate::UNIT
+                }
+            }
+            assert!(
+                validate_mainnet_funding(
+                    &funding,
+                    &validators,
+                    &input.council,
+                    &input.spec_builder,
+                    &input.allocation.custody,
+                    input.allocation.total.unwrap()
+                )
+                .is_err(),
+                "case {case}"
+            );
+        }
+    }
+    // The runtime API must preserve the descriptive refusal, not merely trap
+    // opaquely or omit the preset name. Run with an actual non-benchmark Wasm.
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    #[test]
+    fn wasm_preset_api_lists_new_networks_and_reports_why_export_is_blocked() {
+        use codec::Decode;
+        use sp_core::traits::{CallContext, CodeExecutor, RuntimeCode, WrappedRuntimeCode};
+        let wasm = crate::WASM_BINARY.expect("this test requires a real runtime Wasm build");
+        let fetcher = WrappedRuntimeCode(wasm.into());
+        let code = RuntimeCode {
+            code_fetcher: &fetcher,
+            heap_pages: None,
+            hash: sp_core::blake2_256(wasm).to_vec(),
+        };
+        let executor =
+            sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build();
+        let mut ext = sp_io::TestExternalities::new_empty();
+        let (names, native) = executor.call(
+            &mut ext.ext(),
+            &code,
+            "GenesisBuilder_preset_names",
+            &[],
+            CallContext::Offchain,
+        );
+        assert!(!native);
+        let names = Vec::<String>::decode(&mut &names.unwrap()[..]).unwrap();
+        assert!(names.iter().any(|name| name == "quip-mainnet"));
+        assert!(names.iter().any(|name| name == "quip-testnet-relaunch"));
+        let args = Some(PresetId::from("quip-testnet-relaunch")).encode();
+        let (result, native) = executor.call(
+            &mut ext.ext(),
+            &code,
+            "GenesisBuilder_get_preset",
+            &args,
+            CallContext::Offchain,
+        );
+        assert!(!native);
+        let reason = result.unwrap_err().to_string();
+        assert!(
+            reason.contains("TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs"),
+            "{reason}"
+        );
+        let args = Some(PresetId::from("quip-mainnet")).encode();
+        let (result, native) = executor.call(
+            &mut ext.ext(),
+            &code,
+            "GenesisBuilder_get_preset",
+            &args,
+            CallContext::Offchain,
+        );
+        assert!(!native);
+        let reason = result.unwrap_err().to_string();
+        assert!(reason.contains("mainnet genesis blocked: unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"), "{reason}");
+    }
+    #[test]
+    fn relaunch_council_is_deferred_and_export_is_blocked() {
+        assert_eq!(TESTNET_RELAUNCH_COUNCIL_TBD, None);
+        assert!(preset_names().contains(&PresetId::from("quip-testnet-relaunch")));
+        assert!(preset_names().contains(&PresetId::from("quip-mainnet")));
+        let reason = quip_testnet_relaunch_config_genesis().unwrap_err();
+        assert!(
+            reason.contains("TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs")
+        );
+        let panic =
+            std::panic::catch_unwind(|| get_preset(&PresetId::from("quip-testnet-relaunch")))
+                .unwrap_err();
+        assert_eq!(panic.downcast_ref::<String>().unwrap(), &reason);
+    }
+
+    #[test]
+    fn relaunch_fixture_builds_disjoint_council_and_preserves_operators() {
+        // Fixture-only account IDs, not a claim of provisioned council keys.
+        let council = [
+            AccountId::new([50; 32]),
+            AccountId::new([51; 32]),
+            AccountId::new([52; 32]),
+        ];
+        let patch = testnet_relaunch_genesis(Some(council.clone())).unwrap();
+        let legacy = quip_testnet_config_genesis();
+        let expected_operators: Vec<AccountId> = [
+            "c5c1e685e181d2939fddaf43e61455c0f00a99d2716d59b1f90674e5c0292510",
+            "40f5f2aeab073dfa95c96e48eba57b4afbdd2d118ff4acf60987a8c8bf8bf32b",
+            "d88854de054c7534450cddace65332a98d12ba06ff3adb39f9ad40f129b37aa7",
+        ]
+        .iter()
+        .map(|hex| tx_account_from_hex(hex, "pinned testnet operator"))
+        .collect();
+        assert_eq!(
+            patch["validatorAdmission"]["approved"],
+            serde_json::to_value(&expected_operators).unwrap()
+        );
+        assert_eq!(patch["session"], legacy["session"]);
+        assert_eq!(patch["staking"], legacy["staking"]);
+        assert_eq!(
+            patch["foundationMembership"]["members"],
+            serde_json::to_value(&council).unwrap()
+        );
+        let funding = funding_from_patch(&patch);
+        assert_eq!(funding.balances.len(), 6);
+        assert_eq!(
+            funding
+                .balances
+                .iter()
+                .map(|(a, _)| a)
+                .collect::<BTreeSet<_>>(),
+            expected_operators.iter().chain(&council).collect()
+        );
+        assert!(funding
+            .balances
+            .iter()
+            .all(|(_, amount)| *amount == 1u128 << 60));
+        assert_eq!(
+            funding.faucet.state,
+            pallet_faucet_ops::FaucetState::Enabled
+        );
+        assert_eq!(
+            funding.faucet.authority,
+            Some(expected_operators[0].clone())
+        );
+        assert_eq!(funding.faucet_budget, 1_000_000_000 * crate::UNIT);
+        assert_eq!(
+            patch["quantumComputeMempool"]["defaultIsingSpecBuilder"],
+            serde_json::to_value(&expected_operators[0]).unwrap()
+        );
+        assert_launch_storage(patch, 20_033, 3, 3);
+    }
+
+    #[test]
+    fn relaunch_rejects_duplicate_operator_and_placeholder_council_seats() {
+        let council = [
+            AccountId::new([50; 32]),
+            AccountId::new([51; 32]),
+            AccountId::new([52; 32]),
+        ];
+        let mut duplicate = council.clone();
+        duplicate[1] = duplicate[0].clone();
+        assert!(testnet_relaunch_genesis(Some(duplicate))
+            .unwrap_err()
+            .contains("distinct council seats"));
+        for (operator, _, _) in quip_testnet_authorities() {
+            let mut overlapping = council.clone();
+            overlapping[0] = operator;
+            assert!(testnet_relaunch_genesis(Some(overlapping))
+                .unwrap_err()
+                .contains("also a validator operator"));
+        }
+        for sentinel in reserved_mainnet_accounts() {
+            let mut unresolved = council.clone();
+            unresolved[0] = sentinel;
+            assert!(testnet_relaunch_genesis(Some(unresolved))
+                .unwrap_err()
+                .contains("reserved placeholder council account"));
+        }
     }
 }

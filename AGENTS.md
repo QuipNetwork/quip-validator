@@ -15,15 +15,45 @@ Omit `--chain` to join the live public Quip Testnet (EIP-155 `20033`).
 
 | Flag | Preset | Network | EIP-155 |
 |------|--------|---------|--------:|
-| (omit `--chain`) | `quip-testnet` | live public testnet | 20033 |
-| `--chain=quip-testnet` | `quip-testnet` | live public testnet | 20033 |
+| (omit `--chain`) | pinned spec | live public testnet | 20033 |
+| `--chain=quip-testnet` | pinned spec | live public testnet | 20033 |
 | `--dev` or `--chain=dev` | Development | Alice-only local | 1337 |
 | `--chain=local` | Local Testnet | Alice and Bob local | 1337 |
 | `--chain=local3` | Local Testnet (3 Validators) | Alice, Bob, and Charlie local | 1337 |
+| *(none exists)* | `quip-mainnet` — runtime preset, **export-blocked** | mainnet, not launched | 20049 |
+| *(none exists)* | `quip-testnet-relaunch` — runtime preset, **export-blocked** | relaunch testnet, not launched | 20033 |
 
 Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads that JSON file and uses the chain ID in its genesis.
 
-Runtime 117 is the H2/H4 chain-wipe relaunch, not an in-place upgrade from the
+### Mainnet — not runnable yet
+
+There is **no mainnet network to join**, and no `--chain` value for it. Do not add one.
+
+The two presets in the last two rows exist in both runtime crates and are registered in the GenesisBuilder API, but they **refuse to export** until the owner supplies real inputs: the six mainnet council accounts, five validator stash accounts with BABE/GRANDPA keys, the three relaunch testnet council accounts, and the vesting allocation total, recipients, custody account and tranche terms. `quip_mainnet_config_genesis()` returns `Err` with a named reason rather than emitting placeholders.
+
+To see the refusal rather than take this on faith:
+
+```bash
+cargo test -p quip-protocol-runtime --lib wasm_preset_api_lists_new_networks_and_reports_why_export_is_blocked
+```
+
+It asserts that the preset list contains both names and that asking for `quip-mainnet` returns the refusal reason.
+
+Neither name is a node alias. `load_spec` maps only `dev`, `local`, `rehearsal`, `local3`, the testnet aliases, and otherwise treats the argument as a filesystem path (`node/src/command.rs:39-54`). The test `unprovisioned_networks_have_no_builtin_chain_alias` (`node/src/command.rs:340`) fails if anyone wires them. So today `--chain=quip-mainnet` produces a file-not-found error, which is the intended behaviour, not a bug.
+
+Why there is no flag rather than a flag that refuses: a chain alias promises a launchable network identity, and this one cannot be kept yet. The preset has no genesis to return while inputs are unset; session keys stay `None` by design, so a node built from it would run, author nothing and never finalize; and a preset resolved at runtime gives two operators different genesis from the same binary, which is a fork at block zero rather than a chain. The identity has to be a vendored raw spec with a pinned genesis hash, and decision D6 in `../TWO-NETWORK-DECISIONS.md` requires the alias, the raw spec and the identity to land in the same change. The negative test keeps that gap deliberate instead of accidental.
+
+What must happen before mainnet can run, in order:
+
+1. Owner supplies the addresses, keys and allocation figures above.
+2. The preset exports successfully; generate canonical raw specs through the preset, not by hand.
+3. Vendor the raw spec and pin its SHA-256, mirroring what the testnet did in QUI-2080 part 1 (`chain-specs/`, `scripts/check-live-testnet-spec.py`).
+4. Wire the alias in `load_spec`, delete or update the negative test above, and re-run the live-spec gate.
+5. Insert validator keys on the operators' nodes and bootstrap with a quorum of genesis validators. The decided mainnet identity — protocol id `quip-network`, token symbol `QUIP`, EIP-155 `20049` — lives in `../GENESIS-POSITION.md`; only the chain id is currently in code (`MAINNET_CHAIN_ID = 20_049`), because the chain-spec builder that would set the protocol id does not exist yet. Mainnet must never reuse a testnet or dev key in either direction.
+
+Mainnet reaches genesis by fresh launch. It is never reached by `set_code` from another chain, and no existing database may be pointed at a new genesis.
+
+Runtime 120 is the H2/H4 chain-wipe relaunch, not an in-place upgrade from the
 earlier H1/H3 network. Work on this launch must assume fresh genesis/state,
 fresh validator databases, re-inserted H4 BABE and H2 GRANDPA keys, and
 incompatible old signed extrinsics (`transaction_version = 7`).
@@ -78,39 +108,60 @@ cargo build --release
 cargo +nightly doc --open
 ```
 
-CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. `browser-signer-test` also checks the signing fixture. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
+CI (`.gitlab-ci.yml`) gates merge requests with more than a build. `cargo-test` runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, a node build, the live-spec startup smoke, and a release runtime build. `browser-signer-test` checks the signing fixture and the Polkadot.js signer. `runtime-parity` runs the parity gate and its negative fixtures. `live-testnet-spec` verifies the vendored `chain-specs/quip-testnet.json` byte-for-byte against its pinned SHA-256 and exercises the alias/metadata identity. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
 
-Two further merge-request jobs run automatically and cover benchmarks. `benchmark-preflight` exercises every benchmark against the production runtime constants at low resolution, without touching tracked weights. `weights-staleness-check` warns (yellow, never blocking) when a pallet's `lib.rs`/`benchmarking.rs` changed but its `weights.rs`/`benchmark_weights.rs` did not. Regenerating weights is the separate `benchmark-weights` job — **manual by design**, because it runs on the single serialized reference machine and pushes the regenerated files back to the MR branch. Play it when your change can affect weights.
+Two further merge-request jobs run automatically and cover benchmarks. `benchmark-preflight` exercises every benchmark against the production runtime constants at low resolution, without touching tracked weights; it fails closed if the runtime stops registering the nine `pallet_vesting` benchmarks, and it currently takes a large fraction of its 90-minute timeout (see QUI-2102). `weights-staleness-check` warns (yellow, never blocking) when a pallet's `lib.rs`/`benchmarking.rs` changed but its `weights.rs`/`benchmark_weights.rs` did not. Regenerating weights is the separate `benchmark-weights` job — **manual by design**, because it runs on the single serialized reference machine and pushes the regenerated files back to the MR branch. Play it when your change can affect weights; it mirrors runtime-level weights into `runtime-testnet`, which the parity gate requires.
+
+Gates that exist as scripts and are worth running before a push, because a gate nobody has watched fail is not a gate:
+
+```bash
+bash scripts/check-runtime-parity.sh        # the two runtime trees differ only in approved places
+python3 scripts/check-live-testnet-spec.py  # vendored raw spec matches its pinned SHA-256
+python3 scripts/test-live-testnet-spec.py   # negative fixtures for that gate
+python3 scripts/test-vesting-benchmark-inventory.py  # benchmark inventory guard fixtures
+```
 
 ## Architecture
 
-Three-crate workspace:
+Cargo workspace with two runtime crates, one node crate, ten pallets and the transaction-crypto/quantum-validation libraries.
 
 **`node/`** — Native binary (`quip-network-node`). Handles networking (libp2p), consensus orchestration, RPC server, and chain specification. Key files:
-- `chain_spec.rs` — Genesis configuration. Default (no `--chain`) is `quip-testnet`.
+- `chain_spec.rs` — Chain-spec construction. The default (no `--chain`) and the `quip-testnet` aliases load the **pinned raw spec** in `chain-specs/quip-testnet.json`, not a runtime preset; see the Mainnet section for why no other network is wired.
+- `command.rs` — CLI parsing and `load_spec` (the alias table)
 - `service.rs` — Node service wiring (hybrid BABE + GRANDPA consensus, transaction pool, networking)
 - `rpc.rs` — Custom RPC endpoint registration
 
-**`runtime/`** — Blockchain state transition function (`quip-protocol-runtime`). Compiles to both native and Wasm. The Wasm blob is embedded in the native binary and supports ordinary on-chain upgrades; Runtime 117 (the H2/H4 launch) is explicitly a chain-wipe relaunch instead.
+**`runtime/`** — Blockchain state transition function (`quip-protocol-runtime`), `spec_name` `quip`. Compiles to both native and Wasm. The Wasm blob is embedded in the native binary and supports ordinary on-chain upgrades; Runtime 120 (the H2/H4 launch) is explicitly a chain-wipe relaunch instead.
+
+**`runtime-testnet/`** — Second runtime crate (`quip-testnet-runtime`), `spec_name` `quip-testnet`, 600-slot epochs. Mirrored **byte-for-byte** from `runtime/` except the approved network differences; `scripts/check-runtime-parity.sh` enforces that and is a blocking CI job. Two distinct `spec_name` values are load-bearing: `can_set_code` and the `OnSetCode` guard reject a blob from the other network. This crate is **spec-source only**: it remains a compiled, parity-gated workspace member, but is not linked into a shipping binary. Raw chain specs are produced out of band and vendored with hash pins.
+
+Both runtimes share the same layout:
 - `lib.rs` — Runtime type definitions, pallet composition via `#[frame_support::runtime]` macro, block time constants (6s slots)
 - `configs/mod.rs` — All pallet `Config` trait implementations (system params, weights, fees)
 - `apis.rs` — Runtime API implementations exposed to the node
-- `genesis_config_presets.rs` — Genesis state presets for dev/testnet
+- `genesis_config_presets.rs` — Genesis presets: dev/local/local3/rehearsal, plus the export-blocked `quip-mainnet` and `quip-testnet-relaunch`
 
-**`pallets/evm-chain-id/`** — Stores the EIP-155 chain ID set at genesis (`1337` local, `20033` testnet). `pallet-revive` reads it through `Get<u64>`.
+**Pallets** (`pallets/`):
+- `validator-admission` — Foundation-gated validator admission and governed Root dispatch (`CouncilRootCalls` policy)
+- `quantum-pow` — Protocol-level useful-work mining
+- `quantum-compute-mempool` — User-submitted Ising job marketplace
+- `xqvm` — On-chain XQVM bytecode execution
+- `emission-controller` — Fixed annual subnet emissions and budgeted testnet issuance
+- `slash-policy` — Bounded council discretionary slashing parameters and dispatch
+- `faucet-ops` — Governed testnet faucet with an irreversible disable fuse
+- `miner-registry` — Miner descriptors and qblock participation
+- `evm-chain-id` — Genesis EIP-155 chain ID (`1337` local, `20033` testnet, `20049` mainnet); `pallet-revive` reads it through `Get<u64>`
+- `template` — Minimal reference pallet, not production logic
 
-**`pallets/template/`** — Custom FRAME pallet (`pallet-template`). Starting point for Quip-specific logic.
-- `lib.rs` — Pallet definition (storage, events, errors, dispatchable calls)
-- `mock.rs` — Mock runtime for unit tests
-- `tests.rs` — Pallet unit tests using `frame_support::assert_ok!` / `assert_noop!`
-- `weights.rs` — Benchmark-derived weight constants
-- `benchmarking.rs` — Benchmark definitions (behind `runtime-benchmarks` feature)
+Council slash procedures and validator removal semantics: [SLASHING_RUNBOOK.md](SLASHING_RUNBOOK.md).
+
+**Libraries** (`crates/`): `quantum-validation` (deterministic `no_std` Ising validation), `transaction-crypto{,-core,-wasm,-py}` (hybrid H4 signer: `sr25519 + FN-DSA-512`, with Wasm and CPython bindings).
 
 ## Key Patterns
 
 **`no_std` by default**: Runtime and pallet crates use `#![cfg_attr(not(feature = "std"), no_std)]`. All dependencies in these crates must support `no_std`. Use `default-features = false` for Substrate deps and gate std-only code behind `#[cfg(feature = "std")]`.
 
-**Pallet indices are stable**: Pallet indices in `runtime/src/lib.rs` (e.g., `#[runtime::pallet_index(7)]`) must never change after chain launch — they're encoded in storage keys and extrinsics.
+**Pallet indices are stable**: Pallet indices in `runtime/src/lib.rs` (e.g., `#[runtime::pallet_index(7)]`) must never change after chain launch — they're encoded in storage keys and extrinsics. Index 6 is retired and must not be reused; index 31 is `slash-policy` and index 32 is the stock SDK `pallet-vesting`. Both runtime crates must agree on every index.
 
 **Call indices are stable**: Similarly, `#[pallet::call_index(N)]` values in pallet dispatchables must remain fixed for backward compatibility.
 
@@ -169,7 +220,7 @@ Rust toolchain is pinned in `env-setup/rust-toolchain.toml` (stable channel, inc
 
 ## Versioning & release tags
 
-Cross-repo standard — `quip-protocol/docs/VERSIONING.md` is canonical.
+Cross-repo standard — `quip-protocol/docs/VERSIONING.md` is the canonical path in the cross-repository workspace.
 
 | Artifact | Format | Example |
 |----------|--------|---------|

@@ -59,6 +59,7 @@ impl pallet_balances::Config for Test {
 }
 
 frame_support::parameter_types! {
+    pub static AnnualEmission: u128 = crate::CONTROLLER_ANNUAL_EMISSION_QUIP.saturating_mul(1_000_000_000_000);
     pub const PotId: frame_support::PalletId = frame_support::PalletId(*b"qp/emiss");
 }
 pub struct Clock;
@@ -72,12 +73,14 @@ impl pallet_emission_controller::Config for Test {
     type Currency = Balances;
     type Clock = Clock;
     type Unit = ConstU128<1_000_000_000_000>;
+    type AnnualEmission = AnnualEmission;
     type PotId = PotId;
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = ();
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
+    AnnualEmission::set(crate::CONTROLLER_ANNUAL_EMISSION_QUIP.saturating_mul(1_000_000_000_000));
     let mut storage = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();

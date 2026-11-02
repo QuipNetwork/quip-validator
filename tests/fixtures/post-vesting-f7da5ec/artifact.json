@@ -1,0 +1,9 @@
+{
+  "commit": "f7da5ec7c9d48e96977738811bb843c6653e844b",
+  "parent": "ba20b1e104dce9809c4e939673adcef1b5a884d7",
+  "tree": "ab5ee794c07c2662e88a384c26c0aab98d9929cf",
+  "manifest_sha256": "1fe7131e7c24bec7b05250672a1285f9c75120383dfcfa93020aac0d834c7de1",
+  "worktree": "/Users/lazycoder/projects/quip/quip-validator-vesting",
+  "branch": "ru/feature/mainnet-vesting",
+  "pushed": false
+}

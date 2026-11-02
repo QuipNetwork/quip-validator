@@ -24,6 +24,7 @@
 // For more information, please refer to <http://unlicense.org>
 
 // Substrate and Polkadot dependencies
+use alloc::vec::Vec;
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::{
     derive_impl,
@@ -102,6 +103,27 @@ parameter_types! {
 #[allow(unused_parens)]
 type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
 
+/// Stable error shared by all runtime-upgrade entry points.
+pub const RUNTIME_IDENTITY_MISMATCH: &str = "Runtime spec_name does not match this network";
+
+/// Emergency upgrades may bypass version ordering, but not network identity.
+pub struct NetworkIdentityGuard;
+impl frame_system::SetCode<Runtime> for NetworkIdentityGuard {
+    fn set_code(code: Vec<u8>) -> frame_support::dispatch::DispatchResult {
+        let version = sp_io::misc::runtime_version(&code)
+            .and_then(|v| sp_version::RuntimeVersion::decode(&mut &v[..]).ok());
+        // Match FRAME's exemption for the SDK kitchensink benchmark candidate.
+        #[cfg(all(feature = "runtime-benchmarks", not(test)))]
+        core::hint::black_box(version);
+        #[cfg(not(all(feature = "runtime-benchmarks", not(test))))]
+        if version.is_some_and(|version| version.spec_name != crate::VERSION.spec_name) {
+            return Err(sp_runtime::DispatchError::Other(RUNTIME_IDENTITY_MISMATCH));
+        }
+        // Preserve the unchecked path's existing behavior when extraction fails.
+        <() as frame_system::SetCode<Runtime>>::set_code(code)
+    }
+}
+
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
 /// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
 /// but overridden as needed.
@@ -131,11 +153,13 @@ impl frame_system::Config for Runtime {
     type SS58Prefix = SS58Prefix;
     type MaxConsumers = frame_support::traits::ConstU32<16>;
     type SingleBlockMigrations = SingleBlockMigrations;
+    type OnSetCode = NetworkIdentityGuard;
 }
 
 parameter_types! {
-    // BABE epochs are defined in slots. Keep them short enough for local development.
-    pub const EpochDuration: u64 = 10 * super::MINUTES as u64;
+    // BABE epochs are defined in slots. One epoch is one staking session (ShouldEndSession = Babe),
+    // so six sessions give a 24h mainnet era or a 6h testnet era.
+    pub const EpochDuration: u64 = crate::network_params::EPOCH_DURATION_SLOTS;
     pub const ExpectedBlockTime: u64 = SLOT_DURATION;
 }
 
@@ -144,23 +168,33 @@ impl pallet_babe::Config for Runtime {
     type ExpectedBlockTime = ExpectedBlockTime;
     type EpochChangeTrigger = pallet_babe::ExternalTrigger;
     type DisabledValidators = ();
-    type WeightInfo = ();
-    type MaxAuthorities = ConstU32<32>;
-    type MaxNominators = ConstU32<0>;
-    type KeyOwnerProof = sp_core::Void;
-    type EquivocationReportSystem = ();
+    type WeightInfo = slashing::EquivocationWeights;
+    type MaxAuthorities = ConstU32<64>;
+    type MaxNominators = election::MaxBackersPerWinnerFinal;
+    type KeyOwnerProof = sp_session::MembershipProof;
+    type EquivocationReportSystem = pallet_babe::EquivocationReportSystem<
+        Self,
+        slashing::ReportOffences,
+        crate::Historical,
+        slashing::ReportLongevity,
+    >;
 }
 
 impl pallet_grandpa::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
 
-    type WeightInfo = ();
-    type MaxAuthorities = ConstU32<32>;
-    type MaxNominators = ConstU32<0>;
+    type WeightInfo = slashing::EquivocationWeights;
+    type MaxAuthorities = ConstU32<64>;
+    type MaxNominators = election::MaxBackersPerWinnerFinal;
     type MaxSetIdSessionEntries = validator_onboarding::SetIdSessionEntries;
 
-    type KeyOwnerProof = sp_core::Void;
-    type EquivocationReportSystem = ();
+    type KeyOwnerProof = sp_session::MembershipProof;
+    type EquivocationReportSystem = pallet_grandpa::EquivocationReportSystem<
+        Self,
+        slashing::ReportOffences,
+        crate::Historical,
+        slashing::ReportLongevity,
+    >;
 }
 
 /// Staking queues validators; historical roots start with the first rotation.
@@ -170,7 +204,7 @@ impl pallet_session::Config for Runtime {
     type ValidatorIdOf = ConvertInto;
     type ShouldEndSession = Babe;
     type NextSessionRotation = Babe;
-    type SessionManager = pallet_session::historical::NoteHistoricalRoot<Runtime, crate::Staking>;
+    type SessionManager = election::ElectionScheduler;
     type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
     type Keys = BoxedSessionKeys;
     type DisablingStrategy = pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
@@ -388,12 +422,6 @@ impl pallet_revive::Config for Runtime {
     type GasScale = ConstU32<1_000>;
 }
 
-impl pallet_sudo::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type RuntimeCall = RuntimeCall;
-    type WeightInfo = pallet_sudo::weights::SubstrateWeight<Runtime>;
-}
-
 /// Configure the pallet-template in pallets/template.
 impl pallet_template::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
@@ -401,6 +429,8 @@ impl pallet_template::Config for Runtime {
 }
 
 parameter_types! {
+    pub const ControllerAnnualEmission: Balance =
+        pallet_emission_controller::CONTROLLER_ANNUAL_EMISSION_QUIP.saturating_mul(UNIT);
     pub const EmissionPotId: frame_support::PalletId = frame_support::PalletId(*b"qp/emiss");
 }
 impl pallet_emission_controller::Config for Runtime {
@@ -408,6 +438,7 @@ impl pallet_emission_controller::Config for Runtime {
     type Currency = Balances;
     type Clock = Timestamp;
     type Unit = ConstU128<UNIT>;
+    type AnnualEmission = ControllerAnnualEmission;
     type PotId = EmissionPotId;
     type MaxSubnets = ConstU32<32>;
     type WeightInfo = pallet_emission_controller::weights::SubstrateWeight<Runtime>;
@@ -583,6 +614,17 @@ parameter_types! {
     pub const QuantumPowEpochLength: BlockNumber = 100;
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
+    /// Inclusive bounds for the council-settable qblock reward. The floor keeps
+    /// a win worth more than the miner's deposit; the ceiling bounds what one
+    /// subnet pot can pay out before the emission budget is re-planned.
+    pub const QuantumPowMinBlockReward: Balance = UNIT / 10;
+    pub const QuantumPowMaxBlockReward: Balance = 100 * UNIT;
+    /// Round-length target for the difficulty controller, in blocks (~10 min at
+    /// 6s blocks), and the council's allowed range. The floor sits above the
+    /// fast-proof anchor (60 blocks) so the hardening band keeps an interior.
+    pub const QuantumPowTargetProofBlocks: u32 = 100;
+    pub const QuantumPowMinTargetProofBlocks: u32 = 80;
+    pub const QuantumPowMaxTargetProofBlocks: u32 = 400;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
     /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
     /// and `allowed_spin_values` per registered topology. Set well above the
@@ -629,7 +671,8 @@ parameter_types! {
 ///
 /// Genesis presets can record each preset's actual root account directly, but
 /// runtime migrations need one chain-independent account baked into the
-/// runtime. Operator 1 is the current quip-testnet sudo holder.
+/// runtime. This is operator 1's account on quip-testnet; note that spec 120
+/// removed `pallet-sudo`, so the attribution no longer implies any sudo key.
 pub const QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58: &str =
     "5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi";
 
@@ -670,6 +713,14 @@ impl pallet_quantum_pow::Config for Runtime {
     type EpochLength = QuantumPowEpochLength;
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
+    type MinBlockReward = QuantumPowMinBlockReward;
+    type MaxBlockReward = QuantumPowMaxBlockReward;
+    // QBlock reward and round-length changes are council business (2/3
+    // motion), not Root.
+    type AdminOrigin = validator_onboarding::FoundationOrRoot;
+    type TargetProofBlocks = QuantumPowTargetProofBlocks;
+    type MinTargetProofBlocks = QuantumPowMinTargetProofBlocks;
+    type MaxTargetProofBlocks = QuantumPowMaxTargetProofBlocks;
     type RewardPayment = pallet_emission_controller::SubnetRewards<
         Runtime,
         { pallet_emission_controller::ISING_SUBNET },
@@ -719,6 +770,34 @@ impl pallet_miner_registry::Config for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_clock_and_lifecycle_use_the_approved_durations() {
+        use frame_support::traits::Get;
+
+        let (session_hours, era_hours, slack, longevity) =
+            match crate::network_params::EPOCH_DURATION_SLOTS {
+                2_400 => (4, 24, 1_200, 403_200),
+                600 => (1, 6, 300, 100_800),
+                other => panic!("unapproved epoch duration: {other}"),
+            };
+        assert_eq!(crate::SLOT_DURATION, 6_000);
+        assert_eq!(EpochDuration::get(), session_hours * crate::HOURS as u64);
+        assert_eq!(validator_onboarding::SessionsPerEra::get(), 6);
+        assert_eq!(6 * EpochDuration::get(), era_hours * crate::HOURS as u64);
+        assert_eq!(election::MinimumElectionSlack::get(), slack);
+        assert_eq!(validator_onboarding::BondingDuration::get(), 28);
+        assert_eq!(
+            <<Runtime as pallet_staking::Config>::SlashDeferDuration as Get<u32>>::get(),
+            27
+        );
+        assert_eq!(
+            <<Runtime as pallet_staking::Config>::HistoryDepth as Get<u32>>::get(),
+            84
+        );
+        assert_eq!(validator_onboarding::SetIdSessionEntries::get(), 168);
+        assert_eq!(slashing::ReportLongevity::get(), longevity);
+    }
 
     #[test]
     fn runtime_block_weights_use_benchmarked_overhead() {
@@ -863,4 +942,11 @@ mod xqvm_weights {
     }
 }
 
+pub mod election;
+#[cfg(test)]
+mod governance_matrix;
+pub mod staking_rewards;
 pub mod validator_onboarding;
+
+pub mod slashing;
+pub mod vesting;
