@@ -1,6 +1,6 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
-//! enumerated regenerated-weight constant values below.
+//! enumerated regenerated-weight values and exact xqvm integration changes below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -34,6 +34,89 @@ pub fn constant_value<'a>(
     constant
         .get_mut("value")
         .ok_or_else(|| format!("missing metadata value {pallet_name}.{constant_name}"))
+}
+
+// Exact xqvm 0.5.0 integration delta, audited against all 673 baseline
+// types in both runtimes. These are required values, not open-ended
+// exemptions for call docs or error variants. Portable type ids are resolved
+// through Xqvm's metadata so registry renumbering is still irrelevant.
+pub fn xqvm_variants<'a>(
+    metadata: &'a mut Value,
+    kind: &str,
+) -> Result<&'a mut Vec<Value>, String> {
+    let id = metadata["pallets"]
+        .as_array()
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == "Xqvm"))
+        .and_then(|pallet| pallet[kind]["ty"].as_u64())
+        .ok_or_else(|| format!("missing Xqvm.{kind} type"))?;
+    let id = usize::try_from(id).map_err(|_| "Xqvm type id does not fit usize")?;
+    metadata
+        .get_mut("types")
+        .and_then(|types| types.get_mut("types"))
+        .and_then(|types| types.get_mut(id))
+        .and_then(|ty| ty.pointer_mut("/type/def/variant/variants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("missing Xqvm.{kind} variants"))
+}
+
+fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let baseline_docs = xqvm_variants(before, "calls")?
+        .iter()
+        .find(|call| call["name"] == "execute")
+        .and_then(|call| call["docs"].as_array())
+        .filter(|docs| !docs.is_empty())
+        .ok_or("missing baseline Xqvm.execute docs")?
+        .clone();
+    let docs = xqvm_variants(after, "calls")?
+        .iter_mut()
+        .find(|call| call["name"] == "execute")
+        .and_then(|call| call.get_mut("docs"))
+        .ok_or("missing candidate Xqvm.execute docs")?;
+    if *docs == Value::Array(baseline_docs.clone()) {
+        return Err("missing required Xqvm.execute.docs delta".into());
+    }
+    let mut expected_docs = baseline_docs.clone();
+    // Insert exactly this paragraph after the heading; preserve every old line.
+    expected_docs.splice(
+        1..1,
+        [
+            "",
+            "Outputs are integers. Unwritten slots are reported as zero;",
+            "a model, sample, or vector output fails with `UnsupportedOutputType`",
+            "and emits no `ProgramExecuted` event. Programs that construct these",
+            "values must derive integer results before returning them on chain.",
+        ]
+        .into_iter()
+        .map(Value::from),
+    );
+    if *docs != Value::Array(expected_docs) {
+        return Err("unexpected Xqvm.execute.docs delta".into());
+    }
+    *docs = Value::Array(baseline_docs);
+
+    let baseline_len = xqvm_variants(before, "error")?.len();
+    let variants = xqvm_variants(after, "error")?;
+    if variants.len() == baseline_len {
+        return Err("missing required Xqvm.UnsupportedOutputType delta".into());
+    }
+    let expected_error = serde_json::json!({
+        "docs": [
+            "A completed program returned a model, sample, or vector.",
+            "",
+            "On-chain outputs support integers only. Unwritten slots retain",
+            "their zero representation; typed non-scalar values are rejected",
+            "rather than silently replaced with zero. No success event is emitted."
+        ],
+        "index": 37,
+        "name": "UnsupportedOutputType"
+    });
+    if variants.last() != Some(&expected_error) {
+        return Err("unexpected Xqvm.UnsupportedOutputType delta".into());
+    }
+    // Remove ONLY this exact appended variant. The original error enum,
+    // including every existing variant's docs/index/fields, is still compared.
+    let _ = variants.pop();
+    Ok(())
 }
 
 struct Comparison {
@@ -128,6 +211,7 @@ impl Comparison {
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     let mut left = before.clone();
     let mut right = after.clone();
+    normalize_xqvm(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?

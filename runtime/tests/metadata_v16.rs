@@ -533,7 +533,7 @@ fn before_vesting_metadata() -> RuntimeMetadataV16 {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn vesting_and_regenerated_weights_are_the_only_semantic_metadata_deltas() {
+fn vesting_weights_and_xqvm_are_the_only_metadata_deltas() {
     let before = serde_json::to_value(before_vesting_metadata()).unwrap();
     let after = serde_json::to_value(metadata_v16()).unwrap();
     vesting_metadata_delta::check(&before, &after).unwrap();
@@ -553,6 +553,69 @@ fn vesting_and_regenerated_weights_are_the_only_semantic_metadata_deltas() {
             ))
         );
     }
+    // Each exact xqvm delta is mandatory independently of the other.
+    let old_docs = vesting_metadata_delta::xqvm_variants(&mut baseline, "calls")
+        .unwrap()
+        .iter()
+        .find(|call| call["name"] == "execute")
+        .unwrap()["docs"]
+        .clone();
+    let mut wrong = after.clone();
+    let execute = vesting_metadata_delta::xqvm_variants(&mut wrong, "calls")
+        .unwrap()
+        .iter_mut()
+        .find(|call| call["name"] == "execute")
+        .unwrap();
+    execute["docs"] = old_docs;
+    assert_eq!(
+        vesting_metadata_delta::check(&before, &wrong),
+        Err("missing required Xqvm.execute.docs delta".into())
+    );
+    let mut wrong = after.clone();
+    let _ = vesting_metadata_delta::xqvm_variants(&mut wrong, "error")
+        .unwrap()
+        .pop();
+    assert_eq!(
+        vesting_metadata_delta::check(&before, &wrong),
+        Err("missing required Xqvm.UnsupportedOutputType delta".into())
+    );
+
+    // Allow the reviewed values, not arbitrary replacements at these paths.
+    let mut wrong = after.clone();
+    let execute = vesting_metadata_delta::xqvm_variants(&mut wrong, "calls")
+        .unwrap()
+        .iter_mut()
+        .find(|call| call["name"] == "execute")
+        .unwrap();
+    execute["docs"][2] = serde_json::json!("unreviewed output behavior");
+    assert_eq!(
+        vesting_metadata_delta::check(&before, &wrong),
+        Err("unexpected Xqvm.execute.docs delta".into())
+    );
+    for (field, value) in [
+        ("name", serde_json::json!("UnreviewedError")),
+        ("index", serde_json::json!(38)),
+        ("docs", serde_json::json!(["unreviewed error docs"])),
+        ("fields", serde_json::json!([{}])),
+    ] {
+        let mut wrong = after.clone();
+        let error = vesting_metadata_delta::xqvm_variants(&mut wrong, "error")
+            .unwrap()
+            .last_mut()
+            .unwrap();
+        error[field] = value;
+        assert_eq!(
+            vesting_metadata_delta::check(&before, &wrong),
+            Err("unexpected Xqvm.UnsupportedOutputType delta".into())
+        );
+    }
+    // An extra error cannot hide behind the one approved appended variant.
+    let mut wrong = after;
+    let errors = vesting_metadata_delta::xqvm_variants(&mut wrong, "error").unwrap();
+    errors.insert(errors.len() - 1, errors[0].clone());
+    let error = vesting_metadata_delta::check(&before, &wrong).unwrap_err();
+    assert!(error.ends_with(".def.variant.variants: metadata length changed"));
+    eprintln!("extra Xqvm error variant rejected: {error}");
 }
 
 #[cfg(not(feature = "runtime-benchmarks"))]
