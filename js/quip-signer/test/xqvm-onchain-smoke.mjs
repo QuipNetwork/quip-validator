@@ -185,8 +185,23 @@ try {
     .map((f) => f.replace(/\.expected\.json$/u, ''))
     .sort();
 
+  // These two pinned 0.5.0 fixtures use a 64 GiB reference budget.
+  // Replay every other vector normally, including future large-budget ones:
+  // an unexpected memory failure must fail this gate, never become a skip.
+  const memoryLimitRejections = new Set([
+    'xqmx-grid/allocator_size_at_the_maximum',
+    'xqmx-grid/model_growth_onto_the_maximum'
+  ]);
+  const seenMemoryLimitRejections = new Set();
+  let replayed = 0;
+  let memoryRejected = 0;
+  check(names.length === 63, 'pinned xqvm 0.5.0 corpus has 63 step-asserting vectors');
+  check(maxVmMemory === 16n * 1024n * 1024n, 'replay memory cap is pinned at 16 MiB');
+
   for (const name of names) {
-    console.log(`== vector ${name} ==`);
+    const vectorPath = readFileSync(join(VECTORS_DIR, `${name}.path`), 'utf8').trim();
+    const expectsMemoryLimit = memoryLimitRejections.has(vectorPath);
+    console.log(`== vector ${vectorPath} ==`);
 
     const bytecode = readFileSync(join(VECTORS_DIR, `${name}.xqb`));
     const expected = JSON.parse(readFileSync(join(VECTORS_DIR, `${name}.expected.json`), 'utf8'));
@@ -243,6 +258,20 @@ try {
       signer
     );
 
+    if (expectsMemoryLimit) {
+      seenMemoryLimitRejections.add(vectorPath);
+      check(inputs.memory_limit === 68_719_476_736, `${vectorPath} pins a 64 GiB reference budget`);
+      const reason = executed.ok ? 'success' : describeFailure(api, executed.failed.event ?? executed.failed);
+      const rejected = !executed.ok && reason === 'xqvm.VmMemoryLimitExceeded';
+      check(rejected, `${vectorPath}: expected xqvm.VmMemoryLimitExceeded, got ${reason}`);
+      check(
+        !executed.events.some((e) => api.events.xqvm.ProgramExecuted.is(e)),
+        'memory-cap rejection emitted no ProgramExecuted event'
+      );
+      if (rejected) memoryRejected += 1;
+      continue;
+    }
+
     if (!executed.ok) {
       check(false, `execute failed: ${describeFailure(api, executed.failed.event ?? executed.failed)}`);
       continue;
@@ -275,7 +304,14 @@ try {
       stepsUsed === BigInt(expected.steps),
       `steps_used ${stepsUsed} matches the vector's ${expected.steps}`
     );
+    replayed += 1;
   }
+
+  check(
+    replayed === 61 && memoryRejected === 2 && seenMemoryLimitRejections.size === 2,
+    'pinned coverage: 61 successful replays and both named memory-cap rejections'
+  );
+  console.log(`== ${replayed} replayed, ${memoryRejected} rejected (pallet MaxVmMemory) ==`);
 
   // -------------------------------------------------- negative controls ----
   console.log('== negative controls ==');

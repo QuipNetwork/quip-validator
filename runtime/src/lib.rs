@@ -272,6 +272,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // must not be reused. Membership changes, including removal of the
     // council's own members, require 2/3. No call encoding changes, so
     // `transaction_version` stays at 7.
+    // 120 also takes xqvm 0.5.0's stricter store-time stack verification;
+    // previously stored programs still execute without re-verification.
+    // `execute` now rejects model, sample and vector outputs with
+    // `UnsupportedOutputType` instead of reporting zero. Integer outputs
+    // and zero-filled unwritten slots are unchanged.
+    // 120 has never been enacted: the v0.4.1 tag is not a deployment.
+    // Both xqvm changes are part of 120's first deployed behavior, so the
+    // spec and transaction versions remain 120 and 7.
     spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

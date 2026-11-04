@@ -126,6 +126,8 @@ count=0
 while IFS= read -r expected; do
   dir="$(dirname "$expected")"
   name="$(basename "$dir")"
+  # Preserve the full source path for the pinned memory-cap assertions.
+  printf '%s\n' "${dir#"$vectors_src/"}" >"$vectors_out/$name.path"
 
   "$xquad_bin" "$dir/program.xqasm" "$vectors_out/$name.xqb" >/dev/null
   cp "$expected" "$vectors_out/$name.expected.json"
