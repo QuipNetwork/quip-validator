@@ -533,7 +533,7 @@ fn before_vesting_metadata() -> RuntimeMetadataV16 {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn vesting_and_regenerated_weights_are_the_only_semantic_metadata_deltas() {
+fn vesting_weights_and_mempool_vm_are_the_only_semantic_metadata_deltas() {
     let before = serde_json::to_value(before_vesting_metadata()).unwrap();
     let after = serde_json::to_value(metadata_v16()).unwrap();
     vesting_metadata_delta::check(&before, &after).unwrap();

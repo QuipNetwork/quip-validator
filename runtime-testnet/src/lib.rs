@@ -477,6 +477,9 @@ pub type Executive = frame_executive::Executive<
 >;
 
 #[cfg(test)]
+mod mempool_vm_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use codec::Encode;
