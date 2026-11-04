@@ -99,6 +99,93 @@ fn store_invalid_bytecode_fails() {
 
 // ── execute ──────────────────────────────────────────────────────────────
 
+fn rejects_non_scalar_output(f: impl FnOnce(&mut InstructionBuilder)) {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            f(b);
+            b.emit_push(0).emit_output(Register(0)).emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        // Also pins that rejection emits no ProgramExecuted event and
+        // leaves the stored program and its deposit unchanged.
+        assert_noop!(
+            Xqvm::execute(
+                RuntimeOrigin::signed(1),
+                hash,
+                BoundedVec::default(),
+                1,
+                1_000
+            ),
+            Error::<Test>::UnsupportedOutputType
+        );
+    });
+}
+
+#[test]
+fn execute_rejects_model_output() {
+    rejects_non_scalar_output(|b| {
+        b.emit_push(2).emit_bqmx(Register(0));
+    });
+}
+
+#[test]
+fn execute_rejects_integer_vector_output() {
+    rejects_non_scalar_output(|b| {
+        b.emit_vec_i(Register(0));
+    });
+}
+
+#[test]
+fn execute_rejects_model_vector_output() {
+    rejects_non_scalar_output(|b| {
+        b.emit_vec_x(Register(0));
+    });
+}
+
+#[test]
+fn execute_rejects_sample_output() {
+    rejects_non_scalar_output(|b| {
+        b.emit_push(2).emit_bsmx(Register(0));
+    });
+}
+
+#[test]
+fn execute_preserves_zero_for_unwritten_output_slots() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+        assert_ok!(Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            1,
+            1_000,
+        ));
+        System::assert_last_event(
+            Event::ProgramExecuted {
+                caller: 1,
+                program_hash: hash,
+                steps_used: 1,
+                outputs: vec![0i64].try_into().unwrap(),
+            }
+            .into(),
+        );
+    });
+}
+
 #[test]
 fn execute_addition() {
     new_test_ext().execute_with(|| {

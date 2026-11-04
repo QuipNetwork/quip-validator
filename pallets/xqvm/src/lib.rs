@@ -329,6 +329,12 @@ pub mod pallet {
         /// Appended rather than placed beside the other sample faults so
         /// that the indices of the existing variants do not move.
         VmSampleOutOfDomain,
+        /// A completed program returned a model, sample, or vector.
+        ///
+        /// On-chain outputs support integers only. Unwritten slots retain
+        /// their zero representation; typed non-scalar values are rejected
+        /// rather than silently replaced with zero. No success event is emitted.
+        UnsupportedOutputType,
     }
 
     /// Map a static-verification failure onto a dispatch error.
@@ -614,6 +620,11 @@ pub mod pallet {
 
         /// Execute a stored XQVM program.
         ///
+        /// Outputs are integers. Unwritten slots are reported as zero;
+        /// a model, sample, or vector output fails with `UnsupportedOutputType`
+        /// and emits no `ProgramExecuted` event. Programs that construct these
+        /// values must derive integer results before returning them on chain.
+        ///
         /// Both dimensions of the cost are caller-influenced and neither is
         /// known from the call arguments alone, so both are pre-charged at
         /// their worst case and refunded via `PostDispatchInfo`:
@@ -685,10 +696,15 @@ pub mod pallet {
                         .outputs()
                         .iter()
                         .map(|r| match r {
-                            RegVal::Int(v) => *v,
-                            _ => 0i64,
+                            RegVal::Int(v) => Ok(*v),
+                            // Preserve the existing representation of an unwritten slot.
+                            RegVal::Unset => Ok(0),
+                            RegVal::VecInt(_)
+                            | RegVal::VecXqmx(_)
+                            | RegVal::Model(_)
+                            | RegVal::Sample(_) => Err(Error::<T>::UnsupportedOutputType),
                         })
-                        .collect::<Vec<_>>()
+                        .collect::<Result<Vec<_>, _>>()?
                         .try_into()
                         .expect("output_slots <= MaxOutputSlots checked above");
 
