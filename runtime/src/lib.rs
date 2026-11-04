@@ -278,6 +278,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `UnsupportedOutputType` instead of reporting zero. Integer outputs
     // and zero-filled unwritten slots are unchanged.
     // 120 has never been enacted: the v0.4.1 tag is not a deployment.
+    // The v0.4.1 build of 120 must never be enacted on any network.
     // Both xqvm changes are part of 120's first deployed behavior, so the
     // spec and transaction versions remain 120 and 7.
     spec_version: 120,
