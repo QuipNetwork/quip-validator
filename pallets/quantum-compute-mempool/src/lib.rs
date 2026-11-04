@@ -1,5 +1,22 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+//! Registered transforms execute on chain before scoring and are part of
+//! consensus. Default specs without programs are inert. Validation programs
+//! are verified at registration only: winner summaries contain no spins, so
+//! reward validation executes nothing. Extending that payload and metering its
+//! validation requires a separate owner decision.
+//!
+//! Store the transform program first from a team-controlled account and
+//! verify its ownership before registering the spec. Ownership belongs to
+//! the first storer; another account can front-run the team's store.
+//! The owner can remove the program, stalling every submission to the spec
+//! until someone re-stores the same bytes. Recovery is permissionless.
+//! Submitters receive `VmProgramNotFound`, pay base plus lookup weight,
+//! and leave submission storage and events unchanged; no VM steps execute.
+//! QUI-2158 tracks reference-count refusal in pallet-xqvm or copying bytes
+//! into mempool storage at registration. It must be closed or explicitly
+//! accepted before mainnet launch.
+
 extern crate alloc;
 
 pub use pallet::*;
@@ -165,6 +182,7 @@ pub mod pallet {
     use crate::xqvm::QuantumVm;
     use alloc::vec::Vec;
     use frame_support::{
+        dispatch::DispatchResultWithPostInfo,
         pallet_prelude::*,
         traits::{ExistenceRequirement::AllowDeath, ReservableCurrency, StorageVersion},
     };
@@ -225,6 +243,22 @@ pub mod pallet {
         /// Account recorded as the builder when the runtime migration backfills
         /// the canonical default spec on already-running chains.
         type DefaultJobSpecBuilder: Get<Self::AccountId>;
+
+        type ProgramSource: xqvm::ProgramLookup<Self::Hash>;
+
+        /// Total VM steps shared by every solution in one submission.
+        #[pallet::constant]
+        type MaxTransformStepsPerSubmission: Get<u64>;
+        /// Per-execution memory limit; VMs are dropped between solutions.
+        #[pallet::constant]
+        type MaxVmMemory: Get<u64>;
+        /// Measured VM work price, shared with pallet-xqvm.
+        #[pallet::constant]
+        type VmWeightPerStep: Get<Weight>;
+        /// Worst-case program lookup/decode and VM setup for a batch, including proof.
+        type VmProgramLookupWeight: Get<Weight>;
+        /// Worst-case bounded program lookup, decode and static verification cost.
+        type VmProgramValidationWeight: Get<Weight>;
 
         type VM: xqvm::QuantumVm<Self::AccountId, BalanceOf<Self>, Self::Hash>;
         type WeightInfo: WeightInfo;
@@ -472,6 +506,24 @@ pub mod pallet {
         PayeeRequired,
         InvalidPayee,
         PayeeChainMismatch,
+        /// A referenced program is absent from the configured source.
+        VmProgramNotFound,
+        /// A referenced program cannot be decoded.
+        VmBadBytecode,
+        /// A referenced program fails static verification.
+        VmVerificationFailed,
+        /// The transform must return exactly one integer vector.
+        VmOutputType,
+        /// The transformed vector must preserve the input spin count.
+        VmOutputLength,
+        /// Every transformed spin must be minus one or plus one.
+        VmOutputSpin,
+        /// The transform faulted during execution.
+        VmExecutionFailed,
+        /// The aggregate submission step budget was exhausted.
+        VmStepLimitExceeded,
+        /// The transform exceeded the per-execution memory bound.
+        VmMemoryLimitExceeded,
     }
 
     #[pallet::call]
@@ -517,13 +569,28 @@ pub mod pallet {
         }
 
         #[pallet::call_index(2)]
-        #[pallet::weight(<T as Config>::WeightInfo::register_job_spec())]
+        #[pallet::weight(<T as Config>::WeightInfo::register_job_spec().saturating_add(
+            T::VmProgramValidationWeight::get().saturating_mul(
+                u64::from(validation_program.is_some()) + u64::from(transform_program.is_some())
+            )
+        ))]
         /// Register a team-controlled job spec.
         ///
         /// This is root-only because registered specs are intended to be
         /// blessed protocol/team templates. The builder is explicit because a
         /// sudo-dispatched call reaches this pallet as `Root`, not as the sudo
         /// account's signed origin.
+        ///
+        /// Store the transform program first from a team-controlled account and
+        /// verify its ownership before registering the spec. Ownership belongs to
+        /// the first storer; another account can front-run the team's store.
+        /// The owner can remove the program, stalling every submission to the spec
+        /// until someone re-stores the same bytes. Recovery is permissionless.
+        /// Submitters receive `VmProgramNotFound`, pay base plus lookup weight,
+        /// and leave submission storage and events unchanged; no VM steps execute.
+        /// QUI-2158 tracks reference-count refusal in pallet-xqvm or copying bytes
+        /// into mempool storage at registration. It must be closed or explicitly
+        /// accepted before mainnet launch.
         pub fn register_job_spec(
             origin: OriginFor<T>,
             builder: T::AccountId,
@@ -590,20 +657,20 @@ pub mod pallet {
             // the configured maxima; the benchmark still exposes all three
             // dimensions so a future call format or VM weight contract can
             // pass exact values without changing WeightInfo again.
-            // TODO(benchmarking): Return DispatchResultWithPostInfo and refund
-            // to the actual topology and transformed-solution dimensions once
-            // they are known; calibrate that path on node02.
+            // Reserve the aggregate VM cap before admission; refund VM work
+            // to consumed steps on success and failure. Scoring stays bounded
+            // by these configured maxima until separately rebenchmarked.
             <T as Config>::WeightInfo::submit_solution(
                 T::MaxNodes::get(),
                 T::MaxEdges::get(),
                 T::MaxSolutions::get(),
-            )
+            ).saturating_add(Pallet::<T>::transform_weight(T::MaxTransformStepsPerSubmission::get(), true))
         )]
         pub fn submit_solution(
             origin: OriginFor<T>,
             order_id: u64,
             solutions: SolutionsOf<T>,
-        ) -> DispatchResult {
+        ) -> DispatchResultWithPostInfo {
             Self::do_submit_solution(ensure_signed(origin)?, order_id, solutions, None)
         }
 
@@ -768,13 +835,14 @@ pub mod pallet {
         /// Bind destination metadata to this signed, accepted solution.
         #[pallet::call_index(9)]
         #[pallet::weight(<T as Config>::WeightInfo::submit_solution_with_payee(
-            T::MaxNodes::get(), T::MaxEdges::get(), T::MaxSolutions::get()))]
+            T::MaxNodes::get(), T::MaxEdges::get(), T::MaxSolutions::get())
+            .saturating_add(Pallet::<T>::transform_weight(T::MaxTransformStepsPerSubmission::get(), true)))]
         pub fn submit_solution_with_payee(
             origin: OriginFor<T>,
             order_id: u64,
             solutions: SolutionsOf<T>,
             payee: types::WinnerPayee,
-        ) -> DispatchResult {
+        ) -> DispatchResultWithPostInfo {
             Self::do_submit_solution(ensure_signed(origin)?, order_id, solutions, Some(payee))
         }
     }
@@ -1175,11 +1243,66 @@ pub mod pallet {
             Ok(order_id)
         }
 
+        /// VM lookup/decode is precharged at its bound; only executed steps
+        /// are charged after dispatch, including failed and partial executions.
+        pub fn transform_weight(steps: u64, has_program: bool) -> Weight {
+            T::VmWeightPerStep::get()
+                .saturating_mul(steps)
+                .saturating_add(if has_program {
+                    T::VmProgramLookupWeight::get()
+                } else {
+                    Weight::zero()
+                })
+        }
+
         fn do_submit_solution(
             solver: T::AccountId,
             order_id: u64,
             solutions: SolutionsOf<T>,
             payee: Option<types::WinnerPayee>,
+        ) -> DispatchResultWithPostInfo {
+            use frame_support::dispatch::{DispatchErrorWithPostInfo, Pays, PostDispatchInfo};
+            let base = if payee.is_some() {
+                <T as Config>::WeightInfo::submit_solution_with_payee(
+                    T::MaxNodes::get(),
+                    T::MaxEdges::get(),
+                    T::MaxSolutions::get(),
+                )
+            } else {
+                <T as Config>::WeightInfo::submit_solution(
+                    T::MaxNodes::get(),
+                    T::MaxEdges::get(),
+                    T::MaxSolutions::get(),
+                )
+            };
+            let mut steps = 0;
+            let mut has_program = false;
+            let result = Self::submit_solution_inner(
+                solver,
+                order_id,
+                solutions,
+                payee,
+                &mut steps,
+                &mut has_program,
+            );
+            let post_info = PostDispatchInfo {
+                actual_weight: Some(
+                    base.saturating_add(Pallet::<T>::transform_weight(steps, has_program)),
+                ),
+                pays_fee: Pays::Yes,
+            };
+            result
+                .map(|()| post_info)
+                .map_err(|error| DispatchErrorWithPostInfo { post_info, error })
+        }
+
+        fn submit_solution_inner(
+            solver: T::AccountId,
+            order_id: u64,
+            solutions: SolutionsOf<T>,
+            payee: Option<types::WinnerPayee>,
+            vm_steps: &mut u64,
+            has_program: &mut bool,
         ) -> DispatchResult {
             let mut solver_info =
                 Solvers::<T>::get(&solver).ok_or(Error::<T>::SolverNotRegistered)?;
@@ -1221,7 +1344,8 @@ pub mod pallet {
             let h_values = order.ising_params.h_values.as_slice();
             let j_values = order.ising_params.j_values.as_slice();
             let topology = TopologyIndex::new(nodes, edges).map_err(Self::map_validation_error)?;
-            let transformed_solutions = T::VM::transform_solutions(
+            *has_program = spec.transform_program.is_some();
+            let outcome = T::VM::transform_solutions(
                 &order.spec_id,
                 spec.validation_program.as_ref(),
                 spec.transform_program.as_ref(),
@@ -1230,7 +1354,9 @@ pub mod pallet {
                     .iter()
                     .map(|solution| solution.as_slice().to_vec())
                     .collect(),
-            )?;
+            );
+            *vm_steps = outcome.steps_used;
+            let transformed_solutions = outcome.result?;
             ensure!(
                 !transformed_solutions.is_empty(),
                 Error::<T>::NoSolutionsSubmitted

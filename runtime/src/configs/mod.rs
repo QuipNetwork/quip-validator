@@ -596,6 +596,9 @@ parameter_types! {
     pub const QuantumMaxNodes: u32 = 5_000;
     pub const QuantumMaxEdges: u32 = 50_000;
     pub const QuantumMaxSolutions: u32 = 20;
+    /// VM steps shared by every solution in one submission. Every submission
+    /// reserves this up front, so it sets how many fit in a block.
+    pub const QuantumMaxTransformSteps: u64 = 5_000_000;
     pub const QuantumMaxBidMiners: u32 = 16;
     pub const QuantumMaxOrdersPerProposer: u32 = 32;
     pub const QuantumMaxDeadlineBlocks: BlockNumber = 1_000;
@@ -685,6 +688,27 @@ impl Get<AccountId> for QuantumDefaultJobSpecBuilder {
     }
 }
 
+/// The source owns bounded, content-addressed bytes admitted by pallet-xqvm's
+/// size, basic-block and loop-depth guards. No program storage is duplicated.
+pub struct QuantumProgramSource;
+impl pallet_quantum_compute_mempool::xqvm::ProgramLookup<Hash> for QuantumProgramSource {
+    fn program(hash: &Hash) -> Option<alloc::vec::Vec<u8>> {
+        pallet_xqvm::Programs::<Runtime>::get(hash).map(|bytes| bytes.into_inner())
+    }
+}
+
+parameter_types! {
+    // Conservative reuse of the bounded execute base for every possible VM
+    // instance, including lookup/decode, setup and proof. The adapter decodes
+    // once, so repeated decode/read charges overestimate that part of the batch.
+    pub QuantumProgramLookupWeight: Weight =
+        pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+            .saturating_mul(u64::from(QuantumMaxSolutions::get()));
+    // Registration checks up to two programs; the call charges each bound.
+    pub QuantumProgramValidationWeight: Weight =
+        pallet_xqvm::SubstrateWeight::<Runtime>::store_program(MaxProgramSize::get(), MaxProgramBlocks::get());
+}
+
 impl pallet_quantum_compute_mempool::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
@@ -699,7 +723,13 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type ResultTtlBlocks = QuantumResultTtlBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
     type DefaultJobSpecBuilder = QuantumDefaultJobSpecBuilder;
-    type VM = pallet_quantum_compute_mempool::xqvm::NoOpVm;
+    type ProgramSource = QuantumProgramSource;
+    type MaxTransformStepsPerSubmission = QuantumMaxTransformSteps;
+    type MaxVmMemory = MaxVmMemory;
+    type VmWeightPerStep = XqvmWeightPerStep;
+    type VmProgramLookupWeight = QuantumProgramLookupWeight;
+    type VmProgramValidationWeight = QuantumProgramValidationWeight;
+    type VM = pallet_quantum_compute_mempool::xqvm::XqvmAdapter<Runtime>;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
 }
 

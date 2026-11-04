@@ -11,6 +11,7 @@ type Balance = u128;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MockVmState {
+    pub use_real_vm: bool,
     pub validate_programs_calls: u32,
     pub transform_solutions_calls: u32,
     pub validate_result_calls: u32,
@@ -27,13 +28,18 @@ std::thread_local! {
 
 pub struct TestVm;
 
-impl<AccountId, Hash> pallet_quantum_compute_mempool::xqvm::QuantumVm<AccountId, Balance, Hash>
-    for TestVm
-{
+impl pallet_quantum_compute_mempool::xqvm::QuantumVm<u64, Balance, sp_core::H256> for TestVm {
     fn validate_programs(
-        _validation_program: Option<&Hash>,
-        _transform_program: Option<&Hash>,
+        _validation_program: Option<&sp_core::H256>,
+        _transform_program: Option<&sp_core::H256>,
     ) -> sp_runtime::DispatchResult {
+        if mock_vm_state().use_real_vm {
+            return <crate::xqvm::XqvmAdapter<Test> as crate::xqvm::QuantumVm<
+                u64,
+                Balance,
+                sp_core::H256,
+            >>::validate_programs(_validation_program, _transform_program);
+        }
         MOCK_VM_STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.validate_programs_calls = state.validate_programs_calls.saturating_add(1);
@@ -45,27 +51,44 @@ impl<AccountId, Hash> pallet_quantum_compute_mempool::xqvm::QuantumVm<AccountId,
     }
 
     fn transform_solutions(
-        _spec_id: &Hash,
-        _validation_program: Option<&Hash>,
-        _transform_program: Option<&Hash>,
-        _solver: &AccountId,
+        _spec_id: &sp_core::H256,
+        _validation_program: Option<&sp_core::H256>,
+        _transform_program: Option<&sp_core::H256>,
+        _solver: &u64,
         solutions: Vec<Vec<i8>>,
-    ) -> Result<Vec<Vec<i8>>, sp_runtime::DispatchError> {
-        MOCK_VM_STATE.with(|state| {
+    ) -> crate::xqvm::TransformOutcome {
+        if mock_vm_state().use_real_vm {
+            return <crate::xqvm::XqvmAdapter<Test> as crate::xqvm::QuantumVm<
+                u64,
+                Balance,
+                sp_core::H256,
+            >>::transform_solutions(
+                _spec_id,
+                _validation_program,
+                _transform_program,
+                _solver,
+                solutions,
+            );
+        }
+        let result = MOCK_VM_STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.transform_solutions_calls = state.transform_solutions_calls.saturating_add(1);
             if state.fail_transform_solutions {
                 return Err(sp_runtime::DispatchError::Other("vm-transform-solutions"));
             }
             Ok(state.transformed_solutions.clone().unwrap_or(solutions))
-        })
+        });
+        crate::xqvm::TransformOutcome {
+            result,
+            steps_used: 0,
+        }
     }
 
     fn validate_result(
-        _spec_id: &Hash,
-        _validation_program: Option<&Hash>,
-        _transform_program: Option<&Hash>,
-        winners: &[crate::types::WinnerSummary<AccountId, Balance>],
+        _spec_id: &sp_core::H256,
+        _validation_program: Option<&sp_core::H256>,
+        _transform_program: Option<&sp_core::H256>,
+        winners: &[crate::types::WinnerSummary<u64, Balance>],
     ) -> sp_runtime::DispatchResult {
         MOCK_VM_STATE.with(|state| {
             let mut state = state.borrow_mut();
@@ -154,6 +177,11 @@ impl pallet_balances::Config for Test {
 }
 
 parameter_types! {
+    pub static MaxTransformSteps: u64 = 1000;
+    pub static VmMemory: u64 = 1024 * 1024;
+    pub VmStepWeight: frame_support::weights::Weight = frame_support::weights::Weight::from_parts(10_000, 0);
+    pub VmLookupWeight: frame_support::weights::Weight = frame_support::weights::Weight::from_parts(1_000, 100);
+    pub VmValidationWeight: frame_support::weights::Weight = frame_support::weights::Weight::from_parts(2_000, 100);
     pub const MaxNodes: u32 = 16;
     pub const MaxEdges: u32 = 32;
     pub const MaxSolutions: u32 = 8;
@@ -179,6 +207,12 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type ResultTtlBlocks = ResultTtlBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;
     type DefaultJobSpecBuilder = ConstU64<1>;
+    type ProgramSource = TestProgramSource;
+    type MaxTransformStepsPerSubmission = MaxTransformSteps;
+    type MaxVmMemory = VmMemory;
+    type VmWeightPerStep = VmStepWeight;
+    type VmProgramLookupWeight = VmLookupWeight;
+    type VmProgramValidationWeight = VmValidationWeight;
     type VM = TestVm;
     type WeightInfo = ();
 }
@@ -215,6 +249,8 @@ pub fn new_test_ext_with_default_ising_spec(
     let mut ext: sp_io::TestExternalities = storage.into();
     ext.execute_with(|| {
         reset_vm_state();
+        MaxTransformSteps::set(1000);
+        VmMemory::set(1024 * 1024);
         System::set_block_number(1);
     });
     ext
@@ -230,5 +266,16 @@ pub fn run_to_block(n: u64) {
         let next = System::block_number() + 1;
         System::set_block_number(next);
         QuantumComputeMempool::on_initialize(next);
+    }
+}
+
+pub fn use_real_vm() {
+    MOCK_VM_STATE.with(|state| state.borrow_mut().use_real_vm = true);
+}
+
+pub struct TestProgramSource;
+impl crate::xqvm::ProgramLookup<sp_core::H256> for TestProgramSource {
+    fn program(hash: &sp_core::H256) -> Option<Vec<u8>> {
+        sp_io::storage::get(hash.as_bytes()).map(|bytes| bytes.to_vec())
     }
 }
