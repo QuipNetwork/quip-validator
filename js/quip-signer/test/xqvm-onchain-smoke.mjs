@@ -1,5 +1,5 @@
 // @ts-nocheck
-// On-chain smoke test for the pallet-xqvm / XQuad 0.4.0 integration.
+// On-chain smoke test for the pallet-xqvm / XQuad integration.
 //
 // Replays XQuad conformance vectors through the running node and asserts the
 // chain reproduces the toolchain's normative expectations exactly: the same
@@ -11,7 +11,7 @@
 //   make wasm-signer && npm run build --prefix js/quip-signer
 //   cargo build -p quip-network-node
 //   target/debug/quip-network-node --dev
-//   vectors assembled with `xquad asm` into VECTORS_DIR
+//   vectors assembled by the pinned xqasm library into VECTORS_DIR
 //
 // `scripts/test-xqvm-onchain.sh` does all of this, including the node.
 // To run this file on its own against a node that is already up:
@@ -258,9 +258,18 @@ try {
     const outputs = event.data[3].toJSON().map((v) => Number(v));
     const stepsUsed = event.data[2].toBigInt();
 
+    // The 0.5.0 vector format omits trailing Unset slots and spells
+    // interior Unset slots as null. The pallet preserves every requested
+    // slot and represents Unset as zero. Compare the full event width.
+    check(expected.outputs.length <= inputs.output_slots, 'vector outputs fit the requested slots');
+    const expectedOutputs = Array.from(
+      { length: inputs.output_slots },
+      (_, i) => expected.outputs[i] ?? 0
+    );
+
     check(
-      JSON.stringify(outputs) === JSON.stringify(expected.outputs),
-      `outputs ${JSON.stringify(outputs)} match the vector`
+      JSON.stringify(outputs) === JSON.stringify(expectedOutputs),
+      `outputs ${JSON.stringify(outputs)} match the vector with unwritten slots zero-filled`
     );
     check(
       stepsUsed === BigInt(expected.steps),

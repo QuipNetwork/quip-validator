@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The pinned xqvm version names the toolchain the vectors come from: same
-# crate, same tag. The requirement is an exact pin (`=0.4.0`), so the
+# crate, same tag. The requirement is an exact pin (`=0.5.0`), so the
 # leading `=` is stripped to get the version the tag is named after.
 xqvm_version="$(
   sed -n 's/^xqvm = { version = "=\{0,1\}\([^"]*\)".*/\1/p' Cargo.toml
@@ -55,7 +55,7 @@ echo "== Pinned xqvm: ${xqvm_version} =="
 # for the published xqvm ${xqvm_version} crate (its `.cargo_vcs_info.json`),
 # so the vectors are asserted to come from exactly the source the pallet
 # links against. Update it together with the version pin in Cargo.toml.
-xquad_commit="1e40da31628026e4cdd47cfae2c0119450044e6c"
+xquad_commit="a99f7d2e8956b70453dc6d5e4c1b1705a27d9802"
 
 if [[ -n "${XQUAD_DIR:-}" ]]; then
   xquad_dir="$XQUAD_DIR"
@@ -77,17 +77,44 @@ if [[ "$actual_commit" != "$xquad_commit" ]]; then
   exit 1
 fi
 
-vectors_src="$xquad_dir/conformance/vectors"
+xquad_dir="$(cd "$xquad_dir" && pwd)"
+vectors_src="$xquad_dir/xqvm/tests/vectors"
 if [[ ! -d "$vectors_src" ]]; then
   echo "ERROR: no conformance vectors at $vectors_src" >&2
   exit 1
 fi
 
 echo "== Building the assembler =="
-cargo build --release --manifest-path "$xquad_dir/Cargo.toml" -p xqcli
-xquad_bin="$(cargo metadata --format-version 1 --no-deps \
-  --manifest-path "$xquad_dir/Cargo.toml" |
-  sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/xquad"
+# The 0.5.0 toolchain removed xqcli. Use its assembler library directly in
+# a temporary helper so this gate still needs only Cargo, not a Python CLI
+# environment. The path points at the exact source commit checked above.
+assembler_dir="$work_dir/assembler"
+mkdir -p "$assembler_dir/src"
+# Escape the path for a TOML basic string (including spaces/quoted paths).
+assembler_path="${xquad_dir//\\/\\\\}/xqasm"
+assembler_path="${assembler_path//\"/\\\"}"
+cat >"$assembler_dir/Cargo.toml" <<MANIFEST
+[package]
+name = "quip-xqvm-assemble"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+xqasm = { path = "$assembler_path" }
+MANIFEST
+cat >"$assembler_dir/src/main.rs" <<'RUST'
+fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    assert_eq!(args.len(), 3, "usage: quip-xqvm-assemble INPUT OUTPUT");
+    let source = std::fs::read_to_string(&args[1]).expect("read assembly");
+    let program = xqasm::assemble_source(&source).expect("assemble program");
+    std::fs::write(&args[2], program.encode()).expect("write bytecode");
+}
+RUST
+cargo build --manifest-path "$assembler_dir/Cargo.toml" \
+  --target-dir "$assembler_dir/target"
+xquad_bin="$assembler_dir/target/debug/quip-xqvm-assemble"
 
 # Assemble every vector that pins a step count. Those are the ones whose
 # expectations this suite can check through the chain: outputs and
@@ -100,7 +127,7 @@ while IFS= read -r expected; do
   dir="$(dirname "$expected")"
   name="$(basename "$dir")"
 
-  "$xquad_bin" asm "$dir/program.xqasm" -o "$vectors_out/$name.xqb" >/dev/null
+  "$xquad_bin" "$dir/program.xqasm" "$vectors_out/$name.xqb" >/dev/null
   cp "$expected" "$vectors_out/$name.expected.json"
   cp "$dir/inputs.json" "$vectors_out/$name.inputs.json"
   count=$((count + 1))
@@ -119,7 +146,7 @@ TARGET .0
 NOP
 JUMP .0
 PROGRAM
-"$xquad_bin" asm "$work_dir/runaway.xqasm" -o "$vectors_out/runaway.xqb" >/dev/null
+"$xquad_bin" "$work_dir/runaway.xqasm" "$vectors_out/runaway.xqb" >/dev/null
 
 # One variable past the runtime's 16 MiB MaxVmMemory, at ~2.1M steps — an
 # order of magnitude inside MaxStepLimit, so the allocation budget is what
@@ -129,7 +156,7 @@ PUSH 2097153
 BSMX r0
 HALT
 PROGRAM
-"$xquad_bin" asm "$work_dir/alloc.xqasm" -o "$vectors_out/alloc_over_budget.xqb" >/dev/null
+"$xquad_bin" "$work_dir/alloc.xqasm" "$vectors_out/alloc_over_budget.xqb" >/dev/null
 
 echo "== Starting the node =="
 "$node_binary" --dev --tmp --no-prometheus >"$node_log" 2>&1 &

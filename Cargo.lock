@@ -15834,9 +15834,9 @@ dependencies = [
 
 [[package]]
 name = "xqvm"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af6d182a5a3348282a815ef44ec4beb5421f12ca6ce0c15d3911da9bd3ad4a69"
+checksum = "d1c39a40ef950ea465ff7cabedd92f15261ec9f8e6ce66fb22ee017d826b318f"
 dependencies = [
  "crc32fast",
  "hashbrown 0.15.5",
