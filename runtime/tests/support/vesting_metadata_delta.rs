@@ -59,6 +59,43 @@ pub fn xqvm_variants<'a>(
         .ok_or_else(|| format!("missing Xqvm.{kind} variants"))
 }
 
+fn check_xqvm_references(metadata: &Value) -> Result<(), String> {
+    let pallet = metadata["pallets"]
+        .as_array()
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == "Xqvm"))
+        .ok_or("missing metadata pallet Xqvm")?;
+    for (kind, outer_key, outer_name) in [
+        ("calls", "call_enum_ty", "RuntimeCall"),
+        ("error", "error_enum_ty", "RuntimeError"),
+    ] {
+        let pallet_id = pallet[kind]["ty"]
+            .as_u64()
+            .ok_or_else(|| format!("missing Xqvm.{kind} type"))?;
+        let outer_id = metadata["outer_enums"][outer_key]
+            .as_u64()
+            .ok_or_else(|| format!("missing {outer_name} type"))?;
+        let outer_id = usize::try_from(outer_id)
+            .map_err(|_| format!("{outer_name} type id does not fit usize"))?;
+        let variants = metadata["types"]["types"]
+            .get(outer_id)
+            .and_then(|ty| ty.pointer("/type/def/variant/variants"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("missing {outer_name} variants"))?;
+        let mut xqvm = variants.iter().filter(|variant| variant["name"] == "Xqvm");
+        let fields = xqvm.next().and_then(|variant| variant["fields"].as_array());
+        if xqvm.next().is_some()
+            || !fields.is_some_and(|fields| {
+                fields.len() == 1 && fields[0]["type"].as_u64() == Some(pallet_id)
+            })
+        {
+            return Err(format!(
+                "{outer_name}::Xqvm must reference the pallet Xqvm.{kind} type"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
     let baseline_docs = xqvm_variants(before, "calls")?
         .iter()
@@ -209,6 +246,10 @@ impl Comparison {
 }
 
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
+    // Check both graphs before normalization: otherwise an outer enum can
+    // point at a stale clone while only the pallet target carries the delta.
+    check_xqvm_references(before).map_err(|error| format!("baseline: {error}"))?;
+    check_xqvm_references(after).map_err(|error| format!("candidate: {error}"))?;
     let mut left = before.clone();
     let mut right = after.clone();
     normalize_xqvm(&mut left, &mut right)?;
@@ -299,4 +340,160 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata_pair() -> (Value, Value) {
+        (
+            serde_json::to_value(super::super::before_vesting_metadata()).unwrap(),
+            serde_json::to_value(super::super::metadata_v16()).unwrap(),
+        )
+    }
+
+    // Clone the pallet target at the next canonical id and redirect only the
+    // outer Xqvm field. No hardcoded registry positions are involved.
+    fn split_outer_reference(metadata: &mut Value, kind: &str, outer_key: &str) -> usize {
+        let pallet_id = metadata["pallets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Xqvm")
+            .unwrap()[kind]["ty"]
+            .as_u64()
+            .unwrap() as usize;
+        let outer_id = metadata["outer_enums"][outer_key].as_u64().unwrap() as usize;
+        let registry = metadata["types"]["types"].as_array_mut().unwrap();
+        let clone_id = registry.len();
+        let mut cloned = registry[pallet_id].clone();
+        cloned["id"] = serde_json::json!(clone_id);
+        registry.push(cloned);
+        let variant = registry[outer_id]["type"]["def"]["variant"]["variants"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "Xqvm")
+            .unwrap();
+        variant["fields"][0]["type"] = serde_json::json!(clone_id);
+        clone_id
+    }
+
+    #[test]
+    fn rejects_split_xqvm_error_reference() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut wrong = after.clone();
+        let id = split_outer_reference(&mut wrong, "error", "error_enum_ty");
+        let removed = wrong["types"]["types"][id]["type"]["def"]["variant"]["variants"]
+            .as_array_mut()
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(removed["name"], "UnsupportedOutputType");
+        let message = "RuntimeError::Xqvm must reference the pallet Xqvm.error type";
+        assert_eq!(check(&before, &wrong), Err(format!("candidate: {message}")));
+        eprintln!("stale outer error clone rejected: candidate: {message}");
+
+        // The baseline must obey the same within-graph contract, even if its
+        // duplicate is byte-for-byte identical rather than missing a delta.
+        let mut wrong = before.clone();
+        split_outer_reference(&mut wrong, "error", "error_enum_ty");
+        assert_eq!(check(&wrong, &after), Err(format!("baseline: {message}")));
+    }
+
+    #[test]
+    fn rejects_split_xqvm_call_reference() {
+        let (mut before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let old_docs = xqvm_variants(&mut before, "calls")
+            .unwrap()
+            .iter()
+            .find(|call| call["name"] == "execute")
+            .unwrap()["docs"]
+            .clone();
+        let mut wrong = after.clone();
+        let id = split_outer_reference(&mut wrong, "calls", "call_enum_ty");
+        let execute = wrong["types"]["types"][id]["type"]["def"]["variant"]["variants"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|call| call["name"] == "execute")
+            .unwrap();
+        execute["docs"] = old_docs;
+        let message = "RuntimeCall::Xqvm must reference the pallet Xqvm.calls type";
+        assert_eq!(check(&before, &wrong), Err(format!("candidate: {message}")));
+        eprintln!("stale outer call clone rejected: candidate: {message}");
+
+        let mut wrong = before.clone();
+        split_outer_reference(&mut wrong, "calls", "call_enum_ty");
+        assert_eq!(check(&wrong, &after), Err(format!("baseline: {message}")));
+    }
+
+    fn reverse_registry(mut metadata: Value) -> Value {
+        // Rewrite every portable type reference, including tuples and registry
+        // type definitions, then restore canonical id == array-index ordering.
+        fn references(value: &mut Value, count: u64) {
+            match value {
+                Value::Object(fields) => {
+                    for (key, value) in fields {
+                        let type_reference = matches!(
+                            key.as_str(),
+                            "type"
+                                | "ty"
+                                | "address_ty"
+                                | "call_ty"
+                                | "signature_ty"
+                                | "implicit"
+                                | "output"
+                                | "call_enum_ty"
+                                | "event_enum_ty"
+                                | "error_enum_ty"
+                                | "Plain"
+                                | "key"
+                                | "value"
+                                | "bit_store_type"
+                                | "bit_order_type"
+                        );
+                        if type_reference && value.is_u64() {
+                            *value = serde_json::json!(count - 1 - value.as_u64().unwrap());
+                        } else if key == "tuple" {
+                            for id in value.as_array_mut().unwrap() {
+                                *id = serde_json::json!(count - 1 - id.as_u64().unwrap());
+                            }
+                        } else {
+                            references(value, count);
+                        }
+                    }
+                }
+                Value::Array(values) => {
+                    for value in values {
+                        references(value, count);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let count = metadata["types"]["types"].as_array().unwrap().len();
+        references(&mut metadata, count as u64);
+        let registry = metadata["types"]["types"].as_array_mut().unwrap();
+        registry.reverse();
+        for (id, ty) in registry.iter_mut().enumerate() {
+            ty["id"] = serde_json::json!(id);
+        }
+        metadata
+    }
+
+    #[test]
+    fn accepts_full_canonical_registry_renumbering() {
+        let (before, after) = metadata_pair();
+        let renumbered_before = reverse_registry(before.clone());
+        let renumbered_after = reverse_registry(after.clone());
+        assert_ne!(before["outer_enums"], renumbered_before["outer_enums"]);
+        assert_ne!(after["outer_enums"], renumbered_after["outer_enums"]);
+        check(&before, &renumbered_after).unwrap();
+        check(&renumbered_before, &after).unwrap();
+        check(&renumbered_before, &renumbered_after).unwrap();
+    }
 }
