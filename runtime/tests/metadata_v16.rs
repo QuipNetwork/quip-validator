@@ -533,7 +533,7 @@ fn before_vesting_metadata() -> RuntimeMetadataV16 {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn vesting_weights_and_mempool_vm_are_the_only_semantic_metadata_deltas() {
+fn only_approved_semantic_metadata_deltas_are_present() {
     let before = serde_json::to_value(before_vesting_metadata()).unwrap();
     let after = serde_json::to_value(metadata_v16()).unwrap();
     vesting_metadata_delta::check(&before, &after).unwrap();
@@ -622,14 +622,31 @@ fn vesting_metadata_comparison_rejects_out_of_bounds_call_type() {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn empty_vesting_genesis_adds_only_its_version_keys() {
+fn empty_genesis_has_only_approved_pallet_version_changes() {
     use sp_runtime::BuildStorage;
     let baseline = if quip_protocol_runtime::VERSION.spec_name.as_ref() == "quip" {
         include_str!("../../tests/fixtures/pre-vesting/quip-storage.json")
     } else {
         include_str!("../../tests/fixtures/pre-vesting/quip-testnet-storage.json")
     };
-    let before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
+    let mut before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
+    let retired = before_vesting_metadata()
+        .pallets
+        .into_iter()
+        .find(|p| p.index == 7)
+        .unwrap();
+    let retired_version = hex::encode(frame_support::storage::storage_prefix(
+        retired.name.as_bytes(),
+        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
+    ));
+    let retired_position = before
+        .iter()
+        .position(|(key, _)| key == &retired_version)
+        .unwrap();
+    assert_eq!(
+        before.remove(retired_position).1,
+        hex::encode(0u16.encode())
+    );
     let mut after = quip_protocol_runtime::RuntimeGenesisConfig::default()
         .build_storage()
         .unwrap()
