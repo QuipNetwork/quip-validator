@@ -435,13 +435,19 @@ impl ElectionProvider for AdmissionElection {
 }
 
 /// Appending staking to legacy state must never default to unlimited nominators.
+/// A fresh genesis cannot set the cap: `MaxNominatorsCount` is not a staking
+/// genesis field, and staking reads an absent value as "no cap". The first
+/// upgrade therefore installs the election snapshot ceiling, which both bounds
+/// nominator growth and keeps the voter snapshot from being overrun.
 /// This does not activate a live network: rollout uses fresh genesis, or a
 /// separately reviewed dormant-pallet then consensus-flip migration.
 pub struct InitializeStakingLimits;
 impl frame_support::traits::OnRuntimeUpgrade for InitializeStakingLimits {
     fn on_runtime_upgrade() -> Weight {
         if !pallet_staking::MaxNominatorsCount::<Runtime>::exists() {
-            pallet_staking::MaxNominatorsCount::<Runtime>::put(0);
+            pallet_staking::MaxNominatorsCount::<Runtime>::put(
+                super::election::MaxNominators::get(),
+            );
             return <Runtime as frame_system::Config>::DbWeight::get().reads_writes(1, 1);
         }
         <Runtime as frame_system::Config>::DbWeight::get().reads(1)
@@ -454,9 +460,11 @@ impl frame_support::traits::OnRuntimeUpgrade for InitializeStakingLimits {
     fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
         let before = Option::<u32>::decode(&mut &state[..])
             .map_err(|_| "invalid pre-upgrade nominator limit")?;
+        let default_limit = super::election::MaxNominators::get();
         frame_support::ensure!(
-            pallet_staking::MaxNominatorsCount::<Runtime>::get() == Some(before.unwrap_or(0)),
-            "nominator limit must preserve its previous value or initialize to zero if absent"
+            pallet_staking::MaxNominatorsCount::<Runtime>::get()
+                == Some(before.unwrap_or(default_limit)),
+            "nominator limit must preserve its previous value or initialize to the default if absent"
         );
         Ok(())
     }
@@ -1078,13 +1086,13 @@ pub(super) mod tests {
         );
     }
     #[test]
-    fn migration_closes_missing_nominator_limit() {
+    fn migration_installs_default_nominator_limit() {
         ext().execute_with(|| {
             pallet_staking::MaxNominatorsCount::<Runtime>::kill();
             InitializeStakingLimits::on_runtime_upgrade();
             assert_eq!(
                 pallet_staking::MaxNominatorsCount::<Runtime>::get(),
-                Some(0)
+                Some(super::election::MaxNominators::get())
             );
         });
     }
@@ -1096,7 +1104,7 @@ pub(super) mod tests {
                 pallet_staking::MaxNominatorsCount::<Runtime>::set(before);
                 let state = InitializeStakingLimits::pre_upgrade().unwrap();
                 InitializeStakingLimits::on_runtime_upgrade();
-                let expected = before.unwrap_or(0);
+                let expected = before.unwrap_or(super::election::MaxNominators::get());
                 assert_eq!(
                     pallet_staking::MaxNominatorsCount::<Runtime>::get(),
                     Some(expected)
