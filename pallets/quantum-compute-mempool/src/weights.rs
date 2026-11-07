@@ -160,7 +160,11 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
                 T::MaxNodes::get(),
                 T::MaxEdges::get(),
                 T::MaxSolutions::get(),
-            ),
+            )
+            .saturating_add(crate::Pallet::<T>::transform_weight(
+                T::MaxTransformStepsPerSubmission::get(),
+                true,
+            )),
             SUBMIT_SOLUTION_PROOF_FLOOR,
         ),
         (
@@ -168,7 +172,11 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
                 T::MaxNodes::get(),
                 T::MaxEdges::get(),
                 T::MaxSolutions::get(),
-            ),
+            )
+            .saturating_add(crate::Pallet::<T>::transform_weight(
+                T::MaxTransformStepsPerSubmission::get(),
+                true,
+            )),
             SUBMIT_SOLUTION_PROOF_FLOOR,
         ),
     ] {

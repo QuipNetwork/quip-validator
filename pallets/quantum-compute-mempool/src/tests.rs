@@ -537,7 +537,8 @@ fn submit_solution_propagates_vm_transform_error() {
         set_vm_fail_transform_solutions(true);
 
         assert_noop!(
-            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution()),
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution())
+                .map_err(|error| error.error),
             sp_runtime::DispatchError::Other("vm-transform-solutions")
         );
     });
@@ -567,7 +568,8 @@ fn submit_solution_rejects_ineligible_bid_solver() {
         ));
 
         assert_noop!(
-            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution()),
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution())
+                .map_err(|error| error.error),
             crate::Error::<Test>::NotEligibleSolver
         );
     });
@@ -595,7 +597,8 @@ fn submit_solution_rejects_invalid_spin_values() {
 
         let bad_solution = bounded(vec![bounded(vec![1, 0])]);
         assert_noop!(
-            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, bad_solution),
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, bad_solution)
+                .map_err(|error| error.error),
             crate::Error::<Test>::InvalidSpinValues
         );
     });
@@ -1429,7 +1432,11 @@ fn submit_solution_dispatch_info_charges_configured_maxima() {
                 MaxNodes::get(),
                 MaxEdges::get(),
                 MaxSolutions::get(),
-            ),
+            )
+            .saturating_add(QuantumComputeMempool::transform_weight(
+                MaxTransformSteps::get(),
+                true
+            )),
         );
     });
 }
@@ -1462,7 +1469,8 @@ fn submit_solution_drops_vectors_above_max_energy() {
                 RuntimeOrigin::signed(2),
                 0,
                 alternate_solution(),
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::InsufficientEnergy
         );
         assert_ok!(QuantumComputeMempool::submit_solution(
@@ -1845,7 +1853,8 @@ fn submit_solution_is_rejected_at_expiry_even_when_finalisation_lags() {
                 RuntimeOrigin::signed(3),
                 lagging,
                 sample_solution()
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::OrderNotOpen
         );
     });
@@ -2082,7 +2091,8 @@ fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
                         RuntimeOrigin::signed(2),
                         0,
                         bounded(vec![bounded(spins)])
-                    ),
+                    )
+                    .map_err(|error| error.error),
                     crate::Error::<Test>::SolutionNotImproved
                 );
             }
@@ -2101,7 +2111,8 @@ fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
                     RuntimeOrigin::signed(2),
                     0,
                     alternate_solution()
-                ),
+                )
+                .map_err(|error| error.error),
                 crate::Error::<Test>::SolutionNotImproved
             );
             // Equal energy from a different solver does not displace the incumbent.
@@ -2127,7 +2138,8 @@ fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
                     RuntimeOrigin::signed(3),
                     0,
                     sample_solution()
-                ),
+                )
+                .map_err(|error| error.error),
                 crate::Error::<Test>::SolutionNotImproved
             );
         });
@@ -2235,7 +2247,8 @@ fn best_anchoring_does_not_waive_diversity_or_count_requirements() {
                     RuntimeOrigin::signed(2),
                     0,
                     bounded(vec![bounded(vec![-1, -1]), bounded(vec![1, 1])])
-                ),
+                )
+                .map_err(|error| error.error),
                 expected
             );
         });
@@ -2421,7 +2434,8 @@ fn required_payees_bind_each_signed_winner_and_survive_native_closure() {
                         RuntimeOrigin::signed(solver),
                         0,
                         sample_solution()
-                    ),
+                    )
+                    .map_err(|error| error.error),
                     crate::Error::<Test>::PayeeRequired
                 );
                 assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
@@ -2436,7 +2450,8 @@ fn required_payees_bind_each_signed_winner_and_survive_native_closure() {
                         RuntimeOrigin::signed(solver),
                         0,
                         alternate_solution()
-                    ),
+                    )
+                    .map_err(|error| error.error),
                     crate::Error::<Test>::PayeeRequired
                 );
             }
@@ -2469,7 +2484,8 @@ fn required_payees_bind_each_signed_winner_and_survive_native_closure() {
                         0,
                         sample_solution(),
                         payee(20033, 9)
-                    ),
+                    )
+                    .map_err(|error| error.error),
                     crate::Error::<Test>::OrderNotOpen
                 );
             }
@@ -2492,7 +2508,8 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
                 0,
                 sample_solution(),
                 payee(20033, 2)
-            ),
+            )
+            .map_err(|error| error.error),
             sp_runtime::DispatchError::BadOrigin
         );
         for (destination, error) in [
@@ -2506,7 +2523,8 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
                     0,
                     sample_solution(),
                     destination
-                ),
+                )
+                .map_err(|error| error.error),
                 error
             );
         }
@@ -2522,7 +2540,8 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
                 0,
                 alternate_solution(),
                 payee(20033, 9)
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::SolutionNotImproved
         );
         assert_noop!(
@@ -2531,7 +2550,8 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
                 0,
                 sample_solution(),
                 payee(1, 9)
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::PayeeChainMismatch
         );
         assert_noop!(
@@ -2540,7 +2560,8 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
                 0,
                 bounded(vec![bounded(vec![0, 1])]),
                 payee(20033, 9)
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::InvalidSpinValues
         );
         assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 2)));
@@ -2567,7 +2588,8 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
                 0,
                 sample_solution(),
                 payee(20033, 4)
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::OrderNotOpen
         );
         assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 3)));
@@ -2594,7 +2616,8 @@ fn optional_payee_is_replaced_or_cleared_only_with_an_accepted_payload() {
                 RuntimeOrigin::signed(2),
                 id,
                 alternate_solution()
-            ),
+            )
+            .map_err(|error| error.error),
             crate::Error::<Test>::SolutionNotImproved
         );
         assert_eq!(
@@ -2835,7 +2858,8 @@ fn accepted_payee_events_report_only_metadata_transitions() {
                     0,
                     accepted.solutions,
                     payee(20033, 9)
-                ),
+                )
+                .map_err(|error| error.error),
                 crate::Error::<Test>::SolutionNotImproved
             );
             previous = destination;
@@ -2865,3 +2889,6 @@ fn submission_wrapper_covers_every_full_measured_case_without_double_charging_db
     check::<crate::benchmark_weights::SubstrateWeight<Test>, crate::weights::SubstrateWeight<Test>>(
     );
 }
+
+#[path = "vm_tests.rs"]
+mod vm_tests;
