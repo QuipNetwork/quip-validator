@@ -83,7 +83,7 @@ sp-version = { features = ["serde"], workspace = true }
 sp-weights.workspace = true
 
 [dev-dependencies]
-xqvm = { version = "=0.5.0", default-features = false }
+xqvm = { workspace = true, default-features = false }
 finality-grandpa = "0.16.3"
 frame-metadata.workspace = true
 hex.workspace = true
