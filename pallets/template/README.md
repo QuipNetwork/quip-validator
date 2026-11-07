@@ -1,1 +1,0 @@
-License: MIT-0

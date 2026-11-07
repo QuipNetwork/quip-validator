@@ -1688,9 +1688,7 @@ mod runtime {
     // `ValidatorAdmission::dispatch_as_root`. Never reuse index 6 for a new
     // pallet — its index is part of every stored storage key and extrinsic.
 
-    // Include the custom logic from the pallet-template in the runtime.
-    #[runtime::pallet_index(7)]
-    pub type Template = pallet_template;
+    // Pallet index 7 is retired. Never reuse it for a new pallet.
 
     #[runtime::pallet_index(8)]
     pub type Xqvm = pallet_xqvm;

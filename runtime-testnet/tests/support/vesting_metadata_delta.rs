@@ -1,6 +1,7 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
-//! enumerated regenerated-weight values and exact mempool VM delta below.
+//! enumerated regenerated-weight values, exact mempool VM delta, and retirement
+//! of pallet index 7 below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -422,6 +423,82 @@ impl Comparison {
     }
 }
 
+// Preserve the historical fixture while requiring removal of exactly index 7.
+// Only its three pallet enum types may become unreachable; shared types still
+// undergo the full graph comparison and every other pallet index stays fixed.
+fn normalize_retired_pallet(before: &mut Value, after: &Value) -> Result<BTreeSet<u64>, String> {
+    let pallets = before["pallets"]
+        .as_array_mut()
+        .ok_or("missing baseline pallets")?;
+    let retired: Vec<_> = pallets
+        .iter()
+        .filter(|p| p["index"] == 7)
+        .cloned()
+        .collect();
+    if retired.len() != 1 {
+        return Err("baseline must contain exactly one pallet at retired index 7".into());
+    }
+    let retired = &retired[0];
+    let candidate = after["pallets"]
+        .as_array()
+        .ok_or("missing candidate pallets")?;
+    if candidate
+        .iter()
+        .any(|p| p["index"] == 7 || p["name"] == retired["name"])
+    {
+        return Err("retired pallet index 7 must be absent and never reused".into());
+    }
+    pallets.retain(|p| p["index"] != 7);
+    let mut removed_types = BTreeSet::new();
+    for (kind, outer) in [
+        ("calls", "call_enum_ty"),
+        ("event", "event_enum_ty"),
+        ("error", "error_enum_ty"),
+    ] {
+        let id = retired[kind]["ty"]
+            .as_u64()
+            .ok_or("missing retired pallet enum")?;
+        removed_types.insert(id);
+        let type_index = usize::try_from(id).map_err(|_| "retired type id does not fit usize")?;
+        let path = before["types"]["types"]
+            .get(type_index)
+            .and_then(|entry| entry["type"]["path"].as_array())
+            .filter(|path| !path.is_empty())
+            .ok_or("missing retired enum type identity")?;
+        // Portable IDs (including nested references) may be renumbered. Compare
+        // each retired definition's named identity by value instead: retaining
+        // that identity is forbidden even if its fields or docs were changed.
+        let candidate_types = after["types"]["types"]
+            .as_array()
+            .ok_or("missing candidate registry")?;
+        if candidate_types
+            .iter()
+            .any(|entry| entry["type"]["path"].as_array() == Some(path))
+        {
+            return Err(format!(
+                "retired {kind} enum type must be absent from candidate registry"
+            ));
+        }
+        let outer_id = before["outer_enums"][outer]
+            .as_u64()
+            .ok_or("missing outer enum")?;
+        let outer_id = usize::try_from(outer_id).map_err(|_| "outer type id does not fit usize")?;
+        let variants = before["types"]["types"][outer_id]["type"]["def"]["variant"]["variants"]
+            .as_array_mut()
+            .ok_or("missing baseline outer variants")?;
+        let matches: Vec<_> = variants.iter().filter(|v| v["index"] == 7).collect();
+        if matches.len() != 1
+            || matches[0]["name"] != retired["name"]
+            || matches[0]["fields"].as_array().map(Vec::len) != Some(1)
+            || matches[0]["fields"][0]["type"].as_u64() != Some(id)
+        {
+            return Err("retired outer variant must reference its pallet enum at index 7".into());
+        }
+        variants.retain(|v| v["index"] != 7);
+    }
+    Ok(removed_types)
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
@@ -443,6 +520,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
         }
     }
     normalize_mempool(&mut left, &mut right)?;
+    let retired_types = normalize_retired_pallet(&mut left, &right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?
@@ -499,6 +577,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     {
         return Err("unexpected Vesting call indices".into());
     }
+    let vesting = additions[0].clone();
     pallets.retain(|p| p["name"] != "Vesting");
     for &(pallet, constant) in REGENERATED_WEIGHT_VALUES {
         let baseline = constant_value(&mut left, pallet, constant)?;
@@ -517,11 +596,43 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     };
     comparison.value(&left, &right, "metadata")?;
     let visited: BTreeSet<_> = comparison.seen.iter().map(|(id, _)| *id).collect();
-    if visited.len() != comparison.before.len() {
+    let unvisited: BTreeSet<_> = comparison
+        .before
+        .iter()
+        .map(|entry| entry["id"].as_u64().expect("registry IDs were checked"))
+        .filter(|id| !visited.contains(id))
+        .collect();
+    if unvisited != retired_types {
         return Err(format!(
-            "baseline registry not fully checked: {} of {}",
-            visited.len(),
-            comparison.before.len()
+            "unvisited baseline types must equal retired enums: {unvisited:?} != {retired_types:?}"
+        ));
+    }
+    // Vesting is the one approved new pallet removed before comparison. Walk
+    // its candidate graph with the same reference traversal, without treating
+    // that self-comparison as evidence of unchanged Vesting semantics. Shared
+    // types were already compared above; this accounts for the addition's types.
+    let mut addition = Comparison {
+        before: comparison.after.clone(),
+        after: comparison.after.clone(),
+        outer: BTreeSet::new(),
+        seen: BTreeSet::new(),
+    };
+    addition.value(&vesting, &vesting, "approved Vesting reachability")?;
+    let covered_candidate: BTreeSet<_> = comparison
+        .seen
+        .iter()
+        .chain(addition.seen.iter())
+        .map(|(_, id)| *id)
+        .collect();
+    let candidate_orphans: BTreeSet<_> = comparison
+        .after
+        .iter()
+        .map(|entry| entry["id"].as_u64().expect("registry IDs were checked"))
+        .filter(|id| !covered_candidate.contains(id))
+        .collect();
+    if !candidate_orphans.is_empty() {
+        return Err(format!(
+            "candidate registry has unaccounted types: {candidate_orphans:?}"
         ));
     }
     Ok(())
@@ -536,6 +647,133 @@ mod tests {
             serde_json::to_value(super::super::before_vesting_metadata()).unwrap(),
             serde_json::to_value(super::super::metadata_v16()).unwrap(),
         )
+    }
+
+    #[test]
+    fn rejects_retired_enum_types_left_in_candidate_registry() {
+        let (before, after) = metadata_pair();
+        let retired = before["pallets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["index"] == 7)
+            .unwrap();
+        for kind in ["calls", "event", "error"] {
+            let id = retired[kind]["ty"].as_u64().unwrap() as usize;
+            let mut wrong = after.clone();
+            let registry = wrong["types"]["types"].as_array_mut().unwrap();
+            let mut orphan = before["types"]["types"][id].clone();
+            orphan["id"] = serde_json::json!(registry.len());
+            registry.push(orphan);
+            for (baseline, candidate) in [
+                (before.clone(), wrong.clone()),
+                (reverse_registry(before.clone()), wrong.clone()),
+                (before.clone(), reverse_registry(wrong.clone())),
+                (reverse_registry(before.clone()), reverse_registry(wrong)),
+            ] {
+                let error =
+                    format!("retired {kind} enum type must be absent from candidate registry");
+                assert_eq!(check(&baseline, &candidate), Err(error.clone()));
+                // Changing documentation must not disguise the same retired identity.
+                let mut changed = candidate.clone();
+                let path = &before["types"]["types"][id]["type"]["path"];
+                let orphan = changed["types"]["types"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|entry| entry["type"]["path"] == *path)
+                    .unwrap();
+                orphan["type"]["docs"] = serde_json::json!(["changed orphan documentation"]);
+                assert_eq!(check(&baseline, &changed), Err(error));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_renamed_retired_and_arbitrary_candidate_orphans() {
+        let (before, after) = metadata_pair();
+        let retired = before["pallets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["index"] == 7)
+            .unwrap();
+        for kind in ["calls", "event", "error", "primitive"] {
+            let mut orphan = if kind == "primitive" {
+                serde_json::json!({"id": 0, "type": {"path": [], "params": [], "def": {"primitive": "u8"}, "docs": []}})
+            } else {
+                let id = retired[kind]["ty"].as_u64().unwrap() as usize;
+                let mut entry = before["types"]["types"][id].clone();
+                entry["type"]["path"] = serde_json::json!(["disguised", "RetiredType"]);
+                entry
+            };
+            let mut wrong = after.clone();
+            let registry = wrong["types"]["types"].as_array_mut().unwrap();
+            orphan["id"] = serde_json::json!(registry.len());
+            registry.push(orphan);
+            for (baseline, candidate) in [
+                (before.clone(), wrong.clone()),
+                (reverse_registry(before.clone()), wrong.clone()),
+                (before.clone(), reverse_registry(wrong.clone())),
+                (reverse_registry(before.clone()), reverse_registry(wrong)),
+            ] {
+                assert!(
+                    check(&baseline, &candidate)
+                        .unwrap_err()
+                        .starts_with("candidate registry has unaccounted types:"),
+                    "wrong rejection for candidate orphan {kind}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_any_additional_unvisited_baseline_type() {
+        let (mut before, after) = metadata_pair();
+        let registry = before["types"]["types"].as_array_mut().unwrap();
+        let mut extra = registry
+            .iter()
+            .find(|entry| entry["type"]["def"].get("primitive").is_some())
+            .unwrap()
+            .clone();
+        extra["id"] = serde_json::json!(registry.len());
+        registry.push(extra);
+        assert!(check(&before, &after)
+            .unwrap_err()
+            .starts_with("unvisited baseline types must equal retired enums:"));
+    }
+
+    #[test]
+    fn rejects_reusing_retired_index_or_removing_another_pallet() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut wrong = after.clone();
+        wrong["pallets"][0]["index"] = serde_json::json!(7);
+        assert_eq!(
+            check(&before, &wrong),
+            Err("retired pallet index 7 must be absent and never reused".into())
+        );
+        let mut wrong = after.clone();
+        wrong["pallets"].as_array_mut().unwrap().remove(0);
+        assert!(check(&before, &wrong).is_err());
+        // Leaving any of the retired outer variants behind must also fail.
+        for outer in ["call_enum_ty", "event_enum_ty", "error_enum_ty"] {
+            let mut wrong = after.clone();
+            let old_id = before["outer_enums"][outer].as_u64().unwrap() as usize;
+            let retired = before["types"]["types"][old_id]["type"]["def"]["variant"]["variants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["index"] == 7)
+                .unwrap()
+                .clone();
+            let new_id = wrong["outer_enums"][outer].as_u64().unwrap() as usize;
+            wrong["types"]["types"][new_id]["type"]["def"]["variant"]["variants"]
+                .as_array_mut()
+                .unwrap()
+                .push(retired);
+            assert!(check(&before, &wrong).is_err());
+        }
     }
 
     // Clone the pallet target at the next canonical id and redirect only the

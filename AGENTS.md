@@ -71,10 +71,10 @@ cargo build
 cargo test
 
 # Test a single pallet
-cargo test -p pallet-template
+cargo test -p pallet-evm-chain-id
 
 # Run a single test by name
-cargo test -p pallet-template it_works_for_default_value
+cargo test -p pallet-evm-chain-id genesis_persists_local_chain_id
 
 # Check without building (fast feedback)
 cargo check
@@ -123,7 +123,7 @@ python3 scripts/test-vesting-benchmark-inventory.py  # benchmark inventory guard
 
 ## Architecture
 
-Cargo workspace with two runtime crates, one node crate, ten pallets and the transaction-crypto/quantum-validation libraries.
+Cargo workspace with two runtime crates, one node crate, nine pallets and the transaction-crypto/quantum-validation libraries.
 
 **`node/`** — Native binary (`quip-network-node`). Handles networking (libp2p), consensus orchestration, RPC server, and chain specification. Key files:
 - `chain_spec.rs` — Chain-spec construction. The default (no `--chain`) and the `quip-testnet` aliases load the **pinned raw spec** in `chain-specs/quip-testnet.json`, not a runtime preset; see the Mainnet section for why no other network is wired.
@@ -151,7 +151,6 @@ Both runtimes share the same layout:
 - `faucet-ops` — Governed testnet faucet with an irreversible disable fuse
 - `miner-registry` — Miner descriptors and qblock participation
 - `evm-chain-id` — Genesis EIP-155 chain ID (`1337` local, `20033` testnet, `20049` mainnet); `pallet-revive` reads it through `Get<u64>`
-- `template` — Minimal reference pallet, not production logic
 
 Council slash procedures and validator removal semantics: [SLASHING_RUNBOOK.md](SLASHING_RUNBOOK.md).
 
@@ -161,7 +160,7 @@ Council slash procedures and validator removal semantics: [SLASHING_RUNBOOK.md](
 
 **`no_std` by default**: Runtime and pallet crates use `#![cfg_attr(not(feature = "std"), no_std)]`. All dependencies in these crates must support `no_std`. Use `default-features = false` for Substrate deps and gate std-only code behind `#[cfg(feature = "std")]`.
 
-**Pallet indices are stable**: Pallet indices in `runtime/src/lib.rs` (e.g., `#[runtime::pallet_index(7)]`) must never change after chain launch — they're encoded in storage keys and extrinsics. Index 6 is retired and must not be reused; index 31 is `slash-policy` and index 32 is the stock SDK `pallet-vesting`. Both runtime crates must agree on every index.
+**Pallet indices are stable**: Pallet indices in `runtime/src/lib.rs` (e.g., `#[runtime::pallet_index(8)]`) must never change after chain launch — they're encoded in storage keys and extrinsics. Indices 6 and 7 are retired and must not be reused; index 31 is `slash-policy` and index 32 is the stock SDK `pallet-vesting`. Both runtime crates must agree on every index.
 
 **Call indices are stable**: Similarly, `#[pallet::call_index(N)]` values in pallet dispatchables must remain fixed for backward compatibility.
 

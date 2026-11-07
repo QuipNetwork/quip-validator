@@ -21,7 +21,6 @@ members = [
   "pallets/miner-registry",
   "pallets/quantum-compute-mempool",
   "pallets/quantum-pow",
-  "pallets/template",
   "pallets/xqvm",
   "runtime",
   "runtime-testnet",
@@ -52,7 +51,6 @@ pallet-faucet-ops = { path = "./pallets/faucet-ops", default-features = false }
 pallet-miner-registry = { path = "./pallets/miner-registry", default-features = false }
 pallet-quantum-compute-mempool = { path = "./pallets/quantum-compute-mempool", default-features = false }
 pallet-quantum-pow = { path = "./pallets/quantum-pow", default-features = false }
-pallet-template = { path = "./pallets/template", default-features = false }
 pallet-xqvm = { path = "./pallets/xqvm", default-features = false }
 quantum-validation = { path = "./crates/quantum-validation", default-features = false }
 quip-transaction-crypto-core = { path = "./crates/transaction-crypto-core", default-features = false }

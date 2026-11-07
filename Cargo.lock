@@ -7709,20 +7709,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-template"
-version = "0.4.1"
-dependencies = [
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "parity-scale-codec",
- "scale-info",
- "sp-core",
- "sp-io",
- "sp-runtime",
-]
-
-[[package]]
 name = "pallet-timestamp"
 version = "45.0.0"
 source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?tag=v0.3.1#d511a17da276c0958047c84b6d30ae599542edef"
@@ -9356,7 +9342,6 @@ dependencies = [
  "pallet-session",
  "pallet-slash-policy",
  "pallet-staking",
- "pallet-template",
  "pallet-timestamp",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc-runtime-api",
@@ -9433,7 +9418,6 @@ dependencies = [
  "pallet-session",
  "pallet-slash-policy",
  "pallet-staking",
- "pallet-template",
  "pallet-timestamp",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc-runtime-api",

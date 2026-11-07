@@ -422,12 +422,6 @@ impl pallet_revive::Config for Runtime {
     type GasScale = ConstU32<1_000>;
 }
 
-/// Configure the pallet-template in pallets/template.
-impl pallet_template::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
-}
-
 parameter_types! {
     pub const ControllerAnnualEmission: Balance =
         pallet_emission_controller::CONTROLLER_ANNUAL_EMISSION_QUIP.saturating_mul(UNIT);
