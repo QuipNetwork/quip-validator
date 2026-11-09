@@ -1,5 +1,5 @@
 // @ts-nocheck
-// On-chain smoke test for the pallet-xqvm / XQuad 0.4.0 integration.
+// On-chain smoke test for the pallet-xqvm / XQuad integration.
 //
 // Replays XQuad conformance vectors through the running node and asserts the
 // chain reproduces the toolchain's normative expectations exactly: the same
@@ -11,7 +11,7 @@
 //   make wasm-signer && npm run build --prefix js/quip-signer
 //   cargo build -p quip-network-node
 //   target/debug/quip-network-node --dev
-//   vectors assembled with `xquad asm` into VECTORS_DIR
+//   vectors assembled by the pinned xqasm library into VECTORS_DIR
 //
 // `scripts/test-xqvm-onchain.sh` does all of this, including the node.
 // To run this file on its own against a node that is already up:
@@ -185,8 +185,23 @@ try {
     .map((f) => f.replace(/\.expected\.json$/u, ''))
     .sort();
 
+  // These two pinned 0.5.1 fixtures use a 64 GiB reference budget.
+  // Replay every other vector normally, including future large-budget ones:
+  // an unexpected memory failure must fail this gate, never become a skip.
+  const memoryLimitRejections = new Set([
+    'xqmx-grid/allocator_size_at_the_maximum',
+    'xqmx-grid/model_growth_onto_the_maximum'
+  ]);
+  const seenMemoryLimitRejections = new Set();
+  let replayed = 0;
+  let memoryRejected = 0;
+  check(names.length === 63, 'pinned xqvm 0.5.1 corpus has 63 step-asserting vectors');
+  check(maxVmMemory === 16n * 1024n * 1024n, 'replay memory cap is pinned at 16 MiB');
+
   for (const name of names) {
-    console.log(`== vector ${name} ==`);
+    const vectorPath = readFileSync(join(VECTORS_DIR, `${name}.path`), 'utf8').trim();
+    const expectsMemoryLimit = memoryLimitRejections.has(vectorPath);
+    console.log(`== vector ${vectorPath} ==`);
 
     const bytecode = readFileSync(join(VECTORS_DIR, `${name}.xqb`));
     const expected = JSON.parse(readFileSync(join(VECTORS_DIR, `${name}.expected.json`), 'utf8'));
@@ -243,6 +258,20 @@ try {
       signer
     );
 
+    if (expectsMemoryLimit) {
+      seenMemoryLimitRejections.add(vectorPath);
+      check(inputs.memory_limit === 68_719_476_736, `${vectorPath} pins a 64 GiB reference budget`);
+      const reason = executed.ok ? 'success' : describeFailure(api, executed.failed.event ?? executed.failed);
+      const rejected = !executed.ok && reason === 'xqvm.VmMemoryLimitExceeded';
+      check(rejected, `${vectorPath}: expected xqvm.VmMemoryLimitExceeded, got ${reason}`);
+      check(
+        !executed.events.some((e) => api.events.xqvm.ProgramExecuted.is(e)),
+        'memory-cap rejection emitted no ProgramExecuted event'
+      );
+      if (rejected) memoryRejected += 1;
+      continue;
+    }
+
     if (!executed.ok) {
       check(false, `execute failed: ${describeFailure(api, executed.failed.event ?? executed.failed)}`);
       continue;
@@ -258,15 +287,31 @@ try {
     const outputs = event.data[3].toJSON().map((v) => Number(v));
     const stepsUsed = event.data[2].toBigInt();
 
+    // The 0.5.0 vector format omits trailing Unset slots and spells
+    // interior Unset slots as null. The pallet preserves every requested
+    // slot and represents Unset as zero. Compare the full event width.
+    check(expected.outputs.length <= inputs.output_slots, 'vector outputs fit the requested slots');
+    const expectedOutputs = Array.from(
+      { length: inputs.output_slots },
+      (_, i) => expected.outputs[i] ?? 0
+    );
+
     check(
-      JSON.stringify(outputs) === JSON.stringify(expected.outputs),
-      `outputs ${JSON.stringify(outputs)} match the vector`
+      JSON.stringify(outputs) === JSON.stringify(expectedOutputs),
+      `outputs ${JSON.stringify(outputs)} match the vector with unwritten slots zero-filled`
     );
     check(
       stepsUsed === BigInt(expected.steps),
       `steps_used ${stepsUsed} matches the vector's ${expected.steps}`
     );
+    replayed += 1;
   }
+
+  check(
+    replayed === 61 && memoryRejected === 2 && seenMemoryLimitRejections.size === 2,
+    'pinned coverage: 61 successful replays and both named memory-cap rejections'
+  );
+  console.log(`== ${replayed} replayed, ${memoryRejected} rejected (pallet MaxVmMemory) ==`);
 
   // -------------------------------------------------- negative controls ----
   console.log('== negative controls ==');

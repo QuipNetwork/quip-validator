@@ -272,6 +272,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // must not be reused. Membership changes, including removal of the
     // council's own members, require 2/3. No call encoding changes, so
     // `transaction_version` stays at 7.
+    // 120 also takes xqvm 0.5.x's stricter store-time verifier: a program that
+    // reaches GETLINE, VECGET or ROWSUM with no operand remaining is rejected
+    // at `store_program` with a verifier fault, where 0.4.0 accepted it.
+    // Previously stored programs still execute; there is no re-verification
+    // when a program is loaded for execution.
     spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
