@@ -51,10 +51,11 @@ FROM rust:${RUST_VERSION}-${DEBIAN_VERSION}
 # no behaviour. package.json declares no engines floor.
 #
 # ca-certificates and curl are named explicitly even though the base image
-# already carries them. Several jobs curl checksum-pinned release binaries
-# (solc, resolc, cargo-binstall) and a TLS failure there is a confusing way to
-# discover an implicit dependency. Naming them keeps the image honest about
-# what it guarantees, and costs nothing when they are already satisfied.
+# already carries them. browser-signer-test curls a checksum-pinned
+# cargo-binstall release, and the solc/resolc layer below fetches its binaries
+# at image-build time; a TLS failure in either is a confusing way to discover
+# an implicit dependency. Naming them keeps the image honest about what it
+# guarantees, and costs nothing when they are already satisfied.
 # Pinning system lib versions across Debian point releases is brittle and this
 # image is build tooling only.
 # hadolint ignore=DL3008
@@ -76,6 +77,48 @@ RUN rustup target add wasm32v1-none \
 # minutes that the image build already has and the jobs do not.
 ARG CARGO_SWEEP_VERSION=0.8.0
 RUN cargo install cargo-sweep --locked --version "${CARGO_SWEEP_VERSION}"
+
+# solc and resolc serve pallet-revive's runtime benchmarks, which compile
+# Solidity fixtures to EVM (solc) and to PolkaVM (resolc). Keep these versions
+# aligned with the pinned SDK's get-solc/get-resolc actions. Until QUI-2215 the
+# bench jobs curl'd both from GitHub releases in a before_script, so a GitHub
+# release outage (504s on 2026-11-09) blocked weight regeneration and cost the
+# job its place in the reference machine's queue. Fetching them here moves that
+# dependency to image-build time, which only runs when this file changes.
+#
+# Both binaries are checksum-pinned: RESOLC_SHA256 comes from the release's
+# official checksums.txt; solc publishes no checksum, so SOLC_SHA256 was pinned
+# manually after verifying that the GitHub release artifact and
+# binaries.soliditylang.org serve identical bytes.
+#
+# Both are x86_64-only release binaries, and every job that uses them runs on
+# amd64. The arm64 image (the faucet's per-arch builds) skips them; any other
+# architecture fails the build rather than ship an image without them.
+ARG SOLC_VERSION=0.8.30
+ARG SOLC_SHA256=f3e987dc6ecebd4bd350c48edcbc320b46cf9e3109bd3fc3d88f1acaf4c428f7
+ARG RESOLC_VERSION=1.0.0
+ARG RESOLC_SHA256=e626ba7a1a0d26828c14713781b0082ececc9a0fbfe984f11f0d93d66bbd7806
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) \
+        curl -Lsf --show-error --retry 5 --retry-all-errors \
+            -o /usr/local/bin/solc \
+            "https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solc-static-linux"; \
+        curl -Lsf --show-error --retry 5 --retry-all-errors \
+            -o /usr/local/bin/resolc \
+            "https://github.com/paritytech/revive/releases/download/v${RESOLC_VERSION}/resolc-x86_64-unknown-linux-musl"; \
+        echo "${SOLC_SHA256}  /usr/local/bin/solc" | sha256sum -c -; \
+        echo "${RESOLC_SHA256}  /usr/local/bin/resolc" | sha256sum -c -; \
+        chmod 0755 /usr/local/bin/solc /usr/local/bin/resolc; \
+        solc --version; \
+        resolc --version ;; \
+      arm64) \
+        echo "solc/resolc: x86_64-only release binaries, not installed on arm64" ;; \
+      *) \
+        echo "solc/resolc: unexpected architecture '$arch'" >&2; \
+        exit 1 ;; \
+    esac
 
 # Cargo prefers the git CLI for fetching from GitLab; this matches the
 # behavior of the production Dockerfile so cargo can resolve ssh:// deps
