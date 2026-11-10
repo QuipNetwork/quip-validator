@@ -1318,7 +1318,7 @@ dependencies = [
  "addr2line 0.25.1",
  "cfg-if",
  "libc",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
  "object 0.37.3",
  "rustc-demangle",
  "windows-link",
@@ -5246,6 +5246,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "ising-generators"
+version = "0.0.8"
+source = "git+https://gitlab.com/quip.network/quip-solver-core.git?rev=6f65fd52a9e5b65b74c3fa329c71954ae4d18dca#6f65fd52a9e5b65b74c3fa329c71954ae4d18dca"
+dependencies = [
+ "blake3",
+ "miniz_oxide 0.9.1",
+]
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6555,6 +6564,15 @@ name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
 ]
@@ -9136,6 +9154,7 @@ version = "0.4.1"
 dependencies = [
  "blake3",
  "hex",
+ "ising-generators",
  "libm",
  "parity-scale-codec",
  "rand_chacha 0.9.0",
