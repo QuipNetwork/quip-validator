@@ -630,6 +630,11 @@ parameter_types! {
     /// 2 for spin) so future hardware-spec changes don't force a runtime
     /// upgrade.
     pub const QuantumPowMaxAllowedValues: u32 = 32;
+    /// Family revisions that `register_topology` admits for proof of work.
+    /// Empty: every canonical family is still `research`, and research
+    /// families never mine. Promoting a family means listing its contract
+    /// here in a runtime upgrade.
+    pub const QuantumPowFamilies: &'static [pallet_quantum_pow::Contract] = &[];
     /// Energy-curve calibration: per-mille `c` values that define the
     /// `(max_energy, knee_energy, min_energy)` triple via
     /// `expected_gse` on the default topology and its h/J value
@@ -754,6 +759,7 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
+    type PowFamilies = QuantumPowFamilies;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

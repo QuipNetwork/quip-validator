@@ -17,7 +17,7 @@
 use ising_generators::descriptor::{self, params_digest, Admitted, SizeBounds};
 use ising_generators::family::{self, BaseTopology, SaltFault};
 
-pub use ising_generators::descriptor::{AdvertisedLimits, Contract};
+pub use ising_generators::descriptor::{AdvertisedLimits, Contract, MAX_PARAMS_LEN};
 pub use ising_generators::family::Defect;
 pub use ising_generators::instance::Instance;
 pub use ising_generators::Code;
@@ -79,16 +79,19 @@ pub struct FamilyChallenge<'a> {
 }
 
 impl<'a> FamilyChallenge<'a> {
-    /// Admit a descriptor against [`CONTRACTS`] and build its base topology.
+    /// Admit a descriptor against `contracts` and build its base topology.
     ///
-    /// `nodes` and `edges` are native ids in registration order. The order is
-    /// part of the challenge: the topology order digest covers it.
+    /// `contracts` is the caller's allowlist, usually a subset of
+    /// [`CONTRACTS`]; a family outside it is refused with code 5. `nodes` and
+    /// `edges` are native ids in registration order. The order is part of the
+    /// challenge: the topology order digest covers it.
     ///
     /// # Errors
     ///
     /// [`FamilyError::Rejected`] with the admission code, or
     /// [`FamilyError::InvalidTopology`].
     pub fn admit(
+        contracts: &'a [Contract],
         family_id: &'a [u8],
         revision: u32,
         params: &'a [u8],
@@ -99,7 +102,7 @@ impl<'a> FamilyChallenge<'a> {
         // The validator holds the parameter bytes itself, so the digest it
         // checks is its own.
         let admitted = descriptor::admit(
-            CONTRACTS,
+            contracts,
             family_id,
             revision,
             params,

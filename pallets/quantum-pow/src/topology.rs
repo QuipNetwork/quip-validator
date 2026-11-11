@@ -3,6 +3,29 @@ use codec::Encode;
 use quantum_validation::{AllowedValueSpec, MilliValue};
 use sp_core::H256;
 
+/// Compute the topology hash of a family topology.
+///
+/// `legacy_hash` is [`hash_topology`] over the same graph and value sets.
+/// The family descriptor digest and the topology order digest are mixed in
+/// under a domain tag, so a family topology never collides with the legacy
+/// registration of the same graph, and the same graph under two descriptors
+/// or two node orders gives two challenges.
+pub fn hash_family_topology(
+    legacy_hash: H256,
+    descriptor_digest: [u8; 32],
+    topology_order_digest: [u8; 32],
+) -> H256 {
+    H256::from(sp_io::hashing::blake2_256(
+        &(
+            b"quip-family-topology-v1",
+            legacy_hash,
+            descriptor_digest,
+            topology_order_digest,
+        )
+            .encode(),
+    ))
+}
+
 /// Compute the canonical topology hash for a registered puzzle definition.
 ///
 /// The hash binds the graph structure together with the allowed value sets

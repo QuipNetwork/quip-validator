@@ -180,6 +180,7 @@ fn registered_topology() -> (
         allowed_h_spec(),
         allowed_j_spec(),
         allowed_spin_spec(),
+        None,
     ));
     MineableTopologies::<Test>::insert(hash, ());
     (nodes, edges, hash)
@@ -304,6 +305,7 @@ fn register_topology_works() {
             allowed_h_spec(),
             allowed_j_spec(),
             allowed_spin_spec(),
+            None,
         ));
 
         assert!(RegisteredTopologies::<Test>::contains_key(expected_hash));
@@ -333,6 +335,7 @@ fn first_registration_whitelists_default() {
             allowed_h_spec(),
             allowed_j_spec(),
             allowed_spin_spec(),
+            None,
         ));
 
         assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
@@ -351,6 +354,7 @@ fn register_topology_rejects_small_graph() {
                 allowed_h_spec(),
                 allowed_j_spec(),
                 allowed_spin_spec(),
+                None,
             ),
             crate::Error::<Test>::GraphTooSmall
         );
@@ -378,6 +382,7 @@ fn registered_zero_field_topology() -> sp_core::H256 {
         zero_h,
         allowed_j_spec(),
         allowed_spin_spec(),
+        None,
     ));
     MineableTopologies::<Test>::insert(hash, ());
     hash
@@ -404,6 +409,7 @@ fn register_unwhitelisted(a: u32, b: u32) -> sp_core::H256 {
         allowed_h_spec(),
         allowed_j_spec(),
         allowed_spin_spec(),
+        None,
     ));
     hash
 }
@@ -508,6 +514,7 @@ fn register_topology_requires_root() {
                 allowed_h_spec(),
                 allowed_j_spec(),
                 allowed_spin_spec(),
+                None,
             ),
             sp_runtime::DispatchError::BadOrigin
         );
@@ -526,6 +533,7 @@ fn register_topology_rejects_empty_spin_spec() {
                 allowed_h_spec(),
                 allowed_j_spec(),
                 empty_spec,
+                None,
             ),
             crate::Error::<Test>::EmptyAllowedValues
         );
@@ -1428,6 +1436,7 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
             allowed_h_spec(),
             allowed_j_spec(),
             allowed_spin_spec(),
+            None,
         ));
 
         let expected_last_proof_block_hash =
@@ -2427,6 +2436,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             allowed_h_spec(),
             allowed_j_spec(),
             allowed_spin_spec(),
+            None,
         ));
         // First-write-wins keeps A as the default.
         assert_eq!(DefaultTopology::<Test>::get(), Some(default_hash));
@@ -2509,6 +2519,7 @@ fn register_topology_canonicalizes_set_order() {
             allowed_h_spec(),
             allowed_j_spec(),
             reordered_spin_spec,
+            None,
         ));
 
         let hash = topology::hash_topology(
@@ -2560,6 +2571,7 @@ fn register_topology_rejects_unmineable_continuous_spin_spec() {
                 allowed_h_spec(),
                 allowed_j_spec(),
                 continuous_spin,
+                None,
             ),
             crate::Error::<Test>::PackedSolutionTooLarge
         );
@@ -2734,6 +2746,7 @@ fn submit_proof_rejects_non_mineable_topology() {
             allowed_h_spec(),
             allowed_j_spec(),
             allowed_spin_spec(),
+            None,
         ));
         assert!(
             !MineableTopologies::<Test>::contains_key(topology_hash),
@@ -2899,6 +2912,7 @@ fn set_default_topology_rejects_non_mineable() {
             zero_h,
             allowed_j_spec(),
             allowed_spin_spec(),
+            None,
         ));
         assert_noop!(
             QuantumPow::set_default_topology(RuntimeOrigin::root(), hash_b),
@@ -3034,6 +3048,7 @@ fn register_topology_dispatch_info_uses_input_dimensions() {
         allowed_h_values: allowed_h_spec(),
         allowed_j_values: allowed_j_spec(),
         allowed_spin_values: allowed_spin_spec(),
+        family: None,
     };
 
     assert_eq!(

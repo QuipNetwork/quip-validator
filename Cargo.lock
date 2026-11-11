@@ -7543,6 +7543,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
+ "ising-generators",
  "libm",
  "pallet-balances",
  "pallet-emission-controller",

@@ -177,6 +177,7 @@ fn register_topology_for<T: Config>() -> (NodesOf<T>, EdgesOf<T>, sp_core::H256)
         allowed_h_set::<T>(),
         allowed_j_set::<T>(),
         allowed_spin_set::<T>(),
+        None,
     )
     .is_ok());
     (nodes, edges, topology_hash)
@@ -194,6 +195,7 @@ fn register_extra_topology_for<T: Config>(offset: u32) -> sp_core::H256 {
         allowed_h_set::<T>(),
         allowed_j_set::<T>(),
         allowed_spin_set::<T>(),
+        None,
     )
     .is_ok());
     topology_hash
@@ -286,6 +288,7 @@ mod benchmarks {
             allowed_h,
             allowed_j,
             allowed_spin,
+            None,
         );
 
         assert!(RegisteredTopologies::<T>::contains_key(topology_hash));
@@ -335,6 +338,32 @@ mod benchmarks {
     }
 
     #[benchmark]
+    fn set_topology_energy_band() {
+        // The call only requires a registered family topology. Production
+        // runtimes admit no family, so write the descriptor directly instead
+        // of going through `register_topology` admission.
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        RegisteredTopologies::<T>::mutate(topology_hash, |meta| {
+            if let Some(meta) = meta {
+                meta.family = Some(types::FamilyDescriptor {
+                    family_id: bounded(b"quip/bench".to_vec()),
+                    revision: 1,
+                    params: bounded(Vec::new()),
+                });
+            }
+        });
+        let band = crate::difficulty::EnergyBand {
+            hard_milli: -2_000_000,
+            easy_milli: -1_000_000,
+        };
+
+        #[extrinsic_call]
+        QuantumPow::set_topology_energy_band(RawOrigin::Root, topology_hash, band);
+
+        assert_eq!(TopologyEnergyBand::<T>::get(topology_hash), Some(band));
+    }
+
+    #[benchmark]
     fn submit_proof(
         n: Linear<{ T::MinNodes::get() }, { T::MaxNodes::get() }>,
         e: Linear<1, { T::MaxEdges::get() }>,
@@ -354,6 +383,7 @@ mod benchmarks {
             allowed_h,
             allowed_j,
             allowed_spin,
+            None,
         )
         .is_ok());
         MineableTopologies::<T>::insert(topology_hash, ());

@@ -14,6 +14,7 @@ pub trait WeightInfo {
 	fn set_default_topology() -> Weight;
 	fn set_difficulty() -> Weight;
 	fn set_topology_curve() -> Weight;
+	fn set_topology_energy_band() -> Weight;
 	/// Calculate weight for `submit_proof` from its nonlinear dimensions.
 	///
 	/// `n` is the registered topology's node count, `e` its edge count, and
@@ -132,6 +133,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::set_topology_curve()
 	}
 
+	fn set_topology_energy_band() -> Weight {
+		<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::set_topology_energy_band()
+	}
+
 	fn submit_proof(n: u32, e: u32, s: u32) -> Weight {
 		// Zeroing the generated additive components retains only the measured
 		// base, proof-size estimate, and dispatch-body DB counts.
@@ -177,6 +182,10 @@ impl WeightInfo for () {
 
 	fn set_topology_curve() -> Weight {
 		<() as BenchmarkWeightInfo>::set_topology_curve()
+	}
+
+	fn set_topology_energy_band() -> Weight {
+		<() as BenchmarkWeightInfo>::set_topology_energy_band()
 	}
 
 	fn submit_proof(n: u32, e: u32, s: u32) -> Weight {

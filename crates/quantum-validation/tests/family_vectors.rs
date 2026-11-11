@@ -252,6 +252,7 @@ fn lease_nonce(lease: &Value, index: u64) -> [u8; 32] {
 /// Admit a vector case with no advertised limits.
 fn admit<'a>(case: &'a Value, params: &'a [u8], topo: &blob::Topology) -> FamilyChallenge<'a> {
     FamilyChallenge::admit(
+        CONTRACTS,
         text(case, "family_id").as_bytes(),
         u32::try_from(uint(case, "revision")).expect("revision fits u32"),
         params,
@@ -478,6 +479,7 @@ fn admission_vectors_give_their_expected_codes() {
             let topo = topology(field(request, "topology"));
             let params = bytes(request, "params_hex");
             let got = FamilyChallenge::admit(
+                CONTRACTS,
                 text(request, "family_id").as_bytes(),
                 u32::try_from(uint(request, "revision")).expect("revision fits u32"),
                 &params,
@@ -619,8 +621,16 @@ fn tampered_descriptors_and_tight_limits_are_rejected() {
     let (params, topo, case) = twisted_case();
     let id = text(&case, "family_id").as_bytes();
     let admit_with = |id: &[u8], revision: u32, params: &[u8], limits: AdvertisedLimits| {
-        FamilyChallenge::admit(id, revision, params, &topo.nodes, &topo.edges, &limits)
-            .map(|c| c.descriptor_digest())
+        FamilyChallenge::admit(
+            CONTRACTS,
+            id,
+            revision,
+            params,
+            &topo.nodes,
+            &topo.edges,
+            &limits,
+        )
+        .map(|c| c.descriptor_digest())
     };
     let none = AdvertisedLimits::default();
 
@@ -675,6 +685,7 @@ fn topology_order_is_part_of_the_challenge() {
     let mut reversed = topo.edges.clone();
     reversed.reverse();
     let reordered = FamilyChallenge::admit(
+        CONTRACTS,
         id,
         1,
         &params,

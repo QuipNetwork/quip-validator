@@ -65,8 +65,10 @@ impl pallet_balances::Config for Test {
 }
 
 parameter_types! {
-    pub const MaxNodes: u32 = 16;
-    pub const MaxEdges: u32 = 32;
+    // Large enough for the 24-node, 76-edge z12 Zephyr fixture the family
+    // tests register.
+    pub const MaxNodes: u32 = 32;
+    pub const MaxEdges: u32 = 128;
     pub const MaxSolutions: u32 = 8;
     pub const MinNodes: u32 = 2;
     pub const EpochLength: u64 = 20;
@@ -79,6 +81,8 @@ parameter_types! {
     pub const MaxTargetProofBlocks: u32 = 400;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
+    pub const PowFamilies: &'static [pallet_quantum_pow::Contract] =
+        quantum_validation::families::CONTRACTS;
 }
 
 frame_support::parameter_types! {
@@ -127,6 +131,9 @@ impl pallet_quantum_pow::Config for Test {
     type CurveCEasyMilli = ConstU32<700>;
     type CurveCKneeMilli = ConstU32<725>;
     type CurveCHardMilli = ConstU32<750>;
+    // Every canonical family is admissible under test; production runtimes
+    // list none until a family is promoted.
+    type PowFamilies = PowFamilies;
     type WeightInfo = ();
 }
 

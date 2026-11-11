@@ -58,6 +58,7 @@ pub trait WeightInfo {
 	fn set_default_topology() -> Weight;
 	fn set_difficulty() -> Weight;
 	fn set_topology_curve() -> Weight;
+	fn set_topology_energy_band() -> Weight;
 	fn submit_proof(n: u32, e: u32, s: u32, ) -> Weight;
 	fn add_mineable_topology() -> Weight;
 	fn remove_mineable_topology() -> Weight;
@@ -147,6 +148,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		//  Measured:  `373`
 		//  Estimated: `423913`
 		// Minimum execution time: 18_254_000 picoseconds.
+		Weight::from_parts(18_996_000, 423913)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
+	/// Storage: `QuantumPow::TopologyEnergyBand` (r:0 w:1)
+	/// Not yet measured: copies `set_topology_curve`, which has the same
+	/// one-read, one-write shape, until the `benchmark-weights` job regenerates
+	/// this file.
+	fn set_topology_energy_band() -> Weight {
 		Weight::from_parts(18_996_000, 423913)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
@@ -300,6 +311,16 @@ impl WeightInfo for () {
 		//  Measured:  `373`
 		//  Estimated: `423913`
 		// Minimum execution time: 18_254_000 picoseconds.
+		Weight::from_parts(18_996_000, 423913)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:0)
+	/// Storage: `QuantumPow::TopologyEnergyBand` (r:0 w:1)
+	/// Not yet measured: copies `set_topology_curve`, which has the same
+	/// one-read, one-write shape, until the `benchmark-weights` job regenerates
+	/// this file.
+	fn set_topology_energy_band() -> Weight {
 		Weight::from_parts(18_996_000, 423913)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
