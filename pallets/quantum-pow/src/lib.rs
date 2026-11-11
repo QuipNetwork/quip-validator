@@ -389,11 +389,6 @@ pub mod pallet {
         TopologyCurveSet {
             topology_hash: H256,
         },
-        /// Root set the energy band a family topology's difficulty
-        /// controller runs on.
-        TopologyEnergyBandSet {
-            topology_hash: H256,
-        },
         TopologyMineableAdded {
             topology_hash: H256,
         },
@@ -413,6 +408,12 @@ pub mod pallet {
             reward: BalanceOf<T>,
             energy_milli: i64,
             submitted_at: BlockNumberFor<T>,
+        },
+        /// Root set the energy band a family topology's difficulty
+        /// controller runs on. Appended last so the earlier event indices
+        /// stay as the pre-family metadata recorded them.
+        TopologyEnergyBandSet {
+            topology_hash: H256,
         },
     }
 
