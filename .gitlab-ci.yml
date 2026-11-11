@@ -47,9 +47,11 @@
 #   $CI_REGISTRY_IMAGE/ci-toolchain      multi-arch, nearly every job
 #   $CI_REGISTRY_IMAGE/ci-pypi-publish   amd64, the PyPI upload jobs
 # Both are built by the ci-images stage from .gitlab/*.Dockerfile whenever a CI
-# Dockerfile changes, and nothing is pushed by hand. `make builder-image` and
-# `make pypi-publish-image` build them locally for checking a change; they do
-# not publish.
+# Dockerfile changes, or by hand from a main pipeline. Nothing is pushed from a
+# workstation. `make builder-image` and `make pypi-publish-image` build them
+# locally for checking a change; they do not publish. The toolchain image holds
+# every pinned helper the jobs run; a job checks for the tools it needs through
+# .image-tools and never installs one itself.
 #
 # Runtime images:
 #   registry.gitlab.com/quip.network/quip-validator/quip-network-node:<tag>
@@ -108,16 +110,6 @@ variables:
   # via .cargo-host-cache — their target/ is far too large to tar.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
-  # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
-  # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
-  # source. Bump deliberately; it changes the linker the release wheels are built
-  # with.
-  CARGO_ZIGBUILD_VERSION: "0.22.3"
-  # cargo-binstall itself is pinned and fetched as a release binary (not the
-  # `curl .../main/install.sh | bash` bootstrap), so the toolchain that builds a
-  # published, trust-signed wheel can't be altered by an upstream `main` change.
-  CARGO_BINSTALL_VERSION: "1.20.1"
-  WASM_PACK_VERSION: "0.12.1"
   # Gate for the publish jobs. They stay dormant on `v*` tags until this is set
   # to "true" in project CI/CD variables — which the maintainer does only after
   # the PyPI Trusted Publisher is configured.
@@ -250,6 +242,24 @@ runtime-parity:
 # pipeline to four heavy jobs, and the node then could not open its RPC
 # inside the readiness window because it was competing with the very builds
 # that existed to produce it.
+# Jobs name the baked tools they depend on in IMAGE_TOOLS and run this check
+# before anything else. It fails closed on purpose. A runner with
+# pull_policy=if-not-present keeps whatever ci-toolchain:latest it pulled first,
+# so an image from before a tool was baked in lacks it. Failing here with the
+# fix in the message beats failing mid-job on a missing binary, and a silent
+# download fallback would bring back the dependency the image removed.
+.image-tools:
+  before_script:
+    - |
+      for tool in $IMAGE_TOOLS; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+          echo "ERROR: $tool is not in this job's image ($CI_JOB_IMAGE)." >&2
+          echo "This runner has a ci-toolchain image cached from before $tool was baked in." >&2
+          echo "On the runner host: docker pull $CI_JOB_IMAGE" >&2
+          exit 1
+        fi
+      done
+
 browser-signer-test:
   extends: .cargo-host-cache
   stage: test
@@ -258,8 +268,6 @@ browser-signer-test:
   interruptible: true
   timeout: 90m
   # npm state is small and still tars cheaply, so it stays on the GitLab cache.
-  # cargo-binstall and wasm-pack no longer need a cache entry: they install
-  # into $CARGO_HOME/bin, which is now the host volume and persists on its own.
   cache:
     - key:
         prefix: browser-signer-tools
@@ -270,23 +278,13 @@ browser-signer-test:
         - .npm/
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
+    IMAGE_TOOLS: wasm-pack
+  # nodejs, npm, wasm-pack and the wasm32-unknown-unknown target are baked into
+  # the toolchain image (.gitlab/ci-toolchain.Dockerfile). `make wasm-signer`
+  # checks the wasm-pack version against the Makefile pin.
   before_script:
-    # nodejs, npm, curl and git are baked into the toolchain image
-    # (.gitlab/ci-toolchain.Dockerfile) rather than fetched here.
-    - rustup target add wasm32-unknown-unknown
-    - mkdir -p "$CARGO_HOME/bin"
-    - export PATH="$CARGO_HOME/bin:$PATH"
-    - |
-      if ! command -v cargo-binstall >/dev/null 2>&1; then
-        curl -L --proto '=https' --tlsv1.2 -sSf \
-          "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-x86_64-unknown-linux-musl.tgz" |
-          tar -xz -C "$CARGO_HOME/bin"
-      fi
-    - |
-      if ! command -v wasm-pack >/dev/null 2>&1 ||
-        [ "$(wasm-pack --version)" != "wasm-pack ${WASM_PACK_VERSION}" ]; then
-        cargo binstall --no-confirm --locked "wasm-pack@${WASM_PACK_VERSION}"
-      fi
+    - !reference [.image-tools, before_script]
+    - wasm-pack --version
   script:
     - cargo test -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
     - cargo test -p quip-protocol-runtime --test signing_fixture
@@ -307,23 +305,12 @@ browser-signer-test:
 # here, which made every MR pipeline and every reference-machine run depend on
 # GitHub being up (QUI-2215).
 #
-# The presence check fails closed on purpose. A runner with
-# pull_policy=if-not-present keeps whatever ci-toolchain:latest it pulled first,
-# so an image from before QUI-2215 lacks both binaries. Failing here with the
-# fix in the message beats failing mid-benchmark on a missing compiler, and a
-# silent GitHub fallback would bring back the dependency this removed. The
-# version lines stay so every job log records which compilers ran.
+# The version lines stay so every job log records which compilers ran.
 .revive-benchmark-tooling:
+  variables:
+    IMAGE_TOOLS: solc resolc
   before_script:
-    - |
-      for tool in solc resolc; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-          echo "ERROR: $tool is not in this job's image ($CI_JOB_IMAGE)." >&2
-          echo "This runner has a ci-toolchain image cached from before QUI-2215." >&2
-          echo "On the runner host: docker pull $CI_JOB_IMAGE" >&2
-          exit 1
-        fi
-      done
+    - !reference [.image-tools, before_script]
     - solc --version
     - resolc --version
 
@@ -668,6 +655,15 @@ benchmark-machine:
     - changes:
         - .gitlab/ci-toolchain.Dockerfile
         - .gitlab/ci-pypi-publish.Dockerfile
+    # A manual run from a main pipeline rebuilds `latest` without a Dockerfile
+    # change: a refreshed base image, or a runner whose cached copy predates a
+    # baked-in tool. Run the two per-arch toolchain jobs first and the
+    # manifest job once both have pushed. Main only: an MR pipeline without a
+    # Dockerfile change runs with CI_IMAGE_TAG=latest, so a manual rebuild
+    # there would publish the MR's image to every other pipeline.
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: true
 
 .ci-image-build:
   extends: .kaniko-build
@@ -970,26 +966,19 @@ manifest-evm-sidecar:
     paths:
       - dist/
     expire_in: 1 week
+  variables:
+    IMAGE_TOOLS: maturin twine cargo-zigbuild
   before_script:
-    # maturin + twine + ziglang go in a venv placed first on PATH, so the
+    # maturin, twine and ziglang live in the image's /opt/pyrelease venv, and
+    # cargo-zigbuild and the aarch64-unknown-linux-gnu target are baked in too
+    # (.gitlab/ci-toolchain.Dockerfile). The venv goes first on PATH, so the
     # `python3` that cargo-zigbuild shells out to (`python3 -m ziglang`, how it
-    # locates zig) is the venv's — the one with ziglang. A system `pip install`
-    # would land in a different interpreter and zig would not be found.
-    - python3 -m venv /opt/pyrelease
-    - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
-    - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
-    # cargo-zigbuild as a prebuilt binary via cargo-binstall (seconds) instead of
-    # `cargo install` from source (minutes). cargo-binstall is fetched as a
-    # version-pinned release binary (the runner is always linux amd64, so the
-    # musl asset is portable) rather than the unpinned `main` bootstrap script —
-    # the toolchain that builds a published wheel must be reproducible.
-    - mkdir -p "$CARGO_HOME/bin"
-    - curl -L --proto '=https' --tlsv1.2 -sSf "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-x86_64-unknown-linux-musl.tgz" | tar -xz -C "$CARGO_HOME/bin"
-    - cargo binstall --no-confirm --locked "cargo-zigbuild@$CARGO_ZIGBUILD_VERSION"
-    - rustup target add aarch64-unknown-linux-gnu
-    # `cargo zigbuild` is a build subcommand with no --version flag; just
-    # confirm the binstalled binary is on PATH.
-    - maturin --version && twine --version && command -v cargo-zigbuild
+    # locates zig) is the one with ziglang.
+    - export PATH="/opt/pyrelease/bin:$PATH"
+    - !reference [.image-tools, before_script]
+    # `cargo zigbuild` is a build subcommand with no --version flag; the
+    # presence check above already confirmed it is on PATH.
+    - maturin --version && twine --version && python3 -m ziglang version
 
 # Smoke base: import-test one prebuilt wheel. No compile, so it drops the whole
 # Rust/maturin/zig toolchain and runs on a tiny multi-arch python image — the
