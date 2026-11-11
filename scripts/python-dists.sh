@@ -22,8 +22,8 @@
 #
 # Modes:
 #   build
-#       maturin build (abi3 wheels: linux x86_64 native + linux aarch64 via
-#       cargo-zigbuild) + maturin sdist, then the metadata/content guards
+#       maturin build (abi3 wheels: linux x86_64 + linux aarch64, both via
+#       zig at manylinux2014) + maturin sdist, then the metadata/content guards
 #       (manylinux platform tag, packed python surface, `twine check`). No
 #       import, no network, no token. dist/ is the CI artefact the smoke and
 #       publish jobs consume. Runs on every MR/push (dry-run) and before a
@@ -63,7 +63,7 @@ usage() {
 # --- build -----------------------------------------------------------------
 build_dists() {
 	# Same matrix as xquad's xqffi cdylib:
-	#   1. abi3 wheel, linux x86_64  (native build on the CI runner)
+	#   1. abi3 wheel, linux x86_64  (zig links against glibc 2.17 stubs)
 	#   2. abi3 wheel, linux aarch64 (cross-compiled; zig is the linker)
 	#   3. sdist                     (universal source fallback for macOS/Windows)
 	# The abi3 tag (cp39-abi3-...) comes from pyo3's `abi3-py39` feature, so one
@@ -71,9 +71,10 @@ build_dists() {
 	rm -rf "${DIST}"
 	mkdir -p "${DIST}"
 
-	maturin build --release --manifest-path "${MANIFEST}" --out "${DIST}"
 	maturin build --release --manifest-path "${MANIFEST}" --out "${DIST}" \
-		--target aarch64-unknown-linux-gnu --zig
+		--target x86_64-unknown-linux-gnu --zig --compatibility manylinux2014
+	maturin build --release --manifest-path "${MANIFEST}" --out "${DIST}" \
+		--target aarch64-unknown-linux-gnu --zig --compatibility manylinux2014
 	maturin sdist --manifest-path "${MANIFEST}" --out "${DIST}"
 
 	# Platform-tag guard. `twine check` validates metadata only -- it does NOT
