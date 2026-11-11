@@ -78,20 +78,39 @@ build_dists() {
 	maturin sdist --manifest-path "${MANIFEST}" --out "${DIST}"
 
 	# Platform-tag guard. `twine check` validates metadata only -- it does NOT
-	# inspect platform tags, so a wheel tagged plain `linux_x86_64` (linked
-	# against a glibc newer than any manylinux profile) passes twine check and is
-	# then rejected at upload time. Assert every wheel carries a
-	# manylinux/musllinux tag here so the dry-run actually fails on a
-	# non-portable build instead of discovering it mid-publish.
+	# inspect platform tags, so a wheel tagged plain `linux_x86_64` passes it and
+	# is then rejected at upload time. A bare manylinux/musllinux match is not
+	# enough either: a native build is tagged with whatever glibc floor its symbols
+	# happen to need (manylinux_2_34 on the CI image), so the floor drifts with the
+	# image and the check still passes. Assert the exact tags instead: both wheels
+	# are built with `--zig --compatibility manylinux2014`, and maturin's audit
+	# fails the build if the cdylib needs a newer glibc than that. Only Linux
+	# wheels are judged; other platforms (macOS, Windows) are skipped, not
+	# rejected, so adding their wheels later needs no change here.
+	local expected_tags=(
+		"manylinux2014_x86_64.manylinux_2_17_x86_64"
+		"manylinux2014_aarch64.manylinux_2_17_aarch64"
+	)
 	for whl in "${DIST}"/*.whl; do
-		case "${whl}" in
-		*manylinux* | *musllinux*) ;;
-		*)
-			echo "ERROR: ${whl##*/} has no manylinux/musllinux platform tag; PyPI will reject it." >&2
-			echo "       The native build linked against too-new a glibc -- build it via cargo-zigbuild too, or lower the build image's glibc." >&2
-			exit 1
-			;;
+		case "${whl##*/}" in
+		*manylinux* | *musllinux* | *linux_*) ;;
+		*) continue ;;
 		esac
+		local matched=""
+		for tag in "${expected_tags[@]}"; do
+			[[ "${whl}" == *"-${tag}.whl" ]] && matched=1
+		done
+		if [[ -z "${matched}" ]]; then
+			echo "ERROR: ${whl##*/} does not carry one of the expected platform tags: ${expected_tags[*]}." >&2
+			echo "       The glibc floor moved or the build fell back to a native link; keep --zig --compatibility manylinux2014 on every wheel build." >&2
+			exit 1
+		fi
+	done
+	for tag in "${expected_tags[@]}"; do
+		if ! compgen -G "${DIST}/*-${tag}.whl" >/dev/null; then
+			echo "ERROR: no wheel with platform tag ${tag} in ${DIST}/; expected: ${expected_tags[*]}." >&2
+			exit 1
+		fi
 	done
 
 	# Wheel-content guard (QUI-792). A wheel is a zip; `twine check` validates
