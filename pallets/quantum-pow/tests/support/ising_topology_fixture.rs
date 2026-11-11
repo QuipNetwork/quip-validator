@@ -6,7 +6,8 @@ use quantum_validation::{
     unpack_solution, AllowedValueSpec, MilliValue, TopologyIndex,
 };
 use serde_json::{json, Value};
-use sp_core::{bytes::to_hex, hashing::blake2_256, U256};
+use sp_core::{bytes::to_hex, U256};
+use sp_io::hashing::blake2_256;
 
 /// Stored node and edge order. Labels are sparse and unsorted, and three
 /// edges are given with `u > v`, so the hash exercises canonicalization and

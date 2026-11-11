@@ -63,7 +63,7 @@ impl<O: Offence<Identification>> ReportOffence<AccountId, Identification, O> for
             reporters, offence,
         )
     }
-    fn is_known_offence(offenders: &[Identification], time_slot: &O::TimeSlot) -> bool {
+    fn is_known_offence(offenders: &[Identification], time_slot: &O::Slot) -> bool {
         <HistoricalReports as ReportOffence<AccountId, Identification, O>>::is_known_offence(
             offenders, time_slot,
         )

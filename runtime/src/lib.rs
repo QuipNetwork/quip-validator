@@ -22,7 +22,6 @@ use sp_runtime::{
     MultiAddress,
 };
 #[cfg(feature = "std")]
-use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
 
 pub use frame_system::Call as SystemCall;
@@ -320,15 +319,6 @@ pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
         allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
     };
 
-/// The version information used to identify this runtime when compiled natively.
-#[cfg(feature = "std")]
-pub fn native_version() -> NativeVersion {
-    NativeVersion {
-        runtime_version: VERSION,
-        can_author_with: Default::default(),
-    }
-}
-
 /// Hybrid transaction signature used for runtime extrinsics.
 pub type Signature = HybridTxSignature;
 
@@ -415,9 +405,10 @@ pub struct EthExtraImpl;
 
 impl EthExtra for EthExtraImpl {
     type Config = Runtime;
-    type Extension = TxExtension;
+    type ExtensionV0 = TxExtension;
+    type ExtensionOtherVersions = sp_runtime::traits::InvalidVersion;
 
-    fn get_eth_extension(nonce: u32, tip: Balance) -> Self::Extension {
+    fn get_eth_extension(nonce: u32, tip: Balance) -> Self::ExtensionV0 {
         tx_extension(
             generic::Era::Immortal,
             nonce,

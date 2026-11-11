@@ -408,6 +408,12 @@ impl pallet_revive::Config for Runtime {
     type DepositPerItem = StorageDepositPerItem;
     type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
+    /// Storage deposits are charged in the native currency (`()` is the SDK's
+    /// native-currency backend); contracts hold no separate ED deposit.
+    type Deposit = ();
+    /// Explicit `map_account`/`unmap_account` remain the only mapping path:
+    /// `frame_system`'s account hooks are not `AutoMapper`.
+    type AutoMap = ConstBool<false>;
     type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;
     type AllowEVMBytecode = ConstBool<true>;
     type UploadOrigin = frame_system::EnsureSigned<AccountId>;

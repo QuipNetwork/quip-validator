@@ -396,7 +396,7 @@ struct MainnetInputs {
 
 /// Hash an account ID, not a signing seed. No key pair is generated or provisioned.
 fn mainnet_placeholder(role: &str, label: &str) -> AccountId {
-    AccountId::new(sp_core::blake2_256(
+    AccountId::new(sp_io::hashing::blake2_256(
         &("quip/genesis-placeholder/v1", "mainnet", role, label).encode(),
     ))
 }
@@ -1282,7 +1282,7 @@ mod tests {
         for (name, hash) in expected {
             let bytes = get_preset(&PresetId::from(name.clone())).unwrap();
             assert_eq!(
-                hex_encode(&sp_core::blake2_256(&bytes)),
+                hex_encode(&sp_io::hashing::blake2_256(&bytes)),
                 hash.as_str().unwrap(),
                 "legacy preset changed: {name}"
             );
@@ -1757,7 +1757,7 @@ mod tests {
             Some(&mainnet_allocation::custody_placeholder())
         );
         assert_eq!(
-            hex_encode(&sp_core::blake2_256(&accounts[..12].to_vec().encode())),
+            hex_encode(&sp_io::hashing::blake2_256(&accounts[..12].to_vec().encode())),
             "b6e46344fd96bb4deee3a025c407e7a9d502b8c40ad962a535ceb0160c2d9da2"
         );
         assert_eq!(MAINNET_VALIDATOR_FLOAT, Some(10 * crate::UNIT));
@@ -1953,7 +1953,7 @@ mod tests {
         let code = RuntimeCode {
             code_fetcher: &fetcher,
             heap_pages: None,
-            hash: sp_core::blake2_256(wasm).to_vec(),
+            hash: sp_io::hashing::blake2_256(wasm).to_vec(),
         };
         let executor =
             sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build();

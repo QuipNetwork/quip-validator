@@ -88,6 +88,20 @@ impl multi_block::unsigned::Config for Runtime {
     type WeightInfo = multi_block::weights::polkadot::MultiBlockUnsignedWeightInfo<Self>;
 }
 
+/// The signed phase is disabled (`SignedPhase = 0`, `MaxSubmissions = 0`), so
+/// nothing ever reaches the reward path. The pallet ships no no-op
+/// [`multi_block::signed::RewardSource`], so the stub is explicit: no pot and
+/// no payout. Enabling the signed phase means replacing this type.
+pub struct NoSignedReward;
+
+impl multi_block::signed::RewardSource<AccountId, Balance> for NoSignedReward {
+    fn account() -> Option<AccountId> {
+        None
+    }
+
+    fn paid(_amount: Balance) {}
+}
+
 impl multi_block::signed::Config for Runtime {
     type Currency = Balances;
     type DepositBase = ConstU128<0>;
@@ -97,6 +111,12 @@ impl multi_block::signed::Config for Runtime {
     type MaxSubmissions = ConstU32<0>;
     type BailoutGraceRatio = ZeroRatio;
     type EjectGraceRatio = ZeroRatio;
+    // Signed-phase accounting is unreachable while the phase is disabled. `()`
+    // burns a slashed deposit; the refund ceiling is zero because no submission
+    // can accrue a fee.
+    type Slash = ();
+    type RewardSource = NoSignedReward;
+    type MaxFeeRefund = ConstU128<0>;
     type EstimateCallFee = crate::TransactionPayment;
     type WeightInfo = multi_block::weights::polkadot::MultiBlockSignedWeightInfo<Self>;
 }
@@ -457,6 +477,10 @@ mod tests {
         });
     }
 
+    // `ValidateUnsigned::pre_dispatch` is deprecated upstream in favour of
+    // `#[pallet::authorize]` (polkadot-sdk#2415). Migrating the unsigned path is
+    // a separate change; this test deliberately exercises the current one.
+    #[allow(deprecated)]
     #[test]
     fn offchain_worker_submits_a_valid_bare_runtime_extrinsic() {
         use sp_core::offchain::{
@@ -582,6 +606,28 @@ mod tests {
             assert_eq!(MultiBlockElection::elect(0).unwrap(), expected);
         });
     }
+    #[test]
+    fn signed_phase_stubs_are_unreachable() {
+        // The signed phase is disabled, so its accounting types are stubs: no
+        // submission is accepted and no reward is paid. Enabling the phase
+        // means replacing `NoSignedReward`, `Slash` and `MaxFeeRefund`; this
+        // test fails on purpose if any of the four ever moves.
+        use frame_support::traits::Get;
+        assert_eq!(SignedPhase::get(), 0);
+        assert_eq!(
+            <<Runtime as multi_block::signed::Config>::MaxSubmissions as Get<u32>>::get(),
+            0
+        );
+        assert_eq!(
+            <<Runtime as multi_block::signed::Config>::RewardBase as Get<Balance>>::get(),
+            0
+        );
+        assert_eq!(
+            <NoSignedReward as multi_block::signed::RewardSource<AccountId, Balance>>::account(),
+            None
+        );
+    }
+
     #[test]
     fn scheduler_integrity_test() {
         ElectionScheduler::integrity_test();
@@ -858,6 +904,10 @@ mod tests {
 
         // before_queue exercises a snapshot invalidated before its mined solution
         // can be submitted; queued and fallback exercise removal just before export.
+        // `ValidateUnsigned::pre_dispatch` is deprecated upstream in favour of
+        // `#[pallet::authorize]` (polkadot-sdk#2415). Migrating the unsigned path is
+        // a separate change; this test deliberately exercises the current one.
+        #[allow(deprecated)]
         fn admission_revocation_case(before_queue: bool, queued: bool, force_new: bool) {
             validator_onboarding::tests::ext().execute_with(|| {
                 let removed = Validators::<Runtime>::get()[0].clone();
