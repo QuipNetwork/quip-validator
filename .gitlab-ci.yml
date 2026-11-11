@@ -108,11 +108,16 @@ variables:
   # via .cargo-host-cache — their target/ is far too large to tar.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
-  # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
-  # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
-  # source. Bump deliberately; it changes the linker the release wheels are built
-  # with.
+  # cargo-zigbuild is the zig-linker toolchain for both Linux wheels (x86_64 and
+  # aarch64, at manylinux2014). Pinned and fetched as a prebuilt via
+  # cargo-binstall (seconds) rather than compiled from source. Bump deliberately;
+  # it changes the linker the release wheels are built with.
   CARGO_ZIGBUILD_VERSION: "0.22.3"
+  # maturin and ziglang are pinned too: maturin's manylinux policy tables and
+  # zig's bundled glibc stubs decide the wheels' glibc floor, and both change
+  # between releases. Bump deliberately, and re-check the wheel tags.
+  MATURIN_VERSION: "1.16.0"
+  ZIGLANG_VERSION: "0.17.1"
   # cargo-binstall itself is pinned and fetched as a release binary (not the
   # `curl .../main/install.sh | bash` bootstrap), so the toolchain that builds a
   # published, trust-signed wheel can't be altered by an upstream `main` change.
@@ -915,10 +920,11 @@ manifest-evm-sidecar:
 # (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both smokes, so a
 # wheel that won't import on its own arch blocks the upload.
 #
-# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
-# (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
-# sdist (universal source fallback; macOS/Windows build from it). The wheel
-# version is the pyproject/Cargo version, bumped per release so the tag matches.
+# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheels for linux x86_64
+# and linux aarch64, both built with zig as the linker at manylinux2014
+# (glibc 2.17), + an sdist (universal source fallback; macOS/Windows build
+# from it). The wheel version is the pyproject/Cargo version, bumped per
+# release so the tag matches.
 
 # Tag-only rule for the pypi jobs that do NOT run as an MR dry-run: the arm64
 # import-smoke and both publishes. Runs on pushed release tags like v0.2.1,
@@ -977,7 +983,7 @@ manifest-evm-sidecar:
     # would land in a different interpreter and zig would not be found.
     - python3 -m venv /opt/pyrelease
     - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
-    - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
+    - pip install --quiet --upgrade pip "maturin==$MATURIN_VERSION" 'twine>=6.1' "ziglang==$ZIGLANG_VERSION"
     # cargo-zigbuild as a prebuilt binary via cargo-binstall (seconds) instead of
     # `cargo install` from source (minutes). cargo-binstall is fetched as a
     # version-pinned release binary (the runner is always linux amd64, so the
