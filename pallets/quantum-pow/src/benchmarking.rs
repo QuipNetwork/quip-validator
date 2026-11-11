@@ -12,8 +12,12 @@ use frame_support::{
 };
 use frame_system::RawOrigin;
 use quantum_validation::{
-    derive_nonce, packed::pack_solution, AllowedValueSpec, MilliValue, MILLI_SCALE,
+    derive_nonce,
+    families::{zephyr_lattice, AdvertisedLimits, FamilyChallenge, FamilyError, Instance},
+    packed::pack_solution,
+    AllowedValueSpec, MilliValue, MILLI_SCALE,
 };
+use sp_core::H256;
 use sp_runtime::traits::{SaturatedConversion, Saturating};
 
 fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
@@ -215,11 +219,25 @@ fn valid_proof_for<T: Config>(
 
     let topology =
         RegisteredTopologies::<T>::get(topology_hash).expect("benchmark topology is registered");
+    let solutions = pattern_solutions::<T>(topology.nodes.len() as u32, solution_count);
+
+    types::QuantumProof {
+        topology_hash,
+        nonce,
+        salt,
+        solutions,
+        device_access_time_us: 0,
+    }
+}
+
+/// `solution_count` distinct binary spin vectors of `spin_count` spins,
+/// packed one bit per spin.
+fn pattern_solutions<T: Config>(spin_count: u32, solution_count: u32) -> PackedSolutionsOf<T> {
     let spin_spec = allowed_spin_set::<T>();
-    let solutions: PackedSolutionsOf<T> = bounded::<_, T::MaxSolutions>(
+    bounded::<_, T::MaxSolutions>(
         (0..solution_count)
             .map(|solution_index| {
-                let spins: Vec<MilliValue> = (0..topology.nodes.len() as u32)
+                let spins: Vec<MilliValue> = (0..spin_count)
                     .map(|node_index| {
                         if (node_index ^ solution_index).count_ones() % 2 == 0 {
                             SCALE
@@ -233,15 +251,317 @@ fn valid_proof_for<T: Config>(
                 bounded::<u8, T::MaxNodes>(packed)
             })
             .collect(),
-    );
+    )
+}
 
+// Family fixtures.
+//
+// Every canonical family builds on the Zephyr lattice `z(m, t)`, so the
+// worst admitted instance under the pallet bounds is a full lattice. The
+// verifier cost of a family proof is dominated by admission and regeneration,
+// which grow with the edge count for the ice and routing families and with the
+// square-lattice side `L` for the polariton, flow, and defects families. The
+// fixtures below search those parameters from the top so the benchmarks run
+// at the most expensive configuration the configured bounds admit. The
+// measurements behind that choice are in `docs/family-activation.md`.
+
+/// The weight classes of the family proof path. Each class is benchmarked on
+/// its own worst-case fixture.
+#[derive(Clone, Copy)]
+enum FixtureKind {
+    /// `quip/ice-glass` on the lattice with the most edges.
+    Ice,
+    /// `quip/two-commodity-routing` on the lattice with the most edges that
+    /// has `t >= 3`. Falls back to [`Self::Ice`] when no lattice admits it.
+    Routing,
+    /// `quip/polariton-static` with the largest side `L` and the most charge
+    /// pairs that admit. Falls back to [`Self::Ice`] when no lattice admits it.
+    Square,
+}
+
+struct FamilyFixture {
+    nodes: Vec<u32>,
+    edges: Vec<(u32, u32)>,
+    descriptor: types::FamilyDescriptor,
+}
+
+/// The canonical parameter encoding: the format byte, then every schema field
+/// in order as `tag` (`u16` LE), payload length (`u32` LE), payload.
+fn family_params(fields: &[(u16, &[u8])]) -> Vec<u8> {
+    let mut out = vec![0x01];
+    for (tag, payload) in fields {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+    }
+    out
+}
+
+fn family_descriptor(family_id: &[u8], params: Vec<u8>) -> types::FamilyDescriptor {
+    types::FamilyDescriptor {
+        family_id: bounded(family_id.to_vec()),
+        revision: 1,
+        params: bounded(params),
+    }
+}
+
+fn ice_glass_descriptor(m: u16, t: u8) -> types::FamilyDescriptor {
+    family_descriptor(
+        b"quip/ice-glass",
+        family_params(&[(1, &m.to_le_bytes()), (2, &[t]), (3, &200u16.to_le_bytes())]),
+    )
+}
+
+fn routing_descriptor(m: u16, t: u8) -> types::FamilyDescriptor {
+    // Divisor 16: the measured worst case. Divisor 4 asks for more terminal
+    // pairs than the template can route and skips every nonce early.
+    family_descriptor(
+        b"quip/two-commodity-routing",
+        family_params(&[(1, &m.to_le_bytes()), (2, &[t]), (3, &16u16.to_le_bytes())]),
+    )
+}
+
+fn polariton_descriptor(m: u16, t: u8, side: u16, pairs: u16) -> types::FamilyDescriptor {
+    family_descriptor(
+        b"quip/polariton-static",
+        family_params(&[
+            (1, &m.to_le_bytes()),
+            (2, &[t]),
+            (3, &side.to_le_bytes()),
+            (4, &pairs.to_le_bytes()),
+        ]),
+    )
+}
+
+fn advertised_limits<T: Config>() -> AdvertisedLimits {
+    AdvertisedLimits {
+        max_nodes: u64::from(T::MaxNodes::get()),
+        max_edges: u64::from(T::MaxEdges::get()),
+        max_degree: 0,
+    }
+}
+
+fn admit<'a, T: Config>(
+    descriptor: &'a types::FamilyDescriptor,
+    nodes: &[u32],
+    edges: &[(u32, u32)],
+) -> Option<FamilyChallenge<'a>> {
+    FamilyChallenge::admit(
+        T::PowFamilies::get(),
+        &descriptor.family_id,
+        descriptor.revision,
+        &descriptor.params,
+        nodes,
+        edges,
+        &advertised_limits::<T>(),
+    )
+    .ok()
+}
+
+/// Every full Zephyr lattice within the pallet bounds, as `(m, t, nodes,
+/// edges)`, most edges first.
+fn lattices_under_bounds<T: Config>() -> Vec<(u16, u8, Vec<u32>, Vec<(u32, u32)>)> {
+    let min_nodes = u64::from(T::MinNodes::get());
+    let max_nodes = u64::from(T::MaxNodes::get());
+    let mut lattices = Vec::new();
+    for t in 1..=8u8 {
+        for m in 1..=32u16 {
+            // `z(m, t)` has `4 * t * m * (2m + 1)` nodes. Check the count
+            // before building the lattice: the largest ones are far beyond
+            // any bound and take seconds each in a debug build.
+            let node_count = 4 * u64::from(t) * u64::from(m) * (2 * u64::from(m) + 1);
+            if node_count > max_nodes {
+                break;
+            }
+            if node_count < min_nodes {
+                continue;
+            }
+            let Some((nodes, edges)) = zephyr_lattice(m, t) else {
+                continue;
+            };
+            if edges.len() <= T::MaxEdges::get() as usize {
+                lattices.push((m, t, nodes, edges));
+            }
+        }
+    }
+    lattices.sort_by_key(|lattice| core::cmp::Reverse(lattice.3.len()));
+    lattices
+}
+
+/// The worst-case fixture of `kind` under the pallet bounds.
+fn family_fixture<T: Config>(kind: FixtureKind) -> FamilyFixture {
+    let lattices = lattices_under_bounds::<T>();
+    let found = match kind {
+        FixtureKind::Ice => None,
+        FixtureKind::Routing => lattices.iter().find_map(|(m, t, nodes, edges)| {
+            let descriptor = routing_descriptor(*m, *t);
+            admit::<T>(&descriptor, nodes, edges)
+                .is_some()
+                .then(|| FamilyFixture {
+                    nodes: nodes.clone(),
+                    edges: edges.clone(),
+                    descriptor,
+                })
+        }),
+        FixtureKind::Square => {
+            // The side `L` that fits grows with `m`, so search the widest
+            // lattices first and the largest side first within each.
+            let mut by_width: Vec<_> = lattices.iter().collect();
+            by_width.sort_by_key(|lattice| core::cmp::Reverse((lattice.0, lattice.1)));
+            by_width.iter().find_map(|(m, t, nodes, edges)| {
+                (2..=64u16).rev().find_map(|side| {
+                    // Every interior vertex may carry a charge, half of them
+                    // `+2`: the most pairs the family admits for this side.
+                    let interior = u32::from(side.saturating_sub(2)).pow(2);
+                    let pairs = u16::try_from(interior / 2).unwrap_or(u16::MAX).min(2048);
+                    let descriptor = polariton_descriptor(*m, *t, side, pairs);
+                    admit::<T>(&descriptor, nodes, edges)
+                        .is_some()
+                        .then(|| FamilyFixture {
+                            nodes: nodes.clone(),
+                            edges: edges.clone(),
+                            descriptor,
+                        })
+                })
+            })
+        }
+    };
+    found.unwrap_or_else(|| {
+        lattices
+            .iter()
+            .find_map(|(m, t, nodes, edges)| {
+                let descriptor = ice_glass_descriptor(*m, *t);
+                admit::<T>(&descriptor, nodes, edges)
+                    .is_some()
+                    .then(|| FamilyFixture {
+                        nodes: nodes.clone(),
+                        edges: edges.clone(),
+                        descriptor,
+                    })
+            })
+            .expect("the configured bounds admit an ice-glass lattice")
+    })
+}
+
+fn zero_h_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
+    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![0]))
+}
+
+/// Register the fixture as a family topology and return its hash.
+fn register_family_topology_for<T: Config>(fixture: &FamilyFixture) -> H256 {
+    let nodes = bounded::<_, T::MaxNodes>(fixture.nodes.clone());
+    let edges = bounded::<_, T::MaxEdges>(fixture.edges.clone());
+    let legacy_hash = crate::topology::hash_topology(
+        &nodes,
+        &edges,
+        &zero_h_set::<T>().as_slice(),
+        &allowed_j_set::<T>().as_slice(),
+        &allowed_spin_set::<T>().as_slice(),
+    );
+    let challenge = admit::<T>(&fixture.descriptor, &fixture.nodes, &fixture.edges)
+        .expect("the fixture was admitted when it was chosen");
+    let topology_hash = crate::topology::hash_family_topology(
+        legacy_hash,
+        challenge.descriptor_digest(),
+        challenge.topology_order_digest(),
+    );
+    assert!(QuantumPow::<T>::register_topology(
+        RawOrigin::Root.into(),
+        nodes,
+        edges,
+        zero_h_set::<T>(),
+        allowed_j_set::<T>(),
+        allowed_spin_set::<T>(),
+        Some(fixture.descriptor.clone()),
+    )
+    .is_ok());
+    assert!(RegisteredTopologies::<T>::contains_key(topology_hash));
+    topology_hash
+}
+
+/// Register the fixture, make it mineable with an easy threshold that asks
+/// for `min_solutions` witnesses, and register `miner`.
+fn mineable_family_topology_for<T: Config>(
+    fixture: &FamilyFixture,
+    miner: &T::AccountId,
+    min_solutions: u32,
+) -> H256 {
+    let topology_hash = register_family_topology_for::<T>(fixture);
+    assert!(QuantumPow::<T>::set_topology_energy_band(
+        RawOrigin::Root.into(),
+        topology_hash,
+        crate::difficulty::EnergyBand {
+            hard_milli: -2_000_000,
+            easy_milli: -1_000_000,
+        },
+    )
+    .is_ok());
+    Difficulties::<T>::insert(
+        topology_hash,
+        types::DifficultyConfig {
+            min_solutions,
+            ..easy_difficulty()
+        },
+    );
+    MineableTopologies::<T>::insert(topology_hash, ());
+    register_miner_for::<T>(miner);
+    topology_hash
+}
+
+/// The first salt (of 256) whose nonce the family treats as `want_skip`
+/// asks: an instance, or a skipped nonce. The instance comes back for the
+/// non-skip case. `None` when no salt in the range behaves that way.
+fn family_salt_for<T: Config>(
+    challenge: &FamilyChallenge<'_>,
+    miner: &T::AccountId,
+    want_skip: bool,
+) -> Option<([u8; 32], Option<Instance>)> {
+    frame_system::Pallet::<T>::set_block_number(1u32.into());
+    let last_proof_block_hash_bytes = LastProofBlockHash::<T>::get().0;
+    let miner_bytes = QuantumPow::<T>::account_to_bytes(miner);
+    (0u8..=255).find_map(|counter| {
+        let mut salt = [0u8; 32];
+        salt[0] = counter;
+        let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &salt);
+        match (challenge.regenerate(nonce.to_big_endian()), want_skip) {
+            (Ok(instance), false) => Some((salt, Some(instance))),
+            (Err(FamilyError::Skipped(_)), true) => Some((salt, None)),
+            _ => None,
+        }
+    })
+}
+
+fn family_proof_for<T: Config>(
+    miner: &T::AccountId,
+    topology_hash: H256,
+    salt: [u8; 32],
+    solutions: PackedSolutionsOf<T>,
+) -> QuantumProofOf<T> {
+    let last_proof_block_hash_bytes = LastProofBlockHash::<T>::get().0;
+    let miner_bytes = QuantumPow::<T>::account_to_bytes(miner);
     types::QuantumProof {
         topology_hash,
-        nonce,
+        nonce: derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &salt),
         salt,
         solutions,
         device_access_time_us: 0,
     }
+}
+
+/// A family proof of `solution_count` witnesses on the accept path.
+fn accepted_family_proof<T: Config>(
+    fixture: &FamilyFixture,
+    miner: &T::AccountId,
+    topology_hash: H256,
+    solution_count: u32,
+) -> QuantumProofOf<T> {
+    let challenge = admit::<T>(&fixture.descriptor, &fixture.nodes, &fixture.edges)
+        .expect("the fixture was admitted when it was chosen");
+    let (salt, instance) =
+        family_salt_for::<T>(&challenge, miner, false).expect("one of 256 salts gives an instance");
+    let instance = instance.expect("the non-skip search returns the instance");
+    let solutions = pattern_solutions::<T>(instance.node_ids().len() as u32, solution_count);
+    family_proof_for::<T>(miner, topology_hash, salt, solutions)
 }
 
 #[benchmarks]
@@ -432,6 +752,99 @@ mod benchmarks {
         QuantumPow::remove_mineable_topology(RawOrigin::Root, topology_hash);
 
         assert!(!MineableTopologies::<T>::contains_key(topology_hash));
+    }
+
+    /// Admission of the routing fixture, the family whose topology check
+    /// measured slowest. Charged on top of the legacy registration weight
+    /// when a descriptor is present.
+    #[benchmark]
+    fn register_family_topology() {
+        let fixture = family_fixture::<T>(FixtureKind::Routing);
+        let nodes = bounded::<_, T::MaxNodes>(fixture.nodes.clone());
+        let edges = bounded::<_, T::MaxEdges>(fixture.edges.clone());
+
+        #[extrinsic_call]
+        QuantumPow::register_topology(
+            RawOrigin::Root,
+            nodes,
+            edges,
+            zero_h_set::<T>(),
+            allowed_j_set::<T>(),
+            allowed_spin_set::<T>(),
+            Some(fixture.descriptor),
+        );
+
+        assert_eq!(RegisteredTopologies::<T>::iter_keys().count(), 1);
+    }
+
+    /// The accept path of an ice-class proof: admission, regeneration, `s`
+    /// witness checks, and scoring on the ice-glass fixture.
+    #[benchmark]
+    fn submit_family_proof_ice(s: Linear<1, { T::MaxSolutions::get() }>) {
+        let caller: T::AccountId = whitelisted_caller();
+        let fixture = family_fixture::<T>(FixtureKind::Ice);
+        let topology_hash = mineable_family_topology_for::<T>(&fixture, &caller, s);
+        let proof = accepted_family_proof::<T>(&fixture, &caller, topology_hash, s);
+
+        #[extrinsic_call]
+        QuantumPow::submit_proof(RawOrigin::Signed(caller.clone()), proof);
+
+        assert_eq!(BlockProofCount::<T>::get(), 1);
+        assert!(BlockBestProof::<T>::get().is_some());
+    }
+
+    /// The accept path of a routing-class proof on the routing fixture.
+    #[benchmark]
+    fn submit_family_proof_routing(s: Linear<1, { T::MaxSolutions::get() }>) {
+        let caller: T::AccountId = whitelisted_caller();
+        let fixture = family_fixture::<T>(FixtureKind::Routing);
+        let topology_hash = mineable_family_topology_for::<T>(&fixture, &caller, s);
+        let proof = accepted_family_proof::<T>(&fixture, &caller, topology_hash, s);
+
+        #[extrinsic_call]
+        QuantumPow::submit_proof(RawOrigin::Signed(caller.clone()), proof);
+
+        assert_eq!(BlockProofCount::<T>::get(), 1);
+        assert!(BlockBestProof::<T>::get().is_some());
+    }
+
+    /// The costliest path of a square-class proof: a nonce the polariton
+    /// construction skips after every charge draw failed its flow check. The
+    /// witness is never decoded on that path, so the benchmark has no
+    /// solution dimension. When no salt skips, which is the case for the
+    /// ice-glass fallback of the mock, the accept path with one witness is
+    /// measured instead.
+    #[benchmark]
+    fn submit_family_proof_square() {
+        let caller: T::AccountId = whitelisted_caller();
+        let fixture = family_fixture::<T>(FixtureKind::Square);
+        let topology_hash = mineable_family_topology_for::<T>(&fixture, &caller, 1);
+        let challenge = admit::<T>(&fixture.descriptor, &fixture.nodes, &fixture.edges)
+            .expect("the fixture was admitted when it was chosen");
+        let (salt, spin_count) = match family_salt_for::<T>(&challenge, &caller, true) {
+            Some((salt, _)) => (salt, fixture.nodes.len() as u32),
+            None => {
+                let (salt, instance) = family_salt_for::<T>(&challenge, &caller, false)
+                    .expect("one of 256 salts gives an instance");
+                let instance = instance.expect("the non-skip search returns the instance");
+                (salt, instance.node_ids().len() as u32)
+            }
+        };
+        let proof = family_proof_for::<T>(
+            &caller,
+            topology_hash,
+            salt,
+            pattern_solutions::<T>(spin_count, 1),
+        );
+
+        #[block]
+        {
+            // A skipped nonce is a dispatch error that still consumed the
+            // whole generation cost, which is the quantity under test.
+            let _ = QuantumPow::<T>::submit_proof(RawOrigin::Signed(caller.clone()).into(), proof);
+        }
+
+        assert!(BlockProofCount::<T>::get() <= 1);
     }
 
     impl_benchmark_test_suite!(QuantumPow, crate::mock::new_test_ext(), crate::mock::Test);

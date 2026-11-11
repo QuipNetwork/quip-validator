@@ -159,7 +159,7 @@ fn energy_curve_rejects_empty_specs() {
     .is_err());
 }
 
-fn registered_topology() -> (
+pub(crate) fn registered_topology() -> (
     BoundedVec<u32, MaxNodes>,
     BoundedVec<(u32, u32), MaxEdges>,
     sp_core::H256,
@@ -208,7 +208,7 @@ fn finalize_winner(miner: u64, block_number: u64) {
     QuantumPow::on_finalize(block_number);
 }
 
-fn proof_for(
+pub(crate) fn proof_for(
     miner: u64,
     nodes: &BoundedVec<u32, MaxNodes>,
     edges: &BoundedVec<(u32, u32), MaxEdges>,

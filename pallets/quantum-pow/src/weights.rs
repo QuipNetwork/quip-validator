@@ -20,8 +20,83 @@ pub trait WeightInfo {
 	/// `n` is the registered topology's node count, `e` its edge count, and
 	/// `s` the number of submitted solutions.
 	fn submit_proof(n: u32, e: u32, s: u32) -> Weight;
+	/// The admission cost that `register_topology` adds for a family
+	/// descriptor, measured on the slowest family at the largest admitted
+	/// lattice.
+	fn register_family_topology() -> Weight;
+	/// A family proof of `s` witnesses on an ice-class topology, measured
+	/// at the largest admitted lattice. See [`FamilyWeightClass`].
+	fn submit_family_proof_ice(s: u32) -> Weight;
+	/// A family proof of `s` witnesses on a routing-class topology.
+	fn submit_family_proof_routing(s: u32) -> Weight;
+	/// A family proof on a square-class topology, at the nonce path that
+	/// measured slowest. Independent of the witness count.
+	fn submit_family_proof_square() -> Weight;
 	fn add_mineable_topology() -> Weight;
 	fn remove_mineable_topology() -> Weight;
+}
+
+/// The weight class of a family, keyed by its id.
+///
+/// The verifier cost of a family proof is set by regeneration, which differs
+/// by an order of magnitude between the families (`docs/family-activation.md`
+/// has the measurements). Each class is benchmarked on its own worst-case
+/// fixture. A family outside the three classes is charged the maximum of all
+/// three, so an allowlist entry can never be cheaper than its measurement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FamilyWeightClass {
+	/// The ice families: ice-glass, twisted-ice-dimer, charged-ice, ice-fields.
+	Ice,
+	/// Two-commodity routing.
+	Routing,
+	/// The square-lattice families: polariton-static, flow-static,
+	/// defects-static.
+	Square,
+	/// A family id that no benchmark fixture covers.
+	Unknown,
+}
+
+impl FamilyWeightClass {
+	pub fn of(family_id: &[u8]) -> Self {
+		match family_id {
+			b"quip/ice-glass" | b"quip/twisted-ice-dimer" | b"quip/charged-ice"
+			| b"quip/ice-fields" => Self::Ice,
+			b"quip/two-commodity-routing" => Self::Routing,
+			b"quip/polariton-static" | b"quip/flow-static" | b"quip/defects-static" => {
+				Self::Square
+			}
+			_ => Self::Unknown,
+		}
+	}
+}
+
+/// The pre-dispatch weight of a family proof of `solutions` witnesses.
+pub fn family_proof_weight<W: WeightInfo>(family_id: &[u8], solutions: u32) -> Weight {
+	match FamilyWeightClass::of(family_id) {
+		FamilyWeightClass::Ice => W::submit_family_proof_ice(solutions),
+		FamilyWeightClass::Routing => W::submit_family_proof_routing(solutions),
+		FamilyWeightClass::Square => W::submit_family_proof_square(),
+		FamilyWeightClass::Unknown => W::submit_family_proof_ice(solutions)
+			.max(W::submit_family_proof_routing(solutions))
+			.max(W::submit_family_proof_square()),
+	}
+}
+
+// A FRAME benchmark fixes one salt, so its regression sees the regeneration
+// cost of one nonce. That cost varies with the nonce: across 24 nonces on the
+// routing fixture the slowest regeneration took 2.1 times the mean, and 1.5
+// times on the ice fixture (native, developer machine, 2026-11-11; see
+// `docs/family-activation.md`). The family weights are scaled by this margin
+// so the charge covers nonces the benchmark did not draw. Revisit it when a
+// sweep over nonces on the reference machine narrows the spread.
+const FAMILY_NONCE_VARIANCE_PERCENT: u64 = 150;
+
+fn with_family_nonce_margin(weight: Weight) -> Weight {
+	weight.saturating_add(
+		weight
+			.saturating_mul(FAMILY_NONCE_VARIANCE_PERCENT)
+			.saturating_div(100),
+	)
 }
 
 // The ordinary FRAME regression is intentionally not used as submit_proof's
@@ -147,6 +222,32 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 	}
 
+	fn register_family_topology() -> Weight {
+		<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::register_family_topology()
+	}
+
+	fn submit_family_proof_ice(s: u32) -> Weight {
+		with_family_nonce_margin(
+			<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_family_proof_ice(s),
+		)
+		// Weight evaluation performs one pre-dispatch RegisteredTopologies read.
+		.saturating_add(T::DbWeight::get().reads(1_u64))
+	}
+
+	fn submit_family_proof_routing(s: u32) -> Weight {
+		with_family_nonce_margin(
+			<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_family_proof_routing(s),
+		)
+		.saturating_add(T::DbWeight::get().reads(1_u64))
+	}
+
+	fn submit_family_proof_square() -> Weight {
+		with_family_nonce_margin(
+			<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::submit_family_proof_square(),
+		)
+		.saturating_add(T::DbWeight::get().reads(1_u64))
+	}
+
 	fn add_mineable_topology() -> Weight {
 		<benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::add_mineable_topology()
 	}
@@ -191,6 +292,25 @@ impl WeightInfo for () {
 	fn submit_proof(n: u32, e: u32, s: u32) -> Weight {
 		<() as BenchmarkWeightInfo>::submit_proof(0, 0, 0)
 			.saturating_add(submit_proof_dimension_weight(n, e, s))
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+	}
+
+	fn register_family_topology() -> Weight {
+		<() as BenchmarkWeightInfo>::register_family_topology()
+	}
+
+	fn submit_family_proof_ice(s: u32) -> Weight {
+		with_family_nonce_margin(<() as BenchmarkWeightInfo>::submit_family_proof_ice(s))
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+	}
+
+	fn submit_family_proof_routing(s: u32) -> Weight {
+		with_family_nonce_margin(<() as BenchmarkWeightInfo>::submit_family_proof_routing(s))
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+	}
+
+	fn submit_family_proof_square() -> Weight {
+		with_family_nonce_margin(<() as BenchmarkWeightInfo>::submit_family_proof_square())
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 	}
 

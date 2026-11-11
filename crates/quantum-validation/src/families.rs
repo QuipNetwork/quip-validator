@@ -19,6 +19,9 @@ use ising_generators::family::{self, BaseTopology, SaltFault};
 
 pub use ising_generators::descriptor::{AdvertisedLimits, Contract, MAX_PARAMS_LEN};
 pub use ising_generators::family::Defect;
+/// The full Zephyr lattice `z(m, t)`, the base topology of every canonical
+/// family. Benchmarks and tests build their fixtures from it.
+pub use ising_generators::ice::topology::zephyr_lattice;
 pub use ising_generators::instance::Instance;
 pub use ising_generators::Code;
 

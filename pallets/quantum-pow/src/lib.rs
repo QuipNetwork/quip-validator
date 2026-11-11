@@ -806,13 +806,23 @@ pub mod pallet {
         }
 
         #[pallet::call_index(2)]
-        #[pallet::weight(<T as Config>::WeightInfo::register_topology(
-            nodes.len() as u32,
-            edges.len() as u32,
-            Pallet::<T>::allowed_value_input_count(&allowed_h_values)
-                .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_j_values))
-                .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_spin_values)),
-        ))]
+        #[pallet::weight({
+            let legacy = <T as Config>::WeightInfo::register_topology(
+                nodes.len() as u32,
+                edges.len() as u32,
+                Pallet::<T>::allowed_value_input_count(&allowed_h_values)
+                    .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_j_values))
+                    .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_spin_values)),
+            );
+            // Family admission runs the family's topology check on the whole
+            // graph. It is benchmarked at the largest admitted lattice and
+            // charged in full on top of the legacy registration work.
+            if family.is_some() {
+                legacy.saturating_add(<T as Config>::WeightInfo::register_family_topology())
+            } else {
+                legacy
+            }
+        })]
         pub fn register_topology(
             origin: OriginFor<T>,
             nodes: NodesOf<T>,
@@ -1133,20 +1143,24 @@ pub mod pallet {
             // cost observed on node02, not a claim of literal O(n·e) complexity.
             // TopologyIndex uses BTreeMap construction and lookups, whose structural
             // behavior is closer to n·log(n) + e·log(n).
-            let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
-                .map(|topology| {
-                    if topology.family.is_some() {
-                        // A family instance is sized by admission, not by the
-                        // base topology, and may be larger than it. Charge the
-                        // advertised limits until the family path is benchmarked.
-                        (T::MaxNodes::get(), T::MaxEdges::get())
-                    } else {
-                        (topology.nodes.len() as u32, topology.edges.len() as u32)
-                    }
-                })
-                .unwrap_or((0, 0));
             let solutions = proof.solutions.len() as u32;
-            <T as Config>::WeightInfo::submit_proof(nodes, edges, solutions)
+            match RegisteredTopologies::<T>::get(proof.topology_hash) {
+                Some(topology) => match &topology.family {
+                    // Admission caps every family instance at `MaxNodes` and
+                    // `MaxEdges`, and each weight class is benchmarked at the
+                    // largest lattice those bounds admit, so the class weight
+                    // covers every registered topology of that class.
+                    Some(descriptor) => crate::weights::family_proof_weight::<
+                        <T as Config>::WeightInfo,
+                    >(&descriptor.family_id, solutions),
+                    None => <T as Config>::WeightInfo::submit_proof(
+                        topology.nodes.len() as u32,
+                        topology.edges.len() as u32,
+                        solutions,
+                    ),
+                },
+                None => <T as Config>::WeightInfo::submit_proof(0, 0, solutions),
+            }
         })]
         pub fn submit_proof(origin: OriginFor<T>, proof: QuantumProofOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;

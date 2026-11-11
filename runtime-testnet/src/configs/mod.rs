@@ -630,11 +630,6 @@ parameter_types! {
     /// 2 for spin) so future hardware-spec changes don't force a runtime
     /// upgrade.
     pub const QuantumPowMaxAllowedValues: u32 = 32;
-    /// Family revisions that `register_topology` admits for proof of work.
-    /// Empty: every canonical family is still `research`, and research
-    /// families never mine. Promoting a family means listing its contract
-    /// here in a runtime upgrade.
-    pub const QuantumPowFamilies: &'static [pallet_quantum_pow::Contract] = &[];
     /// Energy-curve calibration: per-mille `c` values that define the
     /// `(max_energy, knee_energy, min_energy)` triple via
     /// `expected_gse` on the default topology and its h/J value
@@ -667,6 +662,29 @@ parameter_types! {
     pub const MinerRegistryMaxDockerImageBytes: u32 = 256;
     pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
     pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
+}
+
+/// Family revisions that `register_topology` admits for proof of work.
+///
+/// Empty: every canonical family is still `research`, and research families
+/// never mine. Promoting a family means listing its contract here in a
+/// runtime upgrade. See `docs/family-activation.md`.
+///
+/// The benchmark build lists every canonical family so the family benchmarks
+/// can register their worst-case fixtures. A release blob never enables
+/// `runtime-benchmarks`.
+pub struct QuantumPowFamilies;
+impl Get<&'static [pallet_quantum_pow::Contract]> for QuantumPowFamilies {
+    fn get() -> &'static [pallet_quantum_pow::Contract] {
+        #[cfg(not(feature = "runtime-benchmarks"))]
+        {
+            &[]
+        }
+        #[cfg(feature = "runtime-benchmarks")]
+        {
+            quantum_validation::families::CONTRACTS
+        }
+    }
 }
 
 /// Account attributed as the builder for migration-inserted default job specs.

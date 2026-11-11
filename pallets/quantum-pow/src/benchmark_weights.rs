@@ -60,6 +60,10 @@ pub trait WeightInfo {
 	fn set_topology_curve() -> Weight;
 	fn set_topology_energy_band() -> Weight;
 	fn submit_proof(n: u32, e: u32, s: u32, ) -> Weight;
+	fn register_family_topology() -> Weight;
+	fn submit_family_proof_ice(s: u32, ) -> Weight;
+	fn submit_family_proof_routing(s: u32, ) -> Weight;
+	fn submit_family_proof_square() -> Weight;
 	fn add_mineable_topology() -> Weight;
 	fn remove_mineable_topology() -> Weight;
 }
@@ -161,6 +165,45 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(18_996_000, 423913)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+	/// Not yet measured on the reference machine. Provisional values from a
+	/// native measurement on a developer machine (2026-11-11, see
+	/// `docs/family-activation.md`) times three for Wasm, until the
+	/// `benchmark-weights` job regenerates this file.
+	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:1)
+	/// Storage: `QuantumPow::DefaultTopology` (r:1 w:1)
+	/// Storage: `QuantumPow::MineableTopologies` (r:0 w:1)
+	fn register_family_topology() -> Weight {
+		Weight::from_parts(120_000_000_000, 423913)
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// Not yet measured on the reference machine; provisional, see
+	/// `register_family_topology`. Same storage shape as `submit_proof`
+	/// with `TopologyEnergyBand` in place of `TopologyCurveC`.
+	fn submit_family_proof_ice(s: u32, ) -> Weight {
+		Weight::from_parts(110_000_000_000, 423913)
+			.saturating_add(Weight::from_parts(300_000_000, 0).saturating_mul(s.into()))
+			.saturating_add(T::DbWeight::get().reads(10_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// Not yet measured on the reference machine; provisional, see
+	/// `register_family_topology`.
+	fn submit_family_proof_routing(s: u32, ) -> Weight {
+		Weight::from_parts(420_000_000_000, 423913)
+			.saturating_add(Weight::from_parts(300_000_000, 0).saturating_mul(s.into()))
+			.saturating_add(T::DbWeight::get().reads(10_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// Not yet measured on the reference machine; provisional, see
+	/// `register_family_topology`. The polariton skip path at side 40 took
+	/// up to 1.3 s native, so this entry alone exceeds the normal-class
+	/// block budget: a square-class family is not mineable until the
+	/// reference measurement lands and the activation review accepts it.
+	fn submit_family_proof_square() -> Weight {
+		Weight::from_parts(4_000_000_000_000, 423913)
+			.saturating_add(T::DbWeight::get().reads(10_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
 	/// Storage: `QuantumPow::Miners` (r:1 w:1)
 	/// Proof: `QuantumPow::Miners` (`max_values`: None, `max_size`: Some(92), added: 2567, mode: `MaxEncodedLen`)
@@ -324,6 +367,45 @@ impl WeightInfo for () {
 		Weight::from_parts(18_996_000, 423913)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+	/// Not yet measured on the reference machine. Provisional values from a
+	/// native measurement on a developer machine (2026-11-11, see
+	/// `docs/family-activation.md`) times three for Wasm, until the
+	/// `benchmark-weights` job regenerates this file.
+	/// Storage: `QuantumPow::RegisteredTopologies` (r:1 w:1)
+	/// Storage: `QuantumPow::DefaultTopology` (r:1 w:1)
+	/// Storage: `QuantumPow::MineableTopologies` (r:0 w:1)
+	fn register_family_topology() -> Weight {
+		Weight::from_parts(120_000_000_000, 423913)
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// Not yet measured on the reference machine; provisional, see
+	/// `register_family_topology`. Same storage shape as `submit_proof`
+	/// with `TopologyEnergyBand` in place of `TopologyCurveC`.
+	fn submit_family_proof_ice(s: u32, ) -> Weight {
+		Weight::from_parts(110_000_000_000, 423913)
+			.saturating_add(Weight::from_parts(300_000_000, 0).saturating_mul(s.into()))
+			.saturating_add(RocksDbWeight::get().reads(10_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// Not yet measured on the reference machine; provisional, see
+	/// `register_family_topology`.
+	fn submit_family_proof_routing(s: u32, ) -> Weight {
+		Weight::from_parts(420_000_000_000, 423913)
+			.saturating_add(Weight::from_parts(300_000_000, 0).saturating_mul(s.into()))
+			.saturating_add(RocksDbWeight::get().reads(10_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// Not yet measured on the reference machine; provisional, see
+	/// `register_family_topology`. The polariton skip path at side 40 took
+	/// up to 1.3 s native, so this entry alone exceeds the normal-class
+	/// block budget: a square-class family is not mineable until the
+	/// reference measurement lands and the activation review accepts it.
+	fn submit_family_proof_square() -> Weight {
+		Weight::from_parts(4_000_000_000_000, 423913)
+			.saturating_add(RocksDbWeight::get().reads(10_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
 	/// Storage: `QuantumPow::Miners` (r:1 w:1)
 	/// Proof: `QuantumPow::Miners` (`max_values`: None, `max_size`: Some(92), added: 2567, mode: `MaxEncodedLen`)

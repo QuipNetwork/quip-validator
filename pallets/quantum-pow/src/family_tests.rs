@@ -6,10 +6,12 @@
 //! of the `ice-glass-zephyr-z12` case.
 
 use super::mock::*;
+use super::tests::{proof_for, registered_topology};
 use crate::{
     difficulty::EnergyBand,
     topology,
     types::{DifficultyConfig, FamilyDescriptor},
+    weights::{family_proof_weight, FamilyWeightClass, WeightInfo},
     AllowedValueSetOf, BlockBestProof, DefaultTopology, Difficulties, LastProofBlockHash,
     MineableTopologies, PackedSpinBytesOf, QBlocks, RegisteredTopologies, TopologyEnergyBand,
 };
@@ -17,7 +19,9 @@ use frame_support::{assert_noop, assert_ok, traits::Hooks, BoundedVec};
 use ising_generators::blob;
 use quantum_validation::{
     derive_nonce,
-    families::{instance_energy, AdvertisedLimits, FamilyChallenge, Instance, CONTRACTS},
+    families::{
+        instance_energy, AdvertisedLimits, FamilyChallenge, Instance, CONTRACTS, MAX_PARAMS_LEN,
+    },
     packed::pack_solution,
     AllowedValueSpec, MilliValue, MILLI_SCALE,
 };
@@ -107,11 +111,17 @@ fn band() -> EnergyBand {
     }
 }
 
-/// Register the z12 ice-glass topology, give it a band and an easy
-/// threshold, whitelist it, and register the miner.
-fn mineable_family_topology() -> H256 {
-    assert_ok!(register(Some(ice_glass())));
-    let hash = registered_hash();
+fn easy() -> DifficultyConfig {
+    DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: i64::MAX,
+        min_diversity_milli: 0,
+    }
+}
+
+/// The root steps that make a registered family topology mineable: band,
+/// threshold, whitelist.
+fn activate_family(hash: H256) {
     assert_ok!(QuantumPow::set_topology_energy_band(
         RuntimeOrigin::root(),
         hash,
@@ -120,16 +130,20 @@ fn mineable_family_topology() -> H256 {
     assert_ok!(QuantumPow::set_difficulty(
         RuntimeOrigin::root(),
         hash,
-        DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: i64::MAX,
-            min_diversity_milli: 0,
-        }
+        easy()
     ));
     assert_ok!(QuantumPow::add_mineable_topology(
         RuntimeOrigin::root(),
         hash
     ));
+}
+
+/// Register the z12 ice-glass topology, give it a band and an easy
+/// threshold, whitelist it, and register the miner.
+fn mineable_family_topology() -> H256 {
+    assert_ok!(register(Some(ice_glass())));
+    let hash = registered_hash();
+    activate_family(hash);
     assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(MINER)));
     hash
 }
@@ -442,4 +456,263 @@ fn family_snapshot_carries_the_descriptor() {
             None
         );
     });
+}
+
+/// The activation boundary: a legacy topology mines block 1, root switches
+/// the single mineable slot to a family topology, the family mines block 2,
+/// and block 1 replays unchanged.
+#[test]
+fn switching_the_mineable_topology_from_legacy_to_family_keeps_history() {
+    new_test_ext().execute_with(|| {
+        let (legacy_nodes, legacy_edges, legacy) = registered_topology();
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            legacy,
+            easy()
+        ));
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(MINER)));
+        System::set_block_number(1);
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(MINER),
+            proof_for(MINER, &legacy_nodes, &legacy_edges, legacy, &[0])
+        ));
+        QuantumPow::on_finalize(1);
+        let legacy_block = QBlocks::<Test>::get(1).expect("block 1 is a legacy qblock");
+        assert_eq!(legacy_block.topology_hash, legacy);
+        let legacy_difficulty = Difficulties::<Test>::get(legacy).expect("adjusted on the win");
+
+        // Block 2 opens a new round on block 1's hash.
+        System::set_block_number(2);
+        frame_system::Pallet::<Test>::set_parent_hash(H256::from([0x11; 32]));
+        QuantumPow::on_initialize(2);
+
+        // The whitelist holds the default plus one incoming topology, so the
+        // switch is add, repoint the default, remove.
+        assert_ok!(register(Some(ice_glass())));
+        let family = RegisteredTopologies::<Test>::iter_keys()
+            .find(|hash| *hash != legacy)
+            .expect("the family topology is registered");
+        activate_family(family);
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            family
+        ));
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            legacy
+        ));
+
+        // A legacy proof is refused before any topology work.
+        assert_noop!(
+            QuantumPow::submit_proof(
+                RuntimeOrigin::signed(MINER),
+                proof_for(MINER, &legacy_nodes, &legacy_edges, legacy, &[0])
+            ),
+            crate::Error::<Test>::TopologyNotMineable
+        );
+
+        // A family proof wins block 2.
+        let (salt, instance) = salt_and_instance();
+        let all_up = vec![1i8; instance.node_ids().len()];
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(MINER),
+            proof(family, salt, &[&all_up])
+        ));
+        QuantumPow::on_finalize(2);
+        assert_eq!(
+            QBlocks::<Test>::get(2)
+                .expect("block 2 is a family qblock")
+                .topology_hash,
+            family
+        );
+
+        // Block 1 replays as it was: same record, same derived nonce, and
+        // the legacy difficulty entry did not move on the family win.
+        let replay = QuantumPow::qblock_with_nonce(1).expect("block 1 replays");
+        assert_eq!(replay.solution, legacy_block);
+        assert_eq!(
+            replay.nonce,
+            derive_nonce(
+                &legacy_block.last_proof_block_hash.0,
+                &crate::Pallet::<Test>::account_to_bytes(&MINER),
+                &legacy_block.salt
+            )
+        );
+        assert_eq!(Difficulties::<Test>::get(legacy), Some(legacy_difficulty));
+        let snapshot = QuantumPow::mining_snapshot(None).expect("default snapshot");
+        assert_eq!(snapshot.topology_hash, family);
+        assert_eq!(snapshot.family, Some(ice_glass()));
+
+        // The switch back is the same steps in reverse.
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            legacy
+        ));
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            legacy
+        ));
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            family
+        ));
+        assert_noop!(
+            QuantumPow::submit_proof(
+                RuntimeOrigin::signed(MINER),
+                proof(family, salt, &[&all_up])
+            ),
+            crate::Error::<Test>::TopologyNotMineable
+        );
+    });
+}
+
+/// Every check that costs nothing runs before admission and regeneration,
+/// so a rejected proof on those paths never pays for an instance.
+#[test]
+fn family_proof_cheap_rejections_come_before_generation() {
+    new_test_ext().execute_with(|| {
+        let hash = mineable_family_topology();
+        let (salt, instance) = salt_and_instance();
+        let all_up = vec![1i8; instance.node_ids().len()];
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(2), proof(hash, salt, &[&all_up])),
+            crate::Error::<Test>::MinerNotRegistered
+        );
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(MINER), proof(hash, salt, &[])),
+            crate::Error::<Test>::NoSolutionsSubmitted
+        );
+        let mut stale = proof(hash, salt, &[&all_up]);
+        stale.salt[31] ^= 1;
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(MINER), stale),
+            crate::Error::<Test>::InvalidNonce
+        );
+    });
+}
+
+/// Registration bounds the descriptor: the parameter bytes have a hard cap,
+/// and a descriptor that names a lattice other than the registered graph is
+/// refused, so no accepted topology regenerates beyond the configured bounds.
+#[test]
+fn family_registration_bounds_the_descriptor() {
+    new_test_ext().execute_with(|| {
+        let mut oversized = ice_glass();
+        let mut params = vec![0x01u8];
+        params.resize(MAX_PARAMS_LEN, 0);
+        oversized.params = bounded(params);
+        assert_noop!(
+            register(Some(oversized)),
+            crate::Error::<Test>::FamilyRejected
+        );
+
+        // The z12 graph is z(1, 2). A descriptor for z(2, 2) does not fit it.
+        let mut other_lattice = ice_glass();
+        let mut params = other_lattice.params.to_vec();
+        params[7] = 2;
+        other_lattice.params = bounded(params);
+        assert_noop!(
+            register(Some(other_lattice)),
+            crate::Error::<Test>::FamilyRejected
+        );
+        assert!(RegisteredTopologies::<Test>::iter_keys().next().is_none());
+
+        // The admitted fixture regenerates to exactly the registered graph.
+        assert_ok!(register(Some(ice_glass())));
+        let hash = registered_hash();
+        activate_family(hash);
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(MINER)));
+        let (_, instance) = salt_and_instance();
+        let meta = RegisteredTopologies::<Test>::get(hash).expect("registered");
+        assert_eq!(instance.node_ids().len(), meta.nodes.len());
+        assert_eq!(instance.edges().len(), meta.edges.len());
+        assert!(instance.node_ids().len() <= MaxNodes::get() as usize);
+        assert!(instance.edges().len() <= MaxEdges::get() as usize);
+    });
+}
+
+/// The largest proof the mock accepts: `MaxSolutions` distinct witnesses,
+/// all required by the threshold, on the fixture topology.
+#[test]
+fn family_proof_with_max_solutions_is_accepted() {
+    new_test_ext().execute_with(|| {
+        let hash = mineable_family_topology();
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            hash,
+            DifficultyConfig {
+                min_solutions: MaxSolutions::get(),
+                ..easy()
+            }
+        ));
+        let (salt, instance) = salt_and_instance();
+        let spin_count = instance.node_ids().len();
+        let witnesses: Vec<Vec<i8>> = (0..MaxSolutions::get())
+            .map(|index| {
+                (0..spin_count as u32)
+                    .map(|node| {
+                        if (node ^ index).count_ones() % 2 == 0 {
+                            1
+                        } else {
+                            -1
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&[i8]> = witnesses.iter().map(Vec::as_slice).collect();
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(MINER),
+            proof(hash, salt, &refs)
+        ));
+        let record = BlockBestProof::<Test>::get().expect("accepted");
+        let best = witnesses
+            .iter()
+            .map(|w| instance_energy(&instance, w).expect("energy"))
+            .min()
+            .expect("one witness");
+        assert_eq!(record.energy_milli, best);
+    });
+}
+
+/// The weight model charges each family by its class, charges an unknown
+/// family the maximum of the classes, and charges admission on top of the
+/// legacy registration weight.
+#[test]
+fn family_weights_follow_the_class_of_the_family() {
+    for (id, class) in [
+        (&b"quip/ice-glass"[..], FamilyWeightClass::Ice),
+        (b"quip/twisted-ice-dimer", FamilyWeightClass::Ice),
+        (b"quip/charged-ice", FamilyWeightClass::Ice),
+        (b"quip/ice-fields", FamilyWeightClass::Ice),
+        (b"quip/two-commodity-routing", FamilyWeightClass::Routing),
+        (b"quip/polariton-static", FamilyWeightClass::Square),
+        (b"quip/flow-static", FamilyWeightClass::Square),
+        (b"quip/defects-static", FamilyWeightClass::Square),
+        (b"quip/not-a-family", FamilyWeightClass::Unknown),
+    ] {
+        assert_eq!(
+            FamilyWeightClass::of(id),
+            class,
+            "{}",
+            String::from_utf8_lossy(id)
+        );
+    }
+
+    let solutions = MaxSolutions::get();
+    let ice = family_proof_weight::<()>(b"quip/ice-glass", solutions);
+    let routing = family_proof_weight::<()>(b"quip/two-commodity-routing", solutions);
+    let square = family_proof_weight::<()>(b"quip/polariton-static", solutions);
+    let unknown = family_proof_weight::<()>(b"quip/not-a-family", solutions);
+    assert_eq!(ice, <() as WeightInfo>::submit_family_proof_ice(solutions));
+    assert!(unknown.all_gte(ice));
+    assert!(unknown.all_gte(routing));
+    assert!(unknown.all_gte(square));
+    assert!(
+        family_proof_weight::<()>(b"quip/ice-glass", 1).all_lte(ice),
+        "more witnesses never cost less"
+    );
+    assert!(<() as WeightInfo>::register_family_topology()
+        .all_gt(frame_support::weights::Weight::zero()));
 }
