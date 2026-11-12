@@ -58,32 +58,10 @@ fn name(registry: &PortableRegistry, id: u32, depth: usize) -> String {
         return rendered;
     }
     match &ty.type_def {
-        TypeDef::Primitive(primitive) => format!("{primitive:?}").to_lowercase(),
-        TypeDef::Sequence(seq) => format!("Vec<{}>", name(registry, seq.type_param.id, depth + 1)),
-        TypeDef::Array(array) => format!(
-            "[{}; {}]",
-            name(registry, array.type_param.id, depth + 1),
-            array.len
-        ),
-        TypeDef::Tuple(tuple) => format!(
-            "({})",
-            tuple
-                .fields
-                .iter()
-                .map(|field| name(registry, field.id, depth + 1))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        TypeDef::Compact(compact) => format!(
-            "Compact<{}>",
-            name(registry, compact.type_param.id, depth + 1)
-        ),
-        TypeDef::BitSequence(bits) => format!(
-            "BitVec<{}, {}>",
-            name(registry, bits.bit_store_type.id, depth + 1),
-            name(registry, bits.bit_order_type.id, depth + 1)
-        ),
-        other => format!("anon {}", definition(registry, other, depth + 1)),
+        TypeDef::Composite(_) | TypeDef::Variant(_) => {
+            format!("anon {}", definition(registry, &ty.type_def, depth + 1))
+        }
+        _ => definition(registry, &ty.type_def, depth),
     }
 }
 
@@ -119,7 +97,31 @@ fn definition(registry: &PortableRegistry, def: &TypeDef<PortableForm>, depth: u
             })
             .collect::<Vec<_>>()
             .join(" | "),
-        _ => String::new(),
+        TypeDef::Primitive(primitive) => format!("{primitive:?}").to_lowercase(),
+        TypeDef::Sequence(seq) => format!("Vec<{}>", name(registry, seq.type_param.id, depth + 1)),
+        TypeDef::Array(array) => format!(
+            "[{}; {}]",
+            name(registry, array.type_param.id, depth + 1),
+            array.len
+        ),
+        TypeDef::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .fields
+                .iter()
+                .map(|field| name(registry, field.id, depth + 1))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TypeDef::Compact(compact) => format!(
+            "Compact<{}>",
+            name(registry, compact.type_param.id, depth + 1)
+        ),
+        TypeDef::BitSequence(bits) => format!(
+            "BitVec<{}, {}>",
+            name(registry, bits.bit_store_type.id, depth + 1),
+            name(registry, bits.bit_order_type.id, depth + 1)
+        ),
     }
 }
 
@@ -330,6 +332,45 @@ mod tests {
 
     const QUIP: &[u8] = include_bytes!("../../../tests/fixtures/native-2609/quip.scale");
     const TESTNET: &[u8] = include_bytes!("../../../tests/fixtures/native-2609/quip-testnet.scale");
+
+    #[test]
+    fn named_field_changes_are_visible_only_with_types() {
+        let before = decode(QUIP).unwrap();
+        let mut after = before.clone();
+        let ty = after
+            .types
+            .types
+            .iter_mut()
+            .find(|ty| ty.ty.path.segments == ["sp_version", "RuntimeVersion"])
+            .unwrap();
+        let TypeDef::Composite(composite) = &mut ty.ty.type_def else {
+            panic!("RuntimeVersion must be a composite");
+        };
+        composite
+            .fields
+            .iter_mut()
+            .find(|field| field.name.as_deref() == Some("spec_version"))
+            .unwrap()
+            .name = Some("changed_spec_version".into());
+        assert!(diff(&surface(&before, false), &surface(&after, false)).is_empty());
+        let delta = diff(&surface(&before, true), &surface(&after, true));
+        assert_eq!(delta.len(), 2, "{delta:?}");
+        assert!(delta[0].starts_with("- type sp_version::RuntimeVersion := "));
+        assert!(delta[1].starts_with("+ type sp_version::RuntimeVersion := "));
+        assert!(delta[1].contains("changed_spec_version:"));
+
+        // Named non-composite definitions must also have a readable body.
+        let ty = after
+            .types
+            .types
+            .iter_mut()
+            .find(|ty| ty.ty.path.segments == ["sp_version", "RuntimeVersion"])
+            .unwrap();
+        ty.ty.type_def = TypeDef::Primitive(scale_info::TypeDefPrimitive::U32);
+        assert!(surface(&after, true)
+            .iter()
+            .any(|line| line == "type sp_version::RuntimeVersion := u32"));
+    }
 
     #[test]
     fn duplicate_occurrences_are_reported_individually() {

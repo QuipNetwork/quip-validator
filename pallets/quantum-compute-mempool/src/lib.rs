@@ -237,8 +237,7 @@ pub mod pallet {
         #[pallet::constant]
         type DefaultIsingSpecId: Get<Self::Hash>;
 
-        /// Account recorded as the builder when the runtime migration backfills
-        /// the canonical default spec on already-running chains.
+        /// Default builder account for the canonical Ising spec.
         type DefaultJobSpecBuilder: Get<Self::AccountId>;
 
         type ProgramSource: xqvm::ProgramLookup<Self::Hash>;
@@ -271,7 +270,7 @@ pub mod pallet {
         /// Builder account recorded on the canonical default plain Ising spec.
         ///
         /// `None` keeps genesis empty, which is useful for tests that exercise
-        /// registration or migration paths directly.
+        /// registration paths directly.
         pub default_ising_spec_builder: Option<T::AccountId>,
     }
 

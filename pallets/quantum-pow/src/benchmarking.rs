@@ -618,8 +618,7 @@ mod benchmarks {
     fn set_default_topology() {
         let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
         // Ensure the topology is on the mineable whitelist (register_topology
-        // does not seed MineableTopologies; only add_mineable_topology and the
-        // v3 migration do).
+        // does not seed MineableTopologies; add_mineable_topology does).
         MineableTopologies::<T>::insert(topology_hash, ());
         // Clear the first-registration seeding so the call exercises the
         // repointing write, not a no-op.

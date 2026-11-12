@@ -43,7 +43,7 @@ impl frame_system::Config for Test {
     type AccountData = pallet_balances::AccountData<Balance>;
     // TestDefaultConfig sets `DbWeight = ()`, making every read/write cost
     // zero — weight assertions would compare `0 == 0` and pass regardless
-    // of the migration's accounting. Real per-op costs make them meaningful.
+    // of storage accounting. Real per-op costs make them meaningful.
     type DbWeight = frame_support::weights::constants::RocksDbWeight;
 }
 

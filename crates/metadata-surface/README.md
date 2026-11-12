@@ -24,4 +24,8 @@ Unit tests embed both `tests/fixtures/native-2609/*.scale` anchors with
 `include_bytes!`. Replacing or relocating those fixtures rebuilds the tests
 and may require updating their paths or expected network differences.
 
-Based on the metadata-surface patch supplied by reviewer `rigorours`.
+The inputs are the checked-in `tests/fixtures/native-2609/*.scale` captures,
+produced by each runtime's `capture_native_2609_anchor` test. To reproduce a
+review, export the earlier fixture with `git show COMMIT:tests/fixtures/native-2609/quip.scale`
+and compare it with the current fixture using the commands above. See the
+repository README for the explicit capture command and required Wasm checks.
