@@ -1,6 +1,13 @@
 //! Exact native V16 metadata comparison. No normalization or approved deltas.
 use serde_json::Value;
 
+pub const ANCHOR_FILES: [&str; 4] = [
+    "quip.scale",
+    "quip-testnet.scale",
+    "quip-storage.json",
+    "quip-testnet-storage.json",
+];
+
 fn check_pallet_references(metadata: &Value, pallet_name: &str) -> Result<(), String> {
     let pallet = metadata["pallets"]
         .as_array()
@@ -174,7 +181,7 @@ mod tests {
         let manifest: Value =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
                 .unwrap();
-        for name in ["quip.scale", "quip-testnet.scale"] {
+        for name in ANCHOR_FILES {
             let bytes = std::fs::read(directory.join(name)).unwrap();
             check_anchor_pin(&manifest, name, &bytes).unwrap();
             for mutation in ["digest", "size", "entry", "missing_digest", "missing_size"] {

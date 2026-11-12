@@ -138,6 +138,27 @@ fn metadata_at_version_16_returns_v16() {
     );
 }
 
+fn wasm_for_metadata_test(wasm: Option<&[u8]>, in_ci: bool) -> Option<&[u8]> {
+    if wasm.is_none() {
+        assert!(
+            !in_ci,
+            "CI requires a runtime Wasm binary; unset SKIP_WASM_BUILD"
+        );
+        eprintln!("skipping: runtime wasm binary not built (SKIP_WASM_BUILD)");
+    }
+    wasm
+}
+
+#[test]
+fn missing_wasm_is_fatal_in_ci_but_skippable_locally() {
+    assert!(wasm_for_metadata_test(None, false).is_none());
+    assert!(std::panic::catch_unwind(|| wasm_for_metadata_test(None, true)).is_err());
+    assert_eq!(
+        wasm_for_metadata_test(Some(b"wasm"), true),
+        Some(b"wasm".as_slice())
+    );
+}
+
 fn wasm_metadata_bytes(version: Option<u32>) -> Option<Vec<u8>> {
     // Regression pin: `state_getMetadata` is served by the legacy
     // `sp_api::Metadata::metadata()` runtime API implemented in
@@ -148,12 +169,10 @@ fn wasm_metadata_bytes(version: Option<u32>) -> Option<Vec<u8>> {
     // point — the same code path a node takes. Reverting `metadata()` to the
     // old V14 one-liner `OpaqueMetadata::new(Runtime::metadata().into())`
     // makes this test fail.
-    let Some(wasm_binary) = quip_protocol_runtime::WASM_BINARY else {
-        // The wasm blob is only embedded when the runtime was built without
-        // SKIP_WASM_BUILD; CI builds it, local quick iterations may not.
-        eprintln!("skipping: runtime wasm binary not built (SKIP_WASM_BUILD)");
-        return None;
-    };
+    let wasm_binary = wasm_for_metadata_test(
+        quip_protocol_runtime::WASM_BINARY,
+        std::env::var_os("CI").is_some(),
+    )?;
 
     let mut ext =
         sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
@@ -542,6 +561,40 @@ fn native_2609_anchor_path() -> std::path::PathBuf {
 }
 
 #[cfg(not(feature = "runtime-benchmarks"))]
+fn native_2609_storage_path() -> std::path::PathBuf {
+    let spec_name = quip_protocol_runtime::VERSION.spec_name;
+    native_2609_anchor_path().with_file_name(format!("{spec_name}-storage.json"))
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+fn default_genesis_storage_bytes() -> Vec<u8> {
+    let storage = RuntimeGenesisConfig::default().build_storage().unwrap();
+    assert!(
+        storage.children_default.is_empty(),
+        "default genesis gained child storage; extend the anchor format deliberately"
+    );
+    let entries: Vec<_> = storage
+        .top
+        .into_iter()
+        .map(|(key, value)| (hex::encode(key), hex::encode(value)))
+        .collect();
+    let mut bytes = serde_json::to_vec_pretty(&entries).unwrap();
+    bytes.push(b'\n');
+    bytes
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn default_genesis_storage_matches_native_2609_anchor() {
+    let anchor = std::fs::read(native_2609_storage_path())
+        .expect("checked-in default-genesis storage anchor");
+    assert!(
+        default_genesis_storage_bytes() == anchor,
+        "default-genesis key/value storage must reproduce its anchor exactly"
+    );
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
 fn native_2609_metadata() -> RuntimeMetadataV16 {
     let bytes = std::fs::read(native_2609_anchor_path()).expect("checked-in native-2609 anchor");
     decode_metadata_v16(&bytes)
@@ -556,7 +609,7 @@ fn native_2609_manifest_pins_match_anchor_files() {
         &std::fs::read(directory.join("manifest.json")).expect("anchor manifest must exist"),
     )
     .expect("anchor manifest must be valid JSON");
-    for name in ["quip.scale", "quip-testnet.scale"] {
+    for name in metadata_anchor::ANCHOR_FILES {
         let bytes = std::fs::read(directory.join(name))
             .unwrap_or_else(|error| panic!("cannot read anchor {name}: {error}"));
         metadata_anchor::check_anchor_pin(&manifest, name, &bytes).unwrap();
@@ -582,7 +635,7 @@ fn native_2609_anchor_reproduces_exact_bytes() {
 }
 
 // The anchor must describe what the chain actually reports, not only the
-// native build. Local SKIP_WASM_BUILD iterations may skip this; CI builds Wasm.
+// native build. Local SKIP_WASM_BUILD iterations may skip this; CI must have Wasm.
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
 fn wasm_metadata_matches_native_2609_anchor() {
@@ -618,7 +671,30 @@ fn capture_native_2609_anchor() {
     let metadata = serde_json::to_value(decode_metadata_v16(&bytes)).unwrap();
     metadata_anchor::check(&metadata, &metadata)
         .expect("capture must satisfy independent invariants");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, &bytes).unwrap();
-    println!("captured {} bytes at {}", bytes.len(), path.display());
+    let directory = path.parent().unwrap();
+    let manifest_path = directory.join("manifest.json");
+    let mut manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&manifest_path).expect("capture provenance manifest must exist"),
+    )
+    .unwrap();
+    let storage_path = native_2609_storage_path();
+    for (file, contents) in [
+        (&path, bytes),
+        (&storage_path, default_genesis_storage_bytes()),
+    ] {
+        std::fs::write(file, &contents).unwrap();
+        let name = file.file_name().unwrap().to_str().unwrap();
+        manifest["files"][name] = serde_json::json!({
+            "sha256": hex::encode(sp_io::hashing::sha2_256(&contents)),
+            "bytes": contents.len(),
+        });
+        println!(
+            "captured {} bytes at {}; updated manifest pin",
+            contents.len(),
+            file.display()
+        );
+    }
+    let mut manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    manifest_bytes.push(b'\n');
+    std::fs::write(manifest_path, manifest_bytes).unwrap();
 }

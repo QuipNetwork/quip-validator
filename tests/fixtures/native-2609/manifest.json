@@ -1,43 +1,52 @@
 {
-  "base_commit": "626aa69b018c4915870eadce3b30cce420583a90",
-  "port_commit": "053e36c1ee4345f1afd32e605b502231cd9bb5b8",
-  "metadata_version": 16,
-  "capture_kind": "native Runtime::metadata_at_version(16) under default-genesis TestExternalities; Wasm build enabled",
+  "base_commit": "a3915ea7dad36b11b9474884470f0926e69ea0a5",
+  "capture_command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 capture_native_2609_anchor -- --ignored --exact --nocapture",
+  "capture_kind": "Native Runtime::metadata_at_version(16) and complete default-genesis top-level storage; Wasm build enabled",
+  "captured_from": "native",
   "features": [
     "default",
     "std"
   ],
-  "capture_command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 capture_native_2609_anchor -- --ignored --exact --nocapture",
   "files": {
+    "quip-storage.json": {
+      "bytes": 9445,
+      "sha256": "d577130a5cc8090dc2125e7492bc1054afdc79ee8d517fd0b1bd4a528233d6fb"
+    },
+    "quip-testnet-storage.json": {
+      "bytes": 9461,
+      "sha256": "dd2da307c9a6d92ab77cfabb161a596d8bdb535457dcdd0cc497d362105e1e16"
+    },
     "quip-testnet.scale": {
-      "sha256": "766079662360f727ade1aae5e35b1eea9b0819cf747ae3b85abbe0bb0e6fe94b",
-      "bytes": 288332
+      "bytes": 288332,
+      "sha256": "766079662360f727ade1aae5e35b1eea9b0819cf747ae3b85abbe0bb0e6fe94b"
     },
     "quip.scale": {
-      "sha256": "8a207a4295c8fe493c83c3d2d12746196ea1868e36f07d3f4881b424004d26b0",
-      "bytes": 288335
+      "bytes": 288335,
+      "sha256": "8a207a4295c8fe493c83c3d2d12746196ea1868e36f07d3f4881b424004d26b0"
     }
   },
-  "captured_from": "native",
+  "metadata_version": 16,
   "native_wasm_metadata_equal": true,
+  "port_commit": "053e36c1ee4345f1afd32e605b502231cd9bb5b8",
+  "provenance": {
+    "cargo_lock_sha256": "80cd901956b21d8aa1d8fadef3bc55c0a80af727e9bc096e3e22d6a17912ca50",
+    "enforced": false,
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n"
+  },
+  "storage_format": "Sorted [hex key, hex value] pairs from RuntimeGenesisConfig::default().build_storage().top, no excluded keys; child storage must be empty",
   "wasm_verification": {
-    "runtime_source_commit": "6739203dae34ca7ef91f240ddc82b38fbe6040e5",
+    "SKIP_WASM_BUILD": "unset",
     "build_profile": "test (embedded Wasm from substrate-wasm-builder)",
+    "command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16",
     "features": [
       "default",
       "std"
     ],
-    "SKIP_WASM_BUILD": "unset",
-    "command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16",
-    "timing": "Post-capture verification against the unchanged checked-in native anchor bytes",
     "runtime_apis": [
       "Metadata_metadata",
       "Metadata_metadata_at_version(16)"
-    ]
-  },
-  "provenance": {
-    "enforced": false,
-    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
-    "cargo_lock_sha256": "80cd901956b21d8aa1d8fadef3bc55c0a80af727e9bc096e3e22d6a17912ca50"
+    ],
+    "runtime_source_commit": "a3915ea7dad36b11b9474884470f0926e69ea0a5",
+    "timing": "Post-capture verification against the unchanged checked-in native anchor bytes"
   }
 }

@@ -258,16 +258,31 @@ env -u SKIP_WASM_BUILD cargo test --locked \
   capture_native_2609_anchor -- --ignored --exact --nocapture
 ```
 
-This explicit capture overwrites the two SCALE files; update the manifest's
-provenance, hashes and sizes when deliberately accepting a new baseline.
+This explicit capture overwrites each runtime's SCALE metadata and sorted
+`*-storage.json` default-genesis key/value fixture, and writes their SHA-256
+hashes and byte sizes into the manifest. Update capture provenance deliberately
+when accepting a new baseline. Normal tests rebuild default-genesis storage
+and require exact equality, with no omitted top-level keys; unexpected child
+storage fails until the capture format is deliberately extended.
 Normal tests only read the anchors and verify byte-for-byte reproduction from
 both native metadata and the Wasm `Metadata_metadata` and
 `Metadata_metadata_at_version(16)` APIs. Before accepting a
 new capture, run `wasm_metadata_matches_native_2609_anchor` in both runtimes
 with `SKIP_WASM_BUILD` unset and record that result in the manifest.
-The manifest test checks both anchor SHA-256 digests and byte sizes and fails
+The manifest test checks all four anchor SHA-256 digests and byte sizes and fails
 on missing files or pins. The compiler and lockfile hash under `provenance`
 are historical capture information only; they are not machine-enforced.
+If `CI` is set, missing Wasm is a test failure; local builds may soft-skip it.
+
+The stable2609 port renumbers `MultiBlockElectionSigned` events rather than
+appending them: `Slashed`, `Ejected`, `Discarded`, and `Bailed` move from indices
+3–6 to 6–9. Decoders and indexers using pre-port runtime-120 metadata, including
+the published `v0.4.1` 120/7 blob, must refresh their metadata. Revive's
+`DeletionQueue` value changes from `BoundedVec<u8>` to
+`DeletionQueueItem { trie_id, account_id }`. This storage-layout change is safe
+only because runtime 120 launches from fresh genesis; this port is not an
+in-place upgrade for an existing runtime-120 chain.
+
 The pre-vesting evidence (captured from `ba20b1e`, checked in by `b483bfb`)
 remains in git history at
 [`b483bfb:tests/fixtures/pre-vesting/manifest.json`](https://gitlab.com/quip.network/quip-validator/-/blob/b483bfb1f8fb58e0be86f72c73bdf8119de63329/tests/fixtures/pre-vesting/manifest.json).
