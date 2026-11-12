@@ -94,3 +94,72 @@ fn fixture_rejects_mismatched_account_as_bad_proof() {
         );
     });
 }
+
+#[test]
+fn ethereum_wrappers_reject_nonzero_versions_but_preserve_signed_payloads() {
+    use codec::{Compact, Encode};
+    use frame_support::traits::fungible::Mutate;
+    use quip_protocol_runtime::{Balances, Executive};
+    use sp_runtime::transaction_validity::TransactionSource;
+
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/ethereum-envelopes.json")).unwrap();
+    let cases = fixture["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 3, "legacy, EIP-2930 and EIP-1559 samples");
+    for case in cases {
+        let captured = hex::decode(case["extrinsic_hex"].as_str().unwrap()).unwrap();
+        let mut body = captured.as_slice();
+        let Compact(length) = Compact::<u32>::decode(&mut body).unwrap();
+        assert_eq!(length as usize, body.len());
+        // Captured V5 general/version 1, followed by the four zero bytes of
+        // the old extension tuple. The remainder is the unchanged eth_transact.
+        assert_eq!(&body[..6], &[0x45, 1, 0, 0, 0, 0]);
+
+        let version_offset = compact_prefix_len(&captured) + 1;
+        for version in [1, 255] {
+            let mut bytes = captured.clone();
+            bytes[version_offset] = version;
+            let error = UncheckedExtrinsic::decode(&mut bytes.as_slice())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("Invalid extension version"), "{error}");
+        }
+
+        // Rewrap captured bytes only: never generate or re-sign the inner tx.
+        let mut bare = vec![0x05];
+        bare.extend_from_slice(&body[6..]);
+        let mut v0 = body.to_vec();
+        v0[1] = 0;
+        for wrapper in [bare, v0] {
+            let mut bytes = Compact(u32::try_from(wrapper.len()).unwrap()).encode();
+            bytes.extend(wrapper);
+            let mut input = bytes.as_slice();
+            let extrinsic = UncheckedExtrinsic::decode(&mut input).unwrap();
+            assert!(input.is_empty());
+            assert_eq!(extrinsic.0.function.encode(), body[6..]);
+
+            let mut ext = sp_io::TestExternalities::new(
+                RuntimeGenesisConfig::default().build_storage().unwrap(),
+            );
+            ext.execute_with(|| {
+                System::set_block_number(1);
+                // Fund the captured fixture's signer without signing anything.
+                let account = pallet_revive::evm::Account::from_secret_key([7; 32]);
+                Balances::set_balance(
+                    &account.substrate_account(),
+                    1_000_000_000_000_000_000_000_000,
+                );
+                extrinsic
+                    .clone()
+                    .check(&frame_system::ChainContext::<Runtime>::default())
+                    .expect("same signed Ethereum payload checks in bare/V0 form");
+                Executive::validate_transaction(
+                    TransactionSource::External,
+                    extrinsic,
+                    Default::default(),
+                )
+                .expect("same signed Ethereum payload validates in bare/V0 form");
+            });
+        }
+    }
+}

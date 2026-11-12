@@ -405,6 +405,9 @@ pub struct EthExtraImpl;
 impl EthExtra for EthExtraImpl {
     type Config = Runtime;
     type ExtensionV0 = TxExtension;
+    // The 2609 SDK rejects nonzero extension versions during decode. This is
+    // deliberately fail-closed: Ethereum clients must use a bare/V0 wrapper,
+    // carrying the same signed inner transaction without re-signing it.
     type ExtensionOtherVersions = sp_runtime::traits::InvalidVersion;
 
     fn get_eth_extension(nonce: u32, tip: Balance) -> Self::ExtensionV0 {

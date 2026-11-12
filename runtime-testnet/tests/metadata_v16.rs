@@ -214,6 +214,45 @@ fn legacy_metadata_runtime_api_publishes_v16() {
 }
 
 #[test]
+fn native_embedded_and_wasm_core_versions_agree() {
+    let Some(wasm_binary) = wasm_for_metadata_test(
+        quip_testnet_runtime::WASM_BINARY,
+        std::env::var_os("CI").is_some(),
+    ) else {
+        return;
+    };
+    let blob = sc_executor_common::runtime_blob::RuntimeBlob::uncompress_if_needed(wasm_binary)
+        .expect("runtime wasm blob is valid");
+    let embedded = sc_executor::read_embedded_version(&blob)
+        .expect("embedded version decodes")
+        .expect("runtime wasm must embed a version");
+    let executor = sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build();
+    let mut ext =
+        sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+    // Execute the actual export: reading the executor's cached version would
+    // merely trust the embedded section and miss a disagreement with the code.
+    let encoded = executor
+        .uncached_call(blob, &mut ext.ext(), false, "Core_version", &[])
+        .expect("Wasm Core_version succeeds");
+    let mut input = encoded.as_slice();
+    let actual = sp_version::RuntimeVersion::decode(&mut input)
+        .expect("Core_version returns RuntimeVersion");
+    assert!(input.is_empty(), "Core_version returned trailing bytes");
+
+    // The embedded API section may order entries differently. Preserve every
+    // entry (including duplicates) and compare all other version fields as-is.
+    let normalize = |mut version: sp_version::RuntimeVersion| {
+        let mut apis = version.apis.to_vec();
+        apis.sort();
+        version.apis = apis.into();
+        version
+    };
+    let native = normalize(quip_testnet_runtime::VERSION);
+    assert_eq!(native, normalize(embedded), "native vs embedded version");
+    assert_eq!(native, normalize(actual), "native vs Wasm Core_version");
+}
+
+#[test]
 fn v16_extrinsic_section_advertises_v4_and_v5() {
     let v16 = metadata_v16();
     let extrinsic = &v16.extrinsic;

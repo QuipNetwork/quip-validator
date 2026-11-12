@@ -287,6 +287,17 @@ the published `v0.4.1` 120/7 blob, must refresh their metadata. Revive's
 only because runtime 120 launches from fresh genesis; this port is not an
 in-place upgrade for an existing runtime-120 chain.
 
+`RuntimeFreezeReason::Revive` at index 14 raises `Balances::MaxFreezes` from
+0 to 1. With Revive configured with `Deposit = ()`, that freeze is never applied.
+
+The port also deliberately rejects nonzero transaction-extension versions
+during SCALE extrinsic decoding. Clients that wrapped `eth_transact` in a
+V5 general envelope with a nonzero extension version must send a bare V5 or
+general V5/version-0 wrapper instead. Only the outer wrapper changes: the
+signed Ethereum payload is unchanged and does not need to be re-signed.
+This applies to legacy/EIP-155, EIP-2930 and EIP-1559 transactions; Ethereum
+transaction type numbers are separate from outer extension versions.
+
 The pre-vesting evidence (captured from `ba20b1e`, checked in by `b483bfb`)
 remains in git history at
 [`b483bfb:tests/fixtures/pre-vesting/manifest.json`](https://gitlab.com/quip.network/quip-validator/-/blob/b483bfb1f8fb58e0be86f72c73bdf8119de63329/tests/fixtures/pre-vesting/manifest.json).
