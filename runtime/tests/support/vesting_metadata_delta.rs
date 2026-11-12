@@ -1,7 +1,7 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
-//! enumerated regenerated-weight values, exact mempool VM delta, and retirement
-//! of pallet index 7 below.
+//! enumerated regenerated-weight values, exact mempool VM delta, exact
+//! quantum-pow family delta, and retirement of pallet index 7 below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -81,19 +81,30 @@ fn check_pallet_references(metadata: &Value, pallet_name: &str) -> Result<(), St
 const MEMPOOL: &str = "QuantumComputeMempool";
 
 fn error_variants(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    pallet_enum_variants(metadata, MEMPOOL, "error")
+}
+
+/// The variants of a pallet's `calls`, `event`, or `error` enum, found through
+/// the pallet entry so a stale outer clone cannot stand in for them.
+fn pallet_enum_variants<'a>(
+    metadata: &'a mut Value,
+    pallet_name: &str,
+    kind: &str,
+) -> Result<&'a mut Vec<Value>, String> {
     let id = metadata["pallets"]
         .as_array()
-        .and_then(|pallets| pallets.iter().find(|p| p["name"] == MEMPOOL))
-        .and_then(|pallet| pallet["error"]["ty"].as_u64())
-        .ok_or("missing mempool error type")?;
-    let id = usize::try_from(id).map_err(|_| "mempool error id does not fit usize")?;
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == pallet_name))
+        .and_then(|pallet| pallet[kind]["ty"].as_u64())
+        .ok_or_else(|| format!("missing {pallet_name} {kind} type"))?;
+    let id =
+        usize::try_from(id).map_err(|_| format!("{pallet_name} {kind} id does not fit usize"))?;
     metadata
         .get_mut("types")
         .and_then(|types| types.get_mut("types"))
         .and_then(|types| types.get_mut(id))
         .and_then(|ty| ty.pointer_mut("/type/def/variant/variants"))
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| "missing mempool error variants".into())
+        .ok_or_else(|| format!("missing {pallet_name} {kind} variants"))
 }
 
 // Required M1/QUI-2158 documentation addition; every existing call doc stays
@@ -334,6 +345,388 @@ fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String
     Ok(())
 }
 
+// Exact pallet-quantum-pow family delta (QUI-2044) against the immutable
+// pre-Vesting captures: the trailing `family` argument of `register_topology`,
+// the `set_topology_energy_band` call at index 11, the `TopologyEnergyBandSet`
+// event appended at index 12, six errors appended at 27..=32, the
+// `TopologyEnergyBand` storage map, the `family` field of `TopologyMeta` and
+// `MiningSnapshot`, and `QuantumPowApi` version 3 with its docs. Each piece is
+// removed from the candidate only after an exact match, so every existing
+// field still undergoes the graph comparison, and `check` walks the removed
+// pieces so their types are accounted for. Type references are compared by
+// identity with existing references, never by registry number.
+const QUANTUM_POW: &str = "QuantumPow";
+const TOPOLOGY_META: &[&str] = &["pallet_quantum_pow", "types", "TopologyMeta"];
+const MINING_SNAPSHOT: &[&str] = &["pallet_quantum_pow", "types", "MiningSnapshot"];
+const QUANTUM_POW_API_V3_DOCS: &[&str] = &[
+    "",
+    " Version 3 adds the `family` field to `MiningSnapshot` and",
+    " `TopologyMeta`, so their encodings differ from version 2.",
+];
+
+/// `value` with every portable type reference replaced by `null`, so an exact
+/// shape comparison does not depend on registry numbering.
+fn without_type_ids(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    let masked =
+                        if matches!(key.as_str(), "type" | "key" | "value") && value.is_u64() {
+                            Value::Null
+                        } else {
+                            without_type_ids(value)
+                        };
+                    (key.clone(), masked)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(without_type_ids).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The fields of the one composite type at `path` in the registry.
+fn composite_fields<'a>(
+    metadata: &'a mut Value,
+    path: &[&str],
+) -> Result<&'a mut Vec<Value>, String> {
+    let name = path.join("::");
+    let registry = metadata
+        .get_mut("types")
+        .and_then(|types| types.get_mut("types"))
+        .and_then(Value::as_array_mut)
+        .ok_or("missing registry")?;
+    let matches: Vec<usize> = registry
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            entry["type"]["path"].as_array().is_some_and(|p| {
+                p.iter()
+                    .map(Value::as_str)
+                    .eq(path.iter().map(|s| Some(*s)))
+            })
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let [index] = matches[..] else {
+        return Err(format!("type {name} must appear exactly once"));
+    };
+    registry[index]
+        .pointer_mut("/type/def/composite/fields")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("type {name} is not a composite"))
+}
+
+fn variant_fields<'a>(variants: &'a mut [Value], name: &str) -> Result<&'a mut Vec<Value>, String> {
+    variants
+        .iter_mut()
+        .find(|variant| variant["name"] == name)
+        .and_then(|variant| variant["fields"].as_array_mut())
+        .ok_or_else(|| format!("missing {name} fields"))
+}
+
+fn storage_entries<'a>(
+    metadata: &'a mut Value,
+    pallet_name: &str,
+) -> Result<&'a mut Vec<Value>, String> {
+    metadata["pallets"]
+        .as_array_mut()
+        .and_then(|pallets| pallets.iter_mut().find(|p| p["name"] == pallet_name))
+        .and_then(|pallet| pallet["storage"]["entries"].as_array_mut())
+        .ok_or_else(|| format!("missing {pallet_name} storage entries"))
+}
+
+fn runtime_api<'a>(metadata: &'a mut Value, name: &str) -> Result<&'a mut Value, String> {
+    metadata["apis"]
+        .as_array_mut()
+        .and_then(|apis| apis.iter_mut().find(|api| api["name"] == name))
+        .ok_or_else(|| format!("missing runtime api {name}"))
+}
+
+/// Remove the one `family` field added to a composite of `baseline_len`
+/// fields. It must reference the same `Option<FamilyDescriptor>` type as
+/// `family_type`. The remaining fields then undergo the graph comparison, so
+/// the position of the addition is checked there.
+fn take_family_field(
+    fields: &mut Vec<Value>,
+    baseline_len: usize,
+    family_type: u64,
+    context: &str,
+) -> Result<Value, String> {
+    let expected = serde_json::json!({
+        "name": "family",
+        "type": family_type,
+        "typeName": "Option<FamilyDescriptor>"
+    });
+    let position = fields
+        .iter()
+        .position(|field| field["name"] == "family")
+        .filter(|&position| fields.len() == baseline_len + 1 && fields[position] == expected)
+        .ok_or_else(|| format!("unexpected required {context} family field delta"))?;
+    Ok(fields.remove(position))
+}
+
+fn normalize_quantum_pow(before: &mut Value, after: &mut Value) -> Result<Vec<Value>, String> {
+    let mut pieces = Vec::new();
+
+    // Calls: the trailing `family` argument and the new call at index 11.
+    let baseline_calls = pallet_enum_variants(before, QUANTUM_POW, "calls")?;
+    if baseline_calls.len() != 11
+        || baseline_calls
+            .iter()
+            .any(|call| call["name"] == "set_topology_energy_band")
+        || variant_fields(baseline_calls, "register_topology")?.len() != 5
+    {
+        return Err("unexpected baseline QuantumPow calls".into());
+    }
+    let calls = pallet_enum_variants(after, QUANTUM_POW, "calls")?;
+    let fields = variant_fields(calls, "register_topology")?;
+    let expected = serde_json::json!({
+        "name": "family",
+        "type": null,
+        "typeName": "Option<types::FamilyDescriptor>"
+    });
+    if fields.len() != 6 || without_type_ids(&fields[5]) != expected || !fields[5]["type"].is_u64()
+    {
+        return Err("unexpected required register_topology family argument delta".into());
+    }
+    let family_type = fields[5]["type"].as_u64().ok_or("family argument type")?;
+    pieces.push(fields.remove(5));
+    // Identity of the new call's references: `topology_hash` is the H256 of
+    // the existing `set_topology_curve`, `band` is the storage value below.
+    let topology_hash_type = variant_fields(calls, "set_topology_curve")?[0]["type"].clone();
+    let expected = serde_json::json!({
+        "name": "set_topology_energy_band",
+        "fields": [
+            {"name": "topology_hash", "type": topology_hash_type, "typeName": "H256"},
+            {"name": "band", "type": null, "typeName": "crate::difficulty::EnergyBand"}
+        ],
+        "index": 11,
+        "docs": [
+            "Set (or replace) the energy band of a family topology (root only).",
+            "",
+            "The difficulty controller eases and hardens within this band at",
+            "the module's fixed rates; `set_difficulty` sets the starting",
+            "point. The band must be ordered, `hard_milli < easy_milli`. A",
+            "legacy topology is refused: its curve comes from `expected_gse`",
+            "and `set_topology_curve`."
+        ]
+    });
+    // Variants follow declaration order, not call index, so find it by name.
+    let position = calls
+        .iter()
+        .position(|call| call["name"] == "set_topology_energy_band")
+        .ok_or("unexpected required QuantumPow call delta")?;
+    let mut masked = without_type_ids(&calls[position]);
+    masked["fields"][0]["type"] = calls[position]["fields"][0]["type"].clone();
+    if calls.len() != 12 || masked != expected || !calls[position]["fields"][1]["type"].is_u64() {
+        return Err("unexpected required QuantumPow call delta".into());
+    }
+    let band_type = calls[position]["fields"][1]["type"]
+        .as_u64()
+        .ok_or("band type")?;
+    pieces.push(calls.remove(position));
+
+    // Events: one appended variant.
+    if pallet_enum_variants(before, QUANTUM_POW, "event")?.len() != 12 {
+        return Err("unexpected baseline QuantumPow events".into());
+    }
+    let events = pallet_enum_variants(after, QUANTUM_POW, "event")?;
+    let expected = serde_json::json!({
+        "name": "TopologyEnergyBandSet",
+        "fields": [{"name": "topology_hash", "type": topology_hash_type, "typeName": "H256"}],
+        "index": 12,
+        "docs": [
+            "Root set the energy band a family topology's difficulty",
+            "controller runs on. Appended last so the earlier event indices",
+            "stay as the pre-family metadata recorded them."
+        ]
+    });
+    if events.len() != 13 || events[12] != expected {
+        return Err("unexpected required QuantumPow event delta".into());
+    }
+    pieces.push(events.remove(12));
+
+    // Errors: six appended variants.
+    if pallet_enum_variants(before, QUANTUM_POW, "error")?.len() != 27 {
+        return Err("unexpected baseline QuantumPow errors".into());
+    }
+    let expected = serde_json::json!([
+        {
+            "name": "FamilyRejected",
+            "index": 27,
+            "docs": [
+                "Admission refused the family descriptor or the topology: the",
+                "family is not in `PowFamilies`, the parameters are malformed or",
+                "out of bounds, or the topology does not fit the family."
+            ]
+        },
+        {
+            "name": "FamilySpinSetRequired",
+            "index": 28,
+            "docs": [
+                "A family topology must register the two-value spin set, because",
+                "every family is a `±1` model."
+            ]
+        },
+        {
+            "name": "InvalidEnergyBand",
+            "index": 29,
+            "docs": ["The energy band is not ordered (`hard_milli < easy_milli`)."]
+        },
+        {
+            "name": "EnergyBandMissing",
+            "index": 30,
+            "docs": [
+                "A family topology cannot become mineable before root sets its",
+                "energy band; the difficulty controller has no curve without one."
+            ]
+        },
+        {
+            "name": "FamilyNonceSkipped",
+            "index": 31,
+            "docs": [
+                "The nonce gives no instance for this family (code 13 or 14); the",
+                "miner must try another salt."
+            ]
+        },
+        {
+            "name": "FamilyWitnessInvalid",
+            "index": 32,
+            "docs": [
+                "A witness has the wrong length, a spin outside `±1`, breaks a hard",
+                "constraint of the family, or its energy overflows."
+            ]
+        }
+    ]);
+    let errors = pallet_enum_variants(after, QUANTUM_POW, "error")?;
+    if errors.get(27..) != expected.as_array().map(Vec::as_slice) {
+        return Err("unexpected required QuantumPow error delta".into());
+    }
+    errors.truncate(27);
+
+    // Storage: the `TopologyEnergyBand` map, keyed like `TopologyCurveC` and
+    // valued with the call's `EnergyBand`.
+    let baseline_entries = storage_entries(before, QUANTUM_POW)?;
+    if baseline_entries.len() != 16
+        || baseline_entries
+            .iter()
+            .any(|entry| entry["name"] == "TopologyEnergyBand")
+    {
+        return Err("unexpected baseline QuantumPow storage".into());
+    }
+    let entries = storage_entries(after, QUANTUM_POW)?;
+    let key_type = entries
+        .iter()
+        .find(|entry| entry["name"] == "TopologyCurveC")
+        .map(|entry| entry["ty"]["Map"]["key"].clone())
+        .ok_or("missing TopologyCurveC storage entry")?;
+    let expected = serde_json::json!({
+        "name": "TopologyEnergyBand",
+        "modifier": "Optional",
+        "ty": {"Map": {"hashers": ["Blake2_128Concat"], "key": key_type, "value": band_type}},
+        "default": [0],
+        "docs": [
+            " Root-set energy band of a family topology, set via",
+            " `set_topology_energy_band`. `energy_curve_for` runs the controller on",
+            " this band because a family's coefficients do not follow the",
+            " `expected_gse` model. A family topology cannot become mineable",
+            " without one."
+        ],
+        "deprecation_info": "NotDeprecated"
+    });
+    let position = entries
+        .iter()
+        .position(|entry| entry["name"] == "TopologyEnergyBand")
+        .ok_or("unexpected required QuantumPow storage delta")?;
+    if entries.len() != 17 || entries[position] != expected {
+        return Err("unexpected required QuantumPow storage delta".into());
+    }
+    pieces.push(entries.remove(position));
+
+    // Named types: `family` appended to `TopologyMeta` and `MiningSnapshot`.
+    for (path, context) in [
+        (TOPOLOGY_META, "TopologyMeta"),
+        (MINING_SNAPSHOT, "MiningSnapshot"),
+    ] {
+        let baseline = composite_fields(before, path)?;
+        if baseline.iter().any(|field| field["name"] == "family") {
+            return Err(format!("unexpected baseline {context} family field"));
+        }
+        let baseline_len = baseline.len();
+        let fields = composite_fields(after, path)?;
+        pieces.push(take_family_field(
+            fields,
+            baseline_len,
+            family_type,
+            context,
+        )?);
+    }
+
+    // Runtime API: version 3 and its documentation.
+    let baseline = runtime_api(before, "QuantumPowApi")?;
+    let baseline_docs = baseline["docs"]
+        .as_array()
+        .ok_or("invalid baseline QuantumPowApi docs")?
+        .clone();
+    if baseline["version"] != 2
+        || baseline_docs
+            .iter()
+            .any(|line| line == QUANTUM_POW_API_V3_DOCS[1])
+    {
+        return Err("unexpected baseline QuantumPowApi".into());
+    }
+    let mut expected_docs = baseline_docs.clone();
+    expected_docs.extend(QUANTUM_POW_API_V3_DOCS.iter().copied().map(Value::from));
+    let api = runtime_api(after, "QuantumPowApi")?;
+    if api["version"] != 3 || api["docs"] != Value::Array(expected_docs) {
+        return Err("unexpected required QuantumPowApi version delta".into());
+    }
+    api["version"] = serde_json::json!(2);
+    api["docs"] = Value::Array(baseline_docs);
+
+    // `System.Version` encodes `RuntimeVersion`, whose `apis` list carries the
+    // 8-byte id and the version of every runtime API. Exactly the
+    // `QuantumPowApi` version moves from 2 to 3; every other byte is equal.
+    let bytes = |value: &Value| -> Result<Vec<u8>, String> {
+        value
+            .as_array()
+            .ok_or("System.Version is not a byte array")?
+            .iter()
+            .map(|byte| {
+                byte.as_u64()
+                    .and_then(|byte| u8::try_from(byte).ok())
+                    .ok_or_else(|| "System.Version byte out of range".to_string())
+            })
+            .collect()
+    };
+    let baseline_version = constant_value(before, "System", "Version")?.clone();
+    let baseline_bytes = bytes(&baseline_version)?;
+    let api_id = sp_core::hashing::blake2_64(b"QuantumPowApi");
+    let positions: Vec<usize> = baseline_bytes
+        .windows(api_id.len())
+        .enumerate()
+        .filter(|(_, window)| *window == api_id)
+        .map(|(position, _)| position + api_id.len())
+        .collect();
+    let [version_at] = positions[..] else {
+        return Err("QuantumPowApi must appear exactly once in the baseline System.Version".into());
+    };
+    if baseline_bytes.get(version_at..version_at + 4) != Some(&2u32.to_le_bytes()[..]) {
+        return Err("unexpected baseline QuantumPowApi runtime version".into());
+    }
+    let mut expected_bytes = baseline_bytes;
+    expected_bytes[version_at..version_at + 4].copy_from_slice(&3u32.to_le_bytes());
+    let candidate_version = constant_value(after, "System", "Version")?;
+    if bytes(candidate_version)? != expected_bytes {
+        return Err("unexpected required QuantumPowApi runtime version delta".into());
+    }
+    *candidate_version = baseline_version;
+    Ok(pieces)
+}
+
 struct Comparison {
     before: Vec<Value>,
     after: Vec<Value>,
@@ -502,7 +895,7 @@ fn normalize_retired_pallet(before: &mut Value, after: &Value) -> Result<BTreeSe
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
-    for pallet in [MEMPOOL, "Xqvm"] {
+    for pallet in [MEMPOOL, "Xqvm", QUANTUM_POW] {
         check_pallet_references(before, pallet).map_err(|error| format!("baseline: {error}"))?;
         check_pallet_references(after, pallet).map_err(|error| format!("candidate: {error}"))?;
     }
@@ -520,6 +913,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
         }
     }
     normalize_mempool(&mut left, &mut right)?;
+    let family_pieces = normalize_quantum_pow(&mut left, &mut right)?;
     let retired_types = normalize_retired_pallet(&mut left, &right)?;
     let before_types = left["types"]["types"]
         .as_array()
@@ -618,6 +1012,11 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
         seen: BTreeSet::new(),
     };
     addition.value(&vesting, &vesting, "approved Vesting reachability")?;
+    // The family pieces removed by normalize_quantum_pow reference the new
+    // descriptor and band types. Walk them the same way.
+    for piece in &family_pieces {
+        addition.value(piece, piece, "approved family reachability")?;
+    }
     let covered_candidate: BTreeSet<_> = comparison
         .seen
         .iter()
@@ -950,6 +1349,115 @@ mod tests {
             constants.remove(constants.len() - 3 + index);
             assert!(check(&before, &wrong).is_err());
         }
+    }
+
+    #[test]
+    fn requires_exact_quantum_pow_family_delta() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut wrong = after.clone();
+        pallet_enum_variants(&mut wrong, QUANTUM_POW, "calls")
+            .unwrap()
+            .retain(|call| call["name"] != "set_topology_energy_band");
+        assert_eq!(
+            check(&before, &wrong),
+            Err("unexpected required QuantumPow call delta".into())
+        );
+        let mut wrong = after.clone();
+        variant_fields(
+            pallet_enum_variants(&mut wrong, QUANTUM_POW, "calls").unwrap(),
+            "register_topology",
+        )
+        .unwrap()
+        .pop();
+        assert_eq!(
+            check(&before, &wrong),
+            Err("unexpected required register_topology family argument delta".into())
+        );
+        let mut wrong = after.clone();
+        pallet_enum_variants(&mut wrong, QUANTUM_POW, "event")
+            .unwrap()
+            .pop();
+        assert_eq!(
+            check(&before, &wrong),
+            Err("unexpected required QuantumPow event delta".into())
+        );
+        for index in 27..33 {
+            let mut wrong = after.clone();
+            pallet_enum_variants(&mut wrong, QUANTUM_POW, "error").unwrap()[index]["docs"] =
+                serde_json::json!(["mutated"]);
+            assert_eq!(
+                check(&before, &wrong),
+                Err("unexpected required QuantumPow error delta".into()),
+                "accepted mutated error {index}"
+            );
+        }
+        let mut wrong = after.clone();
+        storage_entries(&mut wrong, QUANTUM_POW)
+            .unwrap()
+            .retain(|entry| entry["name"] != "TopologyEnergyBand");
+        assert_eq!(
+            check(&before, &wrong),
+            Err("unexpected required QuantumPow storage delta".into())
+        );
+        for (path, context) in [
+            (TOPOLOGY_META, "TopologyMeta"),
+            (MINING_SNAPSHOT, "MiningSnapshot"),
+        ] {
+            let mut wrong = after.clone();
+            composite_fields(&mut wrong, path)
+                .unwrap()
+                .retain(|field| field["name"] != "family");
+            assert_eq!(
+                check(&before, &wrong),
+                Err(format!("unexpected required {context} family field delta"))
+            );
+        }
+        let mut wrong = after.clone();
+        runtime_api(&mut wrong, "QuantumPowApi").unwrap()["version"] = serde_json::json!(2);
+        assert_eq!(
+            check(&before, &wrong),
+            Err("unexpected required QuantumPowApi version delta".into())
+        );
+        let mut wrong = after.clone();
+        *constant_value(&mut wrong, "System", "Version").unwrap() =
+            constant_value(&mut before.clone(), "System", "Version")
+                .unwrap()
+                .clone();
+        assert_eq!(
+            check(&before, &wrong),
+            Err("unexpected required QuantumPowApi runtime version delta".into())
+        );
+        // The baseline must not already carry any piece of the delta.
+        let mut wrong = before.clone();
+        *constant_value(&mut wrong, "System", "Version").unwrap() =
+            constant_value(&mut after.clone(), "System", "Version")
+                .unwrap()
+                .clone();
+        assert_eq!(
+            check(&wrong, &after),
+            Err("unexpected baseline QuantumPowApi runtime version".into())
+        );
+        let mut wrong = before.clone();
+        let added = pallet_enum_variants(&mut after.clone(), QUANTUM_POW, "calls")
+            .unwrap()
+            .iter()
+            .find(|call| call["name"] == "set_topology_energy_band")
+            .unwrap()
+            .clone();
+        pallet_enum_variants(&mut wrong, QUANTUM_POW, "calls")
+            .unwrap()
+            .push(added);
+        assert_eq!(
+            check(&wrong, &after),
+            Err("unexpected baseline QuantumPow calls".into())
+        );
+        let mut wrong = before.clone();
+        runtime_api(&mut wrong, "QuantumPowApi").unwrap()["version"] = serde_json::json!(3);
+        assert_eq!(
+            check(&wrong, &after),
+            Err("unexpected baseline QuantumPowApi".into())
+        );
     }
 
     fn reverse_registry(mut metadata: Value) -> Value {

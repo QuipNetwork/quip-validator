@@ -7,6 +7,7 @@
 //! The public API is organized by concern:
 //!
 //! - [`energy`] for exact Ising energy computation
+//! - [`families`] for canonical family regeneration and witness checks
 //! - [`diversity`] for symmetric Hamming distance and diversity scoring
 //! - [`ising`] for deterministic nonce derivation and model generation
 //! - [`validation`] for spin and solution-set validation
@@ -30,6 +31,7 @@ extern crate alloc;
 pub mod diversity;
 pub mod energy;
 pub mod errors;
+pub mod families;
 pub mod fixed;
 pub mod ising;
 pub mod packed;

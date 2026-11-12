@@ -1,0 +1,130 @@
+{
+ "_about": [
+  "Generated from quantum-validation 0.3.1 in quip-validator at commit 2ca50ee on 2026-09-23.",
+  "Pins lease salts, nonces, and BLAKE3 hashes of little-endian milli field and coupling draws.",
+  "Generator source is described in docs/coordinator-upgrade-v2.md (Task 12)."
+ ],
+ "cases": [
+  {
+   "allowed_h_milli": [
+    -1000,
+    0,
+    1000
+   ],
+   "allowed_j_milli": [
+    -1000,
+    1000
+   ],
+   "base_salt": "0000000000000000333333333333333333333333333333333333333333333333",
+   "last_proof_block_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+   "miner_account": "2222222222222222222222222222222222222222222222222222222222222222",
+   "n_edges": 12,
+   "n_nodes": 8,
+   "name": "small",
+   "salt_count": 4,
+   "salt_start": "5",
+   "salts": [
+    {
+     "h_blake3": "4467e8b942fcf00e309178f4d5f6a86280c3d06b8d728260ecb3ef6ff11add0f",
+     "j_blake3": "ab8b4d8e4d3a8aaf3c837057b5f5768cc500c23bab3afa0e3666f7c7c19dc9c9",
+     "nonce": "f0e3ae9a44bc0fad366f72552eade4d81ff343e79aba6744480a8aca061ebdd5",
+     "salt": "0500000000000000333333333333333333333333333333333333333333333333"
+    },
+    {
+     "h_blake3": "369e8ca1e18954865cbff2ef7bf40643e73d4232e9c0fb2490a0e92b15b49072",
+     "j_blake3": "11476dfc757d93eb9252993f62fb8b9f2a1ff4a60046ba1001588bdae59e2e1f",
+     "nonce": "c859a7aecf125a88c46377b8e818b4953656699ee8851962e44a065baae799c0",
+     "salt": "0600000000000000333333333333333333333333333333333333333333333333"
+    },
+    {
+     "h_blake3": "1715a20f8770ac7f21515b6cb451582f0d80e29331f3490283e4070c81a85ea4",
+     "j_blake3": "ef63f5e9933c6a591af1860340b518019a9d01ac2edf5f050a04b6a58feee8c4",
+     "nonce": "8cf62329d6f6f2ecc9315d7a4d94c9a06fdc794e0ed86d8cef6aff9172ca13b0",
+     "salt": "0700000000000000333333333333333333333333333333333333333333333333"
+    },
+    {
+     "h_blake3": "0b8506a4b74ebdad8b061a27b3b2489d059c56e60498b0ea8af4683221fa26f5",
+     "j_blake3": "89e2f4ab5c1ca19bf6f91652ea1e3676d3af6ec2a1b49c72fe82938b781529f2",
+     "nonce": "0dd308565789824399e447abdc76b8b4a094ba1614d9a60718c3c96de4bbde17",
+     "salt": "0800000000000000333333333333333333333333333333333333333333333333"
+    }
+   ]
+  },
+  {
+   "allowed_h_milli": [
+    -1000,
+    0,
+    1000
+   ],
+   "allowed_j_milli": [
+    -1000,
+    1000
+   ],
+   "base_salt": "0000000000000000000000000000000000000000000000000000000000000000",
+   "last_proof_block_hash": "abababababababababababababababababababababababababababababababab",
+   "miner_account": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "n_edges": 41515,
+   "n_nodes": 4577,
+   "name": "advantage2_counts",
+   "salt_count": 3,
+   "salt_start": "0",
+   "salts": [
+    {
+     "h_blake3": "071551da8110522f04ce069b0eda3f99722e3cd82facca43df3526e85356ac4d",
+     "j_blake3": "bfcb7fee3a02c06944a98df2df1a97b87f921438b8c6c82152054ec39fdf0b6e",
+     "nonce": "9670b30e45e614cf41cd81416ba48f87d4cd44cc978712e2ed3017a939cc00ad",
+     "salt": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+     "h_blake3": "4862767d74b6fd6f4a2a5870df7100a160304ff0b3de570bb846c6e438fd239f",
+     "j_blake3": "de6b94fd0f3b66f703373271f0c48e6ceee9aaab9c7bc203c979eeef061def75",
+     "nonce": "e7ae77fcf5aa29b2bedee47672f1353a18c55ca4a5bd8ef301bac1259e00212f",
+     "salt": "0100000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+     "h_blake3": "82c59eb2088c6b9ef31598aa6ca1aa897e33debb1e4afc2aa8b7b5712e4d5702",
+     "j_blake3": "48ebf73ee6db8e6de9cfc835f8f99b49ac8b77865da6bc44ec1f28e3c1d315bf",
+     "nonce": "8b8eb8778997bcca914270009c7efde764fc84c817e7273f584a723361f2eb10",
+     "salt": "0200000000000000000000000000000000000000000000000000000000000000"
+    }
+   ]
+  },
+  {
+   "allowed_h_milli": [
+    -2000,
+    -500,
+    0,
+    500,
+    2000
+   ],
+   "allowed_j_milli": [
+    -1500,
+    -1000,
+    1000,
+    1500
+   ],
+   "base_salt": "00000000000000007f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+   "last_proof_block_hash": "0101010101010101010101010101010101010101010101010101010101010101",
+   "miner_account": "0202020202020202020202020202020202020202020202020202020202020202",
+   "n_edges": 40,
+   "n_nodes": 16,
+   "name": "wide_allowed_near_counter_limit",
+   "salt_count": 2,
+   "salt_start": "18446744073709551613",
+   "salts": [
+    {
+     "h_blake3": "dd47e960539858b300d3fede1d50b4022cc3b7ce566cd145f8c339a10fa1ff77",
+     "j_blake3": "f59a8e50499fcd332623782cc99b2fc437a37b58ceda9f23c33b7bb242b00caa",
+     "nonce": "391e16142e2c8bf857dbb5d117a3ef1b8038a7409358f3aa838c1876004f9267",
+     "salt": "fdffffffffffffff7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f"
+    },
+    {
+     "h_blake3": "6e2a096c5148a915962241da6a8f322574b5bcd4234cd83caffe700395206807",
+     "j_blake3": "03c241d59c5f4cec770965f95343ccbd1ab6de0031f3ec4ac0f67aabf67ec2ef",
+     "nonce": "fb206f03b992ea3d0ff408b3e95c092d77ae79cbdd2313d288d68cec1b0d64ec",
+     "salt": "feffffffffffffff7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f"
+    }
+   ]
+  }
+ ]
+}

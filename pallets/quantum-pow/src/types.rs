@@ -1,5 +1,6 @@
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
-use quantum_validation::AllowedValueSpec;
+use frame_support::{traits::ConstU32, BoundedVec};
+use quantum_validation::{families::MAX_PARAMS_LEN, AllowedValueSpec};
 use scale_info::TypeInfo;
 use sp_core::{H256, U256};
 
@@ -88,8 +89,32 @@ pub struct TopologyMeta<Nodes, Edges, AllowedValues, BlockNumber> {
     /// variant also implies the bit-width used to encode each spin in the
     /// `QuantumProof::solutions` payload.
     pub allowed_spin_values: AllowedValueSpec<AllowedValues>,
+    /// The canonical generator that draws `h` and `j` for this topology.
+    /// `None` keeps the legacy draw from the allowed value sets.
+    pub family: Option<FamilyDescriptor>,
     pub registered_at: BlockNumber,
 }
+
+/// A family revision and its canonical parameter bytes.
+///
+/// Root fixes the descriptor at registration, and it is part of the
+/// topology hash. A proof names only the topology hash, so no miner input
+/// selects or alters a descriptor.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct FamilyDescriptor {
+    /// The family id, between 3 and 64 bytes, as the generator crate defines it.
+    pub family_id: BoundedVec<u8, ConstU32<MAX_FAMILY_ID_LEN>>,
+    pub revision: u32,
+    /// The canonical parameter encoding, at most `MAX_PARAMS_LEN` bytes.
+    pub params: BoundedVec<u8, ConstU32<{ MAX_PARAMS_LEN as u32 }>>,
+}
+
+/// The longest family id the generator crate admits. The crate keeps this
+/// bound private. Admission still checks the id length, so a tighter crate
+/// bound surfaces as `FamilyRejected` at registration.
+pub const MAX_FAMILY_ID_LEN: u32 = 64;
 
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
@@ -171,6 +196,9 @@ pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
     pub allowed_h_values: AllowedValueSpec<AllowedValues>,
     pub allowed_j_values: AllowedValueSpec<AllowedValues>,
     pub allowed_spin_values: AllowedValueSpec<AllowedValues>,
+    /// The family descriptor of the topology, when the chain draws `h` and
+    /// `j` through the canonical generator instead of the value sets above.
+    pub family: Option<FamilyDescriptor>,
 }
 
 /// Persisted record of a qblock — a chain block won by a quantum PoW proof
