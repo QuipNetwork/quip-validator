@@ -66,6 +66,14 @@ include:
     ref: v1.2.0
     file: templates/dependency-gate.yml
 
+# The template puts dependency-report in .post, which waits for every other
+# job in the pipeline. It reads only the lockfiles, so it runs in the test
+# stage from the start. The template's rules (never on release tags) and
+# allow_failure still apply.
+dependency-report:
+  stage: test
+  needs: []
+
 stages:
   # The images this repo runs its own jobs on are built here, ahead of every
   # stage that consumes them. Both stages are empty and skipped unless a CI
@@ -192,7 +200,8 @@ workflow:
 # Single test job: pulls the toolchain image once, and runs fmt → clippy →
 # test → runtime release build sequentially so they share compile artifacts
 # and registry state. The toolchain image already has clang/protoc/cmake +
-# the wasm32v1-none target.
+# the wasm32v1-none target. The debug node comes from node-build, which runs
+# alongside this job.
 cargo-test:
   extends: .cargo-host-cache
   stage: test
@@ -204,13 +213,45 @@ cargo-test:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
+    - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+
+# Builds the debug node and the browser Wasm bindings once per pipeline.
+# browser-signer-test and xqvm-onchain-test start when this job finishes and
+# run against its artifacts. Each of those suites used to build its own node,
+# which put a duplicate node build on the same runner at the same time
+# (measured on !75: 49 minutes each, and a node too starved to open its RPC).
+#
+# The live-spec smoke runs here because this job holds the binary. The
+# crypto crates' doc-tests run here because they reuse this job's dev-profile
+# build, and cargo-test's `--lib --bins --tests` does not select them.
+#
+# The node is stripped into the checkout: artifacts must sit under
+# $CI_PROJECT_DIR, and the cached executable in CARGO_TARGET_DIR stays
+# untouched for the next incremental build. Stripping keeps the embedded
+# runtime Wasm, which is a data section.
+node-build:
+  extends: [.cargo-host-cache, .image-tools]
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 60m
+  variables:
+    IMAGE_TOOLS: strip wasm-pack
+  script:
     - cargo build -p quip-network-node
     - python3 scripts/smoke-live-testnet-spec.py "$CARGO_TARGET_DIR/debug/quip-network-node" --log-dir live-testnet-smoke-logs
-    - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+    - mkdir -p target/ci-node
+    - strip --strip-all -o target/ci-node/quip-network-node "$CARGO_TARGET_DIR/debug/quip-network-node"
+    - cargo test --doc -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
+    - make wasm-signer
   artifacts:
     when: always
+    expire_in: 1 day
     paths:
       - live-testnet-smoke-logs/
+      - target/ci-node/quip-network-node
+      - js/quip-transaction-crypto-wasm/quip_transaction_crypto_wasm*
 
 # Pin the existing public network independently of current runtime builds.
 live-testnet-spec:
@@ -232,20 +273,6 @@ runtime-parity:
     - bash scripts/check-runtime-parity.sh
     - bash scripts/test-runtime-parity.sh
 
-# Node-level suites that need a running chain and the PQ signer. Kept separate
-# from cargo-test because they additionally install Node and the pinned
-# wasm-pack release, build browser bindings, and exercise the actual
-# Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
-#
-# Both suites run here rather than in a job each. They need byte-identical
-# setup -- the same image, the same apt packages, the same wasm-signer, the
-# same debug node -- and splitting them meant building that twice per
-# pipeline, concurrently, on one runner. Measured on !75: 20 minutes of apt
-# and 49 minutes of `cargo build -p quip-network-node`, duplicated, while the
-# xqvm suite's own work was 70 seconds. The duplicate job also pushed the
-# pipeline to four heavy jobs, and the node then could not open its RPC
-# inside the readiness window because it was competing with the very builds
-# that existed to produce it.
 # Jobs name the baked tools they depend on in IMAGE_TOOLS and run this check
 # before anything else. It fails closed on purpose. A runner with
 # pull_policy=if-not-present keeps whatever ci-toolchain:latest it pulled first,
@@ -264,13 +291,21 @@ runtime-parity:
         fi
       done
 
+# Exercises the Polkadot.js Signer interfaces from js/quip-signer against a dev
+# node: a browser-signed extrinsic with the current spec_version,
+# transaction_version and signed extensions must be accepted. The node and
+# the Wasm bindings come from node-build. cargo-test runs the crypto crates'
+# unit tests and the signing_fixture test.
 browser-signer-test:
-  extends: .cargo-host-cache
+  extends: .image-tools
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
-  timeout: 90m
+  timeout: 15m
+  needs:
+    - job: node-build
+      artifacts: true
   # npm state is small and still tars cheaply, so it stays on the GitLab cache.
   cache:
     - key:
@@ -282,26 +317,44 @@ browser-signer-test:
         - .npm/
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
-    IMAGE_TOOLS: wasm-pack
-  # nodejs, npm, wasm-pack and the wasm32-unknown-unknown target are baked into
-  # the toolchain image (.gitlab/ci-toolchain.Dockerfile). `make wasm-signer`
-  # checks the wasm-pack version against the Makefile pin.
-  before_script:
-    - !reference [.image-tools, before_script]
-    - wasm-pack --version
-  # cargo-test runs the unit and integration tests of these crates and the
-  # signing_fixture test (`--workspace --lib --bins --tests`). Only the
-  # doc-tests, which cargo-test does not select, run here.
+    QUIP_NODE_BINARY: $CI_PROJECT_DIR/target/ci-node/quip-network-node
+    IMAGE_TOOLS: node npm
+  # npm test's pretest builds dist/, which the integration script loads.
   script:
-    - cargo test --doc -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
-    - cargo check -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown
-    - make wasm-signer
     - npm ci --prefix js/quip-signer
     - npm run typecheck --prefix js/quip-signer
     - npm test --prefix js/quip-signer
-    - npm run build --prefix js/quip-signer
-    - cargo build -p quip-network-node
     - bash scripts/test-browser-signer-integration.sh
+
+# Replays the XQuad conformance vectors and the budget guards on a dev node.
+# This tests XQVM execution, not signing, so it has its own job and runs
+# alongside browser-signer-test on node-build's artifacts. It keeps the cargo
+# cache because the script builds the XQuad assembler.
+xqvm-onchain-test:
+  extends: [.cargo-host-cache, .image-tools]
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 30m
+  needs:
+    - job: node-build
+      artifacts: true
+  cache:
+    - key:
+        prefix: browser-signer-tools
+        files:
+          - js/quip-signer/package-lock.json
+      policy: pull
+      paths:
+        - .npm/
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+    QUIP_NODE_BINARY: $CI_PROJECT_DIR/target/ci-node/quip-network-node
+    IMAGE_TOOLS: node npm git
+  script:
+    - npm ci --prefix js/quip-signer
+    - npm run build --prefix js/quip-signer
     - bash scripts/test-xqvm-onchain.sh
 
 # pallet-revive's runtime benchmarks compile both Solidity/EVM and

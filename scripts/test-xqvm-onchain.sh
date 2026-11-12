@@ -14,13 +14,14 @@ set -euo pipefail
 # the assertions track the toolchain instead of drifting from a copy. Set
 # XQUAD_DIR to reuse an existing checkout instead of cloning.
 #
-# Prerequisites (the CI job installs these; see .gitlab-ci.yml):
+# Prerequisites for a local run:
 #   make wasm-signer
 #   npm ci --prefix js/quip-signer && npm run build --prefix js/quip-signer
 #   cargo build -p quip-network-node
 #
-# In CI this runs inside browser-signer-test, which already performs all of
-# the above for its own suite; see .gitlab-ci.yml for why they share a job.
+# In CI, xqvm-onchain-test takes the node and the Wasm bindings from
+# node-build's artifacts and builds the signer wrapper with npm; see
+# .gitlab-ci.yml.
 
 # CI sets CARGO_TARGET_DIR to a host volume outside the project dir, so the
 # node is resolved through it, the same way test-browser-signer-integration.sh
