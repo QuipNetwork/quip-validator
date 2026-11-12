@@ -1078,10 +1078,10 @@ release:smoke-pypi-arm64:
 # Apple Silicon shell runner. One job does both because, unlike the Linux pair,
 # the build host can import both wheels: arm64 natively and x86_64 under
 # Rosetta. A shell runner ignores `image:`, so this job cannot use the
-# toolchain image and is the one PyPI job that installs its own tools (rustup
-# and uv, each only if the runner lacks it). It takes rustc and maturin at the
-# versions .gitlab/ci-toolchain.Dockerfile pins, so every platform builds with
-# the same toolchain. The x86_64 smoke needs Rosetta; on a runner without it
+# toolchain image and is the one PyPI job that installs its own tools (rustup,
+# uv and CPython, each once, under a CI-only directory in the runner's home).
+# It takes rustc and maturin at the versions .gitlab/ci-toolchain.Dockerfile
+# pins, so every platform builds with the same toolchain. The x86_64 smoke needs Rosetta; on a runner without it
 # the job warns and passes, and that wheel is tested by hand before the
 # release that first ships it. Runs on release tags under the same gate as the
 # rest of the chain, and on merge requests that change the binding or this
@@ -1109,13 +1109,21 @@ release:build-pypi-macos:
     - pin() { sed -n "s/^ARG $1=//p" .gitlab/ci-toolchain.Dockerfile; }
     - export RUSTUP_TOOLCHAIN="$(pin RUST_VERSION)" MATURIN_VERSION="$(pin MATURIN_VERSION)"
     - test -n "$RUSTUP_TOOLCHAIN" && test -n "$MATURIN_VERSION"
-    # The global CARGO_HOME points into the clone; rustup must live in the
-    # runner's home so it installs once and its bin/ is the one on PATH.
-    - export CARGO_HOME="$HOME/.cargo"
-    - export PATH="$CARGO_HOME/bin:$HOME/.local/bin:$PATH"
-    - command -v rustup || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
-    - command -v uv || curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
-    - rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin x86_64-apple-darwin
+    # Every tool this job installs lives under one CI-only directory in the
+    # runner user's home, never in that user's own ~/.cargo, ~/.rustup or uv
+    # dirs: the runner can be someone's workstation. It persists across runs, so
+    # each install happens once. The global CARGO_HOME (clone-local) is
+    # overridden so rustup's bin/ is the one put on PATH.
+    - export CI_TOOLS="$HOME/.cache/quip-validator-ci"
+    - export RUSTUP_HOME="$CI_TOOLS/rustup" CARGO_HOME="$CI_TOOLS/cargo"
+    - export UV_INSTALL_DIR="$CI_TOOLS/bin" UV_PYTHON_INSTALL_DIR="$CI_TOOLS/python" UV_PYTHON_BIN_DIR="$CI_TOOLS/bin" UV_CACHE_DIR="$CI_TOOLS/uv-cache"
+    # The uv installer writes its receipt to XDG_CONFIG_HOME, and Apple's python3
+    # caches bytecode under ~/Library; keep both out of the user's dirs too.
+    - export XDG_CONFIG_HOME="$CI_TOOLS/config" PYTHONDONTWRITEBYTECODE=1
+    - export PATH="$CARGO_HOME/bin:$UV_INSTALL_DIR:$PATH"
+    - test -x "$CARGO_HOME/bin/rustup" || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+    - test -x "$UV_INSTALL_DIR/uv" || curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+    - rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
     - uv venv --clear "$CI_PROJECT_DIR/.pyrelease"
     - uv pip install --python "$CI_PROJECT_DIR/.pyrelease/bin/python" "maturin==$MATURIN_VERSION"
     - export PATH="$CI_PROJECT_DIR/.pyrelease/bin:$PATH"
