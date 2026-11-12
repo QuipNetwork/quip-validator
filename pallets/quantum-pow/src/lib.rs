@@ -240,10 +240,9 @@ pub mod pallet {
         type CurveCHardMilli: Get<u32>;
 
         /// The family revisions that `register_topology` admits for proof of
-        /// work. Every revision in the generator crate has registry status
-        /// `research`, and research families never mine, so both runtimes
-        /// leave this empty. Promoting a family is a runtime upgrade that
-        /// adds its contract here; that upgrade is the activation gate.
+        /// work. A contract absent from this list cannot be registered, so
+        /// changing it is a runtime upgrade. Root still chooses which
+        /// registered topology is mineable.
         type PowFamilies: Get<&'static [Contract]>;
 
         type WeightInfo: WeightInfo;

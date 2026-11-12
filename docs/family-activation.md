@@ -1,21 +1,21 @@
 # Family activation gate
 
-No family is mineable on a Quip runtime today. Both runtime crates set the
-family allowlist, `Config::PowFamilies`, to an empty slice. A family topology
-registers only when its contract is on that list, so the gate opens with a
-runtime upgrade and with nothing else.
+Runtime 120 lists every canonical family in the family allowlist,
+`Config::PowFamilies`, in both runtime crates. Root can register a topology
+for any of the eight families. A registered family topology becomes mineable
+only after the Root sequence in step 5 of the activation steps.
 
-This page records what the gate is, the steps that open it, the verifier
-costs that were measured before any activation, and how old and new software
+This page records what the gate is, the steps that make a family topology
+mineable, the verifier costs that were measured, and how old and new software
 behave across the boundary.
 
 ## Status
 
 | Horizon | Item | Confidence |
 |---------|------|------------|
-| Now | Gate closed. The allowlist is empty on `quip` and `quip-testnet`. | Committed |
+| Now | The allowlist holds all eight families on `quip` and `quip-testnet`. | Committed |
 | Now | The runtime charges family proofs by weight class, with reference-machine measurements. | Committed |
-| Now | The square-class charge exceeds the normal-class block budget, so no square proof fits in a block. | Committed |
+| Now | Every class fits the normal-class per-extrinsic limit. The square class carries a smaller margin to fit. | Committed |
 | Next | A nonce sweep on the reference machine narrows the variance margin. | Directional |
 | Later | A side-aware weight for the square-lattice families. | Exploratory, not committed |
 | Later | Compact per-family witness codecs in the generator crate. | Exploratory, not committed |
@@ -41,10 +41,9 @@ select or change a descriptor.
    can produce is bounded by this step, so the verifier never regenerates
    beyond the configured limits.
 
-The allowlist is the only gate. The benchmark build of the runtime lists every
-canonical family so the benchmarks can run their fixtures. A release blob
-never enables `runtime-benchmarks`, and the `on-chain-release-build` feature
-does not include it.
+The allowlist decides which families Root can register. The mineable
+whitelist decides which registered topology miners can mine. The benchmark
+build and the release build use the same list.
 
 ## Activation steps
 
@@ -58,17 +57,17 @@ decision with a link to the review.
 2. **Measured verifier limits.** The family maps to a weight class in
    `FamilyWeightClass`, and the `benchmark-weights` job has run on the
    reference machine with that class fixture. A family outside the three
-   classes needs a class and a fixture first. Compare the measured weight
-   with the normal-class block budget of 1.5 seconds and record how many
+   classes needs a class and a fixture first. The charge must stay under the
+   normal-class per-extrinsic limit of about 1.30 seconds. Record how many
    proofs fit in a block.
 3. **Matching consumer releases.** Miners and coordinators that serve the
    family read runtime API version 3 and handle the `family` field of
    the mining snapshot. See the compatibility matrix below.
-4. **Runtime upgrade.** List the contract in `QuantumPowFamilies` in both
-   runtime crates, keep the two trees in parity, bump `spec_version` only
-   if the running specification has shipped, and regenerate the signing fixture if
-   the transaction version changes.
-5. **Root sequence after the upgrade.** Each call checks the one before it.
+4. **Allowlist.** The contract is in `QuantumPowFamilies` in both runtime
+   crates. Runtime 120 lists all eight families. A new family or revision
+   needs a runtime upgrade that lists it in both trees. Bump `spec_version`
+   only if the running specification has shipped.
+5. **Root sequence.** Each call checks the one before it.
 
    | Step | Call | Check |
    |------|------|-------|
@@ -152,9 +151,11 @@ with the instance it draws. Across 24 nonces, under concurrent load:
 | routing, divisor 16, z(10,5) | 137 ms | 288 ms | 2.1 |
 | polariton, L=24, 121 pairs, z(24,1), skipped nonces | 121 ms | 179 ms | 1.5 |
 
-The weight wrapper scales every family weight by a margin of 150% to cover
-nonces the benchmark did not draw. The constant and its calibration
-note live in `pallets/quantum-pow/src/weights.rs`.
+The weight wrapper scales the ice and routing weights by a margin of 150% to
+cover nonces the benchmark did not draw. The square class carries 40%,
+because 150% would put its charge over the per-extrinsic limit. The square
+benchmark already measures the costliest path, a skipped nonce. The constants
+and their calibration notes live in `pallets/quantum-pow/src/weights.rs`.
 
 ### Weight model
 
@@ -177,17 +178,21 @@ The values in `benchmark_weights.rs` come from the `benchmark-weights` job on
 the reference machine. The margin applies to the whole weight. The charges
 with the margin applied are in this table.
 
-| Class | Measured weight | Charge with margin |
-|-------|-----------------|--------------------|
-| Ice | 61.5 ms + 0.19 ms per solution | 0.16 to 0.17 seconds |
-| Routing | 119 ms + 0.07 ms per solution | about 0.30 seconds |
-| Square | 902 ms | about 2.26 seconds |
+| Class | Measured weight | Margin | Charge with margin |
+|-------|-----------------|-------:|--------------------|
+| Ice | 61.5 ms + 0.19 ms per solution | 150% | 0.16 to 0.17 seconds |
+| Routing | 119 ms + 0.07 ms per solution | 150% | about 0.30 seconds |
+| Square | 902 ms | 40% | about 1.26 seconds |
 
-The normal-class block budget is 1.5 seconds. That budget holds about eight
-ice proofs or four routing proofs. A square proof does not fit, so no miner can
-mine a square family until the square charge falls below the budget.
+The normal-class block budget is 1.5 seconds. One extrinsic can use about
+1.30 seconds of it, after the on-initialize reserve and the extrinsic base
+weight. The budget holds about eight ice proofs, four routing proofs, or one
+square proof. The runtime test
+`every_allowed_family_proof_fits_the_normal_extrinsic_limit` fails if an
+allowed family charges more than the per-extrinsic limit.
 A square-lattice family with a small side pays the large-side weight until a
-side-aware weight exists.
+side-aware weight exists. A square nonce that costs more than 1.4 times the
+benchmark runs over its charge. The native spread was 1.5 times the mean.
 
 ### Rejection order
 
