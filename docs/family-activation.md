@@ -14,8 +14,8 @@ behave across the boundary.
 | Horizon | Item | Confidence |
 |---------|------|------------|
 | Now | Gate closed. The allowlist is empty on `quip` and `quip-testnet`. | Committed |
-| Now | Family proofs are charged by weight class with provisional values. | Committed |
-| Next | The `benchmark-weights` job replaces the provisional values with reference-machine measurements. | Directional |
+| Now | The runtime charges family proofs by weight class, with reference-machine measurements. | Committed |
+| Now | The square-class charge exceeds the normal-class block budget, so no square proof fits in a block. | Committed |
 | Next | A nonce sweep on the reference machine narrows the variance margin. | Directional |
 | Later | A side-aware weight for the square-lattice families. | Exploratory, not committed |
 | Later | Compact per-family witness codecs in the generator crate. | Exploratory, not committed |
@@ -173,12 +173,19 @@ is benchmarked at the largest lattice those bounds admit.
 `register_topology` with a descriptor adds `register_family_topology`, the
 admission cost of the routing fixture, to the legacy registration weight.
 
-The values in `benchmark_weights.rs` are provisional. They take the preceding
-native numbers times three for Wasm. With the margin applied, the charge for
-an ice proof is about 0.3 seconds and for a routing proof about 1 second. A
-square proof is charged about 10 seconds. The normal-class block budget is
-1.5 seconds, so with the provisional values at most one routing proof fits in
-a block and no square proof fits. The reference measurement decides the real figures.
+The values in `benchmark_weights.rs` come from the `benchmark-weights` job on
+the reference machine. The margin applies to the whole weight. The charges
+with the margin applied are in this table.
+
+| Class | Measured weight | Charge with margin |
+|-------|-----------------|--------------------|
+| Ice | 61.5 ms + 0.19 ms per solution | 0.16 to 0.17 seconds |
+| Routing | 119 ms + 0.07 ms per solution | about 0.30 seconds |
+| Square | 902 ms | about 2.26 seconds |
+
+The normal-class block budget is 1.5 seconds. That budget holds about eight
+ice proofs or four routing proofs. A square proof does not fit, so no miner can
+mine a square family until the square charge falls below the budget.
 A square-lattice family with a small side pays the large-side weight until a
 side-aware weight exists.
 
