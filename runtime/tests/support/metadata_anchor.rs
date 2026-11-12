@@ -135,10 +135,80 @@ pub fn check(anchor: &Value, candidate: &Value) -> Result<(), String> {
     compare(anchor, candidate, "metadata")
 }
 
+// Only the anchor's size and digest are enforced. Compiler and lockfile
+// information describe the capture environment, not the current checkout.
+pub fn check_anchor_pin(manifest: &Value, name: &str, bytes: &[u8]) -> Result<(), String> {
+    let entry = manifest["files"]
+        .get(name)
+        .ok_or_else(|| format!("manifest: missing files.{name}"))?;
+    let size = entry["bytes"]
+        .as_u64()
+        .ok_or_else(|| format!("manifest: missing or invalid files.{name}.bytes"))?;
+    if size != bytes.len() as u64 {
+        return Err(format!(
+            "{name}: byte size mismatch: manifest {size}, file {}",
+            bytes.len()
+        ));
+    }
+    let expected = entry["sha256"]
+        .as_str()
+        .ok_or_else(|| format!("manifest: missing or invalid files.{name}.sha256"))?;
+    let actual = hex::encode(sp_io::hashing::sha2_256(bytes));
+    if expected != actual {
+        return Err(format!(
+            "{name}: sha256 mismatch: manifest {expected}, file {actual}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rejects_wrong_or_missing_anchor_pins_but_ignores_provenance() {
+        let path = super::super::native_2609_anchor_path();
+        let directory = path.parent().unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
+                .unwrap();
+        for name in ["quip.scale", "quip-testnet.scale"] {
+            let bytes = std::fs::read(directory.join(name)).unwrap();
+            check_anchor_pin(&manifest, name, &bytes).unwrap();
+            for mutation in ["digest", "size", "entry", "missing_digest", "missing_size"] {
+                let mut wrong = manifest.clone();
+                match mutation {
+                    "digest" => wrong["files"][name]["sha256"] = json!("00".repeat(32)),
+                    "size" => wrong["files"][name]["bytes"] = json!(bytes.len() + 1),
+                    "entry" => {
+                        wrong["files"].as_object_mut().unwrap().remove(name);
+                    }
+                    "missing_digest" => {
+                        wrong["files"][name]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("sha256");
+                    }
+                    "missing_size" => {
+                        wrong["files"][name]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("bytes");
+                    }
+                    _ => unreachable!(),
+                }
+                let error = check_anchor_pin(&wrong, name, &bytes).expect_err("bad pin must fail");
+                assert!(error.contains(name), "{error}");
+                eprintln!("{mutation} rejected: {error}");
+            }
+            let mut provenance = manifest.clone();
+            provenance["provenance"]["rustc"] = json!("different compiler");
+            provenance["provenance"]["cargo_lock_sha256"] = json!("different lockfile");
+            check_anchor_pin(&provenance, name, &bytes).unwrap();
+        }
+    }
 
     fn metadata_pair() -> (Value, Value) {
         let anchor = serde_json::to_value(super::super::native_2609_metadata()).unwrap();
