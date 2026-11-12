@@ -278,10 +278,9 @@ smoke_dists() {
 
 # --- publish: OIDC mint + twine upload -------------------------------------
 # Release-set guard. Publish is the one place the Linux and macOS dist/
-# artefacts sit together, so this is where a missing or stray file is caught:
-# --skip-existing makes uploads idempotent, which also means a version that
-# went up without a platform can never gain it later under the same number.
-# Each pattern must match exactly one file, and nothing else may be present.
+# artefacts sit together, so this is where an incomplete or mixed set is caught
+# before anything is uploaded. Each pattern must match exactly one file, nothing
+# else may be present, and all five must be the same quip-signer version.
 check_release_set() {
 	local patterns=(
 		"*-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
@@ -306,6 +305,20 @@ check_release_set() {
 		ls -1 "${DIST}" >&2
 		exit 1
 	fi
+	# The sdist names the release (quip_signer-<version>.tar.gz); every wheel must
+	# carry the same name and version, so a stale artefact can't ride along.
+	local sdist release f
+	sdist="$(compgen -G "${DIST}/*.tar.gz")"
+	release="${sdist##*/}"
+	release="${release%.tar.gz}"
+	for f in "${files[@]}"; do
+		if [[ "${release}" != quip_signer-* ]] ||
+			[[ "${f##*/}" != "${release}.tar.gz" && "${f##*/}" != "${release}-cp39-abi3-"* ]]; then
+			echo "ERROR: ${f##*/} is not part of release ${release}; every file must be the same quip-signer version." >&2
+			ls -1 "${DIST}" >&2
+			exit 1
+		fi
+	done
 }
 
 publish_dists() {

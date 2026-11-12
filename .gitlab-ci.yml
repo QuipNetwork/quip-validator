@@ -1109,7 +1109,10 @@ release:build-pypi-macos:
     - pin() { sed -n "s/^ARG $1=//p" .gitlab/ci-toolchain.Dockerfile; }
     - export RUSTUP_TOOLCHAIN="$(pin RUST_VERSION)" MATURIN_VERSION="$(pin MATURIN_VERSION)"
     - test -n "$RUSTUP_TOOLCHAIN" && test -n "$MATURIN_VERSION"
-    - export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+    # The global CARGO_HOME points into the clone; rustup must live in the
+    # runner's home so it installs once and its bin/ is the one on PATH.
+    - export CARGO_HOME="$HOME/.cargo"
+    - export PATH="$CARGO_HOME/bin:$HOME/.local/bin:$PATH"
     - command -v rustup || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
     - command -v uv || curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
     - rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin x86_64-apple-darwin
