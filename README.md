@@ -274,6 +274,10 @@ on missing files or pins. The compiler and lockfile hash under `provenance`
 are historical capture information only; they are not machine-enforced.
 If `CI` is set, missing Wasm is a test failure; local builds may soft-skip it.
 
+Attach `cargo run -p metadata-surface -- OLD.scale NEW.scale` output to the
+re-anchor MR; add `--types` before the paths to expose named type layouts
+(see [tool usage and limitations](crates/metadata-surface/README.md)).
+
 The stable2609 port renumbers `MultiBlockElectionSigned` events rather than
 appending them: `Slashed`, `Ejected`, `Discarded`, and `Bailed` move from indices
 3–6 to 6–9. Decoders and indexers using pre-port runtime-120 metadata, including

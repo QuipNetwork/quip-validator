@@ -6749,6 +6749,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "metadata-surface"
+version = "0.4.1"
+dependencies = [
+ "frame-metadata",
+ "hex",
+ "parity-scale-codec",
+ "scale-info",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -8,6 +8,7 @@ version = "0.4.1"
 
 [workspace]
 members = [
+  "crates/metadata-surface",
   "crates/quantum-validation",
   "crates/transaction-crypto-core",
   "crates/transaction-crypto-wasm",
