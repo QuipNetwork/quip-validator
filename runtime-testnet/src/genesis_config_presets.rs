@@ -1757,7 +1757,9 @@ mod tests {
             Some(&mainnet_allocation::custody_placeholder())
         );
         assert_eq!(
-            hex_encode(&sp_io::hashing::blake2_256(&accounts[..12].to_vec().encode())),
+            hex_encode(&sp_io::hashing::blake2_256(
+                &accounts[..12].to_vec().encode()
+            )),
             "b6e46344fd96bb4deee3a025c407e7a9d502b8c40ad962a535ceb0160c2d9da2"
         );
         assert_eq!(MAINNET_VALIDATOR_FLOAT, Some(10 * crate::UNIT));

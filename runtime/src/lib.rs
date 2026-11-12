@@ -21,7 +21,6 @@ use sp_runtime::{
     traits::{BlakeTwo256, IdentifyAccount, Verify},
     MultiAddress,
 };
-#[cfg(feature = "std")]
 use sp_version::RuntimeVersion;
 
 pub use frame_system::Call as SystemCall;
