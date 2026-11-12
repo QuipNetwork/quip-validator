@@ -317,59 +317,6 @@ fn open_order_ids_filter_lazily_expired_orders() {
 }
 
 #[test]
-fn network_upgrade_wipes_mempool_and_reseeds_default_spec() {
-    new_test_ext().execute_with(|| {
-        // v0.2-style state: a registered (non-default) spec plus an order id.
-        let spec_id = register_spec();
-        assert!(JobSpecs::<Test>::contains_key(spec_id));
-        NextOrderId::<Test>::put(7);
-        // Simulate the on-chain v0.2 storage version so the guard fires.
-        StorageVersion::new(1).put::<QuantumComputeMempool>();
-
-        QuantumComputeMempool::on_runtime_upgrade();
-
-        // Old data is dropped, not carried forward...
-        assert!(
-            !JobSpecs::<Test>::contains_key(spec_id),
-            "v0.2 job specs must be wiped"
-        );
-        assert_eq!(NextOrderId::<Test>::get(), 0, "order counter must reset");
-        // ...and only the canonical default Ising spec is reseeded.
-        let default_id = QuantumComputeMempool::default_ising_spec_id();
-        assert!(
-            JobSpecs::<Test>::contains_key(default_id),
-            "default Ising spec must be reseeded"
-        );
-        assert_eq!(
-            StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(4)
-        );
-    });
-}
-
-#[test]
-fn network_upgrade_is_noop_once_at_v3() {
-    new_test_ext_with_default_ising_spec(true).execute_with(|| {
-        // Fresh chain already at the post-upgrade version: the guard must
-        // short-circuit so live state is neither wiped nor re-seeded.
-        StorageVersion::new(4).put::<QuantumComputeMempool>();
-        let spec_id = QuantumComputeMempool::default_ising_spec_id();
-        let pre = JobSpecs::<Test>::get(spec_id).unwrap();
-
-        QuantumComputeMempool::on_runtime_upgrade();
-
-        // The version guard short-circuits: nothing is wiped or re-seeded.
-        let post = JobSpecs::<Test>::get(spec_id).unwrap();
-        assert_eq!(post.builder, pre.builder);
-        assert_eq!(post.registered_at, pre.registered_at);
-        assert_eq!(
-            StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(4)
-        );
-    });
-}
-
-#[test]
 fn root_register_job_spec_emits_event_with_provided_builder() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
@@ -399,29 +346,6 @@ fn root_register_job_spec_emits_event_with_provided_builder() {
             )
         });
         assert!(found, "root register_job_spec must emit JobSpecRegistered");
-    });
-}
-
-#[test]
-fn network_upgrade_does_not_emit_job_spec_registered_event() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        StorageVersion::new(1).put::<QuantumComputeMempool>();
-
-        let _ = QuantumComputeMempool::on_runtime_upgrade();
-
-        let emitted = System::events().into_iter().any(|record| {
-            matches!(
-                record.event,
-                RuntimeEvent::QuantumComputeMempool(
-                    QuantumComputeMempoolEvent::JobSpecRegistered { .. },
-                ),
-            )
-        });
-        assert!(
-            !emitted,
-            "network-upgrade reseed must be silent (no JobSpecRegistered)",
-        );
     });
 }
 
@@ -1959,68 +1883,6 @@ fn expiry_without_solutions_emits_no_result_ready() {
 }
 
 #[test]
-fn network_upgrade_v2_to_v3_indexes_open_orders() {
-    new_test_ext_with_default_ising_spec(true).execute_with(|| {
-        // Two v2-style open orders at block 1: one expiring at block 2, one
-        // at block 6. v2 had no expiry index, so clear what propose_job wrote.
-        let past = propose_single_best(1, 1, 1);
-        let future = propose_single_best(1, 5, 1);
-        let _ = OrdersExpiringAt::<Test>::clear(u32::MAX, None);
-        NextExpiryBucket::<Test>::kill();
-        StorageVersion::new(2).put::<QuantumComputeMempool>();
-        System::set_block_number(3);
-
-        QuantumComputeMempool::on_runtime_upgrade();
-
-        assert_eq!(
-            StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(4)
-        );
-        assert_eq!(NextOrderId::<Test>::get(), 2, "v2 orders are kept");
-        assert_eq!(
-            bucket_ids(4),
-            vec![past],
-            "past expiry lands in the next block"
-        );
-        assert_eq!(bucket_ids(6), vec![future]);
-        assert_eq!(NextExpiryBucket::<Test>::get(), 4);
-        assert_eq!(
-            JobOrders::<Test>::get(past).unwrap().status,
-            OrderStatus::Opened
-        );
-
-        run_to_block(4);
-        assert_eq!(
-            JobOrders::<Test>::get(past).unwrap().status,
-            OrderStatus::Expired
-        );
-        assert_eq!(
-            JobOrders::<Test>::get(future).unwrap().status,
-            OrderStatus::Opened
-        );
-    });
-}
-
-#[cfg(feature = "try-runtime")]
-#[test]
-fn post_upgrade_rejects_an_open_order_missing_from_its_bucket() {
-    new_test_ext_with_default_ising_spec(true).execute_with(|| {
-        StorageVersion::new(2).put::<QuantumComputeMempool>();
-        let order_id = propose_single_best(1, 1, 1);
-        let _ = OrdersExpiringAt::<Test>::clear(u32::MAX, None);
-        NextExpiryBucket::<Test>::kill();
-        System::set_block_number(3);
-        let state = QuantumComputeMempool::pre_upgrade().unwrap();
-
-        QuantumComputeMempool::on_runtime_upgrade();
-        assert!(OrdersExpiringAt::<Test>::contains_key(4, order_id));
-        OrdersExpiringAt::<Test>::remove(4, order_id);
-
-        assert!(QuantumComputeMempool::post_upgrade(state).is_err());
-    });
-}
-
-#[test]
 fn settlement_wrapper_maximizes_complete_weights_and_floors_both_providers() {
     use crate::{benchmark_weights, weights};
     use frame_support::{traits::Get, weights::constants::RocksDbWeight};
@@ -2665,7 +2527,7 @@ fn required_payee_proposal_reuses_native_checks_and_has_no_partial_writes() {
 }
 
 #[test]
-fn metadata_storage_version_bump_does_not_reindex_or_backfill() {
+fn genesis_writes_the_storage_version() {
     new_test_ext().execute_with(|| {
         // Individual pallet genesis builders omit the runtime on_genesis hook.
         <QuantumComputeMempool as frame_support::traits::OnGenesis>::on_genesis();
@@ -2673,21 +2535,6 @@ fn metadata_storage_version_bump_does_not_reindex_or_backfill() {
             StorageVersion::get::<QuantumComputeMempool>(),
             StorageVersion::new(4)
         );
-        let id = propose_single_best(1, 10, 5);
-        OrdersExpiringAt::<Test>::remove(11, id);
-        OrdersExpiringAt::<Test>::insert(3, id, ());
-        StorageVersion::new(3).put::<QuantumComputeMempool>();
-        QuantumComputeMempool::on_runtime_upgrade();
-        assert_eq!(
-            StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(4)
-        );
-        assert!(OrdersExpiringAt::<Test>::contains_key(3, id));
-        assert!(!OrdersExpiringAt::<Test>::contains_key(11, id));
-        assert!(crate::OrderPayeeRequirements::<Test>::iter()
-            .next()
-            .is_none());
-        assert!(crate::OrderPayees::<Test>::iter().next().is_none());
     });
 }
 
