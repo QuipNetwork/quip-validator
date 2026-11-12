@@ -77,22 +77,116 @@ mod tests {
     }
 
     #[test]
-    fn council_decision_requires_two_thirds() {
-        new_test_ext().execute_with(|| {
-            // A plain signed account has no governance power at all.
-            assert_noop!(
-                ValidatorAdmission::approve(RuntimeOrigin::signed(candidate()), candidate()),
-                DispatchError::BadOrigin
-            );
-            // Three of six is half — below 2/3.
-            assert_noop!(
-                ValidatorAdmission::approve(council_origin(3), candidate()),
-                DispatchError::BadOrigin
-            );
-            // Four of six is exactly 2/3.
-            assert_ok!(ValidatorAdmission::approve(council_origin(4), candidate()));
-            assert!(pallet_validator_admission::Approved::<Runtime>::get().contains(&candidate()));
-        });
+    fn council_decisions_require_two_thirds() {
+        // Each case: three of six gives BadOrigin, four of six (exactly 2/3)
+        // succeeds and has its effect. Each case gets a fresh genesis.
+        let cases: [(&str, fn()); 5] = [
+            ("approve", || {
+                new_test_ext().execute_with(|| {
+                    // A plain signed account has no governance power at all.
+                    assert_noop!(
+                        ValidatorAdmission::approve(
+                            RuntimeOrigin::signed(candidate()),
+                            candidate()
+                        ),
+                        DispatchError::BadOrigin
+                    );
+                    assert_noop!(
+                        ValidatorAdmission::approve(council_origin(3), candidate()),
+                        DispatchError::BadOrigin
+                    );
+                    assert_ok!(ValidatorAdmission::approve(council_origin(4), candidate()));
+                    assert!(pallet_validator_admission::Approved::<Runtime>::get()
+                        .contains(&candidate()));
+                });
+            }),
+            ("remove_member", || {
+                new_test_ext().execute_with(|| {
+                    let outgoing = council()[5].clone();
+                    assert_noop!(
+                        FoundationMembership::remove_member(
+                            council_origin(3),
+                            into_member(outgoing.clone())
+                        ),
+                        DispatchError::BadOrigin
+                    );
+                    assert_ok!(FoundationMembership::remove_member(
+                        council_origin(4),
+                        into_member(outgoing.clone())
+                    ));
+                    assert!(!pallet_collective::Members::<Runtime, Instance1>::get()
+                        .contains(&outgoing));
+                    assert_eq!(
+                        pallet_collective::Members::<Runtime, Instance1>::get().len(),
+                        5
+                    );
+                });
+            }),
+            ("remove_member through root", || {
+                new_test_ext().execute_with(|| {
+                    let outgoing = council()[5].clone();
+                    let call = Box::new(RuntimeCall::FoundationMembership(
+                        pallet_membership::Call::remove_member {
+                            who: into_member(outgoing.clone()),
+                        },
+                    ));
+                    assert_noop!(
+                        ValidatorAdmission::dispatch_as_root(council_origin(3), call.clone()),
+                        DispatchError::BadOrigin
+                    );
+                    assert_ok!(ValidatorAdmission::dispatch_as_root(
+                        council_origin(4),
+                        call
+                    ));
+                    // Check the inner dispatch took effect, not just the wrapper result.
+                    assert!(!pallet_collective::Members::<Runtime, Instance1>::get()
+                        .contains(&outgoing));
+                    assert_eq!(
+                        pallet_collective::Members::<Runtime, Instance1>::get().len(),
+                        5
+                    );
+                });
+            }),
+            ("reset_members", || {
+                new_test_ext().execute_with(|| {
+                    assert_noop!(
+                        FoundationMembership::reset_members(council_origin(3), Vec::new()),
+                        DispatchError::BadOrigin
+                    );
+                    assert_ok!(FoundationMembership::reset_members(
+                        council_origin(4),
+                        Vec::new()
+                    ));
+                    assert!(pallet_membership::Members::<Runtime, Instance1>::get().is_empty());
+                    assert!(pallet_collective::Members::<Runtime, Instance1>::get().is_empty());
+                });
+            }),
+            ("add_member", || {
+                new_test_ext().execute_with(|| {
+                    let incoming = AccountId::from([0x42; 32]);
+                    assert_noop!(
+                        FoundationMembership::add_member(
+                            council_origin(3),
+                            into_member(incoming.clone())
+                        ),
+                        DispatchError::BadOrigin
+                    );
+                    assert_ok!(FoundationMembership::add_member(
+                        council_origin(4),
+                        into_member(incoming.clone())
+                    ));
+                    assert!(
+                        pallet_collective::Members::<Runtime, Instance1>::get().contains(&incoming)
+                    );
+                });
+            }),
+        ];
+        for (name, run) in cases {
+            // libtest shows captured output for a failing test, so the last
+            // line names the failing case.
+            eprintln!("case: {name}");
+            run();
+        }
     }
 
     #[test]
@@ -146,91 +240,12 @@ mod tests {
         });
     }
 
+    /// QBlock reward and round length are the two council knobs on the
+    /// quantum-pow pallet: each is council settable at 2/3 and bounded by a
+    /// runtime constant. The round length is also read by the difficulty
+    /// controller's decay gate and hardening band.
     #[test]
-    fn membership_removal_requires_two_thirds() {
-        new_test_ext().execute_with(|| {
-            let outgoing = council()[5].clone();
-            assert_noop!(
-                FoundationMembership::remove_member(
-                    council_origin(3),
-                    into_member(outgoing.clone())
-                ),
-                DispatchError::BadOrigin
-            );
-            assert_ok!(FoundationMembership::remove_member(
-                council_origin(4),
-                into_member(outgoing.clone())
-            ));
-            assert!(!pallet_collective::Members::<Runtime, Instance1>::get().contains(&outgoing));
-            assert_eq!(
-                pallet_collective::Members::<Runtime, Instance1>::get().len(),
-                5
-            );
-        });
-    }
-
-    #[test]
-    fn membership_removal_through_root_requires_two_thirds() {
-        new_test_ext().execute_with(|| {
-            let outgoing = council()[5].clone();
-            let call = Box::new(RuntimeCall::FoundationMembership(
-                pallet_membership::Call::remove_member {
-                    who: into_member(outgoing.clone()),
-                },
-            ));
-            assert_noop!(
-                ValidatorAdmission::dispatch_as_root(council_origin(3), call.clone()),
-                DispatchError::BadOrigin
-            );
-            assert_ok!(ValidatorAdmission::dispatch_as_root(
-                council_origin(4),
-                call
-            ));
-            // Check the inner dispatch took effect, not just the wrapper result.
-            assert!(!pallet_collective::Members::<Runtime, Instance1>::get().contains(&outgoing));
-            assert_eq!(
-                pallet_collective::Members::<Runtime, Instance1>::get().len(),
-                5
-            );
-        });
-    }
-
-    #[test]
-    fn membership_reset_requires_two_thirds() {
-        new_test_ext().execute_with(|| {
-            assert_noop!(
-                FoundationMembership::reset_members(council_origin(3), Vec::new()),
-                DispatchError::BadOrigin
-            );
-            assert_ok!(FoundationMembership::reset_members(
-                council_origin(4),
-                Vec::new()
-            ));
-            assert!(pallet_membership::Members::<Runtime, Instance1>::get().is_empty());
-            assert!(pallet_collective::Members::<Runtime, Instance1>::get().is_empty());
-        });
-    }
-
-    #[test]
-    fn membership_appointment_stays_at_two_thirds() {
-        new_test_ext().execute_with(|| {
-            let incoming = AccountId::from([0x42; 32]);
-            assert_noop!(
-                FoundationMembership::add_member(council_origin(3), into_member(incoming.clone())),
-                DispatchError::BadOrigin
-            );
-            assert_ok!(FoundationMembership::add_member(
-                council_origin(4),
-                into_member(incoming.clone())
-            ));
-            assert!(pallet_collective::Members::<Runtime, Instance1>::get().contains(&incoming));
-        });
-    }
-
-    /// QBlock reward changes are council business, bounded by the runtime
-    /// constants, and never need a runtime upgrade.
-    #[test]
-    fn qblock_reward_is_council_settable_and_bounded() {
+    fn qblock_parameters_are_council_settable_and_bounded() {
         use frame_support::traits::Get;
 
         new_test_ext().execute_with(|| {
@@ -250,16 +265,7 @@ mod tests {
                 crate::QuantumPow::set_block_reward(council_origin(4), max + 1),
                 pallet_quantum_pow::Error::<Runtime>::BlockRewardOutOfBounds
             );
-        });
-    }
 
-    /// QBlock round length is the second half of the same council knob: the
-    /// difficulty controller's decay gate and hardening band both read it.
-    #[test]
-    fn qblock_round_length_is_council_settable_and_bounded() {
-        use frame_support::traits::Get;
-
-        new_test_ext().execute_with(|| {
             let max = <crate::configs::QuantumPowMaxTargetProofBlocks as Get<u32>>::get();
             assert_noop!(
                 crate::QuantumPow::set_target_proof_blocks(council_origin(3), 200),

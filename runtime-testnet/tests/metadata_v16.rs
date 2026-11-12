@@ -658,17 +658,13 @@ fn native_2609_manifest_pins_match_anchor_files() {
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
 fn metadata_matches_native_2609_anchor() {
+    // Report the first differing path before checking exact SCALE bytes.
     let anchor = serde_json::to_value(native_2609_metadata()).unwrap();
     let candidate = serde_json::to_value(metadata_v16()).unwrap();
     metadata_anchor::check(&anchor, &candidate).unwrap();
-}
-
-#[cfg(not(feature = "runtime-benchmarks"))]
-#[test]
-fn native_2609_anchor_reproduces_exact_bytes() {
-    let anchor = std::fs::read(native_2609_anchor_path()).unwrap();
+    let anchor_bytes = std::fs::read(native_2609_anchor_path()).unwrap();
     assert!(
-        metadata_v16_bytes() == anchor,
+        metadata_v16_bytes() == anchor_bytes,
         "native metadata must reproduce the anchor byte for byte"
     );
 }
