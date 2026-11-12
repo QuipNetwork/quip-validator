@@ -22,6 +22,13 @@ The two platform images embed different code bytes:
 | `linux/amd64` | `0x79c79de08948bdaae3423e8d81c6abbdf12cd0eec99168037fb9fa6462252937` |
 | `linux/arm64` | `0xdc4cea1eaf961a4c090bbd63dff51a0d8dd4acfc899559254cbf0a08d29d5d82` |
 
+This list is not exhaustive. Release builds are not byte-reproducible across
+platforms, so any blob built from the `v0.4.1` tag is prohibited whatever its
+hash. A non-matching hash is not evidence that a 120 blob comes from this
+branch; identify this branch's runtime by its own published code hash. The
+stable2609 release must publish its own exact `:code` hash for each shipped
+artifact when it ships; a denylist alone cannot establish runtime identity.
+
 These hashes were extracted from the digest-pinned release images, not from a
 rebuild. To reproduce either value, export the embedded runtime without
 starting a node (substitute `linux/arm64` for the other image):
@@ -40,6 +47,12 @@ exists. Hash the stored bytes as-is, including compression; the image's
 SHA-256 digest, metadata hash and runtime version numbers are different
 identifiers. A matching release code hash identifies a prohibited blob,
 not approval to enact it.
+
+The live spec-119 chain has no `CodeUpdated.hash` event field: a
+`System.authorize_upgrade(code_hash)` proposal naming one of the hashes above,
+or a `set_code` call whose code argument hashes to one of them, targets a
+prohibited blob; check the proposed code hash before voting, not after
+enactment.
 
 The accepted batch-mapping and native contract-deposit policies, plus the
 re-anchor procedure, are documented in the [repository README](../README.md).
