@@ -24,7 +24,7 @@
 #   - rc / pre-release tag (or stable tag not on main)
 #                              →  test + build + manifest (:<tag> + :sha-* only)
 #   - release tag pipelines also run, when QUIP_SIGNER_PUBLISH is enabled:
-#                              + release:build-pypi + both import-smokes
+#                              + release:build-pypi-linux + both import-smokes
 #                              + release:publish-testpypi (auto)
 #                              + release:publish-pypi (manual promote)
 #
@@ -89,7 +89,7 @@ variables:
   # Publish-only image for the quip-signer PyPI upload jobs: python-slim with
   # twine, ca-certificates and curl baked in (.gitlab/ci-pypi-publish.Dockerfile).
   # Kept separate from TOOLCHAIN_IMAGE because these jobs compile nothing — they
-  # upload the dist/ artefact release:build-pypi already produced — so they want
+  # upload the dist/ artefact release:build-pypi-linux already produced — so they want
   # no Rust toolchain and no crate source on the path. Referenced with the arch
   # suffix the build job pushes, and never combined into a manifest, because
   # .pypi-publish pins tags: [docker, amd64] and a one-platform manifest list
@@ -907,7 +907,7 @@ manifest-evm-sidecar:
 # scripts/python-dists.sh, so the cross-built aarch64 wheel is import-tested on
 # a native arm64 runner before any upload (a wheel only imports on its own
 # arch — one amd64 job cannot exercise both):
-#   release:build-pypi         MR dry-run + release tag      build 3 artefacts + guards
+#   release:build-pypi-linux   MR dry-run + release tag      build 3 artefacts + guards
 #   release:smoke-pypi-amd64   MR dry-run + tag; needs build import the x86_64 wheel
 #   release:smoke-pypi-arm64   release tag only; needs build import the aarch64 wheel
 #   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
@@ -938,7 +938,7 @@ manifest-evm-sidecar:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
 
-# build-pypi + the amd64 smoke additionally run as an MR dry-run (no upload) to
+# build-pypi-linux + the amd64 smoke additionally run as an MR dry-run (no upload) to
 # catch packaging regressions before a tag is cut. The arm64 smoke is left out
 # (it uses .on-release-tag) — those runners are slower and in higher demand, so
 # we don't spend them on every MR; the aarch64 wheel is import-tested at tag
@@ -1006,7 +1006,7 @@ manifest-evm-sidecar:
   needs:
     - job: dependency-gate
       optional: true
-    - release:build-pypi
+    - release:build-pypi-linux
 
 # Publish base: mint the OIDC token and upload the prebuilt dist/. Like smoke it
 # needs no Rust toolchain — just twine + curl, both baked into
@@ -1022,7 +1022,7 @@ manifest-evm-sidecar:
   needs:
     - job: dependency-gate
       optional: true
-    - release:build-pypi
+    - release:build-pypi-linux
     - release:smoke-pypi-amd64
     - release:smoke-pypi-arm64
 
@@ -1032,7 +1032,7 @@ manifest-evm-sidecar:
 # Catches release-blocking packaging regressions (bad metadata, a wheel that
 # won't build, an unbuildable aarch64 cross, a dropped python surface) before a
 # tag is cut.
-release:build-pypi:
+release:build-pypi-linux:
   extends: .pypi-build
   stage: test
   rules: !reference [.on-mr-or-release-tag, rules]
