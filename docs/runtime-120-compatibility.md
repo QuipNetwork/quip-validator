@@ -4,6 +4,43 @@ Runtime 120 was never deployed. The `v0.4.1`-tagged 120 blob must never be
 enacted on any network. This runtime requires fresh genesis and provides no
 upgrade path from older storage versions.
 
+Neither the published `v0.4.1` blob nor this branch's 120 blob may be enacted
+on the live spec-119 `quip` testnet: the matching `spec_name` and higher
+`spec_version` would pass the on-chain guards, but the incompatible storage,
+H2/H4 authority encoding and signing changes would halt the chain.
+
+Spec 120 / transaction 7 does not uniquely identify runtime code. The
+[`v0.4.1` release tag](https://gitlab.com/quip.network/quip-validator/-/tree/v0.4.1)
+points to `cb09fe643630adbc503e3f5255353c098aae52e6` (`spec_name = quip`,
+spec 120 / transaction 7). Its published image is
+`registry.gitlab.com/quip.network/quip-validator/quip-network-node` at manifest-list
+digest `sha256:f3863f77c4e6ef8808e8f44ad11e0c79c8025d69603aa992005fee2ed397d198`.
+The two platform images embed different code bytes:
+
+| Image platform | Blake2-256 of the exact `:code` bytes |
+|---|---|
+| `linux/amd64` | `0x79c79de08948bdaae3423e8d81c6abbdf12cd0eec99168037fb9fa6462252937` |
+| `linux/arm64` | `0xdc4cea1eaf961a4c090bbd63dff51a0d8dd4acfc899559254cbf0a08d29d5d82` |
+
+These hashes were extracted from the digest-pinned release images, not from a
+rebuild. To reproduce either value, export the embedded runtime without
+starting a node (substitute `linux/arm64` for the other image):
+
+```bash
+docker run --rm --platform linux/amd64 --network none \
+  --entrypoint /usr/local/bin/quip-network-node \
+  registry.gitlab.com/quip.network/quip-validator/quip-network-node@sha256:f3863f77c4e6ef8808e8f44ad11e0c79c8025d69603aa992005fee2ed397d198 \
+  build-spec --chain dev --raw > v0.4.1-raw.json
+python3 -c 'import hashlib,json; code=bytes.fromhex(json.load(open("v0.4.1-raw.json"))["genesis"]["raw"]["top"]["0x3a636f6465"][2:]); print("0x"+hashlib.blake2b(code,digest_size=32).hexdigest())'
+```
+
+Compare this Blake2-256 value with the hash of the on-chain `:code` storage
+value (key `0x3a636f6465`), or `System.CodeUpdated.hash` where that event field
+exists. Hash the stored bytes as-is, including compression; the image's
+SHA-256 digest, metadata hash and runtime version numbers are different
+identifiers. A matching release code hash identifies a prohibited blob,
+not approval to enact it.
+
 The accepted batch-mapping and native contract-deposit policies, plus the
 re-anchor procedure, are documented in the [repository README](../README.md).
 
