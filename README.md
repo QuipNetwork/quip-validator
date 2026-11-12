@@ -260,7 +260,10 @@ env -u SKIP_WASM_BUILD cargo test --locked \
 
 This explicit capture overwrites the two SCALE files; update the manifest's
 provenance, hashes and sizes when deliberately accepting a new baseline.
-Normal tests only read the anchors and verify byte-for-byte reproduction.
+Normal tests only read the anchors and verify byte-for-byte reproduction from
+both native metadata and the Wasm `Metadata_metadata` API. Before accepting a
+new capture, run `wasm_metadata_matches_native_2609_anchor` in both runtimes
+with `SKIP_WASM_BUILD` unset and record that result in the manifest.
 The pre-vesting evidence (captured from `ba20b1e`, checked in by `b483bfb`)
 remains in git history at
 [`b483bfb:tests/fixtures/pre-vesting/manifest.json`](https://gitlab.com/quip.network/quip-validator/-/blob/b483bfb1f8fb58e0be86f72c73bdf8119de63329/tests/fixtures/pre-vesting/manifest.json).

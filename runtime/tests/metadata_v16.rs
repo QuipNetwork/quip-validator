@@ -138,8 +138,7 @@ fn metadata_at_version_16_returns_v16() {
     );
 }
 
-#[test]
-fn legacy_metadata_runtime_api_publishes_v16() {
+fn wasm_metadata_bytes() -> Option<Vec<u8>> {
     // Regression pin: `state_getMetadata` is served by the legacy
     // `sp_api::Metadata::metadata()` runtime API implemented in
     // `runtime/src/apis.rs`, which must publish V16. The std-side trait impl
@@ -153,7 +152,7 @@ fn legacy_metadata_runtime_api_publishes_v16() {
         // The wasm blob is only embedded when the runtime was built without
         // SKIP_WASM_BUILD; CI builds it, local quick iterations may not.
         eprintln!("skipping: runtime wasm binary not built (SKIP_WASM_BUILD)");
-        return;
+        return None;
     };
 
     let mut ext =
@@ -173,13 +172,15 @@ fn legacy_metadata_runtime_api_publishes_v16() {
     let opaque =
         sp_core::OpaqueMetadata::decode(&mut &encoded[..]).expect("runtime API returns metadata");
 
-    let bytes: &[u8] = &opaque;
-    let prefixed = RuntimeMetadataPrefixed::decode(&mut &bytes[..])
-        .expect("legacy metadata blob SCALE-decodes");
-    assert!(
-        matches!(prefixed.1, RuntimeMetadata::V16(_)),
-        "legacy metadata() runtime API must publish Metadata V16",
-    );
+    Some(opaque.to_vec())
+}
+
+#[test]
+fn legacy_metadata_runtime_api_publishes_v16() {
+    let Some(bytes) = wasm_metadata_bytes() else {
+        return;
+    };
+    decode_metadata_v16(&bytes);
 }
 
 #[test]
@@ -550,6 +551,27 @@ fn native_2609_anchor_reproduces_exact_bytes() {
     assert!(
         metadata_v16_bytes() == anchor,
         "native metadata must reproduce the anchor byte for byte"
+    );
+}
+
+// The anchor must describe what the chain actually reports, not only the
+// native build. Local SKIP_WASM_BUILD iterations may skip this; CI builds Wasm.
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn wasm_metadata_matches_native_2609_anchor() {
+    let Some(bytes) = wasm_metadata_bytes() else {
+        return;
+    };
+    let anchor = std::fs::read(native_2609_anchor_path()).unwrap();
+    // Report the first differing path before checking exact SCALE bytes.
+    metadata_anchor::check(
+        &serde_json::to_value(decode_metadata_v16(&anchor)).unwrap(),
+        &serde_json::to_value(decode_metadata_v16(&bytes)).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        bytes == anchor,
+        "Wasm Metadata_metadata must reproduce the anchor byte for byte"
     );
 }
 

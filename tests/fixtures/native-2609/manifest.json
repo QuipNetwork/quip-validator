@@ -19,5 +19,19 @@
       "sha256": "8a207a4295c8fe493c83c3d2d12746196ea1868e36f07d3f4881b424004d26b0",
       "bytes": 288335
     }
+  },
+  "captured_from": "native",
+  "native_wasm_metadata_equal": true,
+  "wasm_verification": {
+    "runtime_source_commit": "712744eae50664d34ee5affd65787358c5dda487",
+    "build_profile": "test (embedded Wasm from substrate-wasm-builder)",
+    "features": [
+      "default",
+      "std"
+    ],
+    "SKIP_WASM_BUILD": "unset",
+    "runtime_api": "Metadata_metadata",
+    "command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16",
+    "timing": "Post-capture verification against the unchanged checked-in native anchor bytes"
   }
 }
