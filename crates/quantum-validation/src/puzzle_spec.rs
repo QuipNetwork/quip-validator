@@ -251,32 +251,29 @@ mod tests {
     }
 
     #[test]
-    fn binary_set_uses_one_bit() {
-        let spec = set_spec(&[-1000, 1000]);
-        assert_eq!(spec.bits_per_value().unwrap(), 1);
-    }
+    fn bits_per_value_uses_minimum_bits() {
+        let cases: [(&str, AllowedValueSpec<&[MilliValue]>, u8); 4] = [
+            ("binary set", set_spec(&[-1000, 1000]), 1),
+            ("ternary set", set_spec(&[-6000, 0, 6000]), 2),
+            // 13 values -> 4 bits
+            (
+                "integer range",
+                AllowedValueSpec::IntegerRange { min: -6, max: 6 },
+                4,
+            ),
+            (
+                "continuous range",
+                AllowedValueSpec::ContinuousRange {
+                    min: -6000,
+                    max: 6000,
+                },
+                32,
+            ),
+        ];
 
-    #[test]
-    fn ternary_set_uses_two_bits() {
-        let spec = set_spec(&[-6000, 0, 6000]);
-        assert_eq!(spec.bits_per_value().unwrap(), 2);
-    }
-
-    #[test]
-    fn integer_range_uses_minimum_bits() {
-        let spec: AllowedValueSpec<&[MilliValue]> =
-            AllowedValueSpec::IntegerRange { min: -6, max: 6 };
-        // 13 values → 4 bits
-        assert_eq!(spec.bits_per_value().unwrap(), 4);
-    }
-
-    #[test]
-    fn continuous_range_uses_thirty_two_bits() {
-        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange {
-            min: -6000,
-            max: 6000,
-        };
-        assert_eq!(spec.bits_per_value().unwrap(), 32);
+        for (name, spec, bits) in cases {
+            assert_eq!(spec.bits_per_value().unwrap(), bits, "case: {name}");
+        }
     }
 
     #[test]

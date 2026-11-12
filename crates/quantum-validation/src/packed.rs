@@ -214,25 +214,54 @@ mod tests {
     }
 
     #[test]
-    fn binary_spins_round_trip() {
-        let spec = binary_spin_spec();
-        let spins = [-1000, 1000, -1000, 1000, 1000, -1000, -1000, 1000, 1000];
-        let packed = pack_solution(&spins, &spec).unwrap();
-        // 9 spins * 1 bit = 9 bits → 2 bytes
-        assert_eq!(packed.len(), 2);
-        let unpacked = unpack_solution(&packed, spins.len(), &spec).unwrap();
-        assert_eq!(unpacked, spins);
-    }
+    fn packed_solutions_round_trip() {
+        // (name, spec, values, packed length in bytes)
+        type Case<'a> = (
+            &'a str,
+            AllowedValueSpec<&'a [MilliValue]>,
+            &'a [MilliValue],
+            usize,
+        );
+        let cases: [Case; 4] = [
+            // 9 spins * 1 bit = 9 bits -> 2 bytes
+            (
+                "binary spins",
+                binary_spin_spec(),
+                &[-1000, 1000, -1000, 1000, 1000, -1000, -1000, 1000, 1000],
+                2,
+            ),
+            // 7 * 2 bits = 14 bits -> 2 bytes
+            (
+                "ternary h",
+                ternary_h_spec(),
+                &[-6000, 0, 6000, -6000, 0, 6000, -6000],
+                2,
+            ),
+            // -2..=2 -> 5 values -> 3 bits per spin; 15 bits -> 2 bytes
+            (
+                "integer range",
+                AllowedValueSpec::IntegerRange { min: -2, max: 2 },
+                &[-2000, 0, 2000, 1000, -1000],
+                2,
+            ),
+            // continuous values use 32 bits each
+            (
+                "continuous range",
+                AllowedValueSpec::ContinuousRange {
+                    min: -6000,
+                    max: 6000,
+                },
+                &[-6000, -2500, 0, 2500, 6000],
+                20,
+            ),
+        ];
 
-    #[test]
-    fn ternary_h_round_trip() {
-        let spec = ternary_h_spec();
-        let values = [-6000, 0, 6000, -6000, 0, 6000, -6000];
-        let packed = pack_solution(&values, &spec).unwrap();
-        // 7 * 2 bits = 14 bits → 2 bytes
-        assert_eq!(packed.len(), 2);
-        let unpacked = unpack_solution(&packed, values.len(), &spec).unwrap();
-        assert_eq!(unpacked, values);
+        for (name, spec, values, packed_len) in cases {
+            let packed = pack_solution(values, &spec).unwrap();
+            assert_eq!(packed.len(), packed_len, "case: {name}");
+            let unpacked = unpack_solution(&packed, values.len(), &spec).unwrap();
+            assert_eq!(unpacked, values, "case: {name}");
+        }
     }
 
     #[test]
@@ -256,29 +285,5 @@ mod tests {
             unpack_solution(&packed, 9, &spec),
             Err(ValidationError::PackedSolutionLengthMismatch { .. })
         ));
-    }
-
-    #[test]
-    fn integer_range_round_trip() {
-        // -2..=2 → 5 values → 3 bits per spin.
-        let spec: AllowedValueSpec<&[MilliValue]> =
-            AllowedValueSpec::IntegerRange { min: -2, max: 2 };
-        let values = [-2000, 0, 2000, 1000, -1000];
-        let packed = pack_solution(&values, &spec).unwrap();
-        let unpacked = unpack_solution(&packed, values.len(), &spec).unwrap();
-        assert_eq!(unpacked, values);
-    }
-
-    #[test]
-    fn continuous_range_round_trip_uses_32_bits() {
-        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange {
-            min: -6000,
-            max: 6000,
-        };
-        let values = [-6000, -2500, 0, 2500, 6000];
-        let packed = pack_solution(&values, &spec).unwrap();
-        assert_eq!(packed.len(), values.len() * 4);
-        let unpacked = unpack_solution(&packed, values.len(), &spec).unwrap();
-        assert_eq!(unpacked, values);
     }
 }
