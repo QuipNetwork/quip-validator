@@ -4,9 +4,11 @@
 #
 # Stages:
 #   - test:      fmt / clippy / test / runtime release build on every MR;
-#                also the quip-signer PyPI wheel build + amd64 import-smoke as an
-#                MR dry-run; the arm64 import-smoke runs on release tags only
-#                (all three gated on QUIP_SIGNER_PUBLISH at tag time)
+#                also the quip-signer Linux wheel build + amd64 import-smoke as
+#                an MR dry-run; the arm64 import-smoke runs on release tags
+#                only; the macOS wheel build + smoke runs on MRs that touch the
+#                binding and on release tags (all gated on QUIP_SIGNER_PUBLISH
+#                at tag time)
 #   - build:     build the node and EVM-sidecar containers per architecture
 #                (amd64 + arm64), each on a native runner, on release tags only
 #   - manifest:  stitch each image's per-arch builds into a multi-arch manifest
@@ -15,7 +17,8 @@
 #                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
 #
 # Triggers:
-#   - merge_request_event  →  test (+ quip-signer wheel build & amd64 import-smoke, no upload)
+#   - merge_request_event  →  test (+ quip-signer Linux wheel build & amd64 import-smoke, no upload;
+#                              + the macOS wheel build & smoke when the binding changes)
 #   - push to main         →  test
 #   - push to v0.2         →  test
 #   - stable git tag vX.Y.Z reachable from main
@@ -24,7 +27,8 @@
 #   - rc / pre-release tag (or stable tag not on main)
 #                              →  test + build + manifest (:<tag> + :sha-* only)
 #   - release tag pipelines also run, when QUIP_SIGNER_PUBLISH is enabled:
-#                              + release:build-pypi-linux + both import-smokes
+#                              + release:build-pypi-linux + both Linux import-smokes
+#                              + release:build-pypi-macos (build + smoke)
 #                              + release:publish-testpypi (auto)
 #                              + release:publish-pypi (manual promote)
 #
@@ -903,13 +907,14 @@ manifest-evm-sidecar:
 # projects, configuring each Trusted Publisher, the `release` environment, and
 # the protected `v*` tag pattern) must be configured before publishing.
 #
-# The pipeline is build → smoke (both arches) → publish, one job per mode of
+# The pipeline is build → smoke (every platform) → publish, one job per mode of
 # scripts/python-dists.sh, so the cross-built aarch64 wheel is import-tested on
 # a native arm64 runner before any upload (a wheel only imports on its own
 # arch — one amd64 job cannot exercise both):
-#   release:build-pypi-linux   MR dry-run + release tag      build 3 artefacts + guards
+#   release:build-pypi-linux   MR dry-run + release tag      build 2 Linux wheels + sdist + guards
 #   release:smoke-pypi-amd64   MR dry-run + tag; needs build import the x86_64 wheel
 #   release:smoke-pypi-arm64   release tag only; needs build import the aarch64 wheel
+#   release:build-pypi-macos   signer MRs + release tag      build + smoke the 2 macOS wheels
 #   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
 #   release:publish-pypi       release tag, if PUBLISH=true  manual  → PyPI
 #
@@ -920,14 +925,15 @@ manifest-evm-sidecar:
 # QUIP_SIGNER_PUBLISH (off by default), so a node release tag never reds on an
 # unconfigured wheel publish during Phase 1. Every pypi job `needs` only other
 # pypi jobs, so the chain never waits on the container build/manifest stages
-# (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both smokes, so a
-# wheel that won't import on its own arch blocks the upload.
+# (esp. the slow, OOM-prone arm64 kaniko job), and an offline Mac runner holds
+# up the wheels, not the node release. publish `needs` every smoke, so a wheel
+# that won't import on its own arch blocks the upload.
 #
-# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheels for linux x86_64
-# and linux aarch64, both built with zig as the linker at manylinux2014
-# (glibc 2.17), + an sdist (universal source fallback; macOS/Windows build
-# from it). The wheel version is the pyproject/Cargo version, bumped per
-# release so the tag matches.
+# Artefact matrix: five files. abi3 wheels for linux x86_64 and linux aarch64,
+# both built with zig as the linker at manylinux2014 (glibc 2.17); abi3 wheels
+# for macOS arm64 (11.0) and macOS x86_64 (10.12); and an sdist, the source
+# fallback that only Windows builds from. The wheel version is the
+# pyproject/Cargo version, bumped per release so the tag matches.
 
 # Tag-only rule for the pypi jobs that do NOT run as an MR dry-run: the arm64
 # import-smoke and both publishes. Runs on pushed release tags like v0.2.1,
@@ -1011,9 +1017,9 @@ manifest-evm-sidecar:
 # Publish base: mint the OIDC token and upload the prebuilt dist/. Like smoke it
 # needs no Rust toolchain — just twine + curl, both baked into
 # PYPI_PUBLISH_IMAGE so the upload never waits on a Debian mirror — and it
-# consumes the artefact from build (and both smokes) rather than rebuilding, so
-# the uploaded bytes are the ones that passed the smoke. Needs only the pypi
-# jobs, so it never waits on the container build/manifest stages.
+# consumes the artefacts from both builds (and every smoke) rather than
+# rebuilding, so the uploaded bytes are the ones that passed the smoke. Needs
+# only the pypi jobs, so it never waits on the container build/manifest stages.
 .pypi-publish:
   image: $PYPI_PUBLISH_IMAGE
   tags: [docker, amd64]
@@ -1025,6 +1031,7 @@ manifest-evm-sidecar:
     - release:build-pypi-linux
     - release:smoke-pypi-amd64
     - release:smoke-pypi-arm64
+    - release:build-pypi-macos
 
 # Build all three artefacts, guard their tags/content, twine-check metadata, and
 # publish dist/ as an artefact. Runs as an MR dry-run and again on a release tag
@@ -1067,10 +1074,64 @@ release:smoke-pypi-arm64:
   script:
     - bash scripts/python-dists.sh smoke
 
+# Build and smoke the two macOS wheels (arm64 at 11.0, x86_64 at 10.12) on an
+# Apple Silicon shell runner. One job does both because, unlike the Linux pair,
+# the build host can import both wheels: arm64 natively and x86_64 under
+# Rosetta. A shell runner ignores `image:`, so this job cannot use the
+# toolchain image and is the one PyPI job that installs its own tools (rustup
+# and uv, each only if the runner lacks it). It takes rustc and maturin at the
+# versions .gitlab/ci-toolchain.Dockerfile pins, so every platform builds with
+# the same toolchain. The x86_64 smoke needs Rosetta; on a runner without it
+# the job warns and passes, and that wheel is tested by hand before the
+# release that first ships it. Runs on release tags under the same gate as the
+# rest of the chain, and on merge requests that change the binding or this
+# script; the Linux build covers every other MR. Its dist/ joins the Linux one
+# in the publish jobs, which then check for exactly five files.
+release:build-pypi-macos:
+  stage: test
+  tags: [macos, arm64]
+  interruptible: true
+  timeout: 30m
+  needs:
+    - job: dependency-gate
+      optional: true
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - crates/transaction-crypto-py/**/*
+        - scripts/python-dists.sh
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+  script:
+    - pin() { sed -n "s/^ARG $1=//p" .gitlab/ci-toolchain.Dockerfile; }
+    - export RUSTUP_TOOLCHAIN="$(pin RUST_VERSION)" MATURIN_VERSION="$(pin MATURIN_VERSION)"
+    - test -n "$RUSTUP_TOOLCHAIN" && test -n "$MATURIN_VERSION"
+    - export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+    - command -v rustup || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+    - command -v uv || curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+    - rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin x86_64-apple-darwin
+    - uv venv --clear "$CI_PROJECT_DIR/.pyrelease"
+    - uv pip install --python "$CI_PROJECT_DIR/.pyrelease/bin/python" "maturin==$MATURIN_VERSION"
+    - export PATH="$CI_PROJECT_DIR/.pyrelease/bin:$PATH"
+    - rustc --version && maturin --version
+    - bash scripts/python-dists.sh build-macos
+    - uv python install cpython-3.12-macos-aarch64-none
+    - PYTHON="$(uv python find --python-preference only-managed cpython-3.12-macos-aarch64-none)" bash scripts/python-dists.sh smoke
+    - |
+      if arch -x86_64 /usr/bin/true 2>/dev/null; then
+        uv python install cpython-3.12-macos-x86_64-none
+        PYTHON="$(uv python find --python-preference only-managed cpython-3.12-macos-x86_64-none)" bash scripts/python-dists.sh smoke
+      else
+        echo "WARNING: no Rosetta on this runner; the macosx_10_12_x86_64 wheel was built and guarded but not import-tested."
+      fi
+
 # Auto-publish to TestPyPI on every release tag, once publishing is enabled
-# (Phase 1 validation target). Needs build + both smokes (via .pypi-publish), so
-# it uploads only wheels that imported on their own arch, and still doesn't wait
-# on the container build/manifest stages. No allow_failure: once enabled, a
+# (Phase 1 validation target). Needs both builds + every smoke (via
+# .pypi-publish), so it uploads only wheels that imported on their own arch, and
+# still doesn't wait on the container build/manifest stages. No allow_failure: once enabled, a
 # failed TestPyPI upload is a real signal that should red the pipeline.
 release:publish-testpypi:
   extends: .pypi-publish
