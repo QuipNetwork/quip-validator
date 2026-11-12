@@ -4,9 +4,10 @@
 #
 # Usage: scripts/sync-family-vectors.sh <quip-solver-core checkout> <rev>
 #
-# <rev> must be the `rev` of `ising-generators` in
-# crates/quantum-validation/Cargo.toml. The family_vectors test fails when
-# the fixtures and the generator come from different revisions.
+# <rev> must be the `tag` of `ising-generators` in
+# crates/quantum-validation/Cargo.toml. The script records the commit that
+# tag points to in SOURCE_REV, and the family_vectors test fails when that
+# commit differs from the one Cargo.lock resolved the tag to.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then

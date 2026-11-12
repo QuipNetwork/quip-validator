@@ -16,6 +16,8 @@ use rand_core::{RngCore, SeedableRng};
 use serde_json::Value;
 
 const MANIFEST: &str = include_str!("../Cargo.toml");
+const LOCKFILE: &str = include_str!("../../../Cargo.lock");
+const SOLVER_CORE_GIT: &str = "git+https://gitlab.com/quip.network/quip-solver-core.git";
 const SOURCE_REV: &str = include_str!("fixtures/solver-core/SOURCE_REV");
 const REGISTRY: &str = include_str!("fixtures/solver-core/families/registry.json");
 const GOLDEN_VECTORS: &str = include_str!("fixtures/solver-core/golden_vectors.json");
@@ -317,12 +319,22 @@ fn fixtures_come_from_the_pinned_generator_revision() {
         .filter(|line| line.starts_with("ising-generators = "))
         .collect();
     assert_eq!(pins.len(), 2, "one dependency and one dev-dependency");
+    let tag = pins[0]
+        .split_once("tag = \"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(tag, _)| tag)
+        .expect("ising-generators is pinned to a release tag");
     for line in pins {
         assert!(
-            line.contains(&format!("rev = \"{rev}\"")),
-            "Cargo.toml pin differs from SOURCE_REV: {line}"
+            line.contains(&format!("tag = \"{tag}\"")),
+            "Cargo.toml pins disagree on the ising-generators tag: {line}"
         );
     }
+    let source = format!("source = \"{SOLVER_CORE_GIT}?tag={tag}#{rev}\"");
+    assert!(
+        LOCKFILE.lines().any(|line| line == source),
+        "Cargo.lock does not resolve ising-generators {tag} to the SOURCE_REV commit {rev}"
+    );
 }
 
 #[test]

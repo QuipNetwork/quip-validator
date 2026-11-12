@@ -34,7 +34,7 @@ sp-runtime.workspace = true
 [dev-dependencies]
 # Same pin as quantum-validation; `blob` decodes the vendored fixture
 # topologies that the family tests register.
-ising-generators = { git = "https://gitlab.com/quip.network/quip-solver-core.git", rev = "6f65fd52a9e5b65b74c3fa329c71954ae4d18dca", default-features = false, features = ["blob"] }
+ising-generators = { git = "https://gitlab.com/quip.network/quip-solver-core.git", tag = "v0.0.11", default-features = false, features = ["blob"] }
 serde_json = { workspace = true, features = ["std"] }
 sp-core = { default-features = true, workspace = true }
 sp-io = { default-features = true, workspace = true }
