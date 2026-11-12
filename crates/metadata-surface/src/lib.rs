@@ -12,7 +12,7 @@ use frame_metadata::{
     RuntimeMetadata, RuntimeMetadataPrefixed, META_RESERVED,
 };
 use scale_info::{form::PortableForm, Field, PortableRegistry, TypeDef};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 /// Nesting limit for anonymous types and named type parameters.
 const MAX_DEPTH: usize = 8;
@@ -283,7 +283,7 @@ pub fn surface(metadata: &RuntimeMetadataV16, include_types: bool) -> Vec<String
         ));
     }
     if include_types {
-        let named: BTreeSet<_> = registry
+        let mut named: Vec<_> = registry
             .types
             .iter()
             .filter(|ty| !ty.ty.path.segments.is_empty())
@@ -295,27 +295,33 @@ pub fn surface(metadata: &RuntimeMetadataV16, include_types: bool) -> Vec<String
                 )
             })
             .collect();
+        named.sort();
         lines.extend(named);
     }
     lines
 }
 
-/// Lines only in `old` (prefixed `- `) followed by lines only in `new`
-/// (prefixed `+ `), each in its original order. Comparison is set-based:
-/// duplicate counts and line ordering are ignored. An empty diff means only
-/// that the rendered line sets match, not that the metadata blobs are equal.
+/// Surplus occurrences in `old` (prefixed `- `), then in `new` (prefixed `+ `),
+/// each in its original order. Comparison counts duplicates but ignores line
+/// ordering. An empty diff does not prove that the metadata blobs are equal.
 pub fn diff(old: &[String], new: &[String]) -> Vec<String> {
-    let old_set: BTreeSet<_> = old.iter().collect();
-    let new_set: BTreeSet<_> = new.iter().collect();
-    let removed = old
-        .iter()
-        .filter(|line| !new_set.contains(line))
-        .map(|line| format!("- {line}"));
-    let added = new
-        .iter()
-        .filter(|line| !old_set.contains(line))
-        .map(|line| format!("+ {line}"));
-    removed.chain(added).collect()
+    let mut delta = Vec::new();
+    for (prefix, source, other) in [("-", old, new), ("+", new, old)] {
+        let mut remaining = BTreeMap::new();
+        for line in other {
+            *remaining.entry(line).or_insert(0usize) += 1;
+        }
+        for line in source {
+            if let Some(count) = remaining.get_mut(line) {
+                if *count > 0 {
+                    *count -= 1;
+                    continue;
+                }
+            }
+            delta.push(format!("{prefix} {line}"));
+        }
+    }
+    delta
 }
 
 #[cfg(test)]
@@ -324,6 +330,15 @@ mod tests {
 
     const QUIP: &[u8] = include_bytes!("../../../tests/fixtures/native-2609/quip.scale");
     const TESTNET: &[u8] = include_bytes!("../../../tests/fixtures/native-2609/quip-testnet.scale");
+
+    #[test]
+    fn duplicate_occurrences_are_reported_individually() {
+        let single = vec!["same line".into()];
+        let double = vec!["same line".into(), "same line".into()];
+        assert_eq!(diff(&single, &double), vec!["+ same line"]);
+        assert_eq!(diff(&double, &single), vec!["- same line"]);
+        assert_eq!(diff(&double, &[]), vec!["- same line", "- same line"]);
+    }
 
     #[test]
     fn recursive_named_type_parameter_is_bounded() {
