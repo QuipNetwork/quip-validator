@@ -192,11 +192,8 @@ pub mod pallet {
     };
     use sp_runtime::traits::{Hash as _, One, SaturatedConversion, Saturating, Zero};
 
-    /// v2 dropped all v0.2 mempool data on the network upgrade and reseeded
-    /// the canonical default plain Ising spec. v3 adds the expiry index
-    /// (`OrdersExpiringAt`, `NextExpiryBucket`) and indexes the open orders
-    /// already in storage.
-    // v4 adds sparse optional payee metadata; runtime119 launches at fresh genesis.
+    // Genesis writes this version. v4 adds sparse optional payee metadata;
+    // runtime119 launches at fresh genesis, so there is no migration.
     const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
     #[pallet::pallet]
@@ -862,114 +859,6 @@ pub mod pallet {
             <T as Config>::WeightInfo::finalise_expired_orders(finalised)
                 .saturating_add(T::DbWeight::get().reads(buckets_visited))
         }
-
-        /// Cumulative migration to the in-code `STORAGE_VERSION`.
-        ///
-        /// - on-chain `< 2`: the v0.2 wipe. Clear the pallet prefix and reseed
-        ///   the canonical default plain Ising spec exactly as genesis would.
-        ///   The reseed is best-effort: a failure emits a defensive log and the
-        ///   version still moves so this never retries every block; operators
-        ///   can backfill via root `register_job_spec`.
-        /// - on-chain `< 3`: index every open order by its effective expiry so
-        ///   `on_initialize` finalises it. Orders already past expiry are
-        ///   finalised from the upgrade block onwards, eight per block, because
-        ///   migrations run before `System::initialize` so `now + 1` is the
-        ///   upgrade block.
-        /// - on-chain `3`: bump the schema marker for sparse payee maps only.
-        ///   Runtime 119 is a fresh-genesis reset; no payees are imported/backfilled.
-        fn on_runtime_upgrade() -> Weight {
-            use frame_support::{traits::PalletInfoAccess, StorageHasher};
-
-            let on_chain = Pallet::<T>::on_chain_storage_version();
-            if on_chain >= STORAGE_VERSION {
-                return T::DbWeight::get().reads(1);
-            }
-
-            let mut weight = T::DbWeight::get().reads(1);
-
-            if on_chain < 2 {
-                let pallet_prefix = frame_support::Twox128::hash(
-                    <Pallet<T> as PalletInfoAccess>::name().as_bytes(),
-                );
-                let cleared =
-                    frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None)
-                        .backend;
-
-                if let Err(err) =
-                    Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
-                {
-                    frame_support::defensive!(
-                        "on_runtime_upgrade: failed to reseed default Ising spec",
-                        err
-                    );
-                }
-                // 1 write per cleared key + reseed (~2 writes).
-                weight = weight.saturating_add(
-                    T::DbWeight::get().writes(u64::from(cleared).saturating_add(2)),
-                );
-            }
-
-            // v2 -> v3. After a wipe there are no orders, so this is cheap.
-            if on_chain < 3 {
-                weight = weight.saturating_add(Self::index_open_orders_for_expiry());
-            }
-
-            STORAGE_VERSION.put::<Pallet<T>>();
-            weight.saturating_add(T::DbWeight::get().writes(1))
-        }
-
-        #[cfg(feature = "try-runtime")]
-        fn pre_upgrade() -> Result<alloc::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
-            Ok(Pallet::<T>::on_chain_storage_version().encode())
-        }
-
-        #[cfg(feature = "try-runtime")]
-        fn post_upgrade(state: alloc::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-            let pre_version = StorageVersion::decode(&mut state.as_slice())
-                .map_err(|_| sp_runtime::TryRuntimeError::Other("bad pre_upgrade state"))?;
-            ensure!(
-                Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                sp_runtime::TryRuntimeError::Other("storage version not bumped"),
-            );
-            let spec_id = T::DefaultIsingSpecId::get();
-            let spec = JobSpecs::<T>::get(spec_id).ok_or(sp_runtime::TryRuntimeError::Other(
-                "default Ising spec missing after network upgrade",
-            ))?;
-            if pre_version < StorageVersion::new(2) {
-                ensure!(
-                    spec.builder == T::DefaultJobSpecBuilder::get(),
-                    sp_runtime::TryRuntimeError::Other("default Ising spec builder mismatch"),
-                );
-                ensure!(
-                    NextOrderId::<T>::get() == 0,
-                    sp_runtime::TryRuntimeError::Other("network upgrade must leave orders wiped"),
-                );
-            }
-            // Only the v2 -> v3 indexing guarantees this bucket. Afterwards a
-            // backlog order may legitimately sit in an earlier bucket.
-            if pre_version < StorageVersion::new(3) {
-                for order_id in OpenOrders::<T>::iter_keys() {
-                    let Some(order) = JobOrders::<T>::get(order_id) else {
-                        continue;
-                    };
-                    if order.status != types::OrderStatus::Opened {
-                        continue;
-                    }
-                    let bucket = Self::expiry_bucket(lifecycle::effective_expiry(
-                        order.created_at,
-                        order.first_solution_at,
-                        &order.timing,
-                    ));
-                    ensure!(
-                        OrdersExpiringAt::<T>::contains_key(bucket, order_id),
-                        sp_runtime::TryRuntimeError::Other(
-                            "open order missing from its expiry bucket"
-                        ),
-                    );
-                }
-            }
-            Ok(())
-        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -1039,7 +928,7 @@ pub mod pallet {
 
         /// Derive the storage key hash for a job spec tuple.
         ///
-        /// All spec registration paths use this helper so genesis, migration,
+        /// All spec registration paths use this helper so genesis
         /// and the root extrinsic agree on `spec_id` derivation.
         fn job_spec_id(
             name: &BoundedVec<u8, ConstU32<128>>,
@@ -1058,7 +947,7 @@ pub mod pallet {
         /// Insert the canonical default plain Ising spec.
         ///
         /// `builder` is stored as attribution on the resulting `JobSpec`.
-        /// `emit_event` is `false` for genesis/migration and `true` only when
+        /// `emit_event` is `false` for genesis and `true` only when
         /// this helper is reused by an extrinsic path.
         fn insert_default_ising_spec(
             builder: T::AccountId,
@@ -1604,42 +1493,6 @@ pub mod pallet {
                     account_match || type_match
                 }
             }
-        }
-
-        /// Schedule every open order for finalisation and point the cursor at
-        /// the next block. Used once by the v2 -> v3 migration.
-        /// Since `frame_executive` runs migrations before `System::initialize`,
-        /// the `now + 1` cursor is the upgrade block itself and overdue orders
-        /// can finalise in that same block.
-        ///
-        /// Weight counts the initial block-number read, each `OpenOrders` key and
-        /// `JobOrders` value read, and the block-number read in each `schedule_expiry`.
-        /// Writes cover each expiry entry and the `NextExpiryBucket` cursor.
-        fn index_open_orders_for_expiry() -> Weight {
-            let now = frame_system::Pallet::<T>::block_number();
-            let mut reads: u64 = 1;
-            let mut writes: u64 = 1;
-
-            for order_id in OpenOrders::<T>::iter_keys() {
-                reads = reads.saturating_add(2);
-                let Some(order) = JobOrders::<T>::get(order_id) else {
-                    continue;
-                };
-                if order.status != types::OrderStatus::Opened {
-                    continue;
-                }
-                let expiry = lifecycle::effective_expiry(
-                    order.created_at,
-                    order.first_solution_at,
-                    &order.timing,
-                );
-                Self::schedule_expiry(order_id, expiry);
-                reads = reads.saturating_add(1);
-                writes = writes.saturating_add(1);
-            }
-
-            NextExpiryBucket::<T>::put(now.saturating_add(One::one()));
-            T::DbWeight::get().reads_writes(reads, writes)
         }
 
         /// Drain expiry buckets at or before `now`, at most
