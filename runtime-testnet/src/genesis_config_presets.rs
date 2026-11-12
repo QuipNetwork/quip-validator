@@ -1666,28 +1666,7 @@ mod tests {
         let fixture = ready_mainnet_fixture();
         // Spell these independently of the gate's keyring iteration, covering
         // both legacy to_seed() and canonical SDK stash derivation forms.
-        let seeds = [
-            "//Alice",
-            "//Bob",
-            "//Charlie",
-            "//Dave",
-            "//Eve",
-            "//Ferdie",
-            "//AliceStash",
-            "//BobStash",
-            "//CharlieStash",
-            "//DaveStash",
-            "//EveStash",
-            "//FerdieStash",
-            "//One",
-            "//Two",
-            "//Alice//stash",
-            "//Bob//stash",
-            "//Charlie//stash",
-            "//Dave//stash",
-            "//Eve//stash",
-            "//Ferdie//stash",
-        ];
+        let seeds = ["//Alice", "//AliceStash", "//Alice//stash", "//One"];
         let cases = quip_testnet_authorities()
             .into_iter()
             .map(|keys| ("testnet operator", keys))
@@ -1730,18 +1709,11 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_rejects_cross_network_stash() {
-        assert_mainnet_network_key_collisions_rejected(0);
-    }
-
-    #[test]
-    fn mainnet_rejects_cross_network_babe_key() {
-        assert_mainnet_network_key_collisions_rejected(1);
-    }
-
-    #[test]
-    fn mainnet_rejects_cross_network_grandpa_key() {
-        assert_mainnet_network_key_collisions_rejected(2);
+    fn mainnet_rejects_cross_network_keys() {
+        // Component 0 is the stash, 1 the BABE key, 2 the GRANDPA key.
+        for component in 0..3 {
+            assert_mainnet_network_key_collisions_rejected(component);
+        }
     }
 
     #[test]

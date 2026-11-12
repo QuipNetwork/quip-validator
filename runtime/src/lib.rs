@@ -13,7 +13,6 @@ pub mod weights;
 
 extern crate alloc;
 use alloc::vec::Vec;
-use frame_support::traits::{fungible::Mutate, OnRuntimeUpgrade};
 use pallet_revive::evm::runtime::EthExtra;
 use quip_transaction_crypto::HybridTxSignature;
 use sp_runtime::{
@@ -275,6 +274,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // at `store_program` with a verifier fault, where 0.4.0 accepted it.
     // Previously stored programs still execute; there is no re-verification
     // when a program is loaded for execution.
+    // 120 was never deployed; the v0.4.1-tagged 120 blob must never be enacted
+    // on any network. This fresh-genesis runtime has no upgrade path from
+    // an older storage version.
     spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
@@ -427,42 +429,8 @@ pub type UncheckedExtrinsic =
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 
-/// Runtime storage migrations, run on upgrade before every pallet's
-/// `on_runtime_upgrade`.
-pub type Migrations = (
-    pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,
-    InitializeReviveAccount,
-    configs::slashing::InitializeOffences,
-);
-
-/// Reproduces Revive's genesis-time pallet-account initialization when the
-/// pallet is introduced to an already-running chain by runtime upgrade.
-///
-/// The account-existence guard makes this safe and idempotent on later
-/// upgrades and on chains whose genesis already included Revive.
-pub struct InitializeReviveAccount;
-
-impl OnRuntimeUpgrade for InitializeReviveAccount {
-    fn on_runtime_upgrade() -> frame_support::weights::Weight {
-        let account = Revive::account_id();
-        let db_weight = <Runtime as frame_system::Config>::DbWeight::get();
-
-        if System::account_exists(&account) {
-            return db_weight.reads(1);
-        }
-
-        let minimum_balance =
-            <Balances as frame_support::traits::fungible::Inspect<AccountId>>::minimum_balance();
-        assert!(
-            <Balances as Mutate<AccountId>>::mint_into(&account, minimum_balance).is_ok(),
-            "Revive pallet account must be initialized during runtime upgrade",
-        );
-
-        // Account-existence check plus balance-account and total-issuance
-        // reads; minting writes the latter two storage entries.
-        db_weight.reads_writes(3, 2)
-    }
-}
+/// No storage upgrade path: runtime 120 launches from fresh genesis.
+pub type Migrations = ();
 
 /// Executive: handles dispatch to the various modules.
 pub type Executive = frame_executive::Executive<
@@ -1613,33 +1581,6 @@ mod tests {
             assert_eq!(
                 Revive::evm_base_fee(),
                 sp_core::U256::from(1_000_000_000u64)
-            );
-        });
-    }
-
-    #[test]
-    fn revive_upgrade_initialization_is_idempotent() {
-        let mut ext =
-            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
-
-        ext.execute_with(|| {
-            let account = Revive::account_id();
-            assert!(System::account_exists(&account));
-
-            frame_system::Account::<Runtime>::remove(&account);
-            assert!(!System::account_exists(&account));
-
-            InitializeReviveAccount::on_runtime_upgrade();
-            assert!(System::account_exists(&account));
-            assert_eq!(
-                frame_system::Account::<Runtime>::get(&account).data.free,
-                EXISTENTIAL_DEPOSIT
-            );
-
-            InitializeReviveAccount::on_runtime_upgrade();
-            assert_eq!(
-                frame_system::Account::<Runtime>::get(&account).data.free,
-                EXISTENTIAL_DEPOSIT
             );
         });
     }

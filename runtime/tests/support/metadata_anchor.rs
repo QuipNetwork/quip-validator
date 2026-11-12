@@ -1,4 +1,4 @@
-//! Exact native V16 metadata comparison. No normalization or approved deltas.
+//! Independent metadata invariants and anchor pins; SCALE byte equality is the gate.
 use serde_json::Value;
 
 pub const ANCHOR_FILES: [&str; 4] = [
@@ -100,46 +100,12 @@ fn check_indices(entries: &[Value], path: &str) -> Result<(), String> {
     Ok(())
 }
 
-// Walk every field, including all registry entries (reachable or otherwise),
-// numeric references, docs, paths and typeNames. Preserve the first-difference
-// diagnostics from the old graph walk, but allow no changes or renumbering.
-fn compare(a: &Value, b: &Value, path: &str) -> Result<(), String> {
-    match (a, b) {
-        (Value::Object(a), Value::Object(b)) => {
-            for (key, left) in a {
-                let location = format!("{path}.{key}");
-                let right = b
-                    .get(key)
-                    .ok_or_else(|| format!("{location}: metadata field missing"))?;
-                compare(left, right, &location)?;
-            }
-            if let Some(key) = b.keys().find(|key| !a.contains_key(*key)) {
-                return Err(format!("{path}.{key}: unexpected metadata field"));
-            }
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            for (i, (left, right)) in a.iter().zip(b).enumerate() {
-                compare(left, right, &format!("{path}[{i}]"))?;
-            }
-            if a.len() != b.len() {
-                return Err(format!(
-                    "{path}[{}]: metadata length changed",
-                    a.len().min(b.len())
-                ));
-            }
-        }
-        _ if a != b => return Err(format!("{path}: metadata value changed")),
-        _ => {}
-    }
-    Ok(())
-}
-
-pub fn check(anchor: &Value, candidate: &Value) -> Result<(), String> {
+pub fn check_invariants(anchor: &Value, candidate: &Value) -> Result<(), String> {
     // Check both inputs independently before comparison; equality must not
     // conceal a bad anchor or a split outer reference with identical content.
     invariants(anchor).map_err(|error| format!("anchor: {error}"))?;
     invariants(candidate).map_err(|error| format!("candidate: {error}"))?;
-    compare(anchor, candidate, "metadata")
+    Ok(())
 }
 
 // Only the anchor's size and digest are enforced. Compiler and lockfile
@@ -220,7 +186,7 @@ mod tests {
     fn metadata_pair() -> (Value, Value) {
         let anchor = serde_json::to_value(super::super::native_2609_metadata()).unwrap();
         let candidate = serde_json::to_value(super::super::metadata_v16()).unwrap();
-        check(&anchor, &candidate).unwrap();
+        check_invariants(&anchor, &candidate).unwrap();
         (anchor, candidate)
     }
 
@@ -233,95 +199,14 @@ mod tests {
             .unwrap()
     }
 
-    fn calls_id(metadata: &Value) -> usize {
-        metadata["pallets"][pallet_index(metadata, "Xqvm")]["calls"]["ty"]
-            .as_u64()
-            .unwrap() as usize
-    }
-
     fn rejected_on_both_sides(anchor: &Value, candidate: &Value, wrong: &Value, expected: &str) {
         for (side, left, right) in [("anchor", wrong, candidate), ("candidate", anchor, wrong)] {
-            let error = check(left, right).expect_err("mutation must be rejected");
+            let error = check_invariants(left, right).expect_err("mutation must be rejected");
             assert!(
                 error == expected || error == format!("{side}: {expected}"),
                 "{error}"
             );
             eprintln!("{side} mutation rejected: {error}");
-        }
-    }
-
-    #[test]
-    fn rejects_changed_documentation() {
-        let (anchor, candidate) = metadata_pair();
-        let mut wrong = candidate.clone();
-        let id = calls_id(&wrong);
-        let docs =
-            &mut wrong["types"]["types"][id]["type"]["def"]["variant"]["variants"][0]["docs"];
-        assert!(!docs.as_array().unwrap().is_empty());
-        docs[0] = json!("changed documentation line");
-        rejected_on_both_sides(&anchor, &candidate, &wrong,
-            &format!("metadata.types.types[{id}].type.def.variant.variants[0].docs[0]: metadata value changed"));
-    }
-
-    #[test]
-    fn rejects_changed_constant() {
-        let (anchor, candidate) = metadata_pair();
-        let mut wrong = candidate.clone();
-        let p = pallet_index(&wrong, "System");
-        let constants = wrong["pallets"][p]["constants"].as_array_mut().unwrap();
-        let c = constants
-            .iter()
-            .position(|c| c["name"] == "BlockHashCount")
-            .unwrap();
-        let byte = constants[c]["value"][0].as_u64().unwrap();
-        constants[c]["value"][0] = json!(byte ^ 1);
-        rejected_on_both_sides(
-            &anchor,
-            &candidate,
-            &wrong,
-            &format!("metadata.pallets[{p}].constants[{c}].value[0]: metadata value changed"),
-        );
-    }
-
-    #[test]
-    fn rejects_changed_dispatchable_argument_type() {
-        let (anchor, candidate) = metadata_pair();
-        let mut wrong = candidate.clone();
-        let id = calls_id(&wrong);
-        let argument = &mut wrong["types"]["types"][id]["type"]["def"]["variant"]["variants"][0]
-            ["fields"][0]["type"];
-        let old = argument.as_u64().unwrap();
-        *argument = json!(if old == 0 { 1 } else { 0 });
-        rejected_on_both_sides(&anchor, &candidate, &wrong,
-            &format!("metadata.types.types[{id}].type.def.variant.variants[0].fields[0].type: metadata value changed"));
-    }
-
-    #[test]
-    fn rejects_changed_type_paths_and_names() {
-        let (anchor, candidate) = metadata_pair();
-        let id = calls_id(&candidate);
-        for (pointer, path) in [
-            (
-                format!("/types/types/{id}/type/path/0"),
-                format!("metadata.types.types[{id}].type.path[0]"),
-            ),
-            (
-                format!("/types/types/{id}/type/def/variant/variants/0/fields/0/typeName"),
-                format!(
-                    "metadata.types.types[{id}].type.def.variant.variants[0].fields[0].typeName"
-                ),
-            ),
-        ] {
-            let mut wrong = candidate.clone();
-            let label = wrong.pointer_mut(&pointer).unwrap();
-            assert!(label.is_string());
-            *label = json!("changed client-facing name");
-            rejected_on_both_sides(
-                &anchor,
-                &candidate,
-                &wrong,
-                &format!("{path}: metadata value changed"),
-            );
         }
     }
 
@@ -350,7 +235,10 @@ mod tests {
                 let expected =
                     format!("{name}::{pallet} must reference the pallet {pallet}.{kind} type");
                 rejected_on_both_sides(&anchor, &candidate, &wrong, &expected);
-                assert_eq!(check(&wrong, &wrong), Err(format!("anchor: {expected}")));
+                assert_eq!(
+                    check_invariants(&wrong, &wrong),
+                    Err(format!("anchor: {expected}"))
+                );
             }
         }
     }
@@ -407,7 +295,7 @@ mod tests {
             Some("event_enum_ty"),
             Some("error_enum_ty"),
         ] {
-            for mutation in ["missing", "duplicate", "moved"] {
+            for mutation in ["missing", "duplicate", "moved", "occupied"] {
                 let mut wrong = candidate.clone();
                 let (entries, path) = if let Some(outer) = outer {
                     let id = wrong["outer_enums"][outer].as_u64().unwrap() as usize;
@@ -426,6 +314,10 @@ mod tests {
                     }
                     "duplicate" => entries.push(entries[index].clone()),
                     "moved" => entries[index]["index"] = json!(33),
+                    "occupied" => {
+                        let other = entries.iter_mut().find(|v| v["name"] != "Vesting").unwrap();
+                        other["index"] = json!(32);
+                    }
                     _ => unreachable!(),
                 }
                 rejected_on_both_sides(

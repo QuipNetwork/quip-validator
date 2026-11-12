@@ -239,8 +239,7 @@ pub struct QBlock<AccountId, Balance, BlockNumber> {
     /// Miner-reported compute time spent producing the winning proof, in
     /// microseconds — QPU access time for QPU wins, wall clock for CPU/GPU
     /// wins. Copied from the accepted [`ProofRecord`]. Self-reported and
-    /// unverifiable; `0` = unreported (including all pre-111 blocks, which
-    /// the v4 migration backfills with 0). Wall-clock mining duration
+    /// unverifiable; `0` = unreported. Wall-clock mining duration
     /// remains derivable from block spacing (`LastProofBlock` deltas), so
     /// no information is lost by carrying compute time here instead.
     pub device_access_time_us: u64,

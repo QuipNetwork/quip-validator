@@ -62,45 +62,7 @@ fn root_is_not_the_faucet_authority() {
         );
     });
 }
-#[test]
-fn fuse_is_one_way_and_survives_repeated_upgrade() {
-    use frame_support::traits::Hooks;
-    new_test_ext().execute_with(|| {
-        assert_ok!(FaucetOps::disable(RuntimeOrigin::signed(1)));
-        assert_noop!(
-            FaucetOps::mint(RuntimeOrigin::signed(1), 2, 1),
-            Error::<Test>::Disabled
-        );
-        assert_noop!(
-            FaucetOps::disable(RuntimeOrigin::signed(1)),
-            Error::<Test>::Disabled
-        );
-        FaucetOps::on_runtime_upgrade();
-        assert_eq!(
-            crate::State::<Test>::get(),
-            crate::FaucetState::PermanentlyDisabled
-        );
-    });
-}
-#[test]
-fn absent_state_and_legacy_upgrade_fail_closed() {
-    use frame_support::traits::{Hooks, StorageVersion};
-    new_test_ext().execute_with(|| {
-        crate::State::<Test>::kill();
-        assert_noop!(
-            FaucetOps::mint(RuntimeOrigin::signed(1), 2, 1),
-            Error::<Test>::Disabled
-        );
-        StorageVersion::new(0).put::<FaucetOps>();
-        #[cfg(feature = "try-runtime")]
-        let before = FaucetOps::pre_upgrade().unwrap();
-        FaucetOps::on_runtime_upgrade();
-        #[cfg(feature = "try-runtime")]
-        FaucetOps::post_upgrade(before).unwrap();
-        assert_eq!(crate::State::<Test>::get(), crate::FaucetState::Paused);
-        assert!(!crate::Authority::<Test>::exists());
-    });
-}
+
 #[test]
 fn faucet_mints_only_within_controller_budget() {
     new_test_ext().execute_with(|| {

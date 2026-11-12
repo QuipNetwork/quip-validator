@@ -190,6 +190,47 @@ useless_conversion = { level = "allow", priority = 2 }               # Types may
 while_immutable_condition = { level = "allow", priority = 2 }        # false positives
 zero-prefixed-literal = { level = "allow", priority = 2 }            # 00_1000_000
 
+# Debug builds compile the hybrid-key crypto with optimizations. Tests derive
+# H4/BABE/GRANDPA keys from dev seeds (PBKDF2, FN-DSA keygen, sr25519), and
+# unoptimized that costs a large share of the runtime test suite. For example,
+# mainnet_rejects_cross_network_stash takes 174 s at opt-level 0 and 4 s here.
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.fips204]
+opt-level = 3
+[profile.dev.package.fn-dsa]
+opt-level = 3
+[profile.dev.package.fn-dsa-comm]
+opt-level = 3
+[profile.dev.package.fn-dsa-kgen]
+opt-level = 3
+[profile.dev.package.fn-dsa-sign]
+opt-level = 3
+[profile.dev.package.fn-dsa-vrfy]
+opt-level = 3
+[profile.dev.package.hkdf]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.keccak]
+opt-level = 3
+[profile.dev.package.merlin]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.pqhybridsign]
+opt-level = 3
+[profile.dev.package.schnorrkel]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.sha3]
+opt-level = 3
+[profile.dev.package.substrate-bip39]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 panic = "unwind"

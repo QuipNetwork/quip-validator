@@ -657,19 +657,26 @@ fn native_2609_manifest_pins_match_anchor_files() {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn metadata_matches_native_2609_anchor() {
+fn native_metadata_satisfies_anchor_invariants() {
+    // Check independent invariants before requiring exact SCALE bytes.
     let anchor = serde_json::to_value(native_2609_metadata()).unwrap();
     let candidate = serde_json::to_value(metadata_v16()).unwrap();
-    metadata_anchor::check(&anchor, &candidate).unwrap();
+    metadata_anchor::check_invariants(&anchor, &candidate).unwrap();
+    let anchor_bytes = std::fs::read(native_2609_anchor_path()).unwrap();
+    assert_metadata_bytes_match(&anchor_bytes, &metadata_v16_bytes(), "native metadata");
 }
 
+// Surface output is diagnostic only: docs and other omitted fields still fail
+// the exact byte comparison even when the rendered diff is empty.
 #[cfg(not(feature = "runtime-benchmarks"))]
-#[test]
-fn native_2609_anchor_reproduces_exact_bytes() {
-    let anchor = std::fs::read(native_2609_anchor_path()).unwrap();
+fn assert_metadata_bytes_match(anchor: &[u8], bytes: &[u8], source: &str) {
     assert!(
-        metadata_v16_bytes() == anchor,
-        "native metadata must reproduce the anchor byte for byte"
+        bytes == anchor,
+        "{source} must reproduce the anchor byte for byte; surface diff (may omit the differing field):\n{}",
+        metadata_surface::diff(
+            &metadata_surface::surface(&decode_metadata_v16(anchor), true),
+            &metadata_surface::surface(&decode_metadata_v16(bytes), true),
+        ).join("\n")
     );
 }
 
@@ -686,16 +693,12 @@ fn wasm_metadata_matches_native_2609_anchor() {
         let Some(bytes) = wasm_metadata_bytes(version) else {
             return;
         };
-        // Report the first differing path before checking exact SCALE bytes.
-        metadata_anchor::check(
+        metadata_anchor::check_invariants(
             &serde_json::to_value(decode_metadata_v16(&anchor)).unwrap(),
             &serde_json::to_value(decode_metadata_v16(&bytes)).unwrap(),
         )
         .unwrap_or_else(|error| panic!("{api}: {error}"));
-        assert!(
-            bytes == anchor,
-            "Wasm {api} must reproduce the anchor byte for byte"
-        );
+        assert_metadata_bytes_match(&anchor, &bytes, api);
         println!("{api}: {} bytes match the checked-in anchor", bytes.len());
     }
 }
@@ -708,7 +711,7 @@ fn capture_native_2609_anchor() {
     let path = native_2609_anchor_path();
     let bytes = metadata_v16_bytes();
     let metadata = serde_json::to_value(decode_metadata_v16(&bytes)).unwrap();
-    metadata_anchor::check(&metadata, &metadata)
+    metadata_anchor::check_invariants(&metadata, &metadata)
         .expect("capture must satisfy independent invariants");
     let directory = path.parent().unwrap();
     let manifest_path = directory.join("manifest.json");

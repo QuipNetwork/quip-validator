@@ -318,33 +318,41 @@ mod tests {
     }
 
     #[test]
-    fn expected_gse_integer_range_matches_equivalent_set() {
+    fn expected_gse_range_matches_equivalent_set() {
         // IntegerRange {-2..=2} samples {-2,-1,0,1,2} scaled by MILLI_SCALE,
         // exactly the same distribution as the explicit milli set.
-        let h_range: AllowedValueSpec<&[MilliValue]> =
-            AllowedValueSpec::IntegerRange { min: -2, max: 2 };
-        let h_set = set_spec(&[-2000, -1000, 0, 1000, 2000]);
-        let j = set_spec(&[-1000, 1000]);
-        assert_eq!(
-            expected_gse(1024, 2048, 0.75, &h_range, &j).unwrap(),
-            expected_gse(1024, 2048, 0.75, &h_set, &j).unwrap(),
-        );
-    }
-
-    #[test]
-    fn expected_gse_positive_continuous_range_matches_equivalent_mean() {
         // ContinuousRange [500, 1500] milli is all-positive with mean |v| =
-        // 1000 milli — the same mean magnitude as the binary ±1000 set.
-        let h_range: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange {
-            min: 500,
-            max: 1500,
-        };
-        let h_set = set_spec(&[-1000, 1000]);
-        let j = set_spec(&[-1000, 1000]);
-        assert_eq!(
-            expected_gse(1024, 2048, 0.75, &h_range, &j).unwrap(),
-            expected_gse(1024, 2048, 0.75, &h_set, &j).unwrap(),
+        // 1000 milli, the same mean magnitude as the binary +-1000 set.
+        // (name, range spec, equivalent explicit set)
+        type Case<'a> = (
+            &'a str,
+            AllowedValueSpec<&'a [MilliValue]>,
+            AllowedValueSpec<&'a [MilliValue]>,
         );
+        let cases: [Case; 2] = [
+            (
+                "integer range",
+                AllowedValueSpec::IntegerRange { min: -2, max: 2 },
+                set_spec(&[-2000, -1000, 0, 1000, 2000]),
+            ),
+            (
+                "positive continuous range",
+                AllowedValueSpec::ContinuousRange {
+                    min: 500,
+                    max: 1500,
+                },
+                set_spec(&[-1000, 1000]),
+            ),
+        ];
+        let j = set_spec(&[-1000, 1000]);
+
+        for (name, h_range, h_set) in cases {
+            assert_eq!(
+                expected_gse(1024, 2048, 0.75, &h_range, &j).unwrap(),
+                expected_gse(1024, 2048, 0.75, &h_set, &j).unwrap(),
+                "case: {name}"
+            );
+        }
     }
 
     #[test]
