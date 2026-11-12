@@ -289,9 +289,11 @@ browser-signer-test:
   before_script:
     - !reference [.image-tools, before_script]
     - wasm-pack --version
+  # cargo-test runs the unit and integration tests of these crates and the
+  # signing_fixture test (`--workspace --lib --bins --tests`). Only the
+  # doc-tests, which cargo-test does not select, run here.
   script:
-    - cargo test -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
-    - cargo test -p quip-protocol-runtime --test signing_fixture
+    - cargo test --doc -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
     - cargo check -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown
     - make wasm-signer
     - npm ci --prefix js/quip-signer
