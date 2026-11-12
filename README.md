@@ -310,11 +310,15 @@ with this runtime.
 `RuntimeFreezeReason::Revive` at index 14 raises `Balances::MaxFreezes` from
 0 to 1. With Revive configured with `Deposit = ()`, that freeze is never applied.
 
-The port also deliberately rejects nonzero transaction-extension versions
-during SCALE extrinsic decoding. Clients that wrapped `eth_transact` in a
-V5 general envelope with a nonzero extension version must send a bare V5 or
-general V5/version-0 wrapper instead. Only the outer wrapper changes: the
-signed Ethereum payload is unchanged and does not need to be re-signed.
+Since runtime 120 (stable2609), general (V5) extrinsic wrappers must use
+transaction-extension version 0. Nonzero versions previously accepted around
+`eth_transact` now fail during decoding. The checked-in Quip production
+builders construct none of these nonzero wrappers, in either the inspected
+pre-port or current code, so this tightening introduces no wrapper-related
+upgrade-ordering requirement for that tooling. Third-party clients that
+hand-built such wrappers must use bare V5 or general V5/version 0 instead.
+Only the outer wrapper changes: the signed Ethereum payload is unchanged
+and does not need to be re-signed.
 This applies to legacy/EIP-155, EIP-2930 and EIP-1559 transactions; Ethereum
 transaction type numbers are separate from outer extension versions.
 
