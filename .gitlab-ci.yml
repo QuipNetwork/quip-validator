@@ -14,7 +14,7 @@
 #   - manifest:  stitch each image's per-arch builds into a multi-arch manifest
 #                list so a single tag serves both architectures
 #   - release:   publish the quip-signer abi3 wheels + sdist to PyPI on release
-#                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
+#                tags via Trusted Publishing (OIDC) — TestPyPI, then PyPI, both auto
 #
 # Triggers:
 #   - merge_request_event  →  test (+ quip-signer Linux wheel build & amd64 import-smoke, no upload;
@@ -30,7 +30,7 @@
 #                              + release:build-pypi-linux + both Linux import-smokes
 #                              + release:build-pypi-macos (build + smoke)
 #                              + release:publish-testpypi (auto)
-#                              + release:publish-pypi (manual promote)
+#                              + release:publish-pypi (auto, after TestPyPI)
 #
 # Multi-arch: kaniko has no cross-build/manifest support — it builds for the
 # native architecture of whichever runner it runs on. So each architecture has
@@ -916,7 +916,7 @@ manifest-evm-sidecar:
 #   release:smoke-pypi-arm64   release tag only; needs build import the aarch64 wheel
 #   release:build-pypi-macos   signer MRs + release tag      build + smoke the 2 macOS wheels
 #   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
-#   release:publish-pypi       release tag, if PUBLISH=true  manual  → PyPI
+#   release:publish-pypi       release tag, if PUBLISH=true  auto    → PyPI, after TestPyPI
 #
 # build + the amd64 smoke also run as an MR dry-run (no upload) to catch packaging
 # regressions before a tag. The arm64 smoke and both publishes are tag-only — the
@@ -967,7 +967,7 @@ manifest-evm-sidecar:
 # py-signer-test — it caches the crate's target/ keyed on that lock, not the
 # workspace one. Emits dist/ as an artefact so the smoke and publish jobs consume
 # the exact bytes it built (never a rebuild — the smoked wheel is the shipped
-# wheel). expire_in outlasts a manual PyPI promote clicked days after the tag.
+# wheel). expire_in outlasts a publish job retried days after the tag.
 .pypi-build:
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
@@ -1148,19 +1148,27 @@ release:publish-testpypi:
   script:
     - bash scripts/python-dists.sh publish testpypi
 
-# Promote to production PyPI: manual button on the tag pipeline, once publishing
-# is enabled. Manual + allow_failure so an un-clicked promote never reds the node
-# release pipeline; click it once the TestPyPI wheel checks out. Needs build +
-# both smokes (via .pypi-publish) — the promote uploads the same smoked bytes,
-# read from build's artefact (expire_in: 1 week covers a promote clicked days
-# later). Audience is `pypi` here (vs `testpypi` above).
+# Publish to production PyPI once the TestPyPI upload has passed, on the same
+# release tags. This was a manual promote with allow_failure, and nobody pressed
+# it for v0.3.1, v0.3.2 or v0.4.0: those versions reached only TestPyPI and the
+# pipeline stayed green. TestPyPI is the rehearsal, so a green TestPyPI upload
+# is the promote. No allow_failure: a failed PyPI upload reds the tag pipeline,
+# which is the signal the manual job never gave. `needs` is spelled out because
+# a job's `needs` replaces the template's list rather than adding to it. It
+# uploads the same smoked bytes as TestPyPI, read from the build artefacts.
+# Audience is `pypi` here (vs `testpypi` above).
 release:publish-pypi:
   extends: .pypi-publish
   stage: release
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
-      when: manual
-      allow_failure: true
+  rules: !reference [.on-release-tag, rules]
+  needs:
+    - job: dependency-gate
+      optional: true
+    - release:build-pypi-linux
+    - release:smoke-pypi-amd64
+    - release:smoke-pypi-arm64
+    - release:build-pypi-macos
+    - release:publish-testpypi
   environment: release
   id_tokens:
     PYPI_ID_TOKEN:
