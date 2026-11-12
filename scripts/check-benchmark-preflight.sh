@@ -9,9 +9,15 @@ set -euo pipefail
 # temporary directory; tracked weights are never overwritten.
 #
 # Environment overrides:
-#   STEPS / REPEAT   benchmark resolution (default 2 / 1)
+#   STEPS / REPEAT   benchmark resolution (default 3 / 1)
+#
+# Three steps, not two: the weight writer fits a proof-size slope for every
+# storage prefix, and a prefix that a component touches only above zero has a
+# single sample at two steps (the top of the range). The stable2609 analysis
+# rejects a one-sample fit instead of panicking past it, as
+# `finalise_expired_orders` showed.
 
-STEPS="${STEPS:-2}"
+STEPS="${STEPS:-3}"
 REPEAT="${REPEAT:-1}"
 
 normalize_signature() {
