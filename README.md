@@ -287,6 +287,26 @@ the published `v0.4.1` 120/7 blob, must refresh their metadata. Revive's
 only because runtime 120 launches from fresh genesis; this port is not an
 in-place upgrade for an existing runtime-120 chain.
 
+`System.CodeUpdated` (event index 2) gains a `hash: H256` field, so upgrade
+watchers must update their decoders. `Offences.Offence` (event index 0) renames
+`timeslot` to `slot`; the SCALE encoding is unchanged, but name-based decoders
+must update. Against the archived pre-vesting baseline, `Template` at index 7
+is removed and that index is retired; `Vesting` is present at index 32.
+The new signed-election events occupying indices 3–5 are
+`RewardPaymentDeferred`, `UnpaidRewardEvicted`, and `FeeRefundFailed`.
+
+Other storage metadata changes include Revive's `EthereumBlock` type moving
+from `evm::api::rpc_types_gen::Block` to `evm::api::block::Block`, and new
+`Revive.NativeDepositOf`, `MultiBlockElectionSigned.UnpaidRewards`, and
+`Vesting.Vesting`/`Vesting.StorageVersion` entries. These are part of the
+fresh-genesis baseline, not an in-place storage migration.
+
+`ReviveApi` is now version 2 and uses `pallet_revive_types` V1 payload/result
+types. It adds `eth_estimate_gas`, `eth_pre_dispatch_weight`,
+`trace_call_with_config`, `max_extrinsic_weight_in_gas`, `version_declarations`,
+and 24 `*_versioned` methods. Deploy a 2609-compatible eth-rpc proxy in lockstep
+with this runtime.
+
 `RuntimeFreezeReason::Revive` at index 14 raises `Balances::MaxFreezes` from
 0 to 1. With Revive configured with `Deposit = ()`, that freeze is never applied.
 
@@ -314,12 +334,33 @@ deposits. Each account's owner can reverse its mapping with `unmap_account`,
 although a later batch can map it again. This is an accepted property; no
 `BaseCallFilter` restriction is added.
 
+The batch-mapping call has index 13; Revive also adds `AutoMappingEnabled`
+and `PendingDepositCleanup` errors at indices 66 and 67.
+
 The signed election phase remains disabled. `MaxFeeRefund = 0` is a latent
 change from the old SDK's uncapped winner fee refund: enabling the phase
 without revisiting this setting would refund no fees. The reward source uses
 the dedicated `qp/sgnrd` pallet account rather than SDK minting. It has no
 configured funding, so positive rewards from an empty pot are deferred;
 external transfers can fund it, but payouts still transfer existing funds.
+
+`MultiBlockElectionSigned.claim_unpaid_reward` is call 5; its new errors are
+`NoUnpaidReward` (9) and `PotStillDepleted` (10). The disabled signed phase
+normally creates no rewards to claim; the call itself remains dispatchable
+and rejects a claim when no queued reward exists.
+
+Against the archived pre-vesting baseline, `System.BlockWeights` base block
+and extrinsic costs move from 439,945/319,244 ns to 428,890/314,509 ns.
+`Xqvm.WeightPerStep` changes from 35,592 to 29,206 ps and the derived
+`Xqvm.MaxStepLimit` from 21,044,939 to 25,657,397. Mempool VM errors occupy
+indices 36–44; its limits are 5,000,000 transform steps per submission and
+16,777,216 bytes of VM memory, with `VmWeightPerStep` matching the XQVM rate.
+
+The runtime remains at spec 120/transaction 7 with the same signed-extension
+set, but its metadata hash has changed. Signers enabling `CheckMetadataHash`
+need the new metadata. Wallets caching by `(specName, specVersion)` must
+refetch rather than assume that matching 120/7 identifies the metadata in
+the published `v0.4.1` blob.
 
 The pre-vesting evidence (captured from `ba20b1e`, checked in by `b483bfb`)
 remains in git history at
