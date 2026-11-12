@@ -93,7 +93,8 @@ impl multi_block::unsigned::Config for Runtime {
 /// minting, so use a dedicated pot with no genesis allocation or configured
 /// funding instead. Positive rewards from an empty pot defer to UnpaidRewards.
 /// Anyone can transfer into this account; even then payouts transfer existing
-/// funds rather than minting. Enabling the phase requires reviewing this source.
+/// funds rather than minting. This is a guard, not a funded reward budget;
+/// enabling the phase requires reviewing this source.
 pub struct NoSignedReward;
 
 impl multi_block::signed::RewardSource<AccountId, Balance> for NoSignedReward {

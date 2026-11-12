@@ -410,12 +410,18 @@ impl pallet_revive::Config for Runtime {
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
     /// The native backend mints each contract's ED and marks it inactive;
     /// the deployer is not charged and dry-run storage deposits exclude it.
+    /// Deployment charges and dry-run deposit estimates drop by one ED.
     /// Termination attempts to burn/reactivate that ED only when it is the
     /// account's sole balance with no dust; otherwise it stays. It is never
     /// refunded to the terminating caller. This differs from the pre-2609 SDK.
     type Deposit = ();
-    /// Explicit `map_account`/`unmap_account` remain the only mapping path:
-    /// `frame_system`'s account hooks are not `AutoMapper`.
+    /// Explicit mapping is the default; account hooks do not use `AutoMapper`.
+    /// Accepted 2609 behavior: `batch_map_accounts` is not gated by `AutoMap`.
+    /// Any signed non-contract caller can map eligible existing third-party
+    /// accounts without a deposit. It is fee-free when at least 90% of entries
+    /// are useful (new mappings or released mapping deposits). An account's
+    /// owner can reverse the mapping with `unmap_account`; a later batch can
+    /// map it again. We deliberately keep this permissionless batch path.
     type AutoMap = ConstBool<false>;
     type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;
     type AllowEVMBytecode = ConstBool<true>;

@@ -305,6 +305,15 @@ storage-deposit estimates drop by one ED. On termination, the SDK attempts
 to burn/reactivate it only when the account holds exactly the ED and no dust;
 otherwise it remains. It is never refunded to the terminating caller.
 
+We deliberately keep the SDK's permissionless `Revive.batch_map_accounts`
+call. Explicit mapping remains the default with `AutoMap = false`, but this
+batch call is not gated by that setting: any signed non-contract caller can
+map eligible existing third-party accounts without a deposit. The call is
+fee-free when at least 90% of entries create mappings or release held mapping
+deposits. Each account's owner can reverse its mapping with `unmap_account`,
+although a later batch can map it again. This is an accepted property; no
+`BaseCallFilter` restriction is added.
+
 The signed election phase remains disabled. `MaxFeeRefund = 0` is a latent
 change from the old SDK's uncapped winner fee refund: enabling the phase
 without revisiting this setting would refund no fees. The reward source uses
