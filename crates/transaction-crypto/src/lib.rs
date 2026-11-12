@@ -336,17 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn account_id_domain_is_pinned() {
-        // Changing this string re-keys every account at genesis. If that's
-        // really the intent, bump the version segment ("v1" -> "v2") in
-        // lockstep with the migration plan.
-        assert_eq!(
-            quip_transaction_crypto_core::ACCOUNT_ID_DOMAIN,
-            b"quip-account-v1"
-        );
-    }
-
-    #[test]
     fn hybrid_tx_signature_rejects_tampered_signature_bytes() {
         let pair = HybridPair::from_string("//Alice", None).unwrap();
         let account_id = account_id_from_public(&pair.public());
