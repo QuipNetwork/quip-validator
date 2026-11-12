@@ -298,6 +298,20 @@ signed Ethereum payload is unchanged and does not need to be re-signed.
 This applies to legacy/EIP-155, EIP-2930 and EIP-1559 transactions; Ethereum
 transaction type numbers are separate from outer extension versions.
 
+Revive's native `Deposit = ()` backend now mints a contract's existential
+deposit (ED) and marks that issuance inactive. The deployer no longer pays
+this ED as a metered storage deposit, so deployment charges and dry-run
+storage-deposit estimates drop by one ED. On termination, the SDK attempts
+to burn/reactivate it only when the account holds exactly the ED and no dust;
+otherwise it remains. It is never refunded to the terminating caller.
+
+The signed election phase remains disabled. `MaxFeeRefund = 0` is a latent
+change from the old SDK's uncapped winner fee refund: enabling the phase
+without revisiting this setting would refund no fees. The reward source uses
+the dedicated `qp/sgnrd` pallet account rather than SDK minting. It has no
+configured funding, so positive rewards from an empty pot are deferred;
+external transfers can fund it, but payouts still transfer existing funds.
+
 The pre-vesting evidence (captured from `ba20b1e`, checked in by `b483bfb`)
 remains in git history at
 [`b483bfb:tests/fixtures/pre-vesting/manifest.json`](https://gitlab.com/quip.network/quip-validator/-/blob/b483bfb1f8fb58e0be86f72c73bdf8119de63329/tests/fixtures/pre-vesting/manifest.json).

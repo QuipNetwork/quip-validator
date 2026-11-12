@@ -7,7 +7,7 @@ use frame_election_provider_support::{
     onchain, BoundedSupportsOf, ElectionProvider, PageIndex, SequentialPhragmen,
 };
 use pallet_election_provider_multi_block::{self as multi_block, unsigned::miner};
-use sp_runtime::{transaction_validity::TransactionPriority, PerU16};
+use sp_runtime::{traits::AccountIdConversion, transaction_validity::TransactionPriority, PerU16};
 
 parameter_types! {
     pub const Pages: u32 = 1;
@@ -89,14 +89,16 @@ impl multi_block::unsigned::Config for Runtime {
 }
 
 /// The signed phase is disabled (`SignedPhase = 0`, `MaxSubmissions = 0`), so
-/// nothing ever reaches the reward path. The pallet ships no no-op
-/// [`multi_block::signed::RewardSource`], so the stub is explicit: no pot and
-/// no payout. Enabling the signed phase means replacing this type.
+/// normal submissions cannot reach the reward path. `None` would select SDK
+/// minting, so use a dedicated pot with no genesis allocation or configured
+/// funding instead. Positive rewards from an empty pot defer to UnpaidRewards.
+/// Anyone can transfer into this account; even then payouts transfer existing
+/// funds rather than minting. Enabling the phase requires reviewing this source.
 pub struct NoSignedReward;
 
 impl multi_block::signed::RewardSource<AccountId, Balance> for NoSignedReward {
     fn account() -> Option<AccountId> {
-        None
+        Some(frame_support::PalletId(*b"qp/sgnrd").into_account_truncating())
     }
 
     fn paid(_amount: Balance) {}
@@ -608,12 +610,12 @@ mod tests {
     }
     #[test]
     fn signed_phase_stubs_are_unreachable() {
-        // The signed phase is disabled, so its accounting types are stubs: no
-        // submission is accepted and no reward is paid. Enabling the phase
-        // means replacing `NoSignedReward`, `Slash` and `MaxFeeRefund`; this
-        // test fails on purpose if any of the four ever moves.
+        // Pin disabled submission/validation phases, zero submission capacity,
+        // reward and fee-refund amounts, and the initially empty non-minting
+        // source. This does not exercise the Slash handler.
         use frame_support::traits::Get;
         assert_eq!(SignedPhase::get(), 0);
+        assert_eq!(SignedValidationPhase::get(), 0);
         assert_eq!(
             <<Runtime as multi_block::signed::Config>::MaxSubmissions as Get<u32>>::get(),
             0
@@ -623,9 +625,45 @@ mod tests {
             0
         );
         assert_eq!(
-            <NoSignedReward as multi_block::signed::RewardSource<AccountId, Balance>>::account(),
-            None
+            <<Runtime as multi_block::signed::Config>::MaxFeeRefund as Get<Balance>>::get(),
+            0
         );
+        let pot = <<Runtime as multi_block::signed::Config>::RewardSource as
+            multi_block::signed::RewardSource<AccountId, Balance>>::account()
+            .expect("None would mint rewards");
+        assert_eq!(
+            pot,
+            frame_support::PalletId(*b"qp/sgnrd").into_account_truncating()
+        );
+        validator_onboarding::tests::ext().execute_with(|| {
+            assert_eq!(Balances::free_balance(pot), 0);
+        });
+    }
+
+    #[test]
+    fn empty_signed_reward_pot_does_not_mint_an_unpaid_reward() {
+        validator_onboarding::tests::ext().execute_with(|| {
+            let who = AccountId::new([99; 32]);
+            // The SDK entry's fields are private. Decode its SCALE layout to
+            // simulate a positive deferred reward without enabling the phase.
+            let entry = multi_block::signed::UnpaidReward::<Runtime>::decode(
+                &mut (0u32, who.clone(), UNIT).encode().as_slice(),
+            )
+            .unwrap();
+            multi_block::signed::UnpaidRewards::<Runtime>::mutate(|unpaid| {
+                unpaid.try_push(entry).unwrap();
+            });
+            let issuance = Balances::total_issuance();
+            assert_noop!(
+                MultiBlockElectionSigned::claim_unpaid_reward(RuntimeOrigin::signed(who), 0),
+                multi_block::signed::Error::<Runtime>::PotStillDepleted
+            );
+            assert_eq!(Balances::total_issuance(), issuance);
+            assert_eq!(
+                multi_block::signed::UnpaidRewards::<Runtime>::get().len(),
+                1
+            );
+        });
     }
 
     #[test]

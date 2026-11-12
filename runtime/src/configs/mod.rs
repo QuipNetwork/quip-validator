@@ -408,8 +408,11 @@ impl pallet_revive::Config for Runtime {
     type DepositPerItem = StorageDepositPerItem;
     type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
-    /// Storage deposits are charged in the native currency (`()` is the SDK's
-    /// native-currency backend); contracts hold no separate ED deposit.
+    /// The native backend mints each contract's ED and marks it inactive;
+    /// the deployer is not charged and dry-run storage deposits exclude it.
+    /// Termination attempts to burn/reactivate that ED only when it is the
+    /// account's sole balance with no dust; otherwise it stays. It is never
+    /// refunded to the terminating caller. This differs from the pre-2609 SDK.
     type Deposit = ();
     /// Explicit `map_account`/`unmap_account` remain the only mapping path:
     /// `frame_system`'s account hooks are not `AutoMapper`.
