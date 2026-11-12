@@ -14,6 +14,8 @@ pub mod weights;
 mod benchmarking;
 
 #[cfg(test)]
+mod family_tests;
+#[cfg(test)]
 mod mock;
 #[cfg(test)]
 mod tests;
@@ -50,7 +52,10 @@ sp_api::decl_runtime_apis! {
     /// Version 2 adds the per-topology `difficulty_for` and the
     /// `mineable_topologies` whitelist query. Clients can feature-detect
     /// these via the reported API version against older runtimes.
-    #[api_version(2)]
+    ///
+    /// Version 3 adds the `family` field to `MiningSnapshot` and
+    /// `TopologyMeta`, so their encodings differ from version 2.
+    #[api_version(3)]
     pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
         BlockNumber: codec::Codec,
@@ -135,11 +140,14 @@ pub mod pallet {
         traits::{ReservableCurrency, StorageVersion},
     };
     use frame_system::pallet_prelude::*;
+    pub use quantum_validation::families::Contract;
     use quantum_validation::{
         calculate_diversity, derive_nonce, energy_of_solution_indexed,
+        families::{AdvertisedLimits, FamilyChallenge, FamilyError},
         generate_ising_model_indexed,
         packed::{packed_solution_byte_len, spin_signs, unpack_solution},
         select_diverse, validate_topology_consistency, AllowedValueSpec, MilliValue, TopologyIndex,
+        MILLI_SCALE,
     };
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
@@ -231,6 +239,13 @@ pub mod pallet {
         #[pallet::constant]
         type CurveCHardMilli: Get<u32>;
 
+        /// The family revisions that `register_topology` admits for proof of
+        /// work. Every revision in the generator crate has registry status
+        /// `research`, and research families never mine, so both runtimes
+        /// leave this empty. Promoting a family is a runtime upgrade that
+        /// adds its contract here; that upgrade is the activation gate.
+        type PowFamilies: Get<&'static [Contract]>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -259,6 +274,15 @@ pub mod pallet {
     #[pallet::storage]
     pub type TopologyCurveC<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, crate::difficulty::CurveC>;
+
+    /// Root-set energy band of a family topology, set via
+    /// `set_topology_energy_band`. `energy_curve_for` runs the controller on
+    /// this band because a family's coefficients do not follow the
+    /// `expected_gse` model. A family topology cannot become mineable
+    /// without one.
+    #[pallet::storage]
+    pub type TopologyEnergyBand<T: Config> =
+        StorageMap<_, Blake2_128Concat, H256, crate::difficulty::EnergyBand>;
 
     /// Root-controlled whitelist of topologies that may be mined: a topology
     /// must have an entry here for `submit_proof` to accept its solutions.
@@ -385,6 +409,12 @@ pub mod pallet {
             energy_milli: i64,
             submitted_at: BlockNumberFor<T>,
         },
+        /// Root set the energy band a family topology's difficulty
+        /// controller runs on. Appended last so the earlier event indices
+        /// stay as the pre-family metadata recorded them.
+        TopologyEnergyBandSet {
+            topology_hash: H256,
+        },
     }
 
     #[pallet::error]
@@ -446,6 +476,24 @@ pub mod pallet {
         /// A positive diversity floor requires at least two selected
         /// solutions; diversity is defined as zero for fewer than two.
         InvalidDiversityConfig,
+        /// Admission refused the family descriptor or the topology: the
+        /// family is not in `PowFamilies`, the parameters are malformed or
+        /// out of bounds, or the topology does not fit the family.
+        FamilyRejected,
+        /// A family topology must register the two-value spin set, because
+        /// every family is a `±1` model.
+        FamilySpinSetRequired,
+        /// The energy band is not ordered (`hard_milli < easy_milli`).
+        InvalidEnergyBand,
+        /// A family topology cannot become mineable before root sets its
+        /// energy band; the difficulty controller has no curve without one.
+        EnergyBandMissing,
+        /// The nonce gives no instance for this family (code 13 or 14); the
+        /// miner must try another salt.
+        FamilyNonceSkipped,
+        /// A witness has the wrong length, a spin outside `±1`, breaks a hard
+        /// constraint of the family, or its energy overflows.
+        FamilyWitnessInvalid,
     }
 
     #[pallet::hooks]
@@ -759,13 +807,23 @@ pub mod pallet {
         }
 
         #[pallet::call_index(2)]
-        #[pallet::weight(<T as Config>::WeightInfo::register_topology(
-            nodes.len() as u32,
-            edges.len() as u32,
-            Pallet::<T>::allowed_value_input_count(&allowed_h_values)
-                .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_j_values))
-                .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_spin_values)),
-        ))]
+        #[pallet::weight({
+            let legacy = <T as Config>::WeightInfo::register_topology(
+                nodes.len() as u32,
+                edges.len() as u32,
+                Pallet::<T>::allowed_value_input_count(&allowed_h_values)
+                    .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_j_values))
+                    .saturating_add(Pallet::<T>::allowed_value_input_count(&allowed_spin_values)),
+            );
+            // Family admission runs the family's topology check on the whole
+            // graph. It is benchmarked at the largest admitted lattice and
+            // charged in full on top of the legacy registration work.
+            if family.is_some() {
+                legacy.saturating_add(<T as Config>::WeightInfo::register_family_topology())
+            } else {
+                legacy
+            }
+        })]
         pub fn register_topology(
             origin: OriginFor<T>,
             nodes: NodesOf<T>,
@@ -773,6 +831,7 @@ pub mod pallet {
             allowed_h_values: AllowedValueSpec<AllowedValueSetOf<T>>,
             allowed_j_values: AllowedValueSpec<AllowedValueSetOf<T>>,
             allowed_spin_values: AllowedValueSpec<AllowedValueSetOf<T>>,
+            family: Option<types::FamilyDescriptor>,
         ) -> DispatchResult {
             ensure_root(origin)?;
 
@@ -825,18 +884,39 @@ pub mod pallet {
                 Error::<T>::InvalidTopology
             );
 
-            let topology_hash = crate::topology::hash_topology(
+            let legacy_hash = crate::topology::hash_topology(
                 &nodes,
                 &edges,
                 &allowed_h_values.as_slice(),
                 &allowed_j_values.as_slice(),
                 &allowed_spin_values.as_slice(),
             );
+            let topology_hash = match &family {
+                None => legacy_hash,
+                Some(descriptor) => {
+                    // Every family is a `±1` model, and the family path
+                    // decodes witnesses through this spec.
+                    ensure!(
+                        allowed_spin_values.as_slice() == Self::binary_spin_spec(),
+                        Error::<T>::FamilySpinSetRequired
+                    );
+                    // Admission runs once here, so an unknown family, bad
+                    // parameters, or an unfit topology fail at registration
+                    // and never reach a proof.
+                    let challenge = Self::admit_family(descriptor, &nodes, &edges)?;
+                    crate::topology::hash_family_topology(
+                        legacy_hash,
+                        challenge.descriptor_digest(),
+                        challenge.topology_order_digest(),
+                    )
+                }
+            };
             ensure!(
                 !RegisteredTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyAlreadyRegistered
             );
 
+            let is_family = family.is_some();
             RegisteredTopologies::<T>::insert(
                 topology_hash,
                 TopologyMetaOf::<T> {
@@ -845,11 +925,14 @@ pub mod pallet {
                     allowed_h_values,
                     allowed_j_values,
                     allowed_spin_values,
+                    family,
                     registered_at: frame_system::Pallet::<T>::block_number(),
                 },
             );
 
-            if DefaultTopology::<T>::get().is_none() {
+            // A family topology is never auto-whitelisted: it cannot be mined
+            // before root sets its energy band (see `add_mineable_topology`).
+            if !is_family && DefaultTopology::<T>::get().is_none() {
                 DefaultTopology::<T>::put(topology_hash);
                 // The default topology must always be mineable (the invariant
                 // set_default_topology enforces). Auto-whitelist the first-registered
@@ -968,6 +1051,30 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set (or replace) the energy band of a family topology (root only).
+        ///
+        /// The difficulty controller eases and hardens within this band at
+        /// the module's fixed rates; `set_difficulty` sets the starting
+        /// point. The band must be ordered, `hard_milli < easy_milli`. A
+        /// legacy topology is refused: its curve comes from `expected_gse`
+        /// and `set_topology_curve`.
+        #[pallet::call_index(11)]
+        #[pallet::weight(<T as Config>::WeightInfo::set_topology_energy_band())]
+        pub fn set_topology_energy_band(
+            origin: OriginFor<T>,
+            topology_hash: H256,
+            band: crate::difficulty::EnergyBand,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let topology = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
+            ensure!(topology.family.is_some(), Error::<T>::FamilyRejected);
+            ensure!(band.curve().is_some(), Error::<T>::InvalidEnergyBand);
+            TopologyEnergyBand::<T>::insert(topology_hash, band);
+            Self::deposit_event(Event::TopologyEnergyBandSet { topology_hash });
+            Ok(())
+        }
+
         /// Set the qblock reward paid to the winning miner.
         ///
         /// Council business, not Root: the payout is a protocol parameter with a
@@ -1037,11 +1144,24 @@ pub mod pallet {
             // cost observed on node02, not a claim of literal O(n·e) complexity.
             // TopologyIndex uses BTreeMap construction and lookups, whose structural
             // behavior is closer to n·log(n) + e·log(n).
-            let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
-                .map(|topology| (topology.nodes.len() as u32, topology.edges.len() as u32))
-                .unwrap_or((0, 0));
             let solutions = proof.solutions.len() as u32;
-            <T as Config>::WeightInfo::submit_proof(nodes, edges, solutions)
+            match RegisteredTopologies::<T>::get(proof.topology_hash) {
+                Some(topology) => match &topology.family {
+                    // Admission caps every family instance at `MaxNodes` and
+                    // `MaxEdges`, and each weight class is benchmarked at the
+                    // largest lattice those bounds admit, so the class weight
+                    // covers every registered topology of that class.
+                    Some(descriptor) => crate::weights::family_proof_weight::<
+                        <T as Config>::WeightInfo,
+                    >(&descriptor.family_id, solutions),
+                    None => <T as Config>::WeightInfo::submit_proof(
+                        topology.nodes.len() as u32,
+                        topology.edges.len() as u32,
+                        solutions,
+                    ),
+                },
+                None => <T as Config>::WeightInfo::submit_proof(0, 0, solutions),
+            }
         })]
         pub fn submit_proof(origin: OriginFor<T>, proof: QuantumProofOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
@@ -1089,25 +1209,30 @@ pub mod pallet {
                 derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
-            let topology_index =
-                TopologyIndex::new(topology.nodes.as_slice(), topology.edges.as_slice())
-                    .map_err(|_| Error::<T>::InvalidTopology)?;
-            let (h, j) = generate_ising_model_indexed(
-                proof.nonce,
-                topology.nodes.as_slice(),
-                topology.edges.as_slice(),
-                &topology.allowed_h_values.as_slice(),
-                &topology.allowed_j_values.as_slice(),
-                &topology_index,
-            )
-            .map_err(|_| Error::<T>::InvalidTopology)?;
-
             let current = Self::current_difficulty_for(
                 proof.topology_hash,
                 frame_system::Pallet::<T>::block_number(),
             );
-            let validation =
-                Self::validate_proof(&proof, &topology, &topology_index, &h, &j, &current)?;
+            let validation = match &topology.family {
+                None => {
+                    let topology_index =
+                        TopologyIndex::new(topology.nodes.as_slice(), topology.edges.as_slice())
+                            .map_err(|_| Error::<T>::InvalidTopology)?;
+                    let (h, j) = generate_ising_model_indexed(
+                        proof.nonce,
+                        topology.nodes.as_slice(),
+                        topology.edges.as_slice(),
+                        &topology.allowed_h_values.as_slice(),
+                        &topology.allowed_j_values.as_slice(),
+                        &topology_index,
+                    )
+                    .map_err(|_| Error::<T>::InvalidTopology)?;
+                    Self::validate_proof(&proof, &topology, &topology_index, &h, &j, &current)?
+                }
+                Some(descriptor) => {
+                    Self::validate_family_proof(&proof, &topology, descriptor, &current)?
+                }
+            };
 
             ensure!(
                 validation.best_energy_milli < current.max_energy_milli,
@@ -1162,9 +1287,13 @@ pub mod pallet {
         #[pallet::weight(<T as Config>::WeightInfo::add_mineable_topology())]
         pub fn add_mineable_topology(origin: OriginFor<T>, topology_hash: H256) -> DispatchResult {
             ensure_root(origin)?;
+            let topology = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
+            // A family topology has no `expected_gse` curve, so the
+            // controller needs the root-set band before any proof can win.
             ensure!(
-                RegisteredTopologies::<T>::contains_key(topology_hash),
-                Error::<T>::TopologyNotRegistered
+                topology.family.is_none() || TopologyEnergyBand::<T>::contains_key(topology_hash),
+                Error::<T>::EnergyBandMissing
             );
             if !MineableTopologies::<T>::contains_key(topology_hash) {
                 // Model A: enforce at most one non-default mineable topology
@@ -1291,6 +1420,7 @@ pub mod pallet {
                 allowed_h_values: topology.allowed_h_values,
                 allowed_j_values: topology.allowed_j_values,
                 allowed_spin_values: topology.allowed_spin_values,
+                family: topology.family,
             })
         }
 
@@ -1316,6 +1446,38 @@ pub mod pallet {
         /// produces a deterministic 32-byte digest.
         pub fn account_to_bytes(account: &T::AccountId) -> [u8; 32] {
             sp_io::hashing::blake2_256(&account.encode())
+        }
+
+        /// The two-value spin set every family topology registers.
+        fn binary_spin_spec() -> AllowedValueSpec<&'static [MilliValue]> {
+            const SCALE: MilliValue = MILLI_SCALE as MilliValue;
+            AllowedValueSpec::Set(&[-SCALE, SCALE])
+        }
+
+        /// Admit `descriptor` on the base topology against `PowFamilies`.
+        ///
+        /// The pallet's `MaxNodes` and `MaxEdges` cap every instance, so the
+        /// same bounds that size a legacy proof also size a family proof.
+        fn admit_family<'a>(
+            descriptor: &'a types::FamilyDescriptor,
+            nodes: &[u32],
+            edges: &[(u32, u32)],
+        ) -> Result<FamilyChallenge<'a>, Error<T>> {
+            let limits = AdvertisedLimits {
+                max_nodes: u64::from(T::MaxNodes::get()),
+                max_edges: u64::from(T::MaxEdges::get()),
+                max_degree: 0,
+            };
+            FamilyChallenge::admit(
+                T::PowFamilies::get(),
+                &descriptor.family_id,
+                descriptor.revision,
+                &descriptor.params,
+                nodes,
+                edges,
+                &limits,
+            )
+            .map_err(|_| Error::<T>::FamilyRejected)
         }
 
         /// Look up a persisted qblock and re-derive its nonce.
@@ -1420,6 +1582,11 @@ pub mod pallet {
             topology_hash: H256,
         ) -> Option<crate::difficulty::EnergyCurve> {
             let topology = RegisteredTopologies::<T>::get(topology_hash)?;
+            // A family topology runs on its root-set band; `expected_gse`
+            // does not model generator-drawn coefficients.
+            if topology.family.is_some() {
+                return TopologyEnergyBand::<T>::get(topology_hash)?.curve();
+            }
             // Prefer a per-topology override; fall back to the runtime
             // constants when none is set (the legacy calibration).
             let curve_c = TopologyCurveC::<T>::get(topology_hash).unwrap_or_else(|| {
@@ -1447,25 +1614,7 @@ pub mod pallet {
             j: &[MilliValue],
             difficulty: &types::DifficultyConfig,
         ) -> Result<types::ProofValidation, DispatchError> {
-            let spin_spec = topology.allowed_spin_values.as_slice();
-            let num_spins = topology.nodes.len();
-            let mut decoded: Vec<Vec<i8>> = Vec::with_capacity(proof.solutions.len());
-
-            for packed in proof.solutions.iter() {
-                let milli =
-                    unpack_solution(packed.as_slice(), num_spins, &spin_spec).map_err(|err| {
-                        match err {
-                            quantum_validation::ValidationError::PackedSolutionLengthMismatch {
-                                ..
-                            } => DispatchError::from(Error::<T>::PackedSolutionLengthMismatch),
-                            quantum_validation::ValidationError::InvalidEncodedValue { .. } => {
-                                DispatchError::from(Error::<T>::InvalidEncodedSpin)
-                            }
-                            _ => DispatchError::from(Error::<T>::InvalidTopology),
-                        }
-                    })?;
-                decoded.push(spin_signs(&milli).map_err(|_| Error::<T>::InvalidSpinValues)?);
-            }
+            let decoded = Self::decode_solutions(proof, topology, topology.nodes.len())?;
 
             let mut energies = Vec::with_capacity(decoded.len());
             for spins in decoded.iter() {
@@ -1488,6 +1637,75 @@ pub mod pallet {
                 energies.push(energy);
             }
 
+            Self::score_solutions(&decoded, &energies, difficulty)
+        }
+
+        /// Verify a proof against a family topology.
+        ///
+        /// The instance is rebuilt from the chain's own descriptor and the
+        /// derived nonce; the proof contributes only witnesses. Each witness
+        /// is sized by the instance, not the base topology, and must pass the
+        /// family's hard constraints before its energy counts.
+        fn validate_family_proof(
+            proof: &QuantumProofOf<T>,
+            topology: &TopologyMetaOf<T>,
+            descriptor: &types::FamilyDescriptor,
+            difficulty: &types::DifficultyConfig,
+        ) -> Result<types::ProofValidation, DispatchError> {
+            let challenge = Self::admit_family(descriptor, &topology.nodes, &topology.edges)?;
+            let instance = challenge
+                .regenerate(proof.nonce.to_big_endian())
+                .map_err(|err| match err {
+                    FamilyError::Skipped(_) => Error::<T>::FamilyNonceSkipped,
+                    _ => Error::<T>::FamilyRejected,
+                })?;
+            let decoded = Self::decode_solutions(proof, topology, instance.node_ids().len())?;
+
+            let mut energies = Vec::with_capacity(decoded.len());
+            for spins in decoded.iter() {
+                let energy = challenge
+                    .verify_witness(&instance, spins)
+                    .map_err(|_| Error::<T>::FamilyWitnessInvalid)?;
+                energies.push(energy);
+            }
+
+            Self::score_solutions(&decoded, &energies, difficulty)
+        }
+
+        /// Unpack every submitted solution under the topology's spin spec
+        /// into `±1` spin vectors of `num_spins` entries.
+        fn decode_solutions(
+            proof: &QuantumProofOf<T>,
+            topology: &TopologyMetaOf<T>,
+            num_spins: usize,
+        ) -> Result<Vec<Vec<i8>>, DispatchError> {
+            let spin_spec = topology.allowed_spin_values.as_slice();
+            let mut decoded: Vec<Vec<i8>> = Vec::with_capacity(proof.solutions.len());
+
+            for packed in proof.solutions.iter() {
+                let milli =
+                    unpack_solution(packed.as_slice(), num_spins, &spin_spec).map_err(|err| {
+                        match err {
+                            quantum_validation::ValidationError::PackedSolutionLengthMismatch {
+                                ..
+                            } => DispatchError::from(Error::<T>::PackedSolutionLengthMismatch),
+                            quantum_validation::ValidationError::InvalidEncodedValue { .. } => {
+                                DispatchError::from(Error::<T>::InvalidEncodedSpin)
+                            }
+                            _ => DispatchError::from(Error::<T>::InvalidTopology),
+                        }
+                    })?;
+                decoded.push(spin_signs(&milli).map_err(|_| Error::<T>::InvalidSpinValues)?);
+            }
+            Ok(decoded)
+        }
+
+        /// Apply the energy threshold, pick the diverse subset, and summarize.
+        fn score_solutions(
+            decoded: &[Vec<i8>],
+            energies: &[i64],
+            difficulty: &types::DifficultyConfig,
+        ) -> Result<types::ProofValidation, DispatchError> {
             let energy_valid_indices: Vec<usize> = energies
                 .iter()
                 .enumerate()

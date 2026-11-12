@@ -664,6 +664,29 @@ parameter_types! {
     pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
 }
 
+/// Family revisions that `register_topology` admits for proof of work.
+///
+/// Empty: every canonical family is still `research`, and research families
+/// never mine. Promoting a family means listing its contract here in a
+/// runtime upgrade. See `docs/family-activation.md`.
+///
+/// The benchmark build lists every canonical family so the family benchmarks
+/// can register their worst-case fixtures. A release blob never enables
+/// `runtime-benchmarks`.
+pub struct QuantumPowFamilies;
+impl Get<&'static [pallet_quantum_pow::Contract]> for QuantumPowFamilies {
+    fn get() -> &'static [pallet_quantum_pow::Contract] {
+        #[cfg(not(feature = "runtime-benchmarks"))]
+        {
+            &[]
+        }
+        #[cfg(feature = "runtime-benchmarks")]
+        {
+            quantum_validation::families::CONTRACTS
+        }
+    }
+}
+
 /// Account attributed as the builder for migration-inserted default job specs.
 ///
 /// Genesis presets can record each preset's actual root account directly, but
@@ -754,6 +777,7 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
+    type PowFamilies = QuantumPowFamilies;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

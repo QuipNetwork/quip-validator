@@ -10,6 +10,9 @@ edition.workspace = true
 [dependencies]
 blake3 = { version = "1.8.2", default-features = false }
 codec = { workspace = true, features = ["derive", "max-encoded-len"] }
+# Canonical family generators (SC-3). Pinned to a solver-core release tag;
+# tests/fixtures/solver-core/SOURCE_REV must name the commit that tag points to.
+ising-generators = { git = "https://gitlab.com/quip.network/quip-solver-core.git", tag = "v0.0.11", default-features = false }
 libm = { version = "=0.2.16", default-features = false }
 rand_chacha = { version = "0.9.0", default-features = false }
 rand_core = { version = "0.9.3", default-features = false }
@@ -22,6 +25,7 @@ default = ["std"]
 std = [
     "blake3/std",
     "codec/std",
+    "ising-generators/std",
     "rand_chacha/std",
     "rand_core/std",
     "scale-info/std",
@@ -31,5 +35,6 @@ std = [
 
 [dev-dependencies]
 hex = { version = "0.4.3" }
+ising-generators = { git = "https://gitlab.com/quip.network/quip-solver-core.git", tag = "v0.0.11", default-features = false, features = ["blob"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }

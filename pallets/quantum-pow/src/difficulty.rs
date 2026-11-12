@@ -54,6 +54,47 @@ pub struct CurveC {
     pub hard_milli: u32,
 }
 
+/// Root-set energy band of a family topology, in milli.
+///
+/// A family's coefficients come from its canonical generator, not from the
+/// `expected_gse` model, so the controller cannot derive an [`EnergyCurve`]
+/// for it. Root supplies the two ends instead; the knee sits halfway. The
+/// controller rates stay the constants of this module, so the band is the
+/// only tuning input. `hard_milli < easy_milli`.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
+pub struct EnergyBand {
+    /// Hardest (most-negative) end of the band.
+    pub hard_milli: i64,
+    /// Easiest (least-negative) end of the band.
+    pub easy_milli: i64,
+}
+
+impl EnergyBand {
+    /// The curve the controller runs on this band, or `None` when the band
+    /// is not ordered.
+    pub fn curve(self) -> Option<EnergyCurve> {
+        if self.hard_milli >= self.easy_milli {
+            return None;
+        }
+        Some(EnergyCurve {
+            min_milli: self.hard_milli,
+            knee_milli: self.hard_milli.saturating_add(self.easy_milli) / 2,
+            max_milli: self.easy_milli,
+        })
+    }
+}
+
 /// Topology-derived bounds for the difficulty energy curve.
 ///
 /// The curve is calibrated against a single topology's `(num_nodes,
