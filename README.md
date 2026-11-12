@@ -246,8 +246,24 @@ the cost of filling an account's 28 schedule slots: at the former ED floor,
 The higher floor prices this attack; it does not prevent it. Completed schedules
 can be cleaned up with `vest`/`vest_other`; merging requires the recipient.
 
-The immutable pre-vesting evidence is in
-[`tests/fixtures/pre-vesting/manifest.json`](tests/fixtures/pre-vesting/manifest.json).
+The metadata gate is anchored at the native stable2609 state in
+[`tests/fixtures/native-2609/manifest.json`](tests/fixtures/native-2609/manifest.json).
+It compares every metadata field exactly, including docs, paths, type names and
+registry IDs, with no historical delta allowances. Future metadata changes
+require a deliberate re-anchor. Reproduce the anchors with:
+
+```bash
+env -u SKIP_WASM_BUILD cargo test --locked \
+  -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 \
+  capture_native_2609_anchor -- --ignored --exact --nocapture
+```
+
+This explicit capture overwrites the two SCALE files; update the manifest's
+provenance, hashes and sizes when deliberately accepting a new baseline.
+Normal tests only read the anchors and verify byte-for-byte reproduction.
+The pre-vesting evidence (captured from `ba20b1e`, checked in by `b483bfb`)
+remains in git history at
+[`b483bfb:tests/fixtures/pre-vesting/manifest.json`](https://gitlab.com/quip.network/quip-validator/-/blob/b483bfb1f8fb58e0be86f72c73bdf8119de63329/tests/fixtures/pre-vesting/manifest.json).
 The original `f7da5ec` post-vesting capture is preserved in
 [`tests/fixtures/post-vesting-f7da5ec/manifest.json`](tests/fixtures/post-vesting-f7da5ec/manifest.json);
 its validation claims predate the review corrections above. The corrected

@@ -1,0 +1,23 @@
+{
+  "base_commit": "626aa69b018c4915870eadce3b30cce420583a90",
+  "port_commit": "053e36c1ee4345f1afd32e605b502231cd9bb5b8",
+  "metadata_version": 16,
+  "capture_kind": "native Runtime::metadata_at_version(16) under default-genesis TestExternalities; Wasm build enabled",
+  "features": [
+    "default",
+    "std"
+  ],
+  "capture_command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 capture_native_2609_anchor -- --ignored --exact --nocapture",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+  "cargo_lock_sha256": "80cd901956b21d8aa1d8fadef3bc55c0a80af727e9bc096e3e22d6a17912ca50",
+  "files": {
+    "quip-testnet.scale": {
+      "sha256": "766079662360f727ade1aae5e35b1eea9b0819cf747ae3b85abbe0bb0e6fe94b",
+      "bytes": 288332
+    },
+    "quip.scale": {
+      "sha256": "8a207a4295c8fe493c83c3d2d12746196ea1868e36f07d3f4881b424004d26b0",
+      "bytes": 288335
+    }
+  }
+}

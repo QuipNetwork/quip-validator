@@ -50,14 +50,19 @@ fn metadata_v16_bytes() -> Vec<u8> {
     })
 }
 
-fn metadata_v16() -> RuntimeMetadataV16 {
-    let bytes = metadata_v16_bytes();
-    let prefixed =
-        RuntimeMetadataPrefixed::decode(&mut &bytes[..]).expect("metadata blob SCALE-decodes");
-    match prefixed.1 {
-        RuntimeMetadata::V16(v16) => v16,
+fn decode_metadata_v16(bytes: &[u8]) -> RuntimeMetadataV16 {
+    let mut input = bytes;
+    let metadata = RuntimeMetadataPrefixed::decode(&mut input).expect("metadata SCALE-decodes");
+    assert!(input.is_empty(), "metadata has trailing bytes");
+    assert_eq!(metadata.0, frame_metadata::META_RESERVED);
+    match metadata.1 {
+        RuntimeMetadata::V16(metadata) => metadata,
         other => panic!("expected Metadata V16, got a different variant: {other:?}"),
     }
+}
+
+fn metadata_v16() -> RuntimeMetadataV16 {
+    decode_metadata_v16(&metadata_v16_bytes())
 }
 
 fn resolve_type(registry: &PortableRegistry, id: u32) -> &Type<PortableForm> {
@@ -510,165 +515,55 @@ mod unchecked_upgrade_tests {
     }
 }
 
-// Immutable metadata captured from integration parent ba20b1e, before Vesting.
-// Both metadata-hash builds matched their real Wasm APIs; provenance is in the
-// shared fixture manifest. Later changes need reviewed, enumerated deltas;
-// the captured baseline is never automatically updated.
+// Native metadata captured at the stable2609 port. Future changes require a
+// deliberate re-anchor, with provenance recorded alongside the SCALE files.
 #[cfg(not(feature = "runtime-benchmarks"))]
-#[path = "support/vesting_metadata_delta.rs"]
-mod vesting_metadata_delta;
+#[path = "support/metadata_anchor.rs"]
+mod metadata_anchor;
 
 #[cfg(not(feature = "runtime-benchmarks"))]
-fn before_vesting_metadata() -> RuntimeMetadataV16 {
-    let bytes: &[u8] = if quip_testnet_runtime::VERSION.spec_name.as_ref() == "quip" {
-        include_bytes!("../../tests/fixtures/pre-vesting/quip.scale")
-    } else {
-        include_bytes!("../../tests/fixtures/pre-vesting/quip-testnet.scale")
-    };
-    match RuntimeMetadataPrefixed::decode(&mut &bytes[..]).unwrap().1 {
-        RuntimeMetadata::V16(metadata) => metadata,
-        _ => panic!("baseline must be V16"),
-    }
+fn native_2609_anchor_path() -> std::path::PathBuf {
+    let spec_name = quip_testnet_runtime::VERSION.spec_name;
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures/native-2609")
+        .join(format!("{spec_name}.scale"))
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+fn native_2609_metadata() -> RuntimeMetadataV16 {
+    let bytes = std::fs::read(native_2609_anchor_path()).expect("checked-in native-2609 anchor");
+    decode_metadata_v16(&bytes)
 }
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn only_approved_semantic_metadata_deltas_are_present() {
-    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
-    let after = serde_json::to_value(metadata_v16()).unwrap();
-    vesting_metadata_delta::check(&before, &after).unwrap();
-    // Two-sided contract: restoring ANY declared weight value to the baseline
-    // must fail too, so the list describes the exact changed set, not a subset.
-    let mut baseline = before.clone();
-    for &(pallet, constant) in vesting_metadata_delta::REGENERATED_WEIGHT_VALUES {
-        let mut wrong = after.clone();
-        *vesting_metadata_delta::constant_value(&mut wrong, pallet, constant).unwrap() =
-            vesting_metadata_delta::constant_value(&mut baseline, pallet, constant)
-                .unwrap()
-                .clone();
-        assert_eq!(
-            vesting_metadata_delta::check(&before, &wrong),
-            Err(format!(
-                "missing required regenerated-weight delta: {pallet}.{constant}.value"
-            ))
-        );
-    }
+fn metadata_matches_native_2609_anchor() {
+    let anchor = serde_json::to_value(native_2609_metadata()).unwrap();
+    let candidate = serde_json::to_value(metadata_v16()).unwrap();
+    metadata_anchor::check(&anchor, &candidate).unwrap();
 }
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn vesting_metadata_comparison_rejects_unrelated_changes() {
-    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
-    let after = serde_json::to_value(metadata_v16()).unwrap();
-    vesting_metadata_delta::check(&before, &after).unwrap();
-    let mut wrong = after.clone();
-    wrong["pallets"][0]["index"] = serde_json::json!(99);
-    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
-    let mut wrong = after.clone();
-    let old_calls = wrong["pallets"][0]["calls"]["ty"].as_u64().unwrap() as usize;
-    let old_index = wrong["types"]["types"][old_calls]["type"]["def"]["variant"]["variants"][0]
-        ["index"]
-        .as_u64()
-        .unwrap();
-    wrong["types"]["types"][old_calls]["type"]["def"]["variant"]["variants"][0]["index"] =
-        serde_json::json!(old_index ^ 1);
-    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
-    let mut wrong = after.clone();
-    let vesting = wrong["pallets"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|p| p["name"] == "Vesting")
-        .unwrap();
-    vesting["index"] = serde_json::json!(33);
-    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
-    let mut wrong = after.clone();
-    wrong["extrinsic"]["transaction_extensions"][0]["identifier"] =
-        serde_json::json!("unexpected-extension");
-    assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
-    let mut wrong = after;
-    // BlockHashCount is not derived from benchmark weights. Mutate a scratch
-    // candidate by NAME, not the first constant (which is now an allowed delta).
-    let constant =
-        vesting_metadata_delta::constant_value(&mut wrong, "System", "BlockHashCount").unwrap();
-    let byte = constant[0].as_u64().unwrap();
-    constant[0] = serde_json::json!(byte ^ 1);
-    let error = vesting_metadata_delta::check(&before, &wrong).unwrap_err();
-    assert_eq!(
-        error,
-        "metadata.pallets[0].constants[2].value[0]: metadata value changed"
-    );
-    eprintln!("System.BlockHashCount mutation rejected: {error}");
-}
-
-#[cfg(not(feature = "runtime-benchmarks"))]
-#[test]
-fn vesting_metadata_comparison_rejects_out_of_bounds_call_type() {
-    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
-    let mut after = serde_json::to_value(metadata_v16()).unwrap();
-    let invalid_call_type = after["types"]["types"].as_array().unwrap().len() + 1;
-    let vesting = after["pallets"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|p| p["name"] == "Vesting")
-        .unwrap();
-    vesting["calls"]["ty"] = serde_json::json!(invalid_call_type);
-    assert_eq!(
-        vesting_metadata_delta::check(&before, &after),
-        Err("Vesting call type is outside candidate registry".into())
+fn native_2609_anchor_reproduces_exact_bytes() {
+    let anchor = std::fs::read(native_2609_anchor_path()).unwrap();
+    assert!(
+        metadata_v16_bytes() == anchor,
+        "native metadata must reproduce the anchor byte for byte"
     );
 }
 
+// Explicit write path; never run by the normal suite or during comparison.
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn empty_genesis_has_only_approved_pallet_version_changes() {
-    use sp_runtime::BuildStorage;
-    let baseline = if quip_testnet_runtime::VERSION.spec_name.as_ref() == "quip" {
-        include_str!("../../tests/fixtures/pre-vesting/quip-storage.json")
-    } else {
-        include_str!("../../tests/fixtures/pre-vesting/quip-testnet-storage.json")
-    };
-    let mut before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
-    let retired = before_vesting_metadata()
-        .pallets
-        .into_iter()
-        .find(|p| p.index == 7)
-        .unwrap();
-    let retired_version = hex::encode(frame_support::storage::storage_prefix(
-        retired.name.as_bytes(),
-        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
-    ));
-    let retired_position = before
-        .iter()
-        .position(|(key, _)| key == &retired_version)
-        .unwrap();
-    assert_eq!(
-        before.remove(retired_position).1,
-        hex::encode(0u16.encode())
-    );
-    let mut after = quip_testnet_runtime::RuntimeGenesisConfig::default()
-        .build_storage()
-        .unwrap()
-        .top;
-    // The stock genesis builder writes this release marker even without schedules.
-    let release = frame_support::storage::storage_prefix(b"Vesting", b"StorageVersion");
-    assert_eq!(
-        after.remove(release.as_slice()).unwrap(),
-        pallet_vesting::Releases::V1.encode()
-    );
-    // FRAME writes an independent default pallet version under its colon-delimited key.
-    let frame_version = frame_support::storage::storage_prefix(
-        b"Vesting",
-        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
-    );
-    assert_eq!(
-        after.remove(frame_version.as_slice()).unwrap(),
-        0u16.encode()
-    );
-    let after: Vec<_> = after
-        .iter()
-        .map(|(k, v)| (hex::encode(k), hex::encode(v)))
-        .collect();
-    assert_eq!(after, before);
+#[ignore = "capture only"]
+fn capture_native_2609_anchor() {
+    let path = native_2609_anchor_path();
+    let bytes = metadata_v16_bytes();
+    let metadata = serde_json::to_value(decode_metadata_v16(&bytes)).unwrap();
+    metadata_anchor::check(&metadata, &metadata)
+        .expect("capture must satisfy independent invariants");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    println!("captured {} bytes at {}", bytes.len(), path.display());
 }
