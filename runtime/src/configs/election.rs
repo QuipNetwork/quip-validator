@@ -6,10 +6,12 @@ use alloc::{vec, vec::Vec};
 use frame_election_provider_support::{
     onchain, BoundedSupportsOf, ElectionProvider, PageIndex, SequentialPhragmen,
 };
+use frame_support::PalletId;
 use pallet_election_provider_multi_block::{self as multi_block, unsigned::miner};
 use sp_runtime::{traits::AccountIdConversion, transaction_validity::TransactionPriority, PerU16};
 
 parameter_types! {
+    pub const SignedRewardPotId: PalletId = PalletId(*b"qp/sgnrd");
     pub const Pages: u32 = 1;
     /// Zero-based active-session offset within the planned staking era.
     pub const PlanningSession: u32 = 3;
@@ -99,7 +101,7 @@ pub struct NoSignedReward;
 
 impl multi_block::signed::RewardSource<AccountId, Balance> for NoSignedReward {
     fn account() -> Option<AccountId> {
-        Some(frame_support::PalletId(*b"qp/sgnrd").into_account_truncating())
+        Some(SignedRewardPotId::get().into_account_truncating())
     }
 
     fn paid(_amount: Balance) {}
@@ -610,7 +612,7 @@ mod tests {
         });
     }
     #[test]
-    fn signed_phase_stubs_are_unreachable() {
+    fn signed_phase_disabled_and_reward_source_non_minting() {
         // Pin disabled submission/validation phases, zero submission capacity,
         // reward and fee-refund amounts, and the initially empty non-minting
         // source. This does not exercise the Slash handler.
@@ -632,10 +634,7 @@ mod tests {
         let pot = <<Runtime as multi_block::signed::Config>::RewardSource as
             multi_block::signed::RewardSource<AccountId, Balance>>::account()
             .expect("None would mint rewards");
-        assert_eq!(
-            pot,
-            frame_support::PalletId(*b"qp/sgnrd").into_account_truncating()
-        );
+        assert_eq!(pot, SignedRewardPotId::get().into_account_truncating());
         validator_onboarding::tests::ext().execute_with(|| {
             assert_eq!(Balances::free_balance(pot), 0);
         });

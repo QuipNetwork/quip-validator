@@ -658,7 +658,7 @@ fn native_2609_manifest_pins_match_anchor_files() {
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
 fn native_metadata_satisfies_anchor_invariants() {
-    // Report the first differing path before checking exact SCALE bytes.
+    // Check independent invariants before requiring exact SCALE bytes.
     let anchor = serde_json::to_value(native_2609_metadata()).unwrap();
     let candidate = serde_json::to_value(metadata_v16()).unwrap();
     metadata_anchor::check_invariants(&anchor, &candidate).unwrap();
