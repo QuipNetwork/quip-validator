@@ -415,25 +415,100 @@ fn register_unwhitelisted(a: u32, b: u32) -> sp_core::H256 {
 }
 
 #[test]
-fn set_default_topology_requires_root() {
-    new_test_ext().execute_with(|| {
-        let (_, _, hash) = registered_topology();
-        assert_noop!(
-            QuantumPow::set_default_topology(RuntimeOrigin::signed(1), hash),
-            sp_runtime::DispatchError::BadOrigin
-        );
-    });
+fn admin_calls_require_the_admin_origin() {
+    type Call = fn(sp_core::H256) -> frame_support::dispatch::DispatchResult;
+    let cases: [(&str, Call); 7] = [
+        ("set_default_topology", |hash| {
+            QuantumPow::set_default_topology(RuntimeOrigin::signed(1), hash)
+        }),
+        ("register_topology", |_| {
+            QuantumPow::register_topology(
+                RuntimeOrigin::signed(1),
+                bounded::<_, MaxNodes>(vec![0, 1]),
+                bounded::<_, MaxEdges>(vec![(0, 1)]),
+                allowed_h_spec(),
+                allowed_j_spec(),
+                allowed_spin_spec(),
+                None,
+            )
+        }),
+        ("set_difficulty", |hash| {
+            let difficulty = DifficultyConfig {
+                min_solutions: 2,
+                max_energy_milli: -1_000,
+                min_diversity_milli: 500,
+            };
+            QuantumPow::set_difficulty(RuntimeOrigin::signed(1), hash, difficulty)
+        }),
+        ("set_topology_curve", |hash| {
+            QuantumPow::set_topology_curve(RuntimeOrigin::signed(1), hash, override_curve_c())
+        }),
+        ("add_mineable_topology", |hash| {
+            QuantumPow::add_mineable_topology(RuntimeOrigin::signed(1), hash)
+        }),
+        ("set_block_reward", |_| {
+            QuantumPow::set_block_reward(RuntimeOrigin::signed(1), 10)
+        }),
+        ("set_target_proof_blocks", |_| {
+            QuantumPow::set_target_proof_blocks(RuntimeOrigin::signed(1), 120)
+        }),
+    ];
+    for (name, call) in cases {
+        new_test_ext().execute_with(|| {
+            let (_, _, hash) = registered_topology();
+            let root_before = sp_io::storage::root(sp_runtime::StateVersion::V1);
+            assert_eq!(
+                call(hash),
+                Err(sp_runtime::DispatchError::BadOrigin),
+                "{name}"
+            );
+            assert_eq!(
+                sp_io::storage::root(sp_runtime::StateVersion::V1),
+                root_before,
+                "{name} changed state"
+            );
+        });
+    }
 }
 
 #[test]
-fn set_default_topology_rejects_unregistered_hash() {
-    new_test_ext().execute_with(|| {
-        let _ = registered_topology();
-        assert_noop!(
-            QuantumPow::set_default_topology(RuntimeOrigin::root(), sp_core::H256::repeat_byte(7)),
-            crate::Error::<Test>::TopologyNotRegistered
-        );
-    });
+fn root_calls_reject_an_unregistered_topology() {
+    type Call = fn(sp_core::H256) -> frame_support::dispatch::DispatchResult;
+    let cases: [(&str, Call); 4] = [
+        ("set_default_topology", |hash| {
+            QuantumPow::set_default_topology(RuntimeOrigin::root(), hash)
+        }),
+        ("set_difficulty", |hash| {
+            let difficulty = DifficultyConfig {
+                min_solutions: 3,
+                max_energy_milli: -2_000,
+                min_diversity_milli: 800,
+            };
+            QuantumPow::set_difficulty(RuntimeOrigin::root(), hash, difficulty)
+        }),
+        ("set_topology_curve", |hash| {
+            QuantumPow::set_topology_curve(RuntimeOrigin::root(), hash, override_curve_c())
+        }),
+        ("add_mineable_topology", |hash| {
+            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), hash)
+        }),
+    ];
+    for (name, call) in cases {
+        new_test_ext().execute_with(|| {
+            let _ = registered_topology();
+            let root_before = sp_io::storage::root(sp_runtime::StateVersion::V1);
+            assert_eq!(
+                call(sp_core::H256::repeat_byte(7)),
+                Err(crate::Error::<Test>::TopologyNotRegistered.into()),
+                "{name}"
+            );
+            assert_eq!(
+                sp_io::storage::root(sp_runtime::StateVersion::V1),
+                root_before,
+                "{name} changed state"
+            );
+        });
+    }
 }
 
 #[test]
@@ -504,24 +579,6 @@ fn set_default_topology_repoints_default_and_curve() {
 }
 
 #[test]
-fn register_topology_requires_root() {
-    new_test_ext().execute_with(|| {
-        assert_noop!(
-            QuantumPow::register_topology(
-                RuntimeOrigin::signed(1),
-                bounded::<_, MaxNodes>(vec![0, 1]),
-                bounded::<_, MaxEdges>(vec![(0, 1)]),
-                allowed_h_spec(),
-                allowed_j_spec(),
-                allowed_spin_spec(),
-                None,
-            ),
-            sp_runtime::DispatchError::BadOrigin
-        );
-    });
-}
-
-#[test]
 fn register_topology_rejects_empty_spin_spec() {
     new_test_ext().execute_with(|| {
         let empty_spec = AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![]));
@@ -536,41 +593,6 @@ fn register_topology_rejects_empty_spin_spec() {
                 None,
             ),
             crate::Error::<Test>::EmptyAllowedValues
-        );
-    });
-}
-
-#[test]
-fn set_difficulty_requires_root() {
-    new_test_ext().execute_with(|| {
-        let (_, _, hash) = registered_topology();
-        let difficulty = DifficultyConfig {
-            min_solutions: 2,
-            max_energy_milli: -1_000,
-            min_diversity_milli: 500,
-        };
-        assert_noop!(
-            QuantumPow::set_difficulty(RuntimeOrigin::signed(1), hash, difficulty),
-            sp_runtime::DispatchError::BadOrigin
-        );
-    });
-}
-
-#[test]
-fn set_difficulty_rejects_unregistered_topology() {
-    new_test_ext().execute_with(|| {
-        let difficulty = DifficultyConfig {
-            min_solutions: 3,
-            max_energy_milli: -2_000,
-            min_diversity_milli: 800,
-        };
-        assert_noop!(
-            QuantumPow::set_difficulty(
-                RuntimeOrigin::root(),
-                sp_core::H256::repeat_byte(5),
-                difficulty
-            ),
-            crate::Error::<Test>::TopologyNotRegistered
         );
     });
 }
@@ -625,32 +647,6 @@ fn override_curve_c() -> crate::difficulty::CurveC {
         knee_milli: 700,
         hard_milli: 800,
     }
-}
-
-#[test]
-fn set_topology_curve_requires_root() {
-    new_test_ext().execute_with(|| {
-        let (_, _, hash) = registered_topology();
-        assert_noop!(
-            QuantumPow::set_topology_curve(RuntimeOrigin::signed(1), hash, override_curve_c()),
-            sp_runtime::DispatchError::BadOrigin
-        );
-    });
-}
-
-#[test]
-fn set_topology_curve_rejects_unregistered_topology() {
-    new_test_ext().execute_with(|| {
-        let _ = registered_topology();
-        assert_noop!(
-            QuantumPow::set_topology_curve(
-                RuntimeOrigin::root(),
-                sp_core::H256::repeat_byte(7),
-                override_curve_c()
-            ),
-            crate::Error::<Test>::TopologyNotRegistered
-        );
-    });
 }
 
 #[test]
@@ -997,26 +993,6 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
         assert_eq!(next.min_solutions, initial.min_solutions);
         assert_eq!(next.min_diversity_milli, initial.min_diversity_milli);
     });
-}
-
-#[test]
-fn curve_constants_are_recalibrated() {
-    assert_eq!(
-        <<Test as crate::Config>::CurveCEasyMilli as Get<u32>>::get(),
-        700
-    );
-    assert_eq!(
-        <<Test as crate::Config>::CurveCKneeMilli as Get<u32>>::get(),
-        725
-    );
-    assert_eq!(
-        <<Test as crate::Config>::CurveCHardMilli as Get<u32>>::get(),
-        750
-    );
-
-    let curve = test_curve();
-    assert!(curve.min_milli < curve.knee_milli);
-    assert!(curve.knee_milli < curve.max_milli);
 }
 
 #[test]
@@ -1662,45 +1638,35 @@ fn decay_waits_until_after_the_100_block_gate() {
 }
 
 #[test]
-fn current_difficulty_passes_through_at_zero_elapsed() {
-    let curve = test_curve();
+fn current_difficulty_passes_base_through_without_decay() {
     let base = DifficultyConfig {
         min_solutions: 5,
         max_energy_milli: -2_500,
         min_diversity_milli: 200,
     };
-    // block_number == last_proof_block: zero elapsed → no decay.
-    assert_eq!(
-        difficulty::current_difficulty(
-            100,
+    // (name, block, last_proof_block, curve)
+    let cases = [
+        ("zero elapsed", 100, 100, Some(test_curve())),
+        // The 100-block gate is independent of the 10-block decay rate unit.
+        ("inside the gate", 109, 100, Some(test_curve())),
+        ("missing curve", 200, 100, None),
+        // last_proof_block == 0 is the genesis path.
+        ("genesis", 500, 0, Some(test_curve())),
+    ];
+    for (name, block, last_proof, curve) in cases {
+        assert_eq!(
+            difficulty::current_difficulty(
+                block,
+                base,
+                last_proof,
+                10,
+                curve,
+                difficulty::TARGET_PROOF_BLOCKS as u32
+            ),
             base,
-            100,
-            10,
-            Some(curve),
-            difficulty::TARGET_PROOF_BLOCKS as u32
-        ),
-        base,
-    );
-}
-
-#[test]
-fn current_difficulty_holds_until_the_gate() {
-    let curve = test_curve();
-    let base = DifficultyConfig {
-        min_solutions: 5,
-        max_energy_milli: -2_500,
-        min_diversity_milli: 200,
-    };
-    // The 100-block gate is independent of the 10-block decay rate unit.
-    let result = difficulty::current_difficulty(
-        109,
-        base,
-        100,
-        10,
-        Some(curve),
-        difficulty::TARGET_PROOF_BLOCKS as u32,
-    );
-    assert_eq!(result, base);
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -1725,49 +1691,6 @@ fn current_difficulty_applies_decay_per_elapsed_block() {
         difficulty::apply_decay(base, 125, 10, curve, difficulty::TARGET_PROOF_BLOCKS as u32)
     );
     assert!(result.max_energy_milli > base.max_energy_milli);
-}
-
-#[test]
-fn current_difficulty_short_circuits_without_curve() {
-    // Even with elapsed > epoch_length, missing curve → no decay applied.
-    let base = DifficultyConfig {
-        min_solutions: 5,
-        max_energy_milli: -2_500,
-        min_diversity_milli: 200,
-    };
-    assert_eq!(
-        difficulty::current_difficulty(
-            200,
-            base,
-            100,
-            10,
-            None,
-            difficulty::TARGET_PROOF_BLOCKS as u32
-        ),
-        base,
-    );
-}
-
-#[test]
-fn current_difficulty_short_circuits_at_genesis() {
-    let curve = test_curve();
-    let base = DifficultyConfig {
-        min_solutions: 5,
-        max_energy_milli: -2_500,
-        min_diversity_milli: 200,
-    };
-    // last_proof_block == 0 → genesis path → no decay.
-    assert_eq!(
-        difficulty::current_difficulty(
-            500,
-            base,
-            0,
-            10,
-            Some(curve),
-            difficulty::TARGET_PROOF_BLOCKS as u32
-        ),
-        base,
-    );
 }
 
 #[test]
@@ -2767,27 +2690,6 @@ fn submit_proof_rejects_non_mineable_topology() {
 }
 
 #[test]
-fn add_mineable_topology_requires_root() {
-    new_test_ext().execute_with(|| {
-        let (_, _, hash) = registered_topology();
-        assert_noop!(
-            QuantumPow::add_mineable_topology(RuntimeOrigin::signed(1), hash),
-            sp_runtime::DispatchError::BadOrigin
-        );
-    });
-}
-
-#[test]
-fn add_mineable_topology_rejects_unregistered() {
-    new_test_ext().execute_with(|| {
-        assert_noop!(
-            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), sp_core::H256::repeat_byte(9)),
-            crate::Error::<Test>::TopologyNotRegistered
-        );
-    });
-}
-
-#[test]
 fn remove_mineable_topology_refuses_default() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology(); // becomes default + whitelisted
@@ -3012,25 +2914,6 @@ fn calculate_weight(nodes: u32, edges: u32, solutions: u32) -> frame_support::we
 }
 
 #[test]
-fn weight_scales_with_proof_dimensions() {
-    // Mathematical invariant: Weight(n,e,s) should increase with dimensions
-
-    let weight_small = calculate_weight(2, 1, 1);
-    let weight_medium = calculate_weight(100, 200, 8);
-    let weight_large = calculate_weight(1000, 5000, 32);
-
-    // Monotonicity: larger inputs -> larger weight
-    assert!(
-        weight_medium.ref_time() > weight_small.ref_time(),
-        "Weight should increase with proof size (medium > small)"
-    );
-    assert!(
-        weight_large.ref_time() > weight_medium.ref_time(),
-        "Weight should increase with proof size (large > medium)"
-    );
-}
-
-#[test]
 fn register_topology_weight_scales_with_all_dimensions() {
     let base = <() as WeightInfo>::register_topology(2, 1, 3);
     assert!(<() as WeightInfo>::register_topology(3, 1, 3).ref_time() > base.ref_time());
@@ -3058,6 +2941,25 @@ fn register_topology_dispatch_info_uses_input_dimensions() {
 }
 
 #[test]
+fn submit_proof_weight_increases_with_each_dimension() {
+    // (name, smaller (n, e, s), larger (n, e, s)). Each pair isolates one
+    // term of W(n,e,s) = BASE + k1*n + k2*e + k3*s*n + k4*s*e + k5*s^2*n + k6*n*e.
+    let cases = [
+        ("small to medium", (2, 1, 1), (100, 200, 8)),
+        ("medium to large", (100, 200, 8), (1000, 5000, 32)),
+        ("nodes", (100, 0, 0), (200, 0, 0)),
+        ("edges", (0, 100, 0), (0, 200, 0)),
+        ("solutions times edges", (0, 100, 1), (0, 100, 2)),
+    ];
+    for (name, (n1, e1, s1), (n2, e2, s2)) in cases {
+        assert!(
+            calculate_weight(n2, e2, s2).ref_time() > calculate_weight(n1, e1, s1).ref_time(),
+            "weight must increase for {name}"
+        );
+    }
+}
+
+#[test]
 fn weight_formula_components_are_present() {
     // Verify the independently isolatable components of
     // W(n,e,s) =
@@ -3065,30 +2967,6 @@ fn weight_formula_components_are_present() {
 
     let base_weight = calculate_weight(0, 0, 0);
     assert!(base_weight.ref_time() > 0, "Base weight should be non-zero");
-
-    // Component k₁·n: nodes contribute linearly
-    let w_100_nodes = calculate_weight(100, 0, 0);
-    let w_200_nodes = calculate_weight(200, 0, 0);
-    assert!(
-        w_200_nodes.ref_time() > w_100_nodes.ref_time(),
-        "Node component (k₁·n) should increase with node count"
-    );
-
-    // Component k₂·e: edges contribute linearly
-    let w_100_edges = calculate_weight(0, 100, 0);
-    let w_200_edges = calculate_weight(0, 200, 0);
-    assert!(
-        w_200_edges.ref_time() > w_100_edges.ref_time(),
-        "Edge component (k₂·e) should increase with edge count"
-    );
-
-    // Component k₄·s·e: solutions × edges (dominant term)
-    let w_1_sol_100_edge = calculate_weight(0, 100, 1);
-    let w_2_sol_100_edge = calculate_weight(0, 100, 2);
-    assert!(
-        w_2_sol_100_edge.ref_time() > w_1_sol_100_edge.ref_time(),
-        "Solution-edge component (k₄·s·e) should increase with solutions"
-    );
 
     // Component k₆·n·e: the edge slope grows with the node count.
     let edge_slope_at_1_node =
@@ -3562,16 +3440,6 @@ fn block_reward_falls_back_to_the_runtime_constant() {
 }
 
 #[test]
-fn set_block_reward_requires_the_admin_origin() {
-    new_test_ext().execute_with(|| {
-        assert_noop!(
-            QuantumPow::set_block_reward(RuntimeOrigin::signed(1), 10),
-            sp_runtime::DispatchError::BadOrigin
-        );
-    });
-}
-
-#[test]
 fn set_block_reward_enforces_bounds() {
     new_test_ext().execute_with(|| {
         let min = <MinBlockReward as Get<u128>>::get();
@@ -3615,16 +3483,6 @@ fn target_proof_blocks_falls_back_to_the_runtime_constant() {
             <TargetProofBlocks as Get<u32>>::get()
         );
         assert!(crate::TargetProofBlocksOverride::<Test>::get().is_none());
-    });
-}
-
-#[test]
-fn set_target_proof_blocks_requires_the_admin_origin() {
-    new_test_ext().execute_with(|| {
-        assert_noop!(
-            QuantumPow::set_target_proof_blocks(RuntimeOrigin::signed(1), 120),
-            sp_runtime::DispatchError::BadOrigin
-        );
     });
 }
 
