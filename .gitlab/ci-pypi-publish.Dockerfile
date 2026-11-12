@@ -4,9 +4,10 @@
 # plus twine and the TLS tooling the upload needs.
 #
 # This is deliberately NOT the Substrate TOOLCHAIN_IMAGE. The publish jobs
-# compile nothing — they consume the dist/ artefact that release:build-pypi
-# already produced and upload those exact bytes — so they want a small image
-# with no Rust toolchain and no crate source anywhere on the path.
+# compile nothing — they consume the dist/ artefact that
+# release:build-pypi-linux already produced and upload those exact bytes — so
+# they want a small image with no Rust toolchain and no crate source anywhere
+# on the path.
 #
 # CI builds and publishes this to the project registry as
 # $CI_REGISTRY_IMAGE/ci-pypi-publish, from the ci-image-pypi-publish-amd64 job

@@ -13,12 +13,13 @@
 # `publish = false`, so -- unlike xquad's multi-package python-dists.sh -- this
 # handles exactly one distribution and mints exactly one OIDC token.
 #
-# The three modes map one-to-one onto separate CI jobs. They are split (rather
-# than one build-and-publish job) so the cross-built aarch64 wheel is import-
-# tested on a NATIVE arm64 runner before any upload: a wheel only imports on its
-# own architecture, so a single amd64 job physically cannot exercise both. The
-# build job produces dist/ once; two smoke jobs (amd64 + aarch64) each import
-# their arch's wheel; publish uploads the exact bytes that passed both smokes.
+# The modes map onto separate CI jobs. They are split (rather than one
+# build-and-publish job) so the cross-built aarch64 wheel is import-tested on a
+# NATIVE arm64 runner before any upload: a wheel only imports on its own
+# architecture, so a single amd64 job physically cannot exercise both. The Linux
+# build job produces its dist/ once and two smoke jobs (amd64 + aarch64) each
+# import their arch's wheel. The macOS job runs build-macos and then smoke on
+# the same runner. Publish uploads the exact bytes that passed every smoke.
 #
 # Modes:
 #   build
@@ -29,20 +30,27 @@
 #       publish jobs consume. Runs on every MR/push (dry-run) and before a
 #       tagged publish.
 #
+#   build-macos
+#       maturin build (abi3 wheels: macOS arm64 at 11.0 + macOS x86_64 at
+#       10.12) on a macOS runner, then the platform-tag and packed-surface
+#       guards. Its dist/ joins the Linux one in the publish jobs.
+#
 #   smoke
-#       Install the one wheel matching THIS runner's platform tag into a
-#       throwaway venv and import + round-trip sign/verify. Run once per arch
-#       (amd64 + aarch64 runners) so every shipped wheel -- including the cross-
-#       built aarch64 one -- is exercised on its own architecture before upload.
-#       Consumes dist/ from the build job; builds nothing.
+#       Install the one wheel matching THIS interpreter's platform tag into a
+#       throwaway venv and import + round-trip sign/verify. Run once per
+#       platform (Linux amd64 + aarch64 runners, macOS arm64 and x86_64 under
+#       Rosetta) so every shipped wheel is exercised on its own architecture
+#       before upload. PYTHON overrides the interpreter (default python3).
+#       Consumes dist/ from a build job; builds nothing.
 #
 #   publish <testpypi|pypi>
 #       Exchange the GitLab OIDC JWT in PYPI_ID_TOKEN for a short-lived API
 #       token at the target registry's mint endpoint and `twine upload` the
-#       prebuilt dist/. Requires PYPI_ID_TOKEN in env (set by the job's
-#       `id_tokens` block in .gitlab-ci.yml). Gated in CI on both smoke jobs
-#       passing. Used by release:publish-testpypi (auto) and release:publish-pypi
-#       (manual) on release tags.
+#       prebuilt dist/, after asserting it holds exactly the five release files
+#       and passes `twine check`. Requires PYPI_ID_TOKEN in env (set by the
+#       job's `id_tokens` block in .gitlab-ci.yml). Gated in CI on every smoke
+#       passing. Used by release:publish-testpypi and release:publish-pypi on
+#       release tags.
 #
 # Run from the workspace root.
 
@@ -56,7 +64,7 @@ MANIFEST="crates/transaction-crypto-py/Cargo.toml"
 DIST="dist"
 
 usage() {
-	echo "usage: $0 {build | smoke | publish <testpypi|pypi>}" >&2
+	echo "usage: $0 {build | build-macos | smoke | publish <testpypi|pypi>}" >&2
 	exit 2
 }
 
@@ -65,7 +73,8 @@ build_dists() {
 	# Same matrix as xquad's xqffi cdylib:
 	#   1. abi3 wheel, linux x86_64  (zig links against glibc 2.17 stubs)
 	#   2. abi3 wheel, linux aarch64 (cross-compiled; zig is the linker)
-	#   3. sdist                     (universal source fallback for macOS/Windows)
+	#   3. sdist                     (source fallback; only Windows builds from it)
+	# The macOS wheels come from build-macos on a macOS runner.
 	# The abi3 tag (cp39-abi3-...) comes from pyo3's `abi3-py39` feature, so one
 	# wheel per arch serves CPython >=3.9.
 	rm -rf "${DIST}"
@@ -113,15 +122,23 @@ build_dists() {
 		fi
 	done
 
-	# Wheel-content guard (QUI-792). A wheel is a zip; `twine check` validates
-	# metadata but NEVER opens the archive, and the manylinux guard above only
-	# reads the filename tag. When the python-source lived outside the crate,
-	# `maturin build` packed only `_quip_signer.abi3.so` and silently dropped the
-	# `quip_signer` package surface -- the wheel passed every check above, then
-	# imported as an empty namespace package (no `HybridSigner`, etc.). Open each
-	# wheel and assert the tracked pure-Python surface is present so a layout
-	# regression fails the build HERE (both dry-run and publish) instead of
-	# shipping -- or promoting to production -- an unimportable package.
+	check_wheel_contents
+
+	# Metadata validation. Cheap, arch-independent, no upload -- so it runs on the
+	# shared build path and gates the publish jobs too (they consume this dist/).
+	twine check "${DIST}"/*
+}
+
+# Wheel-content guard (QUI-792). A wheel is a zip; `twine check` validates
+# metadata but NEVER opens the archive, and the platform-tag guards only read
+# the filename. When the python-source lived outside the crate, `maturin build`
+# packed only `_quip_signer.abi3.so` and silently dropped the `quip_signer`
+# package surface -- the wheel passed every other check, then imported as an
+# empty namespace package (no `HybridSigner`, etc.). Open each wheel and assert
+# the tracked pure-Python surface is present so a layout regression fails the
+# build HERE (both dry-run and publish) instead of shipping -- or promoting to
+# production -- an unimportable package. Shared by the Linux and macOS builds.
+check_wheel_contents() {
 	local required_members=(
 		"quip_signer/__init__.py"  # re-exports the extension's public API
 		"quip_signer/__init__.pyi" # type stubs
@@ -138,10 +155,81 @@ build_dists() {
 			fi
 		done
 	done
+}
 
-	# Metadata validation. Cheap, arch-independent, no upload -- so it runs on the
-	# shared build path and gates the publish jobs too (they consume this dist/).
-	twine check "${DIST}"/*
+# --- build-macos -----------------------------------------------------------
+build_macos_dists() {
+	# The two macOS abi3 wheels, built natively on an Apple Silicon runner:
+	#   1. macosx_11_0_arm64   (the first macOS release on Apple Silicon)
+	#   2. macosx_10_12_x86_64 (cross-compiled; Rust's oldest supported floor)
+	# MACOSX_DEPLOYMENT_TARGET sets both the linker's minimum OS and the tag
+	# maturin writes, so the tag is asserted exactly below. No --zig or
+	# --compatibility: those are manylinux settings. No `twine check` either:
+	# the macOS runner has no twine, so publish checks these wheels' metadata
+	# once the Linux and macOS dist/ artefacts are merged.
+	rm -rf "${DIST}"
+	mkdir -p "${DIST}"
+
+	# Strip with the linker, not with rustc. The crate's `strip = true` makes
+	# rustc post-process the dylib with its bundled rust-objcopy, and the
+	# llvm-objcopy in LLVM 22.1.2-22.1.6 (rustc 1.95-1.97) writes the Mach-O
+	# symbol string table 4 bytes off 8-byte alignment. dyld on macOS 27 refuses
+	# to load such a binary ("mis-aligned LINKEDIT string pool"), so the wheel
+	# installs and then fails on import. ld64's -x (drop local symbols) and -S
+	# (drop debug info) strip the same symbols as rustc's strip and keep the table
+	# aligned, with no objcopy pass at all. Turning stripping off instead would
+	# also load, but ships ~250 KB of symbols per wheel and only hides the bug;
+	# a separate Rust pin for macOS would split the toolchain that is held at
+	# 1.95.0 for the wasm runtime. The Linux wheels are ELF, which objcopy
+	# writes through a separate backend, and they pass their own smoke.
+	# check_macho_alignment below fails the build if a misaligned binary ever
+	# comes back, whatever the runner's macOS: an older dyld may load it, so the
+	# smoke alone would pass and ship a wheel that breaks on macOS 27.
+	# shortcut: tied to the buggy rust-objcopy; once RUST_VERSION in
+	# .gitlab/ci-toolchain.Dockerfile reaches 1.98 (LLVM 22.1.8, which fixes it),
+	# drop these two lines and let check_macho_alignment confirm the default strip.
+	local -x CARGO_PROFILE_RELEASE_STRIP=false
+	local -x RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-x -C link-arg=-Wl,-S"
+
+	MACOSX_DEPLOYMENT_TARGET=11.0 maturin build --release --manifest-path "${MANIFEST}" \
+		--out "${DIST}" --target aarch64-apple-darwin
+	MACOSX_DEPLOYMENT_TARGET=10.12 maturin build --release --manifest-path "${MANIFEST}" \
+		--out "${DIST}" --target x86_64-apple-darwin
+
+	local tag
+	for tag in macosx_11_0_arm64 macosx_10_12_x86_64; do
+		if ! compgen -G "${DIST}/*-${tag}.whl" >/dev/null; then
+			echo "ERROR: no wheel with platform tag ${tag} in ${DIST}/; MACOSX_DEPLOYMENT_TARGET was not applied." >&2
+			ls -1 "${DIST}" >&2
+			exit 1
+		fi
+	done
+
+	check_wheel_contents
+	check_macho_alignment
+}
+
+# Mach-O alignment guard, for the llvm-objcopy bug described in
+# build_macos_dists. dyld on macOS 27 rejects a dylib whose LC_SYMTAB string
+# table offset is not a multiple of 8; older dyld may not, so this checks the
+# file itself rather than trusting the runner's import smoke.
+check_macho_alignment() {
+	local whl so stroff tmp
+	tmp="$(mktemp -d)"
+	for whl in "${DIST}"/*.whl; do
+		rm -rf "${tmp:?}"/*
+		unzip -q "${whl}" 'quip_signer/*.so' -d "${tmp}"
+		for so in "${tmp}"/quip_signer/*.so; do
+			stroff="$(otool -l "${so}" | awk '/cmd LC_SYMTAB/ {f = 1} f && /stroff/ {print $2; exit}')"
+			if [[ -z "${stroff}" ]] || ((stroff % 8)); then
+				echo "ERROR: ${whl##*/}: ${so##*/} has its symbol string table at offset ${stroff:-<none>}, not 8-byte aligned; dyld on macOS 27 refuses to load it." >&2
+				echo "       A post-link strip through rust-objcopy (LLVM 22.1.2-22.1.6) does this; see build_macos_dists." >&2
+				rm -rf "${tmp}"
+				exit 1
+			fi
+		done
+	done
+	rm -rf "${tmp}"
 }
 
 # --- smoke -----------------------------------------------------------------
@@ -176,7 +264,10 @@ smoke_dists() {
 	trap cleanup EXIT
 
 	smoke_root="$(mktemp -d)"
-	python3 -m venv "${smoke_root}/venv"
+	# PYTHON picks the interpreter, and so the architecture pip resolves for: the
+	# macOS job points it at an x86_64 CPython to smoke the Intel wheel under
+	# Rosetta on an arm64 host.
+	"${PYTHON:-python3}" -m venv "${smoke_root}/venv"
 	"${smoke_root}/venv/bin/pip" install --quiet --disable-pip-version-check \
 		--no-index --only-binary=:all: --find-links "${DIST}" quip-signer
 	# Run from the venv dir so no stray `quip_signer/` in CWD can shadow the
@@ -186,8 +277,57 @@ smoke_dists() {
 }
 
 # --- publish: OIDC mint + twine upload -------------------------------------
+# Release-set guard. Publish is the one place the Linux and macOS dist/
+# artefacts sit together, so this is where an incomplete or mixed set is caught
+# before anything is uploaded. Each pattern must match exactly one file, nothing
+# else may be present, and all five must be the same quip-signer version.
+check_release_set() {
+	local patterns=(
+		"*-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+		"*-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl"
+		"*-cp39-abi3-macosx_11_0_arm64.whl"
+		"*-cp39-abi3-macosx_10_12_x86_64.whl"
+		"*.tar.gz"
+	)
+	local files=("${DIST}"/*)
+	local pattern matches
+	for pattern in "${patterns[@]}"; do
+		# compgen exits 1 on no match; under pipefail that would abort silently.
+		matches=$({ compgen -G "${DIST}/${pattern}" || true; } | wc -l | tr -d ' ')
+		if [[ "${matches}" != 1 ]]; then
+			echo "ERROR: expected exactly one ${pattern} in ${DIST}/, found ${matches}." >&2
+			ls -1 "${DIST}" >&2
+			exit 1
+		fi
+	done
+	if [[ "${#files[@]}" != "${#patterns[@]}" ]]; then
+		echo "ERROR: ${DIST}/ holds ${#files[@]} files; the release is exactly ${#patterns[@]}:" >&2
+		ls -1 "${DIST}" >&2
+		exit 1
+	fi
+	# The sdist names the release (quip_signer-<version>.tar.gz); every wheel must
+	# carry the same name and version, so a stale artefact can't ride along.
+	local sdist release f
+	sdist="$(compgen -G "${DIST}/*.tar.gz")"
+	release="${sdist##*/}"
+	release="${release%.tar.gz}"
+	for f in "${files[@]}"; do
+		if [[ "${release}" != quip_signer-* ]] ||
+			[[ "${f##*/}" != "${release}.tar.gz" && "${f##*/}" != "${release}-cp39-abi3-"* ]]; then
+			echo "ERROR: ${f##*/} is not part of release ${release}; every file must be the same quip-signer version." >&2
+			ls -1 "${DIST}" >&2
+			exit 1
+		fi
+	done
+}
+
 publish_dists() {
 	local target="$1"
+
+	# Before any network call: the full set, then metadata for every file. The
+	# macOS wheels get their `twine check` here, since their build has no twine.
+	check_release_set
+	twine check "${DIST}"/*
 	# TestPyPI and PyPI are independent Trusted-Publishing realms: different OIDC
 	# audience (set job-side via id_tokens), different mint endpoint, different
 	# upload URL, and a separate per-project publisher config. The job hands us
@@ -250,6 +390,7 @@ publish_dists() {
 mode="${1:-}"
 case "${mode}" in
 build) build_dists ;;
+build-macos) build_macos_dists ;;
 smoke) smoke_dists ;;
 publish)
 	target="${2:-}"
