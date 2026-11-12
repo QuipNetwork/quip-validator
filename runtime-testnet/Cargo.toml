@@ -82,6 +82,7 @@ sp-version = { features = ["serde"], workspace = true }
 sp-weights.workspace = true
 
 [dev-dependencies]
+metadata-surface = { path = "../crates/metadata-surface" }
 xqvm = { workspace = true, default-features = false }
 finality-grandpa = "0.16.3"
 frame-metadata.workspace = true
