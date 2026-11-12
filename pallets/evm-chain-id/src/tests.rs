@@ -2,19 +2,15 @@ use crate::{mock::*, ChainId, Eip155ChainId, LOCAL_CHAIN_ID, TESTNET_CHAIN_ID};
 use frame_support::traits::Get;
 
 #[test]
-fn genesis_persists_local_chain_id() {
-    ext_with_chain_id(LOCAL_CHAIN_ID).execute_with(|| {
-        assert_eq!(Eip155ChainId::<Test>::get(), LOCAL_CHAIN_ID);
-        assert_eq!(<ChainId<Test> as Get<u64>>::get(), LOCAL_CHAIN_ID);
-    });
-}
+fn genesis_persists_chain_id() {
+    let cases = [("local", LOCAL_CHAIN_ID), ("testnet", TESTNET_CHAIN_ID)];
 
-#[test]
-fn genesis_persists_testnet_chain_id() {
-    ext_with_chain_id(TESTNET_CHAIN_ID).execute_with(|| {
-        assert_eq!(Eip155ChainId::<Test>::get(), TESTNET_CHAIN_ID);
-        assert_eq!(<ChainId<Test> as Get<u64>>::get(), TESTNET_CHAIN_ID);
-    });
+    for (name, chain_id) in cases {
+        ext_with_chain_id(chain_id).execute_with(|| {
+            assert_eq!(Eip155ChainId::<Test>::get(), chain_id, "case: {name}");
+            assert_eq!(<ChainId<Test> as Get<u64>>::get(), chain_id, "case: {name}");
+        });
+    }
 }
 
 #[test]
