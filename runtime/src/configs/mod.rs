@@ -419,7 +419,9 @@ impl pallet_revive::Config for Runtime {
     /// Accepted 2609 behavior: `batch_map_accounts` is not gated by `AutoMap`.
     /// Any signed non-contract caller can map eligible existing third-party
     /// accounts without a deposit. It is fee-free when at least 90% of entries
-    /// are useful (new mappings or released mapping deposits). An account's
+    /// are useful (new mappings or released mapping deposits). A batch caller
+    /// may release an existing mapping's deposit to its owner without unmapping.
+    /// With `OnKilledAccount = ()`, mappings survive account reaping. An account's
     /// owner can reverse the mapping with `unmap_account`; a later batch can
     /// map it again. We deliberately keep this permissionless batch path.
     type AutoMap = ConstBool<false>;

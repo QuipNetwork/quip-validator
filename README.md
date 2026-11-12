@@ -334,7 +334,10 @@ call. Explicit mapping remains the default with `AutoMap = false`, but this
 batch call is not gated by that setting: any signed non-contract caller can
 map eligible existing third-party accounts without a deposit. The call is
 fee-free when at least 90% of entries create mappings or release held mapping
-deposits. Each account's owner can reverse its mapping with `unmap_account`,
+deposits. A batch caller may also release an existing mapping's held deposit
+back to its owner; the mapping remains. With `OnKilledAccount = ()`, a mapping
+outlives its account being reaped. Each account's owner can reverse its
+mapping with `unmap_account`,
 although a later batch can map it again. This is an accepted property; no
 `BaseCallFilter` restriction is added.
 
