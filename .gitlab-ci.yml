@@ -447,6 +447,18 @@ py-signer-test:
 # concurrent=1; resource_group additionally serializes bench jobs across
 # pipelines, so benchmarks run strictly one at a time.
 #
+# The reference machine is node02 (bench runner 54514911). Weight file
+# headers show it as runner-qkwqxw0vd-project-80034548-concurrent-0 and
+# record only hostname and CPU, so the full spec is kept here:
+#   CPU:  AMD Ryzen 7 3700X, 8 cores (Zen 2), SMT off, performance
+#         governor, boost on (max ~4.4 GHz)
+#   RAM:  16 GB
+#   Disk: Samsung 860 SATA SSD, 500 GB
+#   OS:   Ubuntu 24.04 LTS, bare metal
+# Storage reads/writes are charged with the stock RocksDbWeight
+# constants, not measured on this box. benchmark-machine below tracks
+# CPU and memory drift.
+#
 # The bot commit carries no [skip ci]: the retriggered MR pipeline is the
 # compile check for wholesale-regenerated weight files. No trigger loop —
 # this job is `when: manual` in that pipeline too.
