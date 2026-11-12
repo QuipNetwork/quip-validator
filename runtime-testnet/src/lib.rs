@@ -274,6 +274,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // at `store_program` with a verifier fault, where 0.4.0 accepted it.
     // Previously stored programs still execute; there is no re-verification
     // when a program is loaded for execution.
+    // 120 was never deployed; the v0.4.1-tagged 120 blob must never be enacted
+    // on any network. This fresh-genesis runtime has no upgrade path from
+    // an older storage version.
     spec_version: 120,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
