@@ -923,10 +923,11 @@ manifest-evm-sidecar:
 # (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both smokes, so a
 # wheel that won't import on its own arch blocks the upload.
 #
-# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
-# (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
-# sdist (universal source fallback; macOS/Windows build from it). The wheel
-# version is the pyproject/Cargo version, bumped per release so the tag matches.
+# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheels for linux x86_64
+# and linux aarch64, both built with zig as the linker at manylinux2014
+# (glibc 2.17), + an sdist (universal source fallback; macOS/Windows build
+# from it). The wheel version is the pyproject/Cargo version, bumped per
+# release so the tag matches.
 
 # Tag-only rule for the pypi jobs that do NOT run as an MR dry-run: the arm64
 # import-smoke and both publishes. Runs on pushed release tags like v0.2.1,
