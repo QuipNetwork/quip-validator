@@ -97,11 +97,7 @@ parameter_types! {
     pub const SS58Prefix: u8 = 42;
 }
 
-/// All migrations of the runtime, aside from the ones declared in the pallets.
-///
-/// This can be a tuple of types, each implementing `OnRuntimeUpgrade`.
-#[allow(unused_parens)]
-type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
+type SingleBlockMigrations = ();
 
 /// Stable error shared by all runtime-upgrade entry points.
 pub const RUNTIME_IDENTITY_MISMATCH: &str = "Runtime spec_name does not match this network";

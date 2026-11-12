@@ -128,50 +128,6 @@ pub mod pallet {
         DepositFailed,
         Disabled,
     }
-    #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn on_runtime_upgrade() -> Weight {
-            if Pallet::<T>::on_chain_storage_version() < VERSION {
-                // Legacy pallet had no storage. Never infer authorization from sudo.
-                // Preserve any explicitly blown fuse, even if version metadata
-                // was absent. Missing legacy state is closed but nonterminal.
-                if State::<T>::try_get().ok() != Some(FaucetState::PermanentlyDisabled) {
-                    State::<T>::put(FaucetState::Paused);
-                }
-                Authority::<T>::kill();
-                VERSION.put::<Pallet<T>>();
-                T::DbWeight::get().reads_writes(2, 3)
-            } else {
-                T::DbWeight::get().reads(1)
-            }
-        }
-        #[cfg(feature = "try-runtime")]
-        fn pre_upgrade() -> Result<alloc::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
-            Ok((
-                Pallet::<T>::on_chain_storage_version() < VERSION,
-                State::<T>::try_get().ok() == Some(FaucetState::PermanentlyDisabled),
-            )
-                .encode())
-        }
-        #[cfg(feature = "try-runtime")]
-        fn post_upgrade(before: alloc::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-            let (legacy, was_disabled) = <(bool, bool)>::decode(&mut &before[..])
-                .map_err(|_| "bad faucet migration state")?;
-            if legacy {
-                ensure!(
-                    State::<T>::get()
-                        == if was_disabled {
-                            FaucetState::PermanentlyDisabled
-                        } else {
-                            FaucetState::Paused
-                        }
-                        && !Authority::<T>::exists(),
-                    "legacy faucet must fail closed"
-                );
-            }
-            Ok(())
-        }
-    }
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         /// Mint from the finite testnet budget using the configured authority.
