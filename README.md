@@ -357,10 +357,10 @@ normally creates no rewards to claim; the call itself remains dispatchable
 and rejects a claim when no queued reward exists.
 
 Against the archived pre-vesting baseline, `System.BlockWeights` base block
-and extrinsic costs move from 439,945/319,244 ns to 437,584/318,831 ns.
-`Xqvm.WeightPerStep` changes from 35,592 to 46,250 ps and the derived
-`Xqvm.MaxStepLimit` from 21,044,939 to 16,202,005. These values include the
-reference-machine regeneration in `6f9e19d`. Mempool VM errors occupy
+and extrinsic costs move from 439,945/319,244 ns to 447,438/316,760 ns.
+`Xqvm.WeightPerStep` changes from 35,592 to 29,256 ps and the derived
+`Xqvm.MaxStepLimit` from 21,044,939 to 25,613,469. These values include the
+reference-machine regeneration in `c67fbdb`. Mempool VM errors occupy
 indices 36–44; its limits are 5,000,000 transform steps per submission and
 16,777,216 bytes of VM memory, with `VmWeightPerStep` matching the XQVM rate.
 
