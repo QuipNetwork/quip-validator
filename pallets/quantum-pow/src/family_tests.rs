@@ -193,7 +193,30 @@ fn proof(hash: H256, salt: [u8; 32], witnesses: &[&[i8]]) -> crate::QuantumProof
         topology_hash: hash,
         nonce: derive_nonce(&last_proof_block_hash, &miner, &salt),
         salt,
-        solutions: bounded(witnesses.iter().map(|w| pack(w)).collect()),
+        solutions: {
+            let (nodes, edges) = z12();
+            let descriptor = ice_glass();
+            let challenge = FamilyChallenge::admit(
+                CONTRACTS,
+                &descriptor.family_id,
+                descriptor.revision,
+                &descriptor.params,
+                &nodes,
+                &edges,
+                &AdvertisedLimits::default(),
+            )
+            .expect("admitted");
+            let instance = challenge
+                .regenerate(derive_nonce(&last_proof_block_hash, &miner, &salt).to_big_endian())
+                .expect("generated");
+            let codec = challenge.prepare_witness_codec(&instance).expect("codec");
+            bounded(
+                witnesses
+                    .iter()
+                    .map(|w| bounded(codec.encode(w).expect("compact")))
+                    .collect(),
+            )
+        },
         device_access_time_us: 0,
     }
 }
@@ -354,14 +377,19 @@ fn family_proof_is_verified_against_the_regenerated_instance() {
         let all_up = vec![1i8; instance.node_ids().len()];
         let energy = instance_energy(&instance, &all_up).expect("energy");
 
-        // Wrong witness length. Spins pack one per bit, so the witness must
-        // lose a whole byte (eight spins) for the packed length to differ.
+        let mut malformed = proof(hash, salt, &[&all_up]);
+        malformed.solutions[0].pop();
         assert_noop!(
-            QuantumPow::submit_proof(
-                RuntimeOrigin::signed(MINER),
-                proof(hash, salt, &[&all_up[8..]])
-            ),
-            crate::Error::<Test>::PackedSolutionLengthMismatch
+            QuantumPow::submit_proof(RuntimeOrigin::signed(MINER), malformed),
+            crate::Error::<Test>::FamilyCodecInvalid
+        );
+
+        let mut legacy = proof(hash, salt, &[&all_up]);
+        assert_ne!(legacy.solutions[0], pack(&all_up));
+        legacy.solutions[0] = pack(&all_up);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(MINER), legacy),
+            crate::Error::<Test>::FamilyCodecInvalid
         );
 
         // The threshold is strict: the exact energy does not clear it.
@@ -388,9 +416,13 @@ fn family_proof_is_verified_against_the_regenerated_instance() {
                 min_diversity_milli: 0,
             }
         ));
+        let submitted = proof(hash, salt, &[&all_up]);
+        let archived_call = codec::Encode::encode(&crate::Call::<Test>::submit_proof {
+            proof: submitted.clone(),
+        });
         assert_ok!(QuantumPow::submit_proof(
             RuntimeOrigin::signed(MINER),
-            proof(hash, salt, &[&all_up])
+            submitted
         ));
         let record = BlockBestProof::<Test>::get().expect("best proof");
         assert_eq!(record.energy_milli, energy);
@@ -403,6 +435,38 @@ fn family_proof_is_verified_against_the_regenerated_instance() {
         assert!(next.max_energy_milli <= energy + 1);
         assert!(next.max_energy_milli >= band().hard_milli);
         assert_eq!(QBlocks::<Test>::get(1).expect("qblock").topology_hash, hash);
+        let winner = QuantumPow::qblock_with_nonce(1).expect("persisted nonce");
+        let crate::Call::<Test>::submit_proof { proof: archived } =
+            <crate::Call<Test> as codec::Decode>::decode(&mut &archived_call[..])
+                .expect("archive call")
+        else {
+            panic!("submit_proof call")
+        };
+        assert_eq!(winner.solution.miner, MINER);
+        assert_eq!(winner.solution.salt, archived.salt);
+        assert_eq!(winner.solution.submitted_at, 1);
+        assert_eq!(winner.nonce, archived.nonce);
+        let meta = RegisteredTopologies::<Test>::get(winner.solution.topology_hash)
+            .expect("stored topology");
+        let descriptor = meta.family.as_ref().expect("family descriptor");
+        let challenge = FamilyChallenge::admit(
+            CONTRACTS,
+            &descriptor.family_id,
+            descriptor.revision,
+            &descriptor.params,
+            &meta.nodes,
+            &meta.edges,
+            &AdvertisedLimits::default(),
+        )
+        .expect("archived descriptor");
+        let (spins, energies) = challenge
+            .decode_witnesses(
+                winner.nonce.to_big_endian(),
+                archived.solutions.iter().map(|b| b.as_slice()),
+            )
+            .expect("archive decode");
+        assert_eq!(spins, vec![all_up]);
+        assert_eq!(energies.iter().min(), Some(&winner.solution.energy_milli));
     });
 }
 
@@ -715,4 +779,72 @@ fn family_weights_follow_the_class_of_the_family() {
     );
     assert!(<() as WeightInfo>::register_family_topology()
         .all_gt(frame_support::weights::Weight::zero()));
+}
+
+/// Hard codecs cannot encode infeasible spins and reject inconsistent forest bits.
+#[test]
+fn family_proof_rejects_an_infeasible_hard_witness() {
+    struct RestoreBounds;
+    impl Drop for RestoreBounds {
+        fn drop(&mut self) {
+            MaxNodes::set(32);
+            MaxEdges::set(128);
+        }
+    }
+    let _restore = RestoreBounds;
+    MaxNodes::set(160);
+    MaxEdges::set(2_000);
+    new_test_ext().execute_with(|| {
+        let doc: Value = serde_json::from_str(include_str!(
+            "../../../crates/quantum-validation/tests/fixtures/solver-core/families/polariton.json"
+        )).expect("fixture");
+        let case = &doc["cases"][0];
+        assert_eq!(case["name"], "polariton-l2");
+        let descriptor = FamilyDescriptor {
+            family_id: bounded(b"quip/polariton-static".to_vec()),
+            revision: 1,
+            params: bounded(sp_core::bytes::from_hex(case["params_hex"].as_str().expect("params")).expect("hex")),
+        };
+        let bytes = include_bytes!(
+            "../../../crates/quantum-validation/tests/fixtures/solver-core/topologies/routing-small.bin.gz"
+        );
+        let topology = blob::decode(bytes).and_then(|body| body.topology()).expect("topology");
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(), bounded(topology.nodes.clone()), bounded(topology.edges.clone()),
+            set(&[0]), set(&[-SCALE, SCALE]), binary_spins(), Some(descriptor.clone()),
+        ));
+        let hash = registered_hash();
+        activate_family(hash);
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(MINER)));
+        let challenge = FamilyChallenge::admit(
+            CONTRACTS, &descriptor.family_id, 1, &descriptor.params,
+            &topology.nodes, &topology.edges, &AdvertisedLimits::default(),
+        ).expect("admitted");
+        let salt = [0; 32];
+        let nonce = derive_nonce(&LastProofBlockHash::<Test>::get().0,
+            &crate::Pallet::<Test>::account_to_bytes(&MINER), &salt);
+        let instance = challenge.regenerate(nonce.to_big_endian()).expect("instance");
+        let codec = challenge.prepare_witness_codec(&instance).expect("codec");
+        let infeasible = (0..(1u32 << codec.spin_count())).find_map(|mask| {
+            let spins: Vec<i8> = (0..codec.spin_count())
+                .map(|i| if mask & (1 << i) == 0 { -1 } else { 1 }).collect();
+            (challenge.verify_witness(&instance, &spins)
+                == Err(quantum_validation::families::FamilyError::Infeasible)).then_some(spins)
+        }).expect("infeasible spins");
+        assert_eq!(codec.encode(&infeasible),
+            Err(quantum_validation::families::CodecError::Infeasible));
+        assert_eq!(codec.max_encoded_len(), 2);
+        let invalid = (0..=u16::MAX).find_map(|bits| {
+            let bytes = bits.to_le_bytes();
+            (codec.decode(&bytes) == Err(quantum_validation::families::CodecError::Infeasible))
+                .then_some(bytes)
+        }).expect("infeasible compact forest");
+        let proof = crate::types::QuantumProof {
+            topology_hash: hash, nonce, salt,
+            solutions: bounded(vec![bounded(invalid.to_vec())]),
+            device_access_time_us: 0,
+        };
+        assert_noop!(QuantumPow::submit_proof(RuntimeOrigin::signed(MINER), proof),
+            crate::Error::<Test>::FamilyCodecInvalid);
+    });
 }

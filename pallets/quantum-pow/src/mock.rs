@@ -67,8 +67,8 @@ impl pallet_balances::Config for Test {
 parameter_types! {
     // Large enough for the 24-node, 76-edge z12 Zephyr fixture the family
     // tests register.
-    pub const MaxNodes: u32 = 32;
-    pub const MaxEdges: u32 = 128;
+    pub static MaxNodes: u32 = 32;
+    pub static MaxEdges: u32 = 128;
     pub const MaxSolutions: u32 = 8;
     pub const MinNodes: u32 = 2;
     pub const EpochLength: u64 = 20;

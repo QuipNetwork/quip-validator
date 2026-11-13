@@ -191,6 +191,22 @@ workflow:
     # walk never crosses it. Point the builder at the checkout directly.
     WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
   cache: []
+  # Hold a shared lock on this job's slot while it builds. The prune in another
+  # job's after_script skips a held slot; on 2026-11-13 it swept 17 GiB out of
+  # a running cargo-test (job 17992511936). before_script and script share one
+  # shell, so the descriptor stays open until the script ends. after_script
+  # runs in a new shell, so this job's own prune can still sweep the slot.
+  # A job whose before_script comes from another template must list this one
+  # first with !reference.
+  before_script:
+    - slot_dir="${CARGO_TARGET_DIR%/target}"
+    - mkdir -p "$slot_dir"
+    - exec 9>"$slot_dir/.in-use"
+    - |
+      if ! flock --shared --wait 1200 9; then
+        echo "ERROR: a cache prune held $slot_dir for 20 minutes" >&2
+        exit 1
+      fi
   # after_script also runs when the job fails or is cancelled on timeout, which
   # is exactly when a slot is left half-written. The script exits 0 on every
   # path: a prune must never turn a green build red.
@@ -231,6 +247,9 @@ cargo-test:
 # runtime Wasm, which is a data section.
 node-build:
   extends: [.cargo-host-cache, .image-tools]
+  before_script:
+    - !reference [.cargo-host-cache, before_script]
+    - !reference [.image-tools, before_script]
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
@@ -332,6 +351,9 @@ browser-signer-test:
 # cache because the script builds the XQuad assembler.
 xqvm-onchain-test:
   extends: [.cargo-host-cache, .image-tools]
+  before_script:
+    - !reference [.cargo-host-cache, before_script]
+    - !reference [.image-tools, before_script]
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
@@ -379,6 +401,9 @@ xqvm-onchain-test:
 # responsible for regenerating tracked weights.
 benchmark-preflight:
   extends: [.revive-benchmark-tooling, .cargo-host-cache]
+  before_script:
+    - !reference [.cargo-host-cache, before_script]
+    - !reference [.revive-benchmark-tooling, before_script]
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]

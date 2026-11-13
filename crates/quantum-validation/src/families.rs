@@ -11,12 +11,14 @@
 //! the bytes match the solver-core golden vectors exactly.
 //!
 //! This module only regenerates and checks. It does not decide which family a
-//! challenge uses. Every revision in [`CONTRACTS`] has registry status
-//! `research`, and no caller in the runtime reaches this module yet.
+//! challenge uses. The pallet allowlist and activation steps control mining.
+
+use alloc::vec::Vec;
 
 use ising_generators::descriptor::{self, params_digest, Admitted, SizeBounds};
 use ising_generators::family::{self, BaseTopology, SaltFault};
 
+pub use ising_generators::codec::{CodecError, WitnessCodec};
 pub use ising_generators::descriptor::{AdvertisedLimits, Contract, MAX_PARAMS_LEN};
 pub use ising_generators::family::Defect;
 /// The full Zephyr lattice `z(m, t)`, the base topology of every canonical
@@ -64,6 +66,8 @@ pub enum FamilyError {
     Infeasible,
     /// The energy does not fit in `i64`.
     ArithmeticOverflow,
+    /// Compact witness preparation or decoding failed with its stable codec error.
+    Codec(CodecError),
 }
 
 /// A family descriptor and base topology that passed admission.
@@ -154,6 +158,57 @@ impl<'a> FamilyChallenge<'a> {
                 SaltFault::Defect(defect) => FamilyError::GeneratorDefect(defect),
             },
         )
+    }
+
+    /// Conservative maximum compact witness bytes over every admitted nonce.
+    ///
+    /// Soft codecs need at most one mode bit plus one bit per spin. Hard
+    /// codecs store a subset of spin bits, so the same bound covers them.
+    /// Admission caps nodes at u32::MAX, making this arithmetic safe.
+    pub fn max_witness_len(&self) -> u64 {
+        self.bounds.nodes / 8 + 1
+    }
+
+    /// Prepare the instance's codec once, then reuse it for every witness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FamilyError::ForeignInstance`] for another topology or
+    /// descriptor, or [`FamilyError::Codec`] for invalid codec metadata.
+    pub fn prepare_witness_codec(&self, instance: &Instance) -> Result<WitnessCodec, FamilyError> {
+        if *instance.descriptor_digest() != self.descriptor_digest()
+            || instance.topology_order_digest() != self.topology.order_digest()
+        {
+            return Err(FamilyError::ForeignInstance);
+        }
+        ising_generators::registry::prepare_witness_codec(&self.admitted, instance)
+            .map_err(FamilyError::Codec)
+    }
+
+    /// Regenerate, decode compact solutions, and verify their exact energies.
+    ///
+    /// The admitted descriptor and topology supply all context absent from
+    /// archived extrinsic bytes. Preparation runs once for the entire proof.
+    /// Spins retain instance node order; energies include the instance offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns regeneration, codec, or witness errors from this challenge.
+    pub fn decode_witnesses<'b>(
+        &self,
+        nonce: [u8; 32],
+        witnesses: impl IntoIterator<Item = &'b [u8]>,
+    ) -> Result<(Vec<Vec<i8>>, Vec<MilliEnergy>), FamilyError> {
+        let instance = self.regenerate(nonce)?;
+        let codec = self.prepare_witness_codec(&instance)?;
+        let mut decoded = Vec::new();
+        let mut energies = Vec::new();
+        for bytes in witnesses {
+            let spins = codec.decode(bytes).map_err(FamilyError::Codec)?;
+            energies.push(self.verify_witness(&instance, &spins)?);
+            decoded.push(spins);
+        }
+        Ok((decoded, energies))
     }
 
     /// Check `spins` against `instance` and return its exact energy.

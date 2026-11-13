@@ -574,6 +574,20 @@ fn hard_family_witnesses_match_feasibility_and_energy() {
                 want,
                 "{file} {name}"
             );
+            let codec = challenge
+                .prepare_witness_codec(&instance)
+                .expect("prepared codec");
+            assert_eq!(codec.spin_count(), spins.len());
+            assert!(codec.max_encoded_len() as u64 <= challenge.max_witness_len());
+            if feasible {
+                let bytes = codec.encode(&spins).expect("compact witness");
+                assert_eq!(codec.decode(&bytes).expect("decoded"), spins);
+            } else {
+                assert_eq!(
+                    codec.encode(&spins),
+                    Err(quantum_validation::families::CodecError::Infeasible)
+                );
+            }
             checked += 1;
         }
     }

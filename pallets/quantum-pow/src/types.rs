@@ -19,10 +19,11 @@ use sp_core::{H256, U256};
 ///   reject mismatched salts before doing any topology work.
 /// - `salt` is the only freely-chosen miner input. Fixed at 32 bytes so the
 ///   PoW search space is statically known and identical across every call.
-/// - `solutions` is a list of bit-packed spin vectors. Each entry is decoded
-///   under the registered topology's `allowed_spin_values` spec, so the
-///   wire-format width per spin matches the on-chain spec (e.g., 1 bit per
-///   spin for the default binary Ising topology).
+/// - `solutions` carries compact family witnesses when the topology has a
+///   family descriptor. Otherwise entries use the topology's
+///   `allowed_spin_values` packing (one bit per binary spin).
+///   Archive block bodies retain these bytes; runtime storage keeps only
+///   the winning proof summary.
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]

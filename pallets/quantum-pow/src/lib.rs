@@ -493,6 +493,8 @@ pub mod pallet {
         /// A witness has the wrong length, a spin outside `±1`, breaks a hard
         /// constraint of the family, or its energy overflows.
         FamilyWitnessInvalid,
+        /// A compact family witness has invalid length, padding, symbols, or constraints.
+        FamilyCodecInvalid,
     }
 
     #[pallet::hooks]
@@ -725,21 +727,6 @@ pub mod pallet {
             let allowed_j_values = Self::canonicalize_spec(allowed_j_values)?;
             let allowed_spin_values = Self::canonicalize_spec(allowed_spin_values)?;
 
-            // A submitted solution is a `BoundedVec<u8, MaxNodes>` per the
-            // PackedSpinBytesOf type alias. Indexed spin specs (Set,
-            // IntegerRange) pack <= 8 bits per spin so num_nodes spins always
-            // fit, but ContinuousRange uses 32 bits per spin (4 bytes), making
-            // any topology with num_nodes > MaxNodes/4 unmineable. Reject at
-            // registration so the operator gets a clear error instead of
-            // silently shipping a dead topology.
-            let packed_bytes =
-                packed_solution_byte_len(nodes.len(), &allowed_spin_values.as_slice())
-                    .map_err(|_| Error::<T>::InvalidTopology)?;
-            ensure!(
-                packed_bytes <= T::MaxNodes::get() as usize,
-                Error::<T>::PackedSolutionTooLarge
-            );
-
             ensure!(
                 validate_topology_consistency(
                     &nodes,
@@ -761,10 +748,18 @@ pub mod pallet {
                 &allowed_spin_values.as_slice(),
             );
             let topology_hash = match &family {
-                None => legacy_hash,
+                None => {
+                    let packed_bytes =
+                        packed_solution_byte_len(nodes.len(), &allowed_spin_values.as_slice())
+                            .map_err(|_| Error::<T>::InvalidTopology)?;
+                    ensure!(
+                        packed_bytes <= T::MaxNodes::get() as usize,
+                        Error::<T>::PackedSolutionTooLarge
+                    );
+                    legacy_hash
+                }
                 Some(descriptor) => {
-                    // Every family is a `±1` model, and the family path
-                    // decodes witnesses through this spec.
+                    // Every family is a `±1` model. Its codec supplies the wire format.
                     ensure!(
                         allowed_spin_values.as_slice() == Self::binary_spin_spec(),
                         Error::<T>::FamilySpinSetRequired
@@ -773,6 +768,11 @@ pub mod pallet {
                     // parameters, or an unfit topology fail at registration
                     // and never reach a proof.
                     let challenge = Self::admit_family(descriptor, &nodes, &edges)?;
+                    // Bound every nonce, including the soft codecs' raw fallback.
+                    ensure!(
+                        challenge.max_witness_len() <= u64::from(T::MaxNodes::get()),
+                        Error::<T>::PackedSolutionTooLarge
+                    );
                     crate::topology::hash_family_topology(
                         legacy_hash,
                         challenge.descriptor_digest(),
@@ -1522,21 +1522,23 @@ pub mod pallet {
             difficulty: &types::DifficultyConfig,
         ) -> Result<types::ProofValidation, DispatchError> {
             let challenge = Self::admit_family(descriptor, &topology.nodes, &topology.edges)?;
-            let instance = challenge
-                .regenerate(proof.nonce.to_big_endian())
+            let (decoded, energies) = challenge
+                .decode_witnesses(
+                    proof.nonce.to_big_endian(),
+                    proof.solutions.iter().map(|bytes| bytes.as_slice()),
+                )
                 .map_err(|err| match err {
                     FamilyError::Skipped(_) => Error::<T>::FamilyNonceSkipped,
-                    _ => Error::<T>::FamilyRejected,
+                    FamilyError::Codec(_) => Error::<T>::FamilyCodecInvalid,
+                    FamilyError::Rejected(_)
+                    | FamilyError::InvalidTopology
+                    | FamilyError::GeneratorDefect(_)
+                    | FamilyError::ForeignInstance => Error::<T>::FamilyRejected,
+                    FamilyError::WitnessLength { .. }
+                    | FamilyError::InvalidSpin { .. }
+                    | FamilyError::Infeasible
+                    | FamilyError::ArithmeticOverflow => Error::<T>::FamilyWitnessInvalid,
                 })?;
-            let decoded = Self::decode_solutions(proof, topology, instance.node_ids().len())?;
-
-            let mut energies = Vec::with_capacity(decoded.len());
-            for spins in decoded.iter() {
-                let energy = challenge
-                    .verify_witness(&instance, spins)
-                    .map_err(|_| Error::<T>::FamilyWitnessInvalid)?;
-                energies.push(energy);
-            }
 
             Self::score_solutions(&decoded, &energies, difficulty)
         }

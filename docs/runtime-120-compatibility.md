@@ -142,3 +142,17 @@ SDK weights remain provisional until the reference-machine run and final
 metadata/storage/signing review tracked by
 [QUI-2101](https://linear.app/quip-network/issue/QUI-2101/vesting-release-gate-reference-machine-weights-and-metadata-re),
 owned by `roman@postquant.xyz`.
+
+## Compact family witnesses
+
+Family `submit_proof` solutions now use the solver-core v0.0.14 witness codec.
+The topology descriptor selects the codec by family ID and revision.
+Allowed-value topologies keep their existing packing.
+Family miners, submitters, pool judges, and archive readers must use the compact codec.
+The new decoder replaces the old family decoder without a storage migration.
+
+Solutions remain in archived extrinsic bodies.
+The [archive procedure](family-activation.md#compact-witnesses-and-archived-winners)
+uses the stored topology and the winning nonce to decode them.
+The runtime adds no solution storage and keeps specification 120 and transaction version 7.
+The new pallet error changes metadata, so clients must refresh cached metadata.
