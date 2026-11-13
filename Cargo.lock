@@ -5429,8 +5429,8 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "ising-generators"
-version = "0.0.11"
-source = "git+https://gitlab.com/quip.network/quip-solver-core.git?tag=v0.0.11#81e32c552b65771a99f71028662692511662d006"
+version = "0.0.14"
+source = "git+https://gitlab.com/quip.network/quip-solver-core.git?tag=v0.0.14#7f62a3c867caffcfebc0ee7ec3a9bab2a20bbdf0"
 dependencies = [
  "blake3",
  "miniz_oxide 0.9.1",

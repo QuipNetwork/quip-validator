@@ -11593,7 +11593,7 @@
       "path": "conformance/family_oracle/__main__.py"
     },
     {
-      "blake3": "c00ce7e6045b3401657754327207e2a04fb72bb57cfdea2b44c5d5a89960c797",
+      "blake3": "29d19e8772b5bf0a0845718da7d27077a6ab5fafd85f468fbd4d27e317222bad",
       "path": "conformance/family_oracle/build.py"
     },
     {
@@ -11603,6 +11603,50 @@
     {
       "blake3": "1a17bd517cbcce5abad939fb5342add1533d29eca33c8c637b92a446beaf10f8",
       "path": "conformance/family_oracle/charge.py"
+    },
+    {
+      "blake3": "3879ddf25dfe0d8bc7fcac536b67b508a74d1f199d111743d19f8b4727e45746",
+      "path": "conformance/family_oracle/codec_charge.py"
+    },
+    {
+      "blake3": "2e7f6b3a66eb1c9e04c7855371c308a44e92cbc8dec8663b7b2cd0d0d5b9959e",
+      "path": "conformance/family_oracle/codec_common.py"
+    },
+    {
+      "blake3": "92dab7a851d87428c0c2219a8a6957a010dca2f410eb0c616ccd09a546687165",
+      "path": "conformance/family_oracle/codec_defects.py"
+    },
+    {
+      "blake3": "1cc00a50e74689e8296d0a027251cd5139986e2f800a17187fba62d5df322fdb",
+      "path": "conformance/family_oracle/codec_fields.py"
+    },
+    {
+      "blake3": "75324bf8f738972da5c981bb0a24cae30709caafe27c7a6da936e4e60d687214",
+      "path": "conformance/family_oracle/codec_flow.py"
+    },
+    {
+      "blake3": "141b9912f4e5e0c912e22b19bda893b359fb58cb5479db40be8691436cee4e07",
+      "path": "conformance/family_oracle/codec_glass.py"
+    },
+    {
+      "blake3": "9cf9bd990acf57e3e6ff3be1a61647be8cf326a6c7a11b95542e03accd7597b9",
+      "path": "conformance/family_oracle/codec_polariton.py"
+    },
+    {
+      "blake3": "7165d0ddfdaab7c5aa56784f347499611512cb80047f368c2656930dd4d1dbfd",
+      "path": "conformance/family_oracle/codec_routing.py"
+    },
+    {
+      "blake3": "fe8ac2f228aafd2d69f714d662f379cc3afd0e03e05de80c6d521498bdd3cf77",
+      "path": "conformance/family_oracle/codec_twisted.py"
+    },
+    {
+      "blake3": "be679e87d4b2bab51b29fd37c82d13e928908e77ddb59ca8adf968d0135de28a",
+      "path": "conformance/family_oracle/codec_vectors.py"
+    },
+    {
+      "blake3": "fc8ddc7b0e57d3228aa58537362a601cebecb8ce639a50d243899e624896a168",
+      "path": "conformance/family_oracle/codecs.py"
     },
     {
       "blake3": "807e3ed3db9ca03717672ba7fa85becd2d53f4e7895a0ba17580e1b407c96d5b",
@@ -11629,7 +11673,7 @@
       "path": "conformance/family_oracle/glass.py"
     },
     {
-      "blake3": "d06804795aee3fb09ee45bef0437449d31bd66fc1c98ca0f2d03b22f22c8978a",
+      "blake3": "b014b7bf010ce8f0faca1d80acf01b51abb38c33751bc93a677d20b2c7a5ae01",
       "path": "conformance/family_oracle/ice.py"
     },
     {

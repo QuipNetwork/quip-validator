@@ -283,6 +283,8 @@ struct FamilyFixture {
     nodes: Vec<u32>,
     edges: Vec<(u32, u32)>,
     descriptor: types::FamilyDescriptor,
+    // A feasible all-positive witness for the square benchmark's non-skip path.
+    uncharged_descriptor: Option<types::FamilyDescriptor>,
 }
 
 /// The canonical parameter encoding: the format byte, then every schema field
@@ -401,6 +403,7 @@ fn family_fixture<T: Config>(kind: FixtureKind) -> FamilyFixture {
                     nodes: nodes.clone(),
                     edges: edges.clone(),
                     descriptor,
+                    uncharged_descriptor: None,
                 })
         }),
         FixtureKind::Square => {
@@ -421,6 +424,7 @@ fn family_fixture<T: Config>(kind: FixtureKind) -> FamilyFixture {
                             nodes: nodes.clone(),
                             edges: edges.clone(),
                             descriptor,
+                            uncharged_descriptor: Some(polariton_descriptor(*m, *t, side, 0)),
                         })
                 })
             })
@@ -437,6 +441,7 @@ fn family_fixture<T: Config>(kind: FixtureKind) -> FamilyFixture {
                         nodes: nodes.clone(),
                         edges: edges.clone(),
                         descriptor,
+                        uncharged_descriptor: None,
                     })
             })
             .expect("the configured bounds admit an ice-glass lattice")
@@ -560,7 +565,23 @@ fn accepted_family_proof<T: Config>(
     let (salt, instance) =
         family_salt_for::<T>(&challenge, miner, false).expect("one of 256 salts gives an instance");
     let instance = instance.expect("the non-skip search returns the instance");
-    let solutions = pattern_solutions::<T>(instance.node_ids().len() as u32, solution_count);
+    let codec = challenge.prepare_witness_codec(&instance).expect("codec");
+    let solutions = bounded(
+        (0..solution_count)
+            .map(|index| {
+                let spins: Vec<i8> = (0..codec.spin_count())
+                    .map(|node| {
+                        if (node as u32 ^ index).count_ones().is_multiple_of(2) {
+                            1
+                        } else {
+                            -1
+                        }
+                    })
+                    .collect();
+                bounded(codec.encode(&spins).expect("soft family witness"))
+            })
+            .collect(),
+    );
     family_proof_for::<T>(miner, topology_hash, salt, solutions)
 }
 
@@ -816,25 +837,37 @@ mod benchmarks {
     #[benchmark]
     fn submit_family_proof_square() {
         let caller: T::AccountId = whitelisted_caller();
-        let fixture = family_fixture::<T>(FixtureKind::Square);
+        let mut fixture = family_fixture::<T>(FixtureKind::Square);
+        let skipped = {
+            let challenge = admit::<T>(&fixture.descriptor, &fixture.nodes, &fixture.edges)
+                .expect("the fixture was admitted when it was chosen");
+            family_salt_for::<T>(&challenge, &caller, true)
+        };
+        if skipped.is_none() {
+            // Charged polariton rejects all-positive spins. Without a skipped
+            // nonce, benchmark a feasible uncharged instance on the same graph.
+            if let Some(descriptor) = fixture.uncharged_descriptor.take() {
+                fixture.descriptor = descriptor;
+            }
+        }
         let topology_hash = mineable_family_topology_for::<T>(&fixture, &caller, 1);
         let challenge = admit::<T>(&fixture.descriptor, &fixture.nodes, &fixture.edges)
             .expect("the fixture was admitted when it was chosen");
-        let (salt, spin_count) = match family_salt_for::<T>(&challenge, &caller, true) {
-            Some((salt, _)) => (salt, fixture.nodes.len() as u32),
+        let (salt, solutions) = match skipped {
+            // No instance or codec exists for a skipped nonce. The nonempty
+            // proof reaches generation, which rejects before reading bytes.
+            Some((salt, _)) => (salt, bounded(vec![bounded(Vec::new())])),
             None => {
                 let (salt, instance) = family_salt_for::<T>(&challenge, &caller, false)
                     .expect("one of 256 salts gives an instance");
                 let instance = instance.expect("the non-skip search returns the instance");
-                (salt, instance.node_ids().len() as u32)
+                let codec = challenge.prepare_witness_codec(&instance).expect("codec");
+                let spins = vec![1; codec.spin_count()];
+                let bytes = codec.encode(&spins).expect("uncharged fallback witness");
+                (salt, bounded(vec![bounded(bytes)]))
             }
         };
-        let proof = family_proof_for::<T>(
-            &caller,
-            topology_hash,
-            salt,
-            pattern_solutions::<T>(spin_count, 1),
-        );
+        let proof = family_proof_for::<T>(&caller, topology_hash, salt, solutions);
 
         #[block]
         {
@@ -844,6 +877,31 @@ mod benchmarks {
         }
 
         assert!(BlockProofCount::<T>::get() <= 1);
+    }
+
+    #[cfg(test)]
+    mod compact_tests {
+        use super::*;
+        use crate::mock::{new_test_ext, MaxEdges, MaxNodes, Test};
+
+        #[test]
+        fn square_benchmark_encodes_a_witness_when_no_nonce_skips() {
+            struct RestoreBounds;
+            impl Drop for RestoreBounds {
+                fn drop(&mut self) {
+                    MaxNodes::set(32);
+                    MaxEdges::set(128);
+                }
+            }
+            let _restore = RestoreBounds;
+            MaxNodes::set(84);
+            MaxEdges::set(2_000);
+            new_test_ext().execute_with(|| {
+                assert!(
+                    QuantumPow::<Test>::test_bench_by_name(b"submit_family_proof_square").is_ok()
+                );
+            });
+        }
     }
 
     impl_benchmark_test_suite!(QuantumPow, crate::mock::new_test_ext(), crate::mock::Test);

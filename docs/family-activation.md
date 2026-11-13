@@ -16,9 +16,10 @@ behave across the boundary.
 | Now | The allowlist holds all eight families on `quip` and `quip-testnet`. | Committed |
 | Now | The runtime charges family proofs by weight class, with reference-machine measurements. | Committed |
 | Now | Every class fits the normal-class per-extrinsic limit. The square class carries a smaller margin to fit. | Committed |
+| Now | Family proofs use the compact witness codecs from solver-core v0.0.14. | Implemented, awaiting activation |
 | Next | A nonce sweep on the reference machine narrows the variance margin. | Directional |
+| Next | Run `benchmark-weights` on the reference machine with compact witnesses. | Required before activation |
 | Later | A side-aware weight for the square-lattice families. | Exploratory, not committed |
-| Later | Compact per-family witness codecs in the generator crate. | Exploratory, not committed |
 
 ## What the gate controls
 
@@ -30,7 +31,7 @@ family instead of through the allowed value sets. The descriptor is part of
 the topology hash, so a proof names the challenge and nothing in a proof can
 select or change a descriptor.
 
-`register_topology` admits a descriptor through three checks, in this order:
+`register_topology` admits a descriptor through four checks, in this order:
 
 1. The contract is on `Config::PowFamilies`. An absent contract fails with
    `FamilyRejected` before any parameter is parsed.
@@ -40,6 +41,9 @@ select or change a descriptor.
    sizes stay within `MaxNodes` and `MaxEdges`. Every instance that a nonce
    can produce is bounded by this step, so the verifier never regenerates
    beyond the configured limits.
+4. The compact witness bound fits `BoundedVec<u8, MaxNodes>`.
+   The bound is `ceil((N + 1) / 8)` bytes for the admitted maximum instance size.
+   It covers soft fallback mode and conservatively bounds hard-family witnesses.
 
 The allowlist decides which families Root can register. The mineable
 whitelist decides which registered topology miners can mine. The benchmark
@@ -62,7 +66,9 @@ decision with a link to the review.
    proofs fit in a block.
 3. **Matching consumer releases.** Miners and coordinators that serve the
    family read runtime API version 3 and handle the `family` field of
-   the mining snapshot. See the compatibility matrix below.
+   the mining snapshot. They encode family solutions with the matching compact codec.
+   Pool judges and archive readers must decode that format.
+   See the compatibility matrix below.
 4. **Allowlist.** The contract is in `QuantumPowFamilies` in both runtime
    crates. Runtime 120 lists all eight families. A new family or revision
    needs a runtime upgrade that lists it in both trees. Bump `spec_version`
@@ -91,7 +97,63 @@ old block re-derives from the stored proof hash. The test
 `switching_the_mineable_topology_from_legacy_to_family_keeps_history` covers
 that sequence.
 
+## Compact witnesses and archived winners
+
+`QuantumProof::solutions` contains compact family witnesses in the
+`submit_proof` extrinsic body. Archive nodes keep those bodies.
+The runtime stores the winning summary in `QBlocks`, without storing solutions.
+
+The topology descriptor fixes the codec by `(family_id, revision)`.
+Witness bytes carry no codec tag.
+Hard-family codecs accept only feasible witnesses.
+Soft-family codecs use structured mode or a canonical raw fallback.
+Each spin vector has exactly one encoding.
+Extra bytes, nonzero padding, invalid symbols, and alternate encodings fail with
+`FamilyCodecInvalid`.
+
+The verifier regenerates one instance and prepares one codec per proof.
+It decodes each witness, checks feasibility and energy, then scores the decoded spins.
+Allowed-value topologies still use `unpack_solution`.
+Family topologies have no one-bit compatibility decoder.
+
+To recover a winning solution:
+
+1. Read the `QBlock` for the winning substrate block.
+   Use `submitted_at` to fetch the archive block body and its historical metadata.
+2. Decode successful `QuantumPow.submit_proof` calls.
+   Match the signer to `miner`, and match `salt` and `topology_hash`.
+   Inspect nested calls when a wrapper dispatched the proof.
+3. Read the topology from `RegisteredTopologies[qblock.topology_hash]`.
+   Keep its family descriptor, node order, and edge order.
+   Historical state at the submission block supplies this context if needed.
+4. Get `nonce` from `QuantumPowApi::winning_solution(submitted_at)`.
+   Or call `derive_nonce(last_proof_block_hash, miner_hash, salt)`.
+   Here `miner_hash = blake2_256(SCALE(miner))`.
+   Use the proof hash stored in the `QBlock`, not a current block-hash lookup.
+5. Admit the descriptor and topology with `FamilyChallenge::admit`.
+   Call `decode_witnesses(nonce.to_big_endian(), solutions)`.
+   Pass an iterator of compact byte slices.
+   The helper regenerates the instance and returns instance-order spins and milli-energies.
+6. Check that the minimum returned energy equals `qblock.energy_milli`.
+   If two or more successful calls match, select the first call with that energy.
+   The pallet replaces a winner only for a strictly lower energy.
+
+For repeated decoding of an already regenerated instance, call
+`FamilyChallenge::prepare_witness_codec` once and reuse its `decode` method.
+Call `verify_witness` for each decoded vector.
+The codec exposes `spin_count` and `max_encoded_len`.
+Off-chain readers need the same generator revision and historical descriptor context.
+
+Runtime 120 has not shipped, and family topologies are not mineable before step 5.
+This replaces the old family witness format without migration.
+The runtime specification stays at 120.
+
 ## Measured verifier limits
+
+The measurements below predate compact witness decoding.
+Codec preparation and decoding need new reference-machine measurements.
+Run `benchmark-weights` before activation and recheck the per-extrinsic limit.
+This change leaves weight numbers unchanged.
 
 The runtime bounds are 5,000 nodes and 50,000 edges. Every canonical family
 builds on the Zephyr lattice `z(m, t)`, so the largest admitted instance is a
@@ -154,8 +216,11 @@ with the instance it draws. Across 24 nonces, under concurrent load:
 The weight wrapper scales the ice and routing weights by a margin of 150% to
 cover nonces the benchmark did not draw. The square class carries 40%,
 because 150% would put its charge over the per-extrinsic limit. The square
-benchmark already measures the costliest path, a skipped nonce. The constants
-and their calibration notes live in `pallets/quantum-pow/src/weights.rs`.
+benchmark already measures the costliest path, a skipped nonce.
+
+If the setup finds no skipped nonce, it uses a zero-charge descriptor on the same graph.
+That fallback encodes a feasible compact witness.
+The constants and their calibration notes live in `pallets/quantum-pow/src/weights.rs`.
 
 ### Weight model
 
@@ -213,7 +278,7 @@ sends `register_topology` with six arguments. "New" software is this change.
 
 | Peer | Against a legacy topology | Against a family topology |
 |------|---------------------------|---------------------------|
-| Old miner, new chain | Mines as before. | Not supported. The miner draws `h` and `J` from the value sets, so every proof fails with `FamilyWitnessInvalid` or `InsufficientEnergy` and the QPU time is lost. |
+| Old miner, new chain | Mines as before. | Not supported. The miner draws `h` and `J` from the value sets, and sends the wrong witness format. Family mining requires a matching consumer release. |
 | New miner, old chain | Mines as before. The snapshot has no `family` field and the miner treats the topology as legacy. | Does not arise. An old chain has no family topologies. |
 | Old coordinator, new chain | Reads the snapshot and topology record as before. | Not supported. The coordinator cannot see the descriptor and hands miners a legacy challenge. |
 | New coordinator, old chain | Reads the snapshot and topology record. | Does not arise. |

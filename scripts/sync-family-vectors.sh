@@ -24,12 +24,16 @@ families=(registry ice_structure twisted_dimer ice_charge ice_fields two_commodi
 
 full_rev="$(git -C "$source_repo" rev-parse --verify "$rev^{commit}")"
 rm -rf "$dest"
-mkdir -p "$dest/families" "$dest/topologies"
+mkdir -p "$dest/families/codecs" "$dest/topologies"
 
 git -C "$source_repo" show "$full_rev:$vectors/golden_vectors.json" >"$dest/golden_vectors.json"
 git -C "$source_repo" show "$full_rev:$vectors/golden_lease.json" >"$dest/golden_lease.json"
 for name in "${families[@]}"; do
 	git -C "$source_repo" show "$full_rev:$vectors/families/$name.json" >"$dest/families/$name.json"
+done
+
+for name in polariton defects flow twisted charge glass fields routing; do
+	git -C "$source_repo" show "$full_rev:$vectors/families/codecs/$name.json" >"$dest/families/codecs/$name.json"
 done
 
 # Copy only the topology files that the family cases and admission vectors
