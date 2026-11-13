@@ -39,6 +39,7 @@ orphan_days="${CI_CACHE_ORPHAN_DAYS:-14}"
 interval="${CI_CACHE_INTERVAL:-86400}"
 
 stamp_name=".last-used"
+in_use_name=".in-use"
 
 dry_run=0
 if [[ " $* " == *" --dry-run "* ]]; then
@@ -87,19 +88,17 @@ if ((dry_run == 0)) && [[ -f "$last_prune" ]] &&
   exit 0
 fi
 
-failed=0
-
-for slot in "$cache_root"/*/*; do
-  target="$slot/target"
-  [[ -d "$target" ]] || continue
-
+# Prune one slot: grandfather, remove when orphaned, or sweep to the ceiling.
+prune_slot() {
+  local slot="$1" target="$2" stamp
+  shift 2
   # A slot that predates this script carries no stamp. Grandfather it in
   # rather than reading a missing stamp as "unused" — that would delete every
   # warm cache on the volume the first time this runs.
   stamp="$target/$stamp_name"
   if [[ ! -e "$stamp" ]]; then
     ((dry_run)) || touch "$stamp"
-    continue
+    return 0
   fi
 
   if [[ -z "$(find "$stamp" -mtime "-$orphan_days" 2>/dev/null)" ]]; then
@@ -109,14 +108,34 @@ for slot in "$cache_root"/*/*; do
     else
       rm -rf "$slot"
     fi
-    continue
+    return 0
   fi
 
-  ((sweep)) || continue
+  ((sweep)) || return 0
 
   echo "prune-ci-cache: sweeping $target to $max_size"
   CARGO_TARGET_DIR="$target" \
-    cargo sweep --maxsize "$max_size" "$@" "$project_dir" || failed=1
+    cargo sweep --maxsize "$max_size" "$@" "$project_dir"
+}
+
+failed=0
+
+for slot in "$cache_root"/*/*; do
+  target="$slot/target"
+  [[ -d "$target" ]] || continue
+
+  # A running job holds a shared lock on its slot (the .cargo-host-cache
+  # before_script). Sweeping under a live build deletes files cargo is about
+  # to write, so skip a held slot. Hold the slot exclusively while pruning it,
+  # so a job that starts meanwhile waits instead of building into it.
+  exec {slot_fd}>"$slot/$in_use_name"
+  if ! flock --nonblock "$slot_fd"; then
+    echo "prune-ci-cache: $slot is in use, skipping"
+    exec {slot_fd}>&-
+    continue
+  fi
+  prune_slot "$slot" "$target" "$@" || failed=1
+  exec {slot_fd}>&-
 done
 
 # Record the interval only on a run that reached the end. after_script has its
