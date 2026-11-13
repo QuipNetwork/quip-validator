@@ -246,17 +246,62 @@ the cost of filling an account's 28 schedule slots: at the former ED floor,
 The higher floor prices this attack; it does not prevent it. Completed schedules
 can be cleaned up with `vest`/`vest_other`; merging requires the recipient.
 
-The immutable pre-vesting evidence is in
-[`tests/fixtures/pre-vesting/manifest.json`](tests/fixtures/pre-vesting/manifest.json).
-The original `f7da5ec` post-vesting capture is preserved in
-[`tests/fixtures/post-vesting-f7da5ec/manifest.json`](tests/fixtures/post-vesting-f7da5ec/manifest.json);
-its validation claims predate the review corrections above. The corrected
-100×ED capture is recorded separately in
-[`tests/fixtures/post-vesting-fix/manifest.json`](tests/fixtures/post-vesting-fix/manifest.json).
-SDK weights remain provisional until the reference-machine run and final
-metadata/storage/signing review tracked by
-[QUI-2101](https://linear.app/quip-network/issue/QUI-2101/vesting-release-gate-reference-machine-weights-and-metadata-re),
-owned by `roman@postquant.xyz`.
+The metadata gate is anchored at the native stable2609 state in
+[`tests/fixtures/native-2609/manifest.json`](tests/fixtures/native-2609/manifest.json).
+It compares every metadata field exactly, including docs, paths, type names and
+registry IDs, with no historical delta allowances. Future metadata changes
+require a deliberate re-anchor. Reproduce the anchors with:
+
+```bash
+env -u SKIP_WASM_BUILD cargo test --locked \
+  -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 \
+  capture_native_2609_anchor -- --ignored --exact --nocapture
+```
+
+This explicit capture overwrites each runtime's SCALE metadata and sorted
+`*-storage.json` default-genesis key/value fixture, and writes their SHA-256
+hashes and byte sizes into the manifest. Update capture provenance deliberately
+when accepting a new baseline. Normal tests rebuild default-genesis storage
+and require exact equality, with no omitted top-level keys; unexpected child
+storage fails until the capture format is deliberately extended.
+Normal tests only read the anchors and verify byte-for-byte reproduction from
+both native metadata and the Wasm `Metadata_metadata` and
+`Metadata_metadata_at_version(16)` APIs. Before accepting a
+new capture, run `wasm_metadata_matches_native_2609_anchor` in both runtimes
+with `SKIP_WASM_BUILD` unset and record that result in the manifest.
+The manifest test checks all four anchor SHA-256 digests and byte sizes and fails
+on missing files or pins. The compiler and lockfile hash under `provenance`
+are historical capture information only; they are not machine-enforced.
+If `CI` is set, missing Wasm is a test failure; local builds may soft-skip it.
+
+Attach `cargo run -p metadata-surface -- OLD.scale NEW.scale` output to the
+re-anchor MR; add `--types` before the paths to expose named type layouts
+(see [tool usage and limitations](crates/metadata-surface/README.md)).
+
+Deploy a stable2609-compatible eth-rpc proxy in lockstep with this runtime;
+`ReviveApi` v2 uses the SDK's versioned payload/result types.
+
+Revive's native `Deposit = ()` backend now mints a contract's existential
+deposit (ED) and marks that issuance inactive. The deployer no longer pays
+this ED as a metered storage deposit, so deployment charges and dry-run
+storage-deposit estimates drop by one ED. On termination, the SDK attempts
+to burn/reactivate it only when the account holds exactly the ED and no dust;
+otherwise it remains. It is never refunded to the terminating caller.
+
+We deliberately keep the SDK's permissionless `Revive.batch_map_accounts`
+call. Explicit mapping remains the default with `AutoMap = false`, but this
+batch call is not gated by that setting: any signed non-contract caller can
+map eligible existing third-party accounts without a deposit. The call is
+fee-free when at least 90% of entries create mappings or release held mapping
+deposits. A batch caller may also release an existing mapping's held deposit
+back to its owner; the mapping remains. With `OnKilledAccount = ()`, a mapping
+outlives its account being reaped. Each account's owner can reverse its
+mapping with `unmap_account`,
+although a later batch can map it again. This is an accepted property; no
+`BaseCallFilter` restriction is added.
+
+See [runtime 120 compatibility](docs/runtime-120-compatibility.md) for the
+release-specific event, call, storage, signing and weight changes.
 
 ### Pallets
 

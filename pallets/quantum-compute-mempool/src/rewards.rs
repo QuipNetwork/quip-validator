@@ -123,61 +123,61 @@ mod tests {
     }
 
     #[test]
-    fn weighted_all_negative_pays_leader_most() {
-        // aglais order 240: weights 2 and 1 over 3, remainder to rank 0.
-        let payouts = top_n_weighted_payouts(&ranked(&[-1_500, -500]), 100);
-        assert_eq!(amounts(&payouts), vec![67, 33]);
-    }
-
-    #[test]
-    fn weighted_mixed_sign_never_pays_worse_rank_more() {
-        // aglais order 241 split 25/75 under magnitude weighting.
-        let payouts = top_n_weighted_payouts(&ranked(&[-1_000, 3_000]), 100);
-        assert_eq!(amounts(&payouts), vec![67, 33]);
-    }
-
-    #[test]
-    fn weighted_all_positive_follows_rank() {
-        // weights 3, 2, 1 over 6.
-        let payouts = top_n_weighted_payouts(&ranked(&[100, 200, 300]), 120);
-        assert_eq!(amounts(&payouts), vec![60, 40, 20]);
-    }
-
-    #[test]
-    fn weighted_is_monotone_in_rank_and_sums_to_reward() {
-        let payouts = top_n_weighted_payouts(&ranked(&[-5, -5, 0, 7, 9]), 1_000);
-        let amounts = amounts(&payouts);
-        assert_eq!(amounts, vec![335, 266, 200, 133, 66]);
-        assert!(amounts.windows(2).all(|pair| pair[0] >= pair[1]));
-        assert_eq!(amounts.iter().sum::<u128>(), 1_000);
-    }
-
-    #[test]
-    fn weighted_single_solver_takes_all() {
-        let payouts = top_n_weighted_payouts(&ranked(&[2_000]), 100);
-        assert_eq!(amounts(&payouts), vec![100]);
-    }
-
-    #[test]
-    fn weighted_empty_ranked_pays_nothing() {
-        assert!(top_n_weighted_payouts::<u64>(&[], 100).is_empty());
-    }
-
-    #[test]
-    fn weighted_zero_energies_follow_rank() {
-        let payouts = top_n_weighted_payouts(&ranked(&[0, 0]), 90);
-        assert_eq!(amounts(&payouts), vec![60, 30]);
-    }
-
-    #[test]
-    fn weighted_large_reward_keeps_rank_shares() {
-        // u128::MAX = 6 * q + 3, so weights 3, 2, 1 give 3q + 1, 2q + 1, q
-        // before the remainder of 1 goes to rank 0.
-        let reward = u128::MAX;
-        let q = reward / 6;
-        let payouts = top_n_weighted_payouts(&ranked(&[-3, -2, -1]), reward);
-        let amounts = amounts(&payouts);
-        assert_eq!(amounts, vec![3 * q + 2, 2 * q + 1, q]);
-        assert_eq!(amounts[0] + amounts[1] + amounts[2], reward);
+    fn weighted_payouts_follow_rank_and_split_the_whole_reward() {
+        let large = u128::MAX;
+        let q = large / 6;
+        // (name, energies by rank, reward, expected payouts)
+        let cases: [(&str, &[i64], u128, Vec<u128>); 8] = [
+            // aglais order 240: weights 2 and 1 over 3, remainder to rank 0.
+            (
+                "all negative pays the leader most",
+                &[-1_500, -500],
+                100,
+                vec![67, 33],
+            ),
+            // aglais order 241 split 25/75 under magnitude weighting.
+            (
+                "mixed sign never pays a worse rank more",
+                &[-1_000, 3_000],
+                100,
+                vec![67, 33],
+            ),
+            // weights 3, 2, 1 over 6.
+            (
+                "all positive follows rank",
+                &[100, 200, 300],
+                120,
+                vec![60, 40, 20],
+            ),
+            (
+                "ties and mixed signs",
+                &[-5, -5, 0, 7, 9],
+                1_000,
+                vec![335, 266, 200, 133, 66],
+            ),
+            ("single solver takes all", &[2_000], 100, vec![100]),
+            ("empty ranking pays nothing", &[], 100, vec![]),
+            ("zero energies follow rank", &[0, 0], 90, vec![60, 30]),
+            // u128::MAX = 6 * q + 3, so weights 3, 2, 1 give 3q + 1, 2q + 1, q
+            // before the remainder of 1 goes to rank 0.
+            (
+                "large reward keeps rank shares",
+                &[-3, -2, -1],
+                large,
+                vec![3 * q + 2, 2 * q + 1, q],
+            ),
+        ];
+        for (name, energies, reward, expected) in cases {
+            let payouts = amounts(&top_n_weighted_payouts(&ranked(energies), reward));
+            assert_eq!(payouts, expected, "{name}");
+            // Property: payouts never increase with rank and use the whole reward.
+            assert!(
+                payouts.windows(2).all(|pair| pair[0] >= pair[1]),
+                "{name}: payouts must be monotone in rank"
+            );
+            if !payouts.is_empty() {
+                assert_eq!(payouts.iter().sum::<u128>(), reward, "{name}: sum");
+            }
+        }
     }
 }

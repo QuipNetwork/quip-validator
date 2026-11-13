@@ -9,10 +9,10 @@ use quip_transaction_crypto::{
 use quip_transaction_crypto_core::sign_payload_from_seed;
 use serde_json::{json, Value};
 use sp_core::{
-    blake2_256,
     crypto::{Ss58AddressFormat, Ss58Codec},
     Pair as _,
 };
+use sp_io::hashing::blake2_256;
 use sp_runtime::{generic, BuildStorage};
 
 pub const FIXTURE_SEED: [u8; 32] = [7u8; 32];

@@ -51,8 +51,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # already-present python3 on those lines made apt upgrade the whole
 # interpreter stack to the current point release. Under runner contention that
 # upgrade spent 16 minutes unpacking one package and hit the 30m job timeout,
-# failing py-signer-test and release:build-pypi on a commit that passed on an
-# idle runner in 45 seconds.
+# failing py-signer-test and release:build-pypi-linux on a commit that passed
+# on an idle runner in 45 seconds.
 #
 # nodejs and npm serve browser-signer-test, which builds and runs the
 # TypeScript signer against a wasm bundle. These are Debian's 18.20.4 / 9.2.0,
@@ -77,8 +77,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # wasm32v1-none is the runtime target. wasm32-unknown-unknown is the browser
 # signer bundle that browser-signer-test builds with wasm-pack, and
 # aarch64-unknown-linux-gnu is the cross-built Linux wheel in
-# release:build-pypi. The two extra targets were a `rustup target add` in each
-# job, which downloaded rust-std on every run.
+# release:build-pypi-linux. The two extra targets were a `rustup target add`
+# in each job, which downloaded rust-std on every run.
 RUN rustup target add wasm32v1-none wasm32-unknown-unknown aarch64-unknown-linux-gnu \
  && rustup component add rust-src clippy rustfmt
 
@@ -91,16 +91,17 @@ RUN rustup target add wasm32v1-none wasm32-unknown-unknown aarch64-unknown-linux
 ARG CARGO_SWEEP_VERSION=0.8.0
 RUN cargo install cargo-sweep --locked --version "${CARGO_SWEEP_VERSION}"
 
-# wasm-pack (browser-signer-test) and cargo-zigbuild (release:build-pypi) come
-# as prebuilt release binaries through cargo-binstall, into $CARGO_HOME/bin of
-# the image, which stays on PATH when a job points CARGO_HOME at its cache.
-# Both were binstalled in the jobs' before_script, which put two GitHub
-# release downloads in every merge request pipeline. cargo-binstall itself is
-# a version-pinned release tarball, not the `install.sh | bash` bootstrap, so
-# the toolchain that builds a published wheel cannot be altered by an upstream
-# `main` change. Bump cargo-zigbuild deliberately: it changes the linker the
-# release wheels are built with. The Makefile's wasm-signer target checks
-# WASM_PACK_VERSION; keep the two pins equal.
+# wasm-pack (browser-signer-test) and cargo-zigbuild
+# (release:build-pypi-linux) come as prebuilt release binaries through
+# cargo-binstall, into $CARGO_HOME/bin of the image, which stays on PATH when
+# a job points CARGO_HOME at its cache. Both were binstalled in the jobs'
+# before_script, which put two GitHub release downloads in every merge request
+# pipeline. cargo-binstall itself is a version-pinned release tarball, not the
+# `install.sh | bash` bootstrap, so the toolchain that builds a published
+# wheel cannot be altered by an upstream `main` change. Bump cargo-zigbuild
+# deliberately: it changes the linker the release wheels are built with. The
+# Makefile's wasm-signer target checks WASM_PACK_VERSION; keep the two pins
+# equal.
 ARG CARGO_BINSTALL_VERSION=1.20.1
 ARG WASM_PACK_VERSION=0.12.1
 ARG CARGO_ZIGBUILD_VERSION=0.22.3
@@ -116,8 +117,8 @@ RUN set -eu; \
     cargo binstall --no-confirm --locked \
         "wasm-pack@${WASM_PACK_VERSION}" "cargo-zigbuild@${CARGO_ZIGBUILD_VERSION}"
 
-# maturin, twine and ziglang serve release:build-pypi. They live in a virtual
-# environment that the job puts first on PATH, so the `python3` that
+# maturin, twine and ziglang serve release:build-pypi-linux. They live in a
+# virtual environment that the job puts first on PATH, so the `python3` that
 # cargo-zigbuild shells out to (`python3 -m ziglang`, how it locates zig) is
 # the one with ziglang. The image does not put it on PATH itself:
 # py-signer-test builds its own venv from the system interpreter and must keep

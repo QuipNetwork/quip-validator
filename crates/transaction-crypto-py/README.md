@@ -11,9 +11,10 @@ the browser signer, and the runtime verifier are byte-identical.
 pip install quip-signer
 ```
 
-Prebuilt abi3 wheels are published for **linux x86_64** and **linux aarch64**
-(CPython ≥ 3.9). macOS and Windows resolve the sdist and build it locally, which
-needs a [Rust toolchain](https://rustup.rs/) on the machine.
+Prebuilt abi3 wheels are published for **linux x86_64**, **linux aarch64**
+(manylinux2014), **macOS arm64** (11.0 and later) and **macOS x86_64** (10.12 and
+later), for CPython ≥ 3.9. Windows and other platforms resolve the sdist and
+build it locally, which needs a [Rust toolchain](https://rustup.rs/) on the machine.
 
 ### Building from source (submodule)
 

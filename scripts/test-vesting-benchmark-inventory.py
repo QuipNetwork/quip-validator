@@ -20,7 +20,10 @@ class InventoryGate(unittest.TestCase):
         )
         # The CLI lists other pallets normally when Vesting registration is removed.
         cases = {"removed-registration": "pallet, benchmark\nframe_system, remark\n"}
-        cases.update({f"missing-{name}": valid.replace(f"pallet_vesting, {name}\n", "") for name in sorted(NAMES)})
+        # The gate compares a set against NAMES, so every missing name takes the same
+        # path; the first and last names cover the boundaries.
+        ordered = sorted(NAMES)
+        cases.update({f"missing-{name}": valid.replace(f"pallet_vesting, {name}\n", "") for name in (ordered[0], ordered[-1])})
         cases["unexpected-name"] = valid + "pallet_vesting, new_upstream_path\n"
         cases["duplicate-name"] = valid + "pallet_vesting, vest_locked\n"
         cases["format-indented-pallet"] = valid.replace("pallet_vesting, ", " pallet_vesting, ", 1)
@@ -82,10 +85,15 @@ sys.exit(73)
             fixture = root / "inventory.csv"
             marker = root / "measurement"
             env.update(INVENTORY_FIXTURE=str(fixture), MEASUREMENT_MARKER=str(marker))
+            # SKIP_PALLETS acts after the inventory gate, so only the gate-bypass case
+            # and the passing case can tell a skipped run from an unskipped one.
+            skip_cases = {"removed-registration", "exact-inventory"}
             for driver in DRIVERS:
                 for skip in ("", "pallet_vesting"):
                     env["SKIP_PALLETS"] = skip
                     for case, inventory in cases.items():
+                        if skip and case not in skip_cases:
+                            continue
                         with self.subTest(driver=driver, skip=skip, case=case):
                             fixture.write_text(inventory)
                             marker.unlink(missing_ok=True)

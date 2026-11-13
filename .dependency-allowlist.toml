@@ -1,0 +1,16 @@
+# Reviewed exceptions to the dependency gate age rule.
+# Remove an entry once its release is older than the age window.
+
+[[allow]]
+ecosystem = "cargo"
+name = "const-oid"
+version = "0.10.3"
+commit = "3c35e972cd4bbaf72c947364fdb964f8f95c3e9a"
+reason = "Unblock the current SDK-pin node lockfile before the seven-day age window while retaining the OID overflow fix; supply-chain reviewed 2026-11-12."
+
+[[allow]]
+ecosystem = "cargo"
+name = "frame-decode"
+version = "0.18.2"
+commit = "bfc6e80ae4b5a0ace5ea38077fb6b6fd16d41fe4"
+reason = "Unblocks the validator SDK update while retaining its current Subxt 0.50.3 lockfile; supply-chain reviewed 2026-11-12, source matches upstream and no compromise indicators found."

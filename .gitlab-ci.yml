@@ -4,18 +4,21 @@
 #
 # Stages:
 #   - test:      fmt / clippy / test / runtime release build on every MR;
-#                also the quip-signer PyPI wheel build + amd64 import-smoke as an
-#                MR dry-run; the arm64 import-smoke runs on release tags only
-#                (all three gated on QUIP_SIGNER_PUBLISH at tag time)
+#                also the quip-signer Linux wheel build + amd64 import-smoke as
+#                an MR dry-run; the arm64 import-smoke runs on release tags
+#                only; the macOS wheel build + smoke runs on MRs that touch the
+#                binding and on release tags (all gated on QUIP_SIGNER_PUBLISH
+#                at tag time)
 #   - build:     build the node and EVM-sidecar containers per architecture
 #                (amd64 + arm64), each on a native runner, on release tags only
 #   - manifest:  stitch each image's per-arch builds into a multi-arch manifest
 #                list so a single tag serves both architectures
 #   - release:   publish the quip-signer abi3 wheels + sdist to PyPI on release
-#                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
+#                tags via Trusted Publishing (OIDC) — TestPyPI, then PyPI, both auto
 #
 # Triggers:
-#   - merge_request_event  →  test (+ quip-signer wheel build & amd64 import-smoke, no upload)
+#   - merge_request_event  →  test (+ quip-signer Linux wheel build & amd64 import-smoke, no upload;
+#                              + the macOS wheel build & smoke when the binding changes)
 #   - push to main         →  test
 #   - push to v0.2         →  test
 #   - stable git tag vX.Y.Z reachable from main
@@ -24,9 +27,10 @@
 #   - rc / pre-release tag (or stable tag not on main)
 #                              →  test + build + manifest (:<tag> + :sha-* only)
 #   - release tag pipelines also run, when QUIP_SIGNER_PUBLISH is enabled:
-#                              + release:build-pypi + both import-smokes
+#                              + release:build-pypi-linux + both Linux import-smokes
+#                              + release:build-pypi-macos (build + smoke)
 #                              + release:publish-testpypi (auto)
-#                              + release:publish-pypi (manual promote)
+#                              + release:publish-pypi (auto, after TestPyPI)
 #
 # Multi-arch: kaniko has no cross-build/manifest support — it builds for the
 # native architecture of whichever runner it runs on. So each architecture has
@@ -62,6 +66,14 @@ include:
     ref: v1.2.0
     file: templates/dependency-gate.yml
 
+# The template puts dependency-report in .post, which waits for every other
+# job in the pipeline. It reads only the lockfiles, so it runs in the test
+# stage from the start. The template's rules (never on release tags) and
+# allow_failure still apply.
+dependency-report:
+  stage: test
+  needs: []
+
 stages:
   # The images this repo runs its own jobs on are built here, ahead of every
   # stage that consumes them. Both stages are empty and skipped unless a CI
@@ -89,7 +101,7 @@ variables:
   # Publish-only image for the quip-signer PyPI upload jobs: python-slim with
   # twine, ca-certificates and curl baked in (.gitlab/ci-pypi-publish.Dockerfile).
   # Kept separate from TOOLCHAIN_IMAGE because these jobs compile nothing — they
-  # upload the dist/ artefact release:build-pypi already produced — so they want
+  # upload the dist/ artefact release:build-pypi-linux already produced — so they want
   # no Rust toolchain and no crate source on the path. Referenced with the arch
   # suffix the build job pushes, and never combined into a manifest, because
   # .pypi-publish pins tags: [docker, amd64] and a one-platform manifest list
@@ -188,7 +200,8 @@ workflow:
 # Single test job: pulls the toolchain image once, and runs fmt → clippy →
 # test → runtime release build sequentially so they share compile artifacts
 # and registry state. The toolchain image already has clang/protoc/cmake +
-# the wasm32v1-none target.
+# the wasm32v1-none target. The debug node comes from node-build, which runs
+# alongside this job.
 cargo-test:
   extends: .cargo-host-cache
   stage: test
@@ -200,13 +213,45 @@ cargo-test:
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
+    - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+
+# Builds the debug node and the browser Wasm bindings once per pipeline.
+# browser-signer-test and xqvm-onchain-test start when this job finishes and
+# run against its artifacts. Each of those suites used to build its own node,
+# which put a duplicate node build on the same runner at the same time
+# (measured on !75: 49 minutes each, and a node too starved to open its RPC).
+#
+# The live-spec smoke runs here because this job holds the binary. The
+# crypto crates' doc-tests run here because they reuse this job's dev-profile
+# build, and cargo-test's `--lib --bins --tests` does not select them.
+#
+# The node is stripped into the checkout: artifacts must sit under
+# $CI_PROJECT_DIR, and the cached executable in CARGO_TARGET_DIR stays
+# untouched for the next incremental build. Stripping keeps the embedded
+# runtime Wasm, which is a data section.
+node-build:
+  extends: [.cargo-host-cache, .image-tools]
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 60m
+  variables:
+    IMAGE_TOOLS: strip wasm-pack
+  script:
     - cargo build -p quip-network-node
     - python3 scripts/smoke-live-testnet-spec.py "$CARGO_TARGET_DIR/debug/quip-network-node" --log-dir live-testnet-smoke-logs
-    - cargo build --release -p quip-protocol-runtime -p quip-testnet-runtime
+    - mkdir -p target/ci-node
+    - strip --strip-all -o target/ci-node/quip-network-node "$CARGO_TARGET_DIR/debug/quip-network-node"
+    - cargo test --doc -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
+    - make wasm-signer
   artifacts:
     when: always
+    expire_in: 1 day
     paths:
       - live-testnet-smoke-logs/
+      - target/ci-node/quip-network-node
+      - js/quip-transaction-crypto-wasm/quip_transaction_crypto_wasm*
 
 # Pin the existing public network independently of current runtime builds.
 live-testnet-spec:
@@ -228,20 +273,6 @@ runtime-parity:
     - bash scripts/check-runtime-parity.sh
     - bash scripts/test-runtime-parity.sh
 
-# Node-level suites that need a running chain and the PQ signer. Kept separate
-# from cargo-test because they additionally install Node and the pinned
-# wasm-pack release, build browser bindings, and exercise the actual
-# Polkadot.js Signer interfaces from js/quip-signer/package-lock.json.
-#
-# Both suites run here rather than in a job each. They need byte-identical
-# setup -- the same image, the same apt packages, the same wasm-signer, the
-# same debug node -- and splitting them meant building that twice per
-# pipeline, concurrently, on one runner. Measured on !75: 20 minutes of apt
-# and 49 minutes of `cargo build -p quip-network-node`, duplicated, while the
-# xqvm suite's own work was 70 seconds. The duplicate job also pushed the
-# pipeline to four heavy jobs, and the node then could not open its RPC
-# inside the readiness window because it was competing with the very builds
-# that existed to produce it.
 # Jobs name the baked tools they depend on in IMAGE_TOOLS and run this check
 # before anything else. It fails closed on purpose. A runner with
 # pull_policy=if-not-present keeps whatever ci-toolchain:latest it pulled first,
@@ -260,13 +291,21 @@ runtime-parity:
         fi
       done
 
+# Exercises the Polkadot.js Signer interfaces from js/quip-signer against a dev
+# node: a browser-signed extrinsic with the current spec_version,
+# transaction_version and signed extensions must be accepted. The node and
+# the Wasm bindings come from node-build. cargo-test runs the crypto crates'
+# unit tests and the signing_fixture test.
 browser-signer-test:
-  extends: .cargo-host-cache
+  extends: .image-tools
   stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
   interruptible: true
-  timeout: 90m
+  timeout: 15m
+  needs:
+    - job: node-build
+      artifacts: true
   # npm state is small and still tars cheaply, so it stays on the GitLab cache.
   cache:
     - key:
@@ -278,24 +317,44 @@ browser-signer-test:
         - .npm/
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
-    IMAGE_TOOLS: wasm-pack
-  # nodejs, npm, wasm-pack and the wasm32-unknown-unknown target are baked into
-  # the toolchain image (.gitlab/ci-toolchain.Dockerfile). `make wasm-signer`
-  # checks the wasm-pack version against the Makefile pin.
-  before_script:
-    - !reference [.image-tools, before_script]
-    - wasm-pack --version
+    QUIP_NODE_BINARY: $CI_PROJECT_DIR/target/ci-node/quip-network-node
+    IMAGE_TOOLS: node npm
+  # npm test's pretest builds dist/, which the integration script loads.
   script:
-    - cargo test -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
-    - cargo test -p quip-protocol-runtime --test signing_fixture
-    - cargo check -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown
-    - make wasm-signer
     - npm ci --prefix js/quip-signer
     - npm run typecheck --prefix js/quip-signer
     - npm test --prefix js/quip-signer
-    - npm run build --prefix js/quip-signer
-    - cargo build -p quip-network-node
     - bash scripts/test-browser-signer-integration.sh
+
+# Replays the XQuad conformance vectors and the budget guards on a dev node.
+# This tests XQVM execution, not signing, so it has its own job and runs
+# alongside browser-signer-test on node-build's artifacts. It keeps the cargo
+# cache because the script builds the XQuad assembler.
+xqvm-onchain-test:
+  extends: [.cargo-host-cache, .image-tools]
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 30m
+  needs:
+    - job: node-build
+      artifacts: true
+  cache:
+    - key:
+        prefix: browser-signer-tools
+        files:
+          - js/quip-signer/package-lock.json
+      policy: pull
+      paths:
+        - .npm/
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+    QUIP_NODE_BINARY: $CI_PROJECT_DIR/target/ci-node/quip-network-node
+    IMAGE_TOOLS: node npm git
+  script:
+    - npm ci --prefix js/quip-signer
+    - npm run build --prefix js/quip-signer
     - bash scripts/test-xqvm-onchain.sh
 
 # pallet-revive's runtime benchmarks compile both Solidity/EVM and
@@ -903,15 +962,16 @@ manifest-evm-sidecar:
 # projects, configuring each Trusted Publisher, the `release` environment, and
 # the protected `v*` tag pattern) must be configured before publishing.
 #
-# The pipeline is build → smoke (both arches) → publish, one job per mode of
+# The pipeline is build → smoke (every platform) → publish, one job per mode of
 # scripts/python-dists.sh, so the cross-built aarch64 wheel is import-tested on
 # a native arm64 runner before any upload (a wheel only imports on its own
 # arch — one amd64 job cannot exercise both):
-#   release:build-pypi         MR dry-run + release tag      build 3 artefacts + guards
+#   release:build-pypi-linux   MR dry-run + release tag      build 2 Linux wheels + sdist + guards
 #   release:smoke-pypi-amd64   MR dry-run + tag; needs build import the x86_64 wheel
 #   release:smoke-pypi-arm64   release tag only; needs build import the aarch64 wheel
+#   release:build-pypi-macos   signer MRs + release tag      build + smoke the 2 macOS wheels
 #   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
-#   release:publish-pypi       release tag, if PUBLISH=true  manual  → PyPI
+#   release:publish-pypi       release tag, if PUBLISH=true  auto    → PyPI, after TestPyPI
 #
 # build + the amd64 smoke also run as an MR dry-run (no upload) to catch packaging
 # regressions before a tag. The arm64 smoke and both publishes are tag-only — the
@@ -920,14 +980,15 @@ manifest-evm-sidecar:
 # QUIP_SIGNER_PUBLISH (off by default), so a node release tag never reds on an
 # unconfigured wheel publish during Phase 1. Every pypi job `needs` only other
 # pypi jobs, so the chain never waits on the container build/manifest stages
-# (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both smokes, so a
-# wheel that won't import on its own arch blocks the upload.
+# (esp. the slow, OOM-prone arm64 kaniko job), and an offline Mac runner holds
+# up the wheels, not the node release. publish `needs` every smoke, so a wheel
+# that won't import on its own arch blocks the upload.
 #
-# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheels for linux x86_64
-# and linux aarch64, both built with zig as the linker at manylinux2014
-# (glibc 2.17), + an sdist (universal source fallback; macOS/Windows build
-# from it). The wheel version is the pyproject/Cargo version, bumped per
-# release so the tag matches.
+# Artefact matrix: five files. abi3 wheels for linux x86_64 and linux aarch64,
+# both built with zig as the linker at manylinux2014 (glibc 2.17); abi3 wheels
+# for macOS arm64 (11.0) and macOS x86_64 (10.12); and an sdist, the source
+# fallback that only Windows builds from. The wheel version is the
+# pyproject/Cargo version, bumped per release so the tag matches.
 
 # Tag-only rule for the pypi jobs that do NOT run as an MR dry-run: the arm64
 # import-smoke and both publishes. Runs on pushed release tags like v0.2.1,
@@ -938,7 +999,7 @@ manifest-evm-sidecar:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
 
-# build-pypi + the amd64 smoke additionally run as an MR dry-run (no upload) to
+# build-pypi-linux + the amd64 smoke additionally run as an MR dry-run (no upload) to
 # catch packaging regressions before a tag is cut. The arm64 smoke is left out
 # (it uses .on-release-tag) — those runners are slower and in higher demand, so
 # we don't spend them on every MR; the aarch64 wheel is import-tested at tag
@@ -961,7 +1022,7 @@ manifest-evm-sidecar:
 # py-signer-test — it caches the crate's target/ keyed on that lock, not the
 # workspace one. Emits dist/ as an artefact so the smoke and publish jobs consume
 # the exact bytes it built (never a rebuild — the smoked wheel is the shipped
-# wheel). expire_in outlasts a manual PyPI promote clicked days after the tag.
+# wheel). expire_in outlasts a publish job retried days after the tag.
 .pypi-build:
   image: $TOOLCHAIN_IMAGE
   tags: [docker, amd64]
@@ -1006,14 +1067,14 @@ manifest-evm-sidecar:
   needs:
     - job: dependency-gate
       optional: true
-    - release:build-pypi
+    - release:build-pypi-linux
 
 # Publish base: mint the OIDC token and upload the prebuilt dist/. Like smoke it
 # needs no Rust toolchain — just twine + curl, both baked into
 # PYPI_PUBLISH_IMAGE so the upload never waits on a Debian mirror — and it
-# consumes the artefact from build (and both smokes) rather than rebuilding, so
-# the uploaded bytes are the ones that passed the smoke. Needs only the pypi
-# jobs, so it never waits on the container build/manifest stages.
+# consumes the artefacts from both builds (and every smoke) rather than
+# rebuilding, so the uploaded bytes are the ones that passed the smoke. Needs
+# only the pypi jobs, so it never waits on the container build/manifest stages.
 .pypi-publish:
   image: $PYPI_PUBLISH_IMAGE
   tags: [docker, amd64]
@@ -1022,9 +1083,10 @@ manifest-evm-sidecar:
   needs:
     - job: dependency-gate
       optional: true
-    - release:build-pypi
+    - release:build-pypi-linux
     - release:smoke-pypi-amd64
     - release:smoke-pypi-arm64
+    - release:build-pypi-macos
 
 # Build all three artefacts, guard their tags/content, twine-check metadata, and
 # publish dist/ as an artefact. Runs as an MR dry-run and again on a release tag
@@ -1032,7 +1094,7 @@ manifest-evm-sidecar:
 # Catches release-blocking packaging regressions (bad metadata, a wheel that
 # won't build, an unbuildable aarch64 cross, a dropped python surface) before a
 # tag is cut.
-release:build-pypi:
+release:build-pypi-linux:
   extends: .pypi-build
   stage: test
   rules: !reference [.on-mr-or-release-tag, rules]
@@ -1067,10 +1129,75 @@ release:smoke-pypi-arm64:
   script:
     - bash scripts/python-dists.sh smoke
 
+# Build and smoke the two macOS wheels (arm64 at 11.0, x86_64 at 10.12) on an
+# Apple Silicon shell runner. One job does both because, unlike the Linux pair,
+# the build host can import both wheels: arm64 natively and x86_64 under
+# Rosetta. A shell runner ignores `image:`, so this job cannot use the
+# toolchain image and is the one PyPI job that installs its own tools (rustup,
+# uv and CPython, each once, under a CI-only directory in the runner's home).
+# It takes rustc and maturin at the versions .gitlab/ci-toolchain.Dockerfile
+# pins, so every platform builds with the same toolchain. The x86_64 smoke needs Rosetta; on a runner without it
+# the job warns and passes, and that wheel is tested by hand before the
+# release that first ships it. Runs on release tags under the same gate as the
+# rest of the chain, and on merge requests that change the binding or this
+# script; the Linux build covers every other MR. Its dist/ joins the Linux one
+# in the publish jobs, which then check for exactly five files.
+release:build-pypi-macos:
+  stage: test
+  tags: [macos, arm64]
+  interruptible: true
+  timeout: 30m
+  needs:
+    - job: dependency-gate
+      optional: true
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - crates/transaction-crypto-py/**/*
+        - scripts/python-dists.sh
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+  script:
+    - pin() { sed -n "s/^ARG $1=//p" .gitlab/ci-toolchain.Dockerfile; }
+    - export RUSTUP_TOOLCHAIN="$(pin RUST_VERSION)" MATURIN_VERSION="$(pin MATURIN_VERSION)"
+    - test -n "$RUSTUP_TOOLCHAIN" && test -n "$MATURIN_VERSION"
+    # Every tool this job installs lives under one CI-only directory in the
+    # runner user's home, never in that user's own ~/.cargo, ~/.rustup or uv
+    # dirs: the runner can be someone's workstation. It persists across runs, so
+    # each install happens once. The global CARGO_HOME (clone-local) is
+    # overridden so rustup's bin/ is the one put on PATH.
+    - export CI_TOOLS="$HOME/.cache/quip-validator-ci"
+    - export RUSTUP_HOME="$CI_TOOLS/rustup" CARGO_HOME="$CI_TOOLS/cargo"
+    - export UV_INSTALL_DIR="$CI_TOOLS/bin" UV_PYTHON_INSTALL_DIR="$CI_TOOLS/python" UV_PYTHON_BIN_DIR="$CI_TOOLS/bin" UV_CACHE_DIR="$CI_TOOLS/uv-cache"
+    # The uv installer writes its receipt to XDG_CONFIG_HOME, and Apple's python3
+    # caches bytecode under ~/Library; keep both out of the user's dirs too.
+    - export XDG_CONFIG_HOME="$CI_TOOLS/config" PYTHONDONTWRITEBYTECODE=1
+    - export PATH="$CARGO_HOME/bin:$UV_INSTALL_DIR:$PATH"
+    - test -x "$CARGO_HOME/bin/rustup" || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+    - test -x "$UV_INSTALL_DIR/uv" || curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
+    - rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+    - uv venv --clear "$CI_PROJECT_DIR/.pyrelease"
+    - uv pip install --python "$CI_PROJECT_DIR/.pyrelease/bin/python" "maturin==$MATURIN_VERSION"
+    - export PATH="$CI_PROJECT_DIR/.pyrelease/bin:$PATH"
+    - rustc --version && maturin --version
+    - bash scripts/python-dists.sh build-macos
+    - uv python install cpython-3.12-macos-aarch64-none
+    - PYTHON="$(uv python find --python-preference only-managed cpython-3.12-macos-aarch64-none)" bash scripts/python-dists.sh smoke
+    - |
+      if arch -x86_64 /usr/bin/true 2>/dev/null; then
+        uv python install cpython-3.12-macos-x86_64-none
+        PYTHON="$(uv python find --python-preference only-managed cpython-3.12-macos-x86_64-none)" bash scripts/python-dists.sh smoke
+      else
+        echo "WARNING: no Rosetta on this runner; the macosx_10_12_x86_64 wheel was built and guarded but not import-tested."
+      fi
+
 # Auto-publish to TestPyPI on every release tag, once publishing is enabled
-# (Phase 1 validation target). Needs build + both smokes (via .pypi-publish), so
-# it uploads only wheels that imported on their own arch, and still doesn't wait
-# on the container build/manifest stages. No allow_failure: once enabled, a
+# (Phase 1 validation target). Needs both builds + every smoke (via
+# .pypi-publish), so it uploads only wheels that imported on their own arch, and
+# still doesn't wait on the container build/manifest stages. No allow_failure: once enabled, a
 # failed TestPyPI upload is a real signal that should red the pipeline.
 release:publish-testpypi:
   extends: .pypi-publish
@@ -1087,19 +1214,27 @@ release:publish-testpypi:
   script:
     - bash scripts/python-dists.sh publish testpypi
 
-# Promote to production PyPI: manual button on the tag pipeline, once publishing
-# is enabled. Manual + allow_failure so an un-clicked promote never reds the node
-# release pipeline; click it once the TestPyPI wheel checks out. Needs build +
-# both smokes (via .pypi-publish) — the promote uploads the same smoked bytes,
-# read from build's artefact (expire_in: 1 week covers a promote clicked days
-# later). Audience is `pypi` here (vs `testpypi` above).
+# Publish to production PyPI once the TestPyPI upload has passed, on the same
+# release tags. This was a manual promote with allow_failure, and nobody pressed
+# it for v0.3.1, v0.3.2 or v0.4.0: those versions reached only TestPyPI and the
+# pipeline stayed green. TestPyPI is the rehearsal, so a green TestPyPI upload
+# is the promote. No allow_failure: a failed PyPI upload reds the tag pipeline,
+# which is the signal the manual job never gave. `needs` is spelled out because
+# a job's `needs` replaces the template's list rather than adding to it. It
+# uploads the same smoked bytes as TestPyPI, read from the build artefacts.
+# Audience is `pypi` here (vs `testpypi` above).
 release:publish-pypi:
   extends: .pypi-publish
   stage: release
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
-      when: manual
-      allow_failure: true
+  rules: !reference [.on-release-tag, rules]
+  needs:
+    - job: dependency-gate
+      optional: true
+    - release:build-pypi-linux
+    - release:smoke-pypi-amd64
+    - release:smoke-pypi-arm64
+    - release:build-pypi-macos
+    - release:publish-testpypi
   environment: release
   id_tokens:
     PYPI_ID_TOKEN:

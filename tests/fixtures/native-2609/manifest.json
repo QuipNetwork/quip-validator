@@ -1,0 +1,49 @@
+{
+  "capture_kind": "Native Runtime::metadata_at_version(16) and complete default-genesis top-level storage; Wasm build enabled",
+  "captured_from": "native",
+  "files": {
+    "quip-storage.json": {
+      "bytes": 9445,
+      "sha256": "d577130a5cc8090dc2125e7492bc1054afdc79ee8d517fd0b1bd4a528233d6fb"
+    },
+    "quip-testnet-storage.json": {
+      "bytes": 9461,
+      "sha256": "dd2da307c9a6d92ab77cfabb161a596d8bdb535457dcdd0cc497d362105e1e16"
+    },
+    "quip-testnet.scale": {
+      "bytes": 290706,
+      "sha256": "b6582fa7674e72e51a8114568b266ff5e55a55424fd8030a1d946e95a8a45717"
+    },
+    "quip.scale": {
+      "bytes": 290709,
+      "sha256": "3e86d53458a1ec645dbf5f81ee94a4aea46d6f3939ef77ff58b7885d26a5e177"
+    }
+  },
+  "metadata_version": 16,
+  "native_wasm_metadata_equal": true,
+  "provenance": {
+    "cargo_lock_sha256": "80cd901956b21d8aa1d8fadef3bc55c0a80af727e9bc096e3e22d6a17912ca50",
+    "enforced": false,
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+    "capture_command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 capture_native_2609_anchor -- --ignored --exact --nocapture",
+    "features": [
+      "default",
+      "std"
+    ]
+  },
+  "storage_format": "Sorted [hex key, hex value] pairs from RuntimeGenesisConfig::default().build_storage().top, no excluded keys; child storage must be empty",
+  "wasm_verification": {
+    "SKIP_WASM_BUILD": "unset",
+    "build_profile": "test (embedded Wasm from substrate-wasm-builder)",
+    "command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16",
+    "features": [
+      "default",
+      "std"
+    ],
+    "runtime_apis": [
+      "Metadata_metadata",
+      "Metadata_metadata_at_version(16)"
+    ],
+    "timing": "Post-capture verification against the unchanged checked-in native anchor bytes"
+  }
+}

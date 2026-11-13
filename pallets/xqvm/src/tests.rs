@@ -87,14 +87,94 @@ fn store_duplicate_fails() {
 }
 
 #[test]
-fn store_invalid_bytecode_fails() {
-    new_test_ext().execute_with(|| {
-        let garbage: Vec<u8> = vec![0xFF, 0xFE, 0xFD];
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(garbage)),
-            Error::<Test>::InvalidBytecode
-        );
+fn store_rejects_bad_programs_with_distinct_errors() {
+    // Each case is (name, bytecode, expected error). Container faults keep
+    // their own error, distinct from stream faults found by the verifier.
+    let mut corrupt_crc = build_program(|b| {
+        b.emit_halt();
     });
+    // Corrupt the CRC-32 in the header (bytes 11..15).
+    corrupt_crc[11] ^= 0xFF;
+
+    let cases: Vec<(&str, Vec<u8>, DispatchError)> = vec![
+        (
+            "garbage bytes",
+            vec![0xFF, 0xFE, 0xFD],
+            Error::<Test>::InvalidBytecode.into(),
+        ),
+        (
+            "corrupt container",
+            corrupt_crc,
+            Error::<Test>::InvalidBytecode.into(),
+        ),
+        (
+            // ADD with nothing on the stack. The XQBC container is well
+            // formed, so this was stored before the verifier ran and only
+            // faulted when somebody executed it.
+            "stack underflow",
+            build_program(|b| {
+                b.emit_add().emit_halt();
+            }),
+            Error::<Test>::VerifierStackFault.into(),
+        ),
+        (
+            "read of unset register",
+            build_program(|b| {
+                b.emit_load(Register(3)).emit_halt();
+            }),
+            Error::<Test>::VerifierReadUnsetRegister.into(),
+        ),
+        (
+            // 0x0D is the reserved gap in the opcode table. `Program::decode`
+            // tolerates it, so this reaches the verifier rather than
+            // `InvalidBytecode`.
+            "unknown opcode",
+            raw_program(vec![0x0D, HALT]),
+            Error::<Test>::VerifierBadInstruction.into(),
+        ),
+        (
+            // JUMP1 to label 3 in a stream with no TARGET at all. The
+            // builder refuses to assemble this, but the wire format can
+            // carry it, so the verifier has to be the one to say no.
+            "jump to a missing target",
+            raw_program(vec![JUMP1, 0x03, HALT]),
+            Error::<Test>::VerifierUndefinedJumpTarget.into(),
+        ),
+        (
+            // RANGE opens a loop that no NEXT ever closes.
+            "unclosed loop",
+            build_program(|b| {
+                b.emit_push(0).emit_push(4).emit_range().emit_halt();
+            }),
+            Error::<Test>::VerifierLoopImbalance.into(),
+        ),
+        (
+            // STOW writes r0 as an int, but ENERGY reads r0 as a model.
+            "register read at the wrong type",
+            build_program(|b| {
+                b.emit_push(1)
+                    .emit_stow(Register(0))
+                    .emit_push(2)
+                    .emit_bsmx(Register(1))
+                    .emit_energy(Register(0), Register(1))
+                    .emit_halt();
+            }),
+            Error::<Test>::VerifierRegisterTypeMismatch.into(),
+        ),
+    ];
+
+    for (name, bytecode, expected) in cases {
+        // assert_noop! takes no message; a failing case is named in the
+        // captured output.
+        println!("case: {name}");
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_noop!(
+                Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+                expected
+            );
+        });
+    }
 }
 
 // ── execute ──────────────────────────────────────────────────────────────
@@ -191,247 +271,83 @@ fn execute_with_calldata() {
 }
 
 #[test]
-fn execute_step_limit_exceeded() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
+fn execute_rejects_bad_requests_with_distinct_errors() {
+    // Each case is (name, stored program or None for an unknown hash,
+    // output slots, step limit, expected error). The mock sets
+    // MaxStepLimit = 100_000 and MaxOutputSlots = 32, so 100_001 and 33 are
+    // the first rejected values.
+    let halt = build_program(|b| {
+        b.emit_halt();
+    });
+    // Infinite loop: label -> PUSH 1 -> JUMPI label
+    let spin = build_program(|b| {
+        let top = b.label();
+        b.place(top).unwrap().emit_push(1).emit_jump_if(top);
+    });
+    let cases: Vec<(&str, Option<Vec<u8>>, u32, u64, DispatchError)> = vec![
+        (
+            "step limit exceeded",
+            Some(spin),
+            0,
+            10,
+            Error::<Test>::VmStepLimitExceeded.into(),
+        ),
+        (
+            "program not found",
+            None,
+            0,
+            1_000,
+            Error::<Test>::ProgramNotFound.into(),
+        ),
+        (
+            "step limit too high",
+            Some(halt.clone()),
+            0,
+            100_001,
+            Error::<Test>::StepLimitTooHigh.into(),
+        ),
+        (
+            "too many output slots",
+            Some(halt),
+            33,
+            1_000,
+            Error::<Test>::TooManyOutputSlots.into(),
+        ),
+    ];
 
-        // Infinite loop: label -> PUSH 1 -> JUMPI label
-        let bytecode = build_program(|b| {
-            let top = b.label();
-            b.place(top).unwrap().emit_push(1).emit_jump_if(top);
+    for (name, program, slots, steps, expected) in cases {
+        // assert_noop! takes no message; a failing case is named in the
+        // captured output.
+        println!("case: {name}");
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let hash = match program {
+                Some(bytecode) => {
+                    let hash = program_hash(&bytecode);
+                    assert_ok!(Xqvm::store_program(
+                        RuntimeOrigin::signed(1),
+                        bounded(bytecode),
+                    ));
+                    hash
+                }
+                None => program_hash(b"nonexistent"),
+            };
+
+            assert_noop!(
+                Xqvm::execute(
+                    RuntimeOrigin::signed(1),
+                    hash,
+                    BoundedVec::default(),
+                    slots,
+                    steps,
+                ),
+                expected
+            );
         });
-        let hash = program_hash(&bytecode);
-
-        assert_ok!(Xqvm::store_program(
-            RuntimeOrigin::signed(1),
-            bounded(bytecode),
-        ));
-
-        assert_noop!(
-            Xqvm::execute(
-                RuntimeOrigin::signed(1),
-                hash,
-                BoundedVec::default(),
-                0,
-                10, // very low step limit
-            ),
-            Error::<Test>::VmStepLimitExceeded
-        );
-    });
-}
-
-#[test]
-fn execute_division_by_zero() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        let bytecode = build_program(|b| {
-            b.emit_push(1).emit_push(0).emit_div().emit_halt();
-        });
-        let hash = program_hash(&bytecode);
-
-        assert_ok!(Xqvm::store_program(
-            RuntimeOrigin::signed(1),
-            bounded(bytecode),
-        ));
-
-        assert_noop!(
-            Xqvm::execute(
-                RuntimeOrigin::signed(1),
-                hash,
-                BoundedVec::default(),
-                0,
-                1_000,
-            ),
-            Error::<Test>::VmDivisionByZero
-        );
-    });
-}
-
-#[test]
-fn execute_program_not_found() {
-    new_test_ext().execute_with(|| {
-        let fake_hash = program_hash(b"nonexistent");
-
-        assert_noop!(
-            Xqvm::execute(
-                RuntimeOrigin::signed(1),
-                fake_hash,
-                BoundedVec::default(),
-                0,
-                1_000,
-            ),
-            Error::<Test>::ProgramNotFound
-        );
-    });
-}
-
-#[test]
-fn execute_step_limit_too_high() {
-    new_test_ext().execute_with(|| {
-        let bytecode = build_program(|b| {
-            b.emit_halt();
-        });
-        let hash = program_hash(&bytecode);
-
-        assert_ok!(Xqvm::store_program(
-            RuntimeOrigin::signed(1),
-            bounded(bytecode),
-        ));
-
-        // MaxStepLimit in mock is 100_000
-        assert_noop!(
-            Xqvm::execute(
-                RuntimeOrigin::signed(1),
-                hash,
-                BoundedVec::default(),
-                0,
-                100_001,
-            ),
-            Error::<Test>::StepLimitTooHigh
-        );
-    });
-}
-
-#[test]
-fn execute_too_many_output_slots() {
-    new_test_ext().execute_with(|| {
-        let bytecode = build_program(|b| {
-            b.emit_halt();
-        });
-        let hash = program_hash(&bytecode);
-
-        assert_ok!(Xqvm::store_program(
-            RuntimeOrigin::signed(1),
-            bounded(bytecode),
-        ));
-
-        // MaxOutputSlots in mock is 32
-        assert_noop!(
-            Xqvm::execute(
-                RuntimeOrigin::signed(1),
-                hash,
-                BoundedVec::default(),
-                33,
-                1_000,
-            ),
-            Error::<Test>::TooManyOutputSlots
-        );
-    });
+    }
 }
 
 // ── static verification at store time ────────────────────────────────────
-
-#[test]
-fn store_rejects_stack_underflow() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        // ADD with nothing on the stack. The XQBC container is perfectly well
-        // formed -- correct magic, version, length and CRC -- so this was
-        // stored happily before the verifier ran, and only faulted when
-        // somebody executed it.
-        let bytecode = build_program(|b| {
-            b.emit_add().emit_halt();
-        });
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierStackFault
-        );
-    });
-}
-
-#[test]
-fn store_rejects_read_of_unset_register() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        let bytecode = build_program(|b| {
-            b.emit_load(Register(3)).emit_halt();
-        });
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierReadUnsetRegister
-        );
-    });
-}
-
-#[test]
-fn store_rejects_an_unknown_opcode() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        // 0x0D is the reserved gap in the opcode table. `Program::decode`
-        // tolerates it -- the container is well formed and the scan that
-        // rebuilds the jump table only records the fault -- so this reaches
-        // the verifier rather than `InvalidBytecode`.
-        let bytecode = raw_program(vec![0x0D, HALT]);
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierBadInstruction
-        );
-    });
-}
-
-#[test]
-fn store_rejects_a_jump_to_a_missing_target() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        // JUMP1 to label 3 in a stream with no TARGET at all. The builder
-        // refuses to assemble this, which is the point: the wire format can
-        // still carry it, so the verifier has to be the one to say no.
-        let bytecode = raw_program(vec![JUMP1, 0x03, HALT]);
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierUndefinedJumpTarget
-        );
-    });
-}
-
-#[test]
-fn store_rejects_an_unclosed_loop() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        // RANGE opens a loop that no NEXT ever closes.
-        let bytecode = build_program(|b| {
-            b.emit_push(0).emit_push(4).emit_range().emit_halt();
-        });
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierLoopImbalance
-        );
-    });
-}
-
-#[test]
-fn store_rejects_a_register_read_at_the_wrong_type() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        // STOW writes r0 as an int; LOAD of a model register would be fine,
-        // but ENERGY wants a model in r0 and reads it as one.
-        let bytecode = build_program(|b| {
-            b.emit_push(1)
-                .emit_stow(Register(0))
-                .emit_push(2)
-                .emit_bsmx(Register(1))
-                .emit_energy(Register(0), Register(1))
-                .emit_halt();
-        });
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierRegisterTypeMismatch
-        );
-    });
-}
 
 // ── basic-block bound ────────────────────────────────────────────────────
 
@@ -654,25 +570,6 @@ fn store_accepts_a_verifiable_program() {
     });
 }
 
-#[test]
-fn store_still_rejects_a_corrupt_container() {
-    // Container faults keep their own error, distinct from stream faults.
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-
-        let mut bytecode = build_program(|b| {
-            b.emit_halt();
-        });
-        // Corrupt the CRC-32 in the header (bytes 11..15).
-        bytecode[11] ^= 0xFF;
-
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::InvalidBytecode
-        );
-    });
-}
-
 // ── weight accounting ────────────────────────────────────────────────────
 
 #[test]
@@ -884,197 +781,142 @@ fn execute_expecting_failure(bytecode: Vec<u8>, calldata: Vec<i64>, slots: u32) 
 }
 
 #[test]
-fn arithmetic_overflow_maps_to_its_own_error() {
-    // The headline behaviour change in xqvm 0.4.0: i64::MAX + 1 raises where
-    // it used to wrap. Under the old wildcard this was indistinguishable
-    // from any other runtime fault.
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        let bytecode = build_program(|b| {
-            b.emit_push(i64::MAX).emit_push(1).emit_add().emit_halt();
+fn vm_faults_map_to_their_own_errors() {
+    // Each case is (name, bytecode, expected error). Under the old wildcard
+    // these were indistinguishable from any other runtime fault.
+    let cases: Vec<(&str, Vec<u8>, DispatchError)> = vec![
+        (
+            // The headline behaviour change in xqvm 0.4.0: i64::MAX + 1
+            // raises where it used to wrap.
+            "arithmetic overflow",
+            build_program(|b| {
+                b.emit_push(i64::MAX).emit_push(1).emit_add().emit_halt();
+            }),
+            Error::<Test>::VmArithmeticOverflow.into(),
+        ),
+        (
+            "division by zero",
+            build_program(|b| {
+                b.emit_push(1).emit_push(0).emit_div().emit_halt();
+            }),
+            Error::<Test>::VmDivisionByZero.into(),
+        ),
+        (
+            // INPUT pops a calldata slot index; nothing was supplied.
+            "calldata index out of range",
+            build_program(|b| {
+                b.emit_push(0).emit_input(Register(0)).emit_halt();
+            }),
+            Error::<Test>::VmCallDataIndex.into(),
+        ),
+        (
+            // OUTPUT addresses slot 0 while the call requested none.
+            "output index out of range",
+            build_program(|b| {
+                b.emit_push(7)
+                    .emit_stow(Register(0))
+                    .emit_push(0)
+                    .emit_output(Register(0))
+                    .emit_halt();
+            }),
+            Error::<Test>::VmOutputIndex.into(),
+        ),
+        (
+            // SHL pops b then a; a shift of 64 discards every significant bit.
+            "oversized shift",
+            build_program(|b| {
+                b.emit_push(1).emit_push(64).emit_shl().emit_halt();
+            }),
+            Error::<Test>::VmInvalidShift.into(),
+        ),
+        (
+            // XSMX pops k then size; the integer domain requires k >= 2.
+            "integer sample with small k",
+            build_program(|b| {
+                b.emit_push(4)
+                    .emit_push(1)
+                    .emit_xsmx(Register(0))
+                    .emit_halt();
+            }),
+            Error::<Test>::VmInvalidIntegerK.into(),
+        ),
+        (
+            // A binary sample holds {0, 1}; SETLINE pops value then index,
+            // and writing 2 to variable 0 leaves the domain.
+            "sample write outside its domain",
+            build_program(|b| {
+                b.emit_push(4)
+                    .emit_bsmx(Register(0))
+                    .emit_push(0)
+                    .emit_push(2)
+                    .emit_set_line(Register(0))
+                    .emit_halt();
+            }),
+            Error::<Test>::VmSampleOutOfDomain.into(),
+        ),
+        (
+            // A four-variable model has indices 0..4; index 9 addresses a
+            // variable that was never declared.
+            "coefficient index past the model",
+            build_program(|b| {
+                b.emit_push(4)
+                    .emit_bqmx(Register(0))
+                    .emit_push(9)
+                    .emit_push(1)
+                    .emit_set_line(Register(0))
+                    .emit_halt();
+            }),
+            Error::<Test>::VmIndexOutOfBounds.into(),
+        ),
+        (
+            // ENERGY of a two-element sample against a four-variable model.
+            // Both registers hold the type the verifier expects, so this is
+            // a fault only the VM can see.
+            "sample of the wrong size",
+            build_program(|b| {
+                b.emit_push(4)
+                    .emit_bqmx(Register(0))
+                    .emit_push(2)
+                    .emit_bsmx(Register(1))
+                    .emit_energy(Register(0), Register(1))
+                    .emit_halt();
+            }),
+            Error::<Test>::VmSizeMismatch.into(),
+        ),
+        (
+            // RESIZE pops cols then rows. A 3 x 3 grid describes nine cells
+            // over a model that declared four variables.
+            "grid larger than the model",
+            build_program(|b| {
+                b.emit_push(4)
+                    .emit_bqmx(Register(0))
+                    .emit_push(3)
+                    .emit_push(3)
+                    .emit_resize(Register(0))
+                    .emit_halt();
+            }),
+            Error::<Test>::VmInvalidGridDimensions.into(),
+        ),
+        (
+            // A negative size is not an allocation at all.
+            "negative allocation",
+            build_program(|b| {
+                b.emit_push(-1).emit_bsmx(Register(0)).emit_halt();
+            }),
+            Error::<Test>::VmInvalidAllocation.into(),
+        ),
+    ];
+
+    for (name, bytecode, expected) in cases {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_eq!(
+                execute_expecting_failure(bytecode, vec![], 0),
+                expected,
+                "{name}"
+            );
         });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmArithmeticOverflow.into()
-        );
-    });
-}
-
-#[test]
-fn calldata_index_out_of_range_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // INPUT pops a calldata slot index; nothing was supplied.
-        let bytecode = build_program(|b| {
-            b.emit_push(0).emit_input(Register(0)).emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmCallDataIndex.into()
-        );
-    });
-}
-
-#[test]
-fn output_index_out_of_range_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // OUTPUT addresses slot 0 while the call requested none.
-        let bytecode = build_program(|b| {
-            b.emit_push(7)
-                .emit_stow(Register(0))
-                .emit_push(0)
-                .emit_output(Register(0))
-                .emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmOutputIndex.into()
-        );
-    });
-}
-
-#[test]
-fn oversized_shift_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // SHL pops b then a; a shift of 64 discards every significant bit.
-        let bytecode = build_program(|b| {
-            b.emit_push(1).emit_push(64).emit_shl().emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmInvalidShift.into()
-        );
-    });
-}
-
-#[test]
-fn integer_sample_with_small_k_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // XSMX pops k then size; the integer domain requires k >= 2.
-        let bytecode = build_program(|b| {
-            b.emit_push(4)
-                .emit_push(1)
-                .emit_xsmx(Register(0))
-                .emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmInvalidIntegerK.into()
-        );
-    });
-}
-
-#[test]
-fn sample_write_outside_its_domain_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // A binary sample holds {0, 1}; SETLINE pops value then index, and
-        // writing 2 to variable 0 leaves the domain.
-        let bytecode = build_program(|b| {
-            b.emit_push(4)
-                .emit_bsmx(Register(0))
-                .emit_push(0)
-                .emit_push(2)
-                .emit_set_line(Register(0))
-                .emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmSampleOutOfDomain.into()
-        );
-    });
-}
-
-#[test]
-fn coefficient_index_past_the_model_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // A four-variable model has indices 0..4; SETLINE pops value then
-        // index, and index 9 addresses a variable that was never declared.
-        let bytecode = build_program(|b| {
-            b.emit_push(4)
-                .emit_bqmx(Register(0))
-                .emit_push(9)
-                .emit_push(1)
-                .emit_set_line(Register(0))
-                .emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmIndexOutOfBounds.into()
-        );
-    });
-}
-
-#[test]
-fn sample_of_the_wrong_size_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // ENERGY of a two-element sample against a four-variable model. Both
-        // registers hold the type the verifier expects, so this is a fault
-        // only the VM can see.
-        let bytecode = build_program(|b| {
-            b.emit_push(4)
-                .emit_bqmx(Register(0))
-                .emit_push(2)
-                .emit_bsmx(Register(1))
-                .emit_energy(Register(0), Register(1))
-                .emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmSizeMismatch.into()
-        );
-    });
-}
-
-#[test]
-fn grid_larger_than_the_model_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // RESIZE pops cols then rows. A 3 x 3 grid describes nine cells over
-        // a model that declared four variables.
-        let bytecode = build_program(|b| {
-            b.emit_push(4)
-                .emit_bqmx(Register(0))
-                .emit_push(3)
-                .emit_push(3)
-                .emit_resize(Register(0))
-                .emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmInvalidGridDimensions.into()
-        );
-    });
-}
-
-#[test]
-fn negative_allocation_maps_to_its_own_error() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // A negative size is not an allocation at all.
-        let bytecode = build_program(|b| {
-            b.emit_push(-1).emit_bsmx(Register(0)).emit_halt();
-        });
-
-        assert_eq!(
-            execute_expecting_failure(bytecode, vec![], 0),
-            Error::<Test>::VmInvalidAllocation.into()
-        );
-    });
+    }
 }
 
 // ── storage deposit and removal (QUI-1058) ───────────────────────────────
