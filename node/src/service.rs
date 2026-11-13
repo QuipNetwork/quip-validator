@@ -203,7 +203,7 @@ pub fn new_full<
         Vec::default(),
     ));
 
-    let (network, system_rpc_tx, tx_handler_controller, sync_service) =
+    let (network, system_rpc_tx, tx_handler_controller, sync_service, _bitswap_handle) =
         sc_service::build_network(sc_service::BuildNetworkParams {
             config: &config,
             net_config,
@@ -216,6 +216,9 @@ pub fn new_full<
             block_relay: None,
             metrics,
             spawn_essential_handle: task_manager.spawn_essential_handle(),
+            // `None` derives the gap-sync body policy from the block pruning
+            // configuration, which is the pre-2609 behaviour.
+            gap_sync_body_policy: None,
         })?;
 
     if config.offchain_worker.enabled {

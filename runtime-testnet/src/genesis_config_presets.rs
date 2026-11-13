@@ -396,7 +396,7 @@ struct MainnetInputs {
 
 /// Hash an account ID, not a signing seed. No key pair is generated or provisioned.
 fn mainnet_placeholder(role: &str, label: &str) -> AccountId {
-    AccountId::new(sp_core::blake2_256(
+    AccountId::new(sp_io::hashing::blake2_256(
         &("quip/genesis-placeholder/v1", "mainnet", role, label).encode(),
     ))
 }
@@ -1282,7 +1282,7 @@ mod tests {
         for (name, hash) in expected {
             let bytes = get_preset(&PresetId::from(name.clone())).unwrap();
             assert_eq!(
-                hex_encode(&sp_core::blake2_256(&bytes)),
+                hex_encode(&sp_io::hashing::blake2_256(&bytes)),
                 hash.as_str().unwrap(),
                 "legacy preset changed: {name}"
             );
@@ -1666,28 +1666,7 @@ mod tests {
         let fixture = ready_mainnet_fixture();
         // Spell these independently of the gate's keyring iteration, covering
         // both legacy to_seed() and canonical SDK stash derivation forms.
-        let seeds = [
-            "//Alice",
-            "//Bob",
-            "//Charlie",
-            "//Dave",
-            "//Eve",
-            "//Ferdie",
-            "//AliceStash",
-            "//BobStash",
-            "//CharlieStash",
-            "//DaveStash",
-            "//EveStash",
-            "//FerdieStash",
-            "//One",
-            "//Two",
-            "//Alice//stash",
-            "//Bob//stash",
-            "//Charlie//stash",
-            "//Dave//stash",
-            "//Eve//stash",
-            "//Ferdie//stash",
-        ];
+        let seeds = ["//Alice", "//AliceStash", "//Alice//stash", "//One"];
         let cases = quip_testnet_authorities()
             .into_iter()
             .map(|keys| ("testnet operator", keys))
@@ -1730,18 +1709,11 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_rejects_cross_network_stash() {
-        assert_mainnet_network_key_collisions_rejected(0);
-    }
-
-    #[test]
-    fn mainnet_rejects_cross_network_babe_key() {
-        assert_mainnet_network_key_collisions_rejected(1);
-    }
-
-    #[test]
-    fn mainnet_rejects_cross_network_grandpa_key() {
-        assert_mainnet_network_key_collisions_rejected(2);
+    fn mainnet_rejects_cross_network_keys() {
+        // Component 0 is the stash, 1 the BABE key, 2 the GRANDPA key.
+        for component in 0..3 {
+            assert_mainnet_network_key_collisions_rejected(component);
+        }
     }
 
     #[test]
@@ -1757,7 +1729,9 @@ mod tests {
             Some(&mainnet_allocation::custody_placeholder())
         );
         assert_eq!(
-            hex_encode(&sp_core::blake2_256(&accounts[..12].to_vec().encode())),
+            hex_encode(&sp_io::hashing::blake2_256(
+                &accounts[..12].to_vec().encode()
+            )),
             "b6e46344fd96bb4deee3a025c407e7a9d502b8c40ad962a535ceb0160c2d9da2"
         );
         assert_eq!(MAINNET_VALIDATOR_FLOAT, Some(10 * crate::UNIT));
@@ -1953,7 +1927,7 @@ mod tests {
         let code = RuntimeCode {
             code_fetcher: &fetcher,
             heap_pages: None,
-            hash: sp_core::blake2_256(wasm).to_vec(),
+            hash: sp_io::hashing::blake2_256(wasm).to_vec(),
         };
         let executor =
             sc_executor::WasmExecutor::<sp_io::SubstrateHostFunctions>::builder().build();

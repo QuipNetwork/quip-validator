@@ -97,11 +97,7 @@ parameter_types! {
     pub const SS58Prefix: u8 = 42;
 }
 
-/// All migrations of the runtime, aside from the ones declared in the pallets.
-///
-/// This can be a tuple of types, each implementing `OnRuntimeUpgrade`.
-#[allow(unused_parens)]
-type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
+type SingleBlockMigrations = ();
 
 /// Stable error shared by all runtime-upgrade entry points.
 pub const RUNTIME_IDENTITY_MISMATCH: &str = "Runtime spec_name does not match this network";
@@ -408,6 +404,23 @@ impl pallet_revive::Config for Runtime {
     type DepositPerItem = StorageDepositPerItem;
     type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
+    /// The native backend mints each contract's ED and marks it inactive;
+    /// the deployer is not charged and dry-run storage deposits exclude it.
+    /// Deployment charges and dry-run deposit estimates drop by one ED.
+    /// Termination attempts to burn/reactivate that ED only when it is the
+    /// account's sole balance with no dust; otherwise it stays. It is never
+    /// refunded to the terminating caller. This differs from the pre-2609 SDK.
+    type Deposit = ();
+    /// Explicit mapping is the default; account hooks do not use `AutoMapper`.
+    /// Accepted 2609 behavior: `batch_map_accounts` is not gated by `AutoMap`.
+    /// Any signed non-contract caller can map eligible existing third-party
+    /// accounts without a deposit. It is fee-free when at least 90% of entries
+    /// are useful (new mappings or released mapping deposits). A batch caller
+    /// may release an existing mapping's deposit to its owner without unmapping.
+    /// With `OnKilledAccount = ()`, mappings survive account reaping. An account's
+    /// owner can reverse the mapping with `unmap_account`; a later batch can
+    /// map it again. We deliberately keep this permissionless batch path.
+    type AutoMap = ConstBool<false>;
     type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;
     type AllowEVMBytecode = ConstBool<true>;
     type UploadOrigin = frame_system::EnsureSigned<AccountId>;
@@ -666,24 +679,14 @@ parameter_types! {
 
 /// Family revisions that `register_topology` admits for proof of work.
 ///
-/// Empty: every canonical family is still `research`, and research families
-/// never mine. Promoting a family means listing its contract here in a
-/// runtime upgrade. See `docs/family-activation.md`.
-///
-/// The benchmark build lists every canonical family so the family benchmarks
-/// can register their worst-case fixtures. A release blob never enables
-/// `runtime-benchmarks`.
+/// Every canonical family. Listing a contract lets Root register a topology
+/// for it; Root still decides which topology is mineable. The benchmarks
+/// register their worst-case fixtures from the same list. See
+/// `docs/family-activation.md`.
 pub struct QuantumPowFamilies;
 impl Get<&'static [pallet_quantum_pow::Contract]> for QuantumPowFamilies {
     fn get() -> &'static [pallet_quantum_pow::Contract] {
-        #[cfg(not(feature = "runtime-benchmarks"))]
-        {
-            &[]
-        }
-        #[cfg(feature = "runtime-benchmarks")]
-        {
-            quantum_validation::families::CONTRACTS
-        }
+        quantum_validation::families::CONTRACTS
     }
 }
 
@@ -890,6 +893,26 @@ mod tests {
             Some(max_block - initialization - ExtrinsicBaseWeight::get())
         );
         assert_eq!(weights.get(DispatchClass::Mandatory).max_total, None);
+    }
+
+    #[test]
+    fn every_allowed_family_proof_fits_the_normal_extrinsic_limit() {
+        let limit = RuntimeBlockWeights::get()
+            .get(DispatchClass::Normal)
+            .max_extrinsic
+            .expect("normal class has an extrinsic limit");
+        let families = QuantumPowFamilies::get();
+        assert!(!families.is_empty(), "the family allowlist is empty");
+        for contract in families {
+            let weight = pallet_quantum_pow::weights::family_proof_weight::<
+                <Runtime as pallet_quantum_pow::Config>::WeightInfo,
+            >(contract.family_id.as_bytes(), QuantumPowMaxSolutions::get());
+            assert!(
+                weight.all_lte(limit),
+                "{} charges {weight:?}, over the normal extrinsic limit {limit:?}",
+                contract.family_id,
+            );
+        }
     }
 
     #[test]

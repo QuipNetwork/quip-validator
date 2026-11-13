@@ -6,10 +6,12 @@ use alloc::{vec, vec::Vec};
 use frame_election_provider_support::{
     onchain, BoundedSupportsOf, ElectionProvider, PageIndex, SequentialPhragmen,
 };
+use frame_support::PalletId;
 use pallet_election_provider_multi_block::{self as multi_block, unsigned::miner};
-use sp_runtime::{transaction_validity::TransactionPriority, PerU16};
+use sp_runtime::{traits::AccountIdConversion, transaction_validity::TransactionPriority, PerU16};
 
 parameter_types! {
+    pub const SignedRewardPotId: PalletId = PalletId(*b"qp/sgnrd");
     pub const Pages: u32 = 1;
     /// Zero-based active-session offset within the planned staking era.
     pub const PlanningSession: u32 = 3;
@@ -88,6 +90,23 @@ impl multi_block::unsigned::Config for Runtime {
     type WeightInfo = multi_block::weights::polkadot::MultiBlockUnsignedWeightInfo<Self>;
 }
 
+/// The signed phase is disabled (`SignedPhase = 0`, `MaxSubmissions = 0`), so
+/// normal submissions cannot reach the reward path. `None` would select SDK
+/// minting, so use a dedicated pot with no genesis allocation or configured
+/// funding instead. Positive rewards from an empty pot defer to UnpaidRewards.
+/// Anyone can transfer into this account; even then payouts transfer existing
+/// funds rather than minting. This is a guard, not a funded reward budget;
+/// enabling the phase requires reviewing this source.
+pub struct NoSignedReward;
+
+impl multi_block::signed::RewardSource<AccountId, Balance> for NoSignedReward {
+    fn account() -> Option<AccountId> {
+        Some(SignedRewardPotId::get().into_account_truncating())
+    }
+
+    fn paid(_amount: Balance) {}
+}
+
 impl multi_block::signed::Config for Runtime {
     type Currency = Balances;
     type DepositBase = ConstU128<0>;
@@ -97,6 +116,12 @@ impl multi_block::signed::Config for Runtime {
     type MaxSubmissions = ConstU32<0>;
     type BailoutGraceRatio = ZeroRatio;
     type EjectGraceRatio = ZeroRatio;
+    // Signed-phase accounting is unreachable while the phase is disabled. `()`
+    // burns a slashed deposit; the refund ceiling is zero because no submission
+    // can accrue a fee.
+    type Slash = ();
+    type RewardSource = NoSignedReward;
+    type MaxFeeRefund = ConstU128<0>;
     type EstimateCallFee = crate::TransactionPayment;
     type WeightInfo = multi_block::weights::polkadot::MultiBlockSignedWeightInfo<Self>;
 }
@@ -457,6 +482,10 @@ mod tests {
         });
     }
 
+    // `ValidateUnsigned::pre_dispatch` is deprecated upstream in favour of
+    // `#[pallet::authorize]` (polkadot-sdk#2415). Migrating the unsigned path is
+    // a separate change; this test deliberately exercises the current one.
+    #[allow(deprecated)]
     #[test]
     fn offchain_worker_submits_a_valid_bare_runtime_extrinsic() {
         use sp_core::offchain::{
@@ -582,6 +611,61 @@ mod tests {
             assert_eq!(MultiBlockElection::elect(0).unwrap(), expected);
         });
     }
+    #[test]
+    fn signed_phase_disabled_and_reward_source_non_minting() {
+        // Pin disabled submission/validation phases, zero submission capacity,
+        // reward and fee-refund amounts, and the initially empty non-minting
+        // source. This does not exercise the Slash handler.
+        use frame_support::traits::Get;
+        assert_eq!(SignedPhase::get(), 0);
+        assert_eq!(SignedValidationPhase::get(), 0);
+        assert_eq!(
+            <<Runtime as multi_block::signed::Config>::MaxSubmissions as Get<u32>>::get(),
+            0
+        );
+        assert_eq!(
+            <<Runtime as multi_block::signed::Config>::RewardBase as Get<Balance>>::get(),
+            0
+        );
+        assert_eq!(
+            <<Runtime as multi_block::signed::Config>::MaxFeeRefund as Get<Balance>>::get(),
+            0
+        );
+        let pot = <<Runtime as multi_block::signed::Config>::RewardSource as
+            multi_block::signed::RewardSource<AccountId, Balance>>::account()
+            .expect("None would mint rewards");
+        assert_eq!(pot, SignedRewardPotId::get().into_account_truncating());
+        validator_onboarding::tests::ext().execute_with(|| {
+            assert_eq!(Balances::free_balance(pot), 0);
+        });
+    }
+
+    #[test]
+    fn empty_signed_reward_pot_does_not_mint_an_unpaid_reward() {
+        validator_onboarding::tests::ext().execute_with(|| {
+            let who = AccountId::new([99; 32]);
+            // The SDK entry's fields are private. Decode its SCALE layout to
+            // simulate a positive deferred reward without enabling the phase.
+            let entry = multi_block::signed::UnpaidReward::<Runtime>::decode(
+                &mut (0u32, who.clone(), UNIT).encode().as_slice(),
+            )
+            .unwrap();
+            multi_block::signed::UnpaidRewards::<Runtime>::mutate(|unpaid| {
+                unpaid.try_push(entry).unwrap();
+            });
+            let issuance = Balances::total_issuance();
+            assert_noop!(
+                MultiBlockElectionSigned::claim_unpaid_reward(RuntimeOrigin::signed(who), 0),
+                multi_block::signed::Error::<Runtime>::PotStillDepleted
+            );
+            assert_eq!(Balances::total_issuance(), issuance);
+            assert_eq!(
+                multi_block::signed::UnpaidRewards::<Runtime>::get().len(),
+                1
+            );
+        });
+    }
+
     #[test]
     fn scheduler_integrity_test() {
         ElectionScheduler::integrity_test();
@@ -858,6 +942,10 @@ mod tests {
 
         // before_queue exercises a snapshot invalidated before its mined solution
         // can be submitted; queued and fallback exercise removal just before export.
+        // `ValidateUnsigned::pre_dispatch` is deprecated upstream in favour of
+        // `#[pallet::authorize]` (polkadot-sdk#2415). Migrating the unsigned path is
+        // a separate change; this test deliberately exercises the current one.
+        #[allow(deprecated)]
         fn admission_revocation_case(before_queue: bool, queued: bool, force_new: bool) {
             validator_onboarding::tests::ext().execute_with(|| {
                 let removed = Validators::<Runtime>::get()[0].clone();

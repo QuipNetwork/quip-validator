@@ -4,8 +4,9 @@ This file provides guidance to coding assistants (Claude Code, Codex, Cursor, et
 
 ## Overview
 
-Quip Network solochain node built on Substrate (Polkadot SDK
-`polkadot-stable2603`). This is a standalone blockchain with hybrid H4 BABE
+Quip Network solochain node built on Substrate. The workspace pins the
+Quip fork of the Polkadot SDK at tag `v0.4.0`, which is upstream
+`polkadot-stable2609-1` plus the Quip hybrid-crypto changes. This is a standalone blockchain with hybrid H4 BABE
 block authoring and H2 GRANDPA finality.
 
 ## Chain specs
@@ -108,9 +109,9 @@ cargo build --release
 cargo +nightly doc --open
 ```
 
-CI (`.gitlab-ci.yml`) gates merge requests with more than a build. `cargo-test` runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, a node build, the live-spec startup smoke, and a release runtime build. `browser-signer-test` checks the signing fixture and the Polkadot.js signer. `runtime-parity` runs the parity gate and its negative fixtures. `live-testnet-spec` verifies the vendored `chain-specs/quip-testnet.json` byte-for-byte against its pinned SHA-256 and exercises the alias/metadata identity. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
+CI (`.gitlab-ci.yml`) gates merge requests with more than a build. `cargo-test` runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a release runtime build. `node-build` builds the debug node once, runs the live-spec startup smoke and the crypto doc-tests, and builds the browser Wasm bindings. `browser-signer-test` checks the Polkadot.js signer against that node, and `xqvm-onchain-test` replays the XQVM conformance vectors on it. `runtime-parity` runs the parity gate and its negative fixtures. `live-testnet-spec` verifies the vendored `chain-specs/quip-testnet.json` byte-for-byte against its pinned SHA-256 and exercises the alias/metadata identity. The quip-signer PyPI chain builds the Linux wheels in the toolchain image and the macOS wheels on a macOS shell runner (`release:build-pypi-macos`), and on release tags with `QUIP_SIGNER_PUBLISH` on it publishes to TestPyPI and then PyPI without a manual step. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
 
-Every Rust job runs on the `ci-toolchain` image built from `.gitlab/ci-toolchain.Dockerfile`. The image holds the system build dependencies, the Rust targets, and every pinned helper binary the jobs use. A tool that a job needs belongs in that Dockerfile, not in a job's `before_script`. CI rebuilds the image when a CI Dockerfile changes, and a main pipeline can rebuild it by hand. Each job names the tools it depends on in `IMAGE_TOOLS` and fails before its script if the image lacks one. `make builder-image` builds the image locally for checking a change.
+Every Rust job in a Docker container runs on the `ci-toolchain` image built from `.gitlab/ci-toolchain.Dockerfile`. The image holds the system build dependencies, the Rust targets, and every pinned helper binary the jobs use. A tool that a job needs belongs in that Dockerfile, not in a job's `before_script`. CI rebuilds the image when a CI Dockerfile changes, and a main pipeline can rebuild it by hand. Each job names the tools it depends on in `IMAGE_TOOLS` and fails before its script if the image lacks one. `make builder-image` builds the image locally for checking a change. The exception is `release:build-pypi-macos`: it runs on a macOS shell runner, which ignores `image:`, so it installs its own rustup and uv and reads the rustc and maturin versions from the Dockerfile's `ARG` pins.
 
 Two further merge-request jobs run automatically and cover benchmarks. `benchmark-preflight` exercises every benchmark against the production runtime constants at low resolution, without touching tracked weights; it fails closed if the runtime stops registering the nine `pallet_vesting` benchmarks, and it currently takes a large fraction of its 90-minute timeout (see QUI-2102). `weights-staleness-check` warns (yellow, never blocking) when a pallet's `lib.rs`/`benchmarking.rs` changed but its `weights.rs`/`benchmark_weights.rs` did not. Regenerating weights is the separate `benchmark-weights` job — **manual by design**, because it runs on the single serialized reference machine and pushes the regenerated files back to the MR branch. Play it when your change can affect weights; it mirrors runtime-level weights into `runtime-testnet`, which the parity gate requires.
 
@@ -202,7 +203,7 @@ These gate code at both pallet and runtime level.
 - Prefer runtime configuration via `parameter_types!` and explicit `impl pallet_x::Config for Runtime` blocks.
 - Avoid adding runtime-only behavior into pure helper crates.
 - Bump `spec_version` only after the current spec has shipped (a release tag that nodes actually run). If the current spec has not gone live, keep that number and do not invent the next one. Example: 115 has not shipped, so pallet-evm-chain-id stayed on 115 instead of 116.
-- When you do change `spec_version`, `transaction_version`, or the signed-extension set in `runtime/src/lib.rs`, regenerate the Polkadot.js signing fixture before you push. `runtime/tests/fixtures/hybrid-signing.json` embeds those values. `browser-signer-test` runs `cargo test -p quip-protocol-runtime --test signing_fixture` and fails if the fixture is stale:
+- When you do change `spec_version`, `transaction_version`, or the signed-extension set in `runtime/src/lib.rs`, regenerate the Polkadot.js signing fixture before you push. `runtime/tests/fixtures/hybrid-signing.json` embeds those values. `cargo-test` runs `cargo test -p quip-protocol-runtime --test signing_fixture` and fails if the fixture is stale:
 
 ```bash
 cargo run -p quip-protocol-runtime --example generate_polkadotjs_signing_fixture -- --write

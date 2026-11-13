@@ -1,0 +1,26 @@
+{
+  "source_commit": "034faa214ae99b537aada95ba6fad77ef0f685ec",
+  "source_sdk": "d511a17da276c0958047c84b6d30ae599542edef",
+  "provenance": "Captured on both native runtimes at source_commit with source_sdk. These V5 general/version-1 envelopes passed Decode, Checkable::check and Executive::validate_transaction. The regression test consumes these fixed bytes without generating signatures.",
+  "cases": [
+    {
+      "kind": "legacy EIP-155",
+      "extrinsic_hex": "c9014501000000000e00a101f86680843b9aca00839896809442424242424242424242424242424242424242428080829ca6a00a5275db1fd95e0ab94023e12758da2b548c6a95f850422268759728939c4f78a06a2783f3718c58f7e56d6410410804a453e68229a40a7654d71eb957c4bbc22a"
+    },
+    {
+      "kind": "EIP-2930",
+      "extrinsic_hex": "d5014501000000000e00ad0101f868824e4180843b9aca00839896809442424242424242424242424242424242424242428080c080a0f83e4cb31c7750d55cc4e7bbb4e745e03a45b67104d3a28b462c06ed54de86a9a022fa5a3b00eb654da74d2857dd8bcbbb09776a19008b8fb05b2e9327900ddcbb"
+    },
+    {
+      "kind": "EIP-1559",
+      "extrinsic_hex": "d5014501000000000e00ad0102f868824e418080843b9aca00839896809442424242424242424242424242424242424242428080c001a0b2695466f30e6eca161edee1697a03d168507aef952764ef455b38e66e4e777d9f080d3787266747884b29f1b26377cfe013361bf18bced1a7ce60c07f37b9d9"
+    }
+  ],
+  "capture_recipe": [
+    "At source_commit, create RuntimeGenesisConfig::default() test externalities (EIP-155 chain ID 20033) and an evm::Account::from_secret_key([7; 32]).",
+    "For each GenericTransaction type 0, 1 and 2, set from to the signer, to H160::repeat_byte(0x42), chain_id 20033, gas 10000000, gas_price and max_fee_per_gas to Pallet::<Runtime>::evm_base_fee() (1000000000), and max_priority_fee_per_gas 0. Use Default::default() for remaining fields (zero nonce/value, empty input/access list).",
+    "Call try_into_unsigned(), then account.sign_transaction(unsigned).signed_payload(). Put the payload in RuntimeCall::Revive(pallet_revive::Call::eth_transact { payload }).",
+    "Encode the body as [0x45, 1] followed by native_tx_extension(Era::Immortal, 0, 0).encode() and call.encode(). Prefix it with Compact(body.len() as u32).encode(); hex-encode the complete bytes.",
+    "For validation, set block number 1 and fund the signer substrate_account with 1000000000000000000000000. Decode UncheckedExtrinsic, check it with ChainContext::<Runtime>::default(), and call Executive::validate_transaction(TransactionSource::External, extrinsic, Default::default())."
+  ]
+}

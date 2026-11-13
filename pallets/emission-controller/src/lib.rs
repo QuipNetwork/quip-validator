@@ -239,80 +239,14 @@ pub mod pallet {
             Self::accrue(T::Clock::now().as_secs());
             T::WeightInfo::accrue(T::MaxSubnets::get())
         }
-        fn on_runtime_upgrade() -> Weight {
-            if Pallet::<T>::on_chain_storage_version() >= VERSION {
-                return T::DbWeight::get().reads(1);
-            }
-            // Preserve all issued counters and balances. Moving the anchor
-            // avoids a silent stall when the annual rate drops from 40M to 30M.
-            // Unconfigured/disabled chains remain closed; unanchored genesis
-            // still waits for the first consensus timestamp.
-            let start = match Self::rebased_start() {
-                Ok(start) => start,
-                Err(error) => {
-                    log::error!(
-                        target: "runtime::emission-controller",
-                        "Invalid rebase: {error}; storage version not advanced",
-                    );
-                    frame_support::defensive!("invalid emission-controller rebase", error);
-                    return T::DbWeight::get().reads(5);
-                }
-            };
-            StartAt::<T>::set(start);
-            VERSION.put::<Pallet<T>>();
-            T::DbWeight::get().reads_writes(5, 2)
-        }
+
         fn integrity_test() {
             assert!(
                 T::AnnualEmission::get() > 0,
                 "annual emission must be nonzero"
             );
         }
-        #[cfg(feature = "try-runtime")]
-        fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-            Self::try_state(<frame_system::Pallet<T> as sp_runtime::traits::BlockNumberProvider>::current_block_number())?;
-            let start = if Pallet::<T>::on_chain_storage_version() < VERSION {
-                Self::rebased_start()?
-            } else {
-                StartAt::<T>::get()
-            };
-            let counters: Vec<_> = Routes::<T>::get()
-                .into_iter()
-                .map(|(subnet, _)| (subnet, SubnetIssued::<T>::get(subnet)))
-                .collect();
-            Ok((
-                start,
-                ScheduledIssued::<T>::get(),
-                T::Currency::total_issuance(),
-                counters,
-            )
-                .encode())
-        }
-        #[cfg(feature = "try-runtime")]
-        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-            let (start, issued, issuance, counters): (Option<u64>, u128, u128, Vec<(u32, u128)>) =
-                Decode::decode(&mut &state[..]).map_err(|_| "invalid rebase pre-state")?;
-            ensure!(
-                Pallet::<T>::on_chain_storage_version() == VERSION,
-                "rebase did not complete"
-            );
-            ensure!(StartAt::<T>::get() == start, "incorrect rebase anchor");
-            ensure!(
-                ScheduledIssued::<T>::get() == issued,
-                "rebase changed issued counter"
-            );
-            ensure!(
-                T::Currency::total_issuance() == issuance,
-                "rebase changed issuance"
-            );
-            for (subnet, amount) in counters {
-                ensure!(
-                    SubnetIssued::<T>::get(subnet) == amount,
-                    "rebase changed subnet counter"
-                );
-            }
-            Self::try_state(<frame_system::Pallet<T> as sp_runtime::traits::BlockNumberProvider>::current_block_number())
-        }
+
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
@@ -360,29 +294,7 @@ pub mod pallet {
             }
             sum == 1_000_000_000
         }
-        /// Rebase only an enabled, anchored schedule with previously paid emissions.
-        /// ScheduledIssued is the sum of SubnetIssued, checked by try_state.
-        fn rebased_start() -> Result<Option<u64>, &'static str> {
-            let start = StartAt::<T>::get();
-            let issued = ScheduledIssued::<T>::get();
-            if !Enabled::<T>::get() || start.is_none() || issued == 0 {
-                return Ok(start);
-            }
-            let elapsed = sp_runtime::helpers_128bit::multiply_by_rational_with_rounding(
-                issued,
-                u128::from(YEAR_SECONDS),
-                T::AnnualEmission::get(),
-                sp_runtime::Rounding::Down,
-            )
-            .ok_or("rebase duration overflow or zero annual emission")?;
-            // An offset larger than the clock clamps the anchor to Unix epoch.
-            let elapsed = u64::try_from(elapsed).unwrap_or(u64::MAX);
-            let start = T::Clock::now().as_secs().saturating_sub(elapsed);
-            // Without clamping, flooring leaves less than one second of
-            // entitlement below the counters and the next second resumes accrual.
-            // A clamped curve must first reach the preserved issued counters.
-            Ok(Some(start))
-        }
+
         /// Cumulative entitlement avoids per-block rounding loss and handles gaps.
         pub fn entitlement(elapsed: u64) -> Option<u128> {
             let annual = T::AnnualEmission::get();

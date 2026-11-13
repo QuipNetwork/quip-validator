@@ -54,9 +54,11 @@ function check (condition, message) {
 }
 
 /// Sign, submit, and wait for inclusion. Returns the events for this
-/// extrinsic plus whether it succeeded.
-async function submit (api, tx, account, signer) {
-  await tx.signAsync(account.address, { nonce: -1, signer });
+/// extrinsic plus whether it succeeded. Pass an explicit nonce to submit
+/// several extrinsics without waiting for each one; the default, -1, asks
+/// the node for the next nonce and so needs the previous one included.
+async function submit (api, tx, account, signer, nonce = -1) {
+  await tx.signAsync(account.address, { nonce, signer });
 
   const submittedHex = tx.toHex().toLowerCase();
 
@@ -198,23 +200,50 @@ try {
   check(names.length === 63, 'pinned xqvm 0.5.1 corpus has 63 step-asserting vectors');
   check(maxVmMemory === 16n * 1024n * 1024n, 'replay memory cap is pinned at 16 MiB');
 
-  for (const name of names) {
-    const vectorPath = readFileSync(join(VECTORS_DIR, `${name}.path`), 'utf8').trim();
+  const vectors = names.map((name) => {
+    const bytecode = readFileSync(join(VECTORS_DIR, `${name}.xqb`));
+    const expected = JSON.parse(readFileSync(join(VECTORS_DIR, `${name}.expected.json`), 'utf8'));
+
+    return {
+      vectorPath: readFileSync(join(VECTORS_DIR, `${name}.path`), 'utf8').trim(),
+      bytecode,
+      expected,
+      inputs: JSON.parse(readFileSync(join(VECTORS_DIR, `${name}.inputs.json`), 'utf8')),
+      hash: blake2AsHex(bytecode, 256),
+      stepLimit: BigInt(expected.steps) + 100n
+    };
+  });
+
+  // Waiting for each extrinsic before signing the next costs one block per
+  // extrinsic, two per vector. Sign every store_program and then every
+  // execute with ascending nonces and submit them together: the pool orders
+  // them by nonce, so each execute applies after every store, and each
+  // result is still matched to its own extrinsic.
+  const firstNonce = (await api.rpc.system.accountNextIndex(alice.address)).toNumber();
+  const storeResults = vectors.map(({ bytecode }, i) => submit(
+    api,
+    api.tx.xqvm.storeProgram(u8aToHex(bytecode)),
+    alice,
+    signer,
+    firstNonce + i
+  ));
+  const executeResults = vectors.map(({ hash, inputs, stepLimit }, i) => submit(
+    api,
+    api.tx.xqvm.execute(hash, inputs.calldata, inputs.output_slots, stepLimit),
+    alice,
+    signer,
+    firstNonce + vectors.length + i
+  ));
+  const results = await Promise.all([...storeResults, ...executeResults]);
+  const storedAll = results.slice(0, vectors.length);
+  const executedAll = results.slice(vectors.length);
+
+  for (const [i, { vectorPath, bytecode, expected, inputs, hash }] of vectors.entries()) {
     const expectsMemoryLimit = memoryLimitRejections.has(vectorPath);
     console.log(`== vector ${vectorPath} ==`);
 
-    const bytecode = readFileSync(join(VECTORS_DIR, `${name}.xqb`));
-    const expected = JSON.parse(readFileSync(join(VECTORS_DIR, `${name}.expected.json`), 'utf8'));
-    const inputs = JSON.parse(readFileSync(join(VECTORS_DIR, `${name}.inputs.json`), 'utf8'));
-    const hash = blake2AsHex(bytecode, 256);
-
     // ---- store_program
-    const stored = await submit(
-      api,
-      api.tx.xqvm.storeProgram(u8aToHex(bytecode)),
-      alice,
-      signer
-    );
+    const stored = storedAll[i];
 
     if (!stored.ok) {
       const reason = describeFailure(api, stored.failed.event ?? stored.failed);
@@ -250,13 +279,7 @@ try {
     );
 
     // ---- execute
-    const stepLimit = BigInt(expected.steps) + 100n;
-    const executed = await submit(
-      api,
-      api.tx.xqvm.execute(hash, inputs.calldata, inputs.output_slots, stepLimit),
-      alice,
-      signer
-    );
+    const executed = executedAll[i];
 
     if (expectsMemoryLimit) {
       seenMemoryLimitRejections.add(vectorPath);

@@ -9,9 +9,15 @@ set -euo pipefail
 # temporary directory; tracked weights are never overwritten.
 #
 # Environment overrides:
-#   STEPS / REPEAT   benchmark resolution (default 2 / 1)
+#   STEPS / REPEAT   benchmark resolution (default 3 / 1)
+#
+# Three steps, not two: the weight writer fits a proof-size slope for every
+# storage prefix, and a prefix that a component touches only above zero has a
+# single sample at two steps (the top of the range). The stable2609 analysis
+# rejects a one-sample fit instead of panicking past it, as
+# `finalise_expired_orders` showed.
 
-STEPS="${STEPS:-2}"
+STEPS="${STEPS:-3}"
 REPEAT="${REPEAT:-1}"
 
 normalize_signature() {
@@ -237,25 +243,46 @@ fi
 
 echo "== Discovered $benchmark_count benchmarks across ${#pallets[@]} pallets =="
 
-for pallet in "${pallets[@]}"; do
-  output="$OUTPUT_DIR/$pallet.rs"
-  template_args=(--template .maintain/frame-weight-template.hbs)
-  if [ "$pallet" = "pallet_vesting" ]; then
-    template_args=()
-  fi
-  extra_args=()
-  if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
-    extra_args=(--extra)
-  fi
-  echo "-- $pallet"
+# Every `benchmark pallet` invocation builds genesis from the chain spec and
+# compiles the runtime blob, about 70 seconds on the CI runners, while the
+# benchmarks themselves take seconds at this resolution. Run the pallets in
+# three invocations instead of one each: the template pallets together, the
+# mempool with its extra benchmarks, and vesting without the template. With a
+# directory as --output the CLI writes one <pallet>.rs per pallet, `::`
+# becoming `_`.
+run_benchmarks() {
+  local pallet_list="$1"
+  shift
+  echo "-- ${pallet_list//,/ }"
   "$BIN" benchmark pallet \
-    --pallet "$pallet" \
-    --extrinsic '*' "${extra_args[@]}" \
+    --pallets "$pallet_list" \
+    --extrinsic '*' \
     --steps "$STEPS" \
     --repeat "$REPEAT" \
     --min-duration 0 \
-    "${template_args[@]}" \
-    --output "$output"
+    --output "$OUTPUT_DIR" \
+    "$@"
+}
+
+template_pallets=()
+for pallet in "${pallets[@]}"; do
+  case "$pallet" in
+    pallet_vesting | pallet_quantum_compute_mempool) ;;
+    *) template_pallets+=("$pallet") ;;
+  esac
+done
+template_list="$(IFS=,; echo "${template_pallets[*]}")"
+run_benchmarks "$template_list" --template .maintain/frame-weight-template.hbs
+run_benchmarks pallet_quantum_compute_mempool --extra \
+  --template .maintain/frame-weight-template.hbs
+run_benchmarks pallet_vesting
+
+for pallet in "${pallets[@]}"; do
+  output="$OUTPUT_DIR/${pallet//::/_}.rs"
+  if [ ! -s "$output" ]; then
+    echo "ERROR: benchmark run generated no $output for $pallet" >&2
+    exit 1
+  fi
 
   if [ "$pallet" = "pallet_quantum_compute_mempool" ]; then
     bash scripts/run-benchmarks.sh --verify-regenerated-mempool "$output"

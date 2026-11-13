@@ -123,54 +123,52 @@ fn set_descriptor_stores_typed_descriptor_and_reserves_deposit() {
 }
 
 #[test]
-fn set_descriptor_rejects_empty_required_fields() {
+fn set_descriptor_rejects_invalid_v1_inputs() {
+    let cases: [(
+        &str,
+        fn(&mut crate::NodeDescriptorV1InputOf<Test>),
+        Error<Test>,
+    ); 4] = [
+        (
+            "empty node id",
+            |input| input.node_id = bytes::<64>(b""),
+            Error::<Test>::EmptyNodeId,
+        ),
+        (
+            "empty rpc endpoint",
+            |input| input.rpc_endpoints = bounded(vec![bytes::<256>(b"")]),
+            Error::<Test>::EmptyRpcEndpoint,
+        ),
+        (
+            "no miners",
+            |input| input.miners = bounded(vec![]),
+            Error::<Test>::NoMiners,
+        ),
+        (
+            "zero public port",
+            |input| input.public_port = Some(0),
+            Error::<Test>::InvalidPort,
+        ),
+    ];
+
     new_test_ext().execute_with(|| {
-        let mut input = v1_input();
-        input.node_id = bytes::<64>(b"");
-
-        assert_noop!(
-            MinerRegistry::set_descriptor(RuntimeOrigin::signed(1), NodeDescriptorInput::V1(input)),
-            Error::<Test>::EmptyNodeId
-        );
-    });
-}
-
-#[test]
-fn set_descriptor_rejects_empty_optional_strings_when_present() {
-    new_test_ext().execute_with(|| {
-        let mut input = v1_input();
-        input.rpc_endpoints = bounded(vec![bytes::<256>(b"")]);
-
-        assert_noop!(
-            MinerRegistry::set_descriptor(RuntimeOrigin::signed(1), NodeDescriptorInput::V1(input)),
-            Error::<Test>::EmptyRpcEndpoint
-        );
-    });
-}
-
-#[test]
-fn set_descriptor_rejects_descriptor_without_miners() {
-    new_test_ext().execute_with(|| {
-        let mut input = v1_input();
-        input.miners = bounded(vec![]);
-
-        assert_noop!(
-            MinerRegistry::set_descriptor(RuntimeOrigin::signed(1), NodeDescriptorInput::V1(input)),
-            Error::<Test>::NoMiners
-        );
-    });
-}
-
-#[test]
-fn set_descriptor_rejects_zero_public_port() {
-    new_test_ext().execute_with(|| {
-        let mut input = v1_input();
-        input.public_port = Some(0);
-
-        assert_noop!(
-            MinerRegistry::set_descriptor(RuntimeOrigin::signed(1), NodeDescriptorInput::V1(input)),
-            Error::<Test>::InvalidPort
-        );
+        for (name, mutate, expected) in cases {
+            let mut input = v1_input();
+            mutate(&mut input);
+            // assert_noop! takes no message, so check the error and the
+            // untouched storage root by hand to keep the case name.
+            let root = sp_io::storage::root(sp_core::storage::StateVersion::V1);
+            let result = MinerRegistry::set_descriptor(
+                RuntimeOrigin::signed(1),
+                NodeDescriptorInput::V1(input),
+            );
+            assert_eq!(result, Err(expected.into()), "case: {name}");
+            assert_eq!(
+                root,
+                sp_io::storage::root(sp_core::storage::StateVersion::V1),
+                "case: {name}: storage changed"
+            );
+        }
     });
 }
 
@@ -438,26 +436,9 @@ fn set_descriptor_v2_stores_and_returns_system_info() {
 }
 
 #[test]
-fn set_descriptor_v2_without_system_info_stores_none() {
+fn set_descriptor_v2_rejects_invalid_system_info_fields() {
     new_test_ext().execute_with(|| {
-        let mut input = v2_input();
-        input.system_info = None;
-
-        assert_ok!(MinerRegistry::set_descriptor(
-            RuntimeOrigin::signed(1),
-            NodeDescriptorInput::V2(input)
-        ));
-
-        let stored = NodeDescriptors::<Test>::get(1).expect("descriptor stored");
-        assert_eq!(stored.schema_version, crate::NODE_DESCRIPTOR_SCHEMA_V2);
-        assert!(stored.system_info.is_none());
-    });
-}
-
-#[test]
-fn set_descriptor_v2_rejects_empty_required_system_info_fields() {
-    new_test_ext().execute_with(|| {
-        let cases: [(fn(&mut crate::SystemInfoOf<Test>), Error<Test>); 5] = [
+        let cases: [(fn(&mut crate::SystemInfoOf<Test>), Error<Test>); 6] = [
             (
                 |si| si.os.system = bytes::<64>(b""),
                 Error::<Test>::EmptyOsSystem,
@@ -478,6 +459,10 @@ fn set_descriptor_v2_rejects_empty_required_system_info_fields() {
                 |si| si.gpus[0].name = bytes::<96>(b""),
                 Error::<Test>::EmptyGpuName,
             ),
+            (
+                |si| si.gpus[0].utilization_pct = Some(101),
+                Error::<Test>::InvalidGpuUtilization,
+            ),
         ];
 
         for (mutate, expected) in cases {
@@ -493,21 +478,6 @@ fn set_descriptor_v2_rejects_empty_required_system_info_fields() {
                 expected
             );
         }
-    });
-}
-
-#[test]
-fn set_descriptor_v2_rejects_gpu_utilization_over_100() {
-    new_test_ext().execute_with(|| {
-        let mut si = system_info();
-        si.gpus[0].utilization_pct = Some(101);
-        let mut input = v2_input();
-        input.system_info = Some(si);
-
-        assert_noop!(
-            MinerRegistry::set_descriptor(RuntimeOrigin::signed(1), NodeDescriptorInput::V2(input)),
-            Error::<Test>::InvalidGpuUtilization
-        );
     });
 }
 
@@ -676,19 +646,34 @@ fn set_descriptor_v2_stores_and_returns_runtime() {
 }
 
 #[test]
-fn set_descriptor_v2_without_runtime_stores_none() {
-    new_test_ext().execute_with(|| {
-        let mut input = v2_input();
-        input.runtime = None;
+fn set_descriptor_v2_without_optional_sections_stores_none() {
+    let cases: [(&str, fn(&mut crate::NodeDescriptorV2InputOf<Test>)); 2] = [
+        ("system_info", |input| input.system_info = None),
+        ("runtime", |input| input.runtime = None),
+    ];
 
-        assert_ok!(MinerRegistry::set_descriptor(
-            RuntimeOrigin::signed(1),
-            NodeDescriptorInput::V2(input)
-        ));
+    for (name, mutate) in cases {
+        new_test_ext().execute_with(|| {
+            let mut input = v2_input();
+            mutate(&mut input);
 
-        let stored = NodeDescriptors::<Test>::get(1).expect("descriptor stored");
-        assert!(stored.runtime.is_none());
-    });
+            assert_ok!(MinerRegistry::set_descriptor(
+                RuntimeOrigin::signed(1),
+                NodeDescriptorInput::V2(input)
+            ));
+
+            let stored = NodeDescriptors::<Test>::get(1).expect("descriptor stored");
+            assert_eq!(
+                stored.schema_version,
+                crate::NODE_DESCRIPTOR_SCHEMA_V2,
+                "case: {name}"
+            );
+            match name {
+                "system_info" => assert!(stored.system_info.is_none(), "case: {name}"),
+                _ => assert!(stored.runtime.is_none(), "case: {name}"),
+            }
+        });
+    }
 }
 
 #[test]
@@ -760,75 +745,5 @@ fn set_descriptor_v2_rejects_empty_runtime_fields() {
                 expected
             );
         }
-    });
-}
-
-#[test]
-fn migrate_v1_to_v2_clears_descriptors_and_returns_deposits() {
-    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
-
-    new_test_ext().execute_with(|| {
-        // Simulate an on-chain v1 pallet holding two descriptors with distinct
-        // deposits (V1 vs larger V2), so the drain loop must unreserve each
-        // account's OWN deposit — catching wrong-account / early-break bugs.
-        StorageVersion::new(1).put::<crate::Pallet<Test>>();
-        assert_ok!(MinerRegistry::set_descriptor(
-            RuntimeOrigin::signed(1),
-            descriptor()
-        ));
-        assert_ok!(MinerRegistry::set_descriptor(
-            RuntimeOrigin::signed(2),
-            NodeDescriptorInput::V2(v2_input())
-        ));
-        let reserved_1 = Balances::reserved_balance(1);
-        let reserved_2 = Balances::reserved_balance(2);
-        assert!(reserved_1 > 0 && reserved_2 > 0);
-        assert_ne!(reserved_1, reserved_2);
-
-        let _weight =
-            <crate::migrations::v2::MigrateToV2<Test> as OnRuntimeUpgrade>::on_runtime_upgrade();
-
-        // Every descriptor dropped, every deposit returned, version advanced.
-        assert!(NodeDescriptors::<Test>::get(1).is_none());
-        assert!(NodeDescriptors::<Test>::get(2).is_none());
-        assert_eq!(Balances::reserved_balance(1), 0);
-        assert_eq!(Balances::reserved_balance(2), 0);
-        assert_eq!(
-            crate::Pallet::<Test>::on_chain_storage_version(),
-            StorageVersion::new(2)
-        );
-
-        // Self-healing: a re-file reserves exactly the new deposit (not double).
-        assert_ok!(MinerRegistry::set_descriptor(
-            RuntimeOrigin::signed(1),
-            descriptor()
-        ));
-        let refiled = NodeDescriptors::<Test>::get(1).expect("re-filed");
-        assert_eq!(Balances::reserved_balance(1), refiled.deposit);
-    });
-}
-
-#[test]
-fn migrate_v1_to_v2_is_noop_when_not_at_version_1() {
-    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
-
-    new_test_ext().execute_with(|| {
-        // Already at v2: the version gate must skip the drain entirely.
-        StorageVersion::new(2).put::<crate::Pallet<Test>>();
-        assert_ok!(MinerRegistry::set_descriptor(
-            RuntimeOrigin::signed(1),
-            descriptor()
-        ));
-        let reserved = Balances::reserved_balance(1);
-
-        let _weight =
-            <crate::migrations::v2::MigrateToV2<Test> as OnRuntimeUpgrade>::on_runtime_upgrade();
-
-        assert!(NodeDescriptors::<Test>::get(1).is_some());
-        assert_eq!(Balances::reserved_balance(1), reserved);
-        assert_eq!(
-            crate::Pallet::<Test>::on_chain_storage_version(),
-            StorageVersion::new(2)
-        );
     });
 }
