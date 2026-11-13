@@ -12,11 +12,11 @@
     },
     "quip-testnet.scale": {
       "bytes": 290808,
-      "sha256": "69d18b3b2e489a965add828ada38941994faea5a8233011f5ae9ae0a73decb1c"
+      "sha256": "b46ca2e2afbf60d52b1a5fe1e73adca0cbc173fc46d882ec2e84521a2df571fa"
     },
     "quip.scale": {
       "bytes": 290811,
-      "sha256": "c00bf46dd782a99f730d98f3d15caa8453bc6b73eb4d59730ce3f0f635de1996"
+      "sha256": "a0c33141fb527fd6ca9625d7376aae067f9b2214f785a0f413ae46363a614b8c"
     }
   },
   "metadata_version": 16,
