@@ -438,7 +438,8 @@ impl onchain::Config for BenchmarkOnChainConfig {
 type FilteredElection = onchain::OnChainExecution<OnChainConfig>;
 /// The pinned staking Config requires DataProvider = Staking. This bridge keeps
 /// that associated-type contract while the actual solver exclusively consumes
-/// AdmissionData, for both normal and genesis elections.
+/// AdmissionData. Production uses this bridge for genesis; block elections use
+/// AdmissionMultiBlockElection and its on-chain fallback directly.
 pub struct AdmissionElection;
 impl ElectionProvider for AdmissionElection {
     type AccountId = AccountId;
@@ -450,7 +451,17 @@ impl ElectionProvider for AdmissionElection {
     type Pages = ConstU32<1>;
     type DataProvider = Staking;
     fn elect(page: PageIndex) -> Result<BoundedSupportsOf<Self>, Self::Error> {
-        FilteredElection::elect(page)
+        if System::block_number() == 0 {
+            // Session's production genesis builder calls Staking, which calls
+            // this adapter. Both the provider and SDK solver register weight;
+            // genesis is not a block. Always restore the defined empty weight
+            // state, independent of the elected set, solver or prior charges.
+            let result = FilteredElection::elect(page);
+            frame_system::BlockWeight::<Runtime>::kill();
+            result
+        } else {
+            FilteredElection::elect(page)
+        }
     }
     fn start() -> Result<(), Self::Error> {
         FilteredElection::start()
@@ -1569,5 +1580,110 @@ pub(super) mod tests {
             assert!(<crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call).is_ok());
             assert_eq!(crate::MultiBlockElection::elect(0).unwrap().len(), 2);
         });
+    }
+
+    #[test]
+    fn production_genesis_election_has_zero_weight_but_block_elections_charge() {
+        let empty = RuntimeGenesisConfig::default().build_storage().unwrap();
+        let key = frame_system::BlockWeight::<Runtime>::hashed_key();
+        assert!(!empty.top.contains_key(key.as_slice()));
+        // ext() runs the real funded local Session/Staking genesis builders,
+        // then only sets the block number to one. No block hooks are simulated.
+        ext().execute_with(|| {
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            System::set_block_number(0);
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            System::register_extra_weight_unchecked(
+                Weight::from_parts(777, 99),
+                DispatchClass::Mandatory,
+            );
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            assert!(AdmissionElection::elect(1).is_err());
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            System::set_block_number(1);
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert!(
+                frame_system::BlockWeight::<Runtime>::get()
+                    .total()
+                    .ref_time()
+                    > 0
+            );
+        });
+    }
+
+    #[test]
+    fn block_one_import_and_election_charges_ignore_genesis_weight() {
+        use sp_runtime::traits::{Block as _, Header as _};
+        let timestamp: crate::UncheckedExtrinsic =
+            sp_runtime::generic::UncheckedExtrinsic::new_bare(RuntimeCall::Timestamp(
+                pallet_timestamp::Call::set { now: 6_000 },
+            ))
+            .into();
+        let block = ext().execute_with(|| {
+            System::set_block_number(0);
+            let digest = sp_consensus_babe::digests::PreDigest::SecondaryPlain(
+                sp_consensus_babe::digests::SecondaryPlainPreDigest {
+                    authority_index: 0,
+                    slot: sp_consensus_babe::Slot::from(1),
+                },
+            );
+            let header = crate::Header::new(
+                1,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                sp_runtime::generic::Digest {
+                    logs: vec![sp_runtime::generic::DigestItem::PreRuntime(
+                        sp_consensus_babe::BABE_ENGINE_ID,
+                        digest.encode(),
+                    )],
+                },
+            );
+            crate::Executive::initialize_block(&header);
+            assert_ok!(crate::Executive::apply_extrinsic(timestamp.clone()).unwrap());
+            crate::Block::new(crate::Executive::finalize_block(), vec![timestamp])
+        });
+        // Exact legacy default-genesis weight, plus an unrelated larger charge.
+        let legacy = vec![0, 0, 0, 0, 7, 64, 127, 172, 99, 13, 2, 112, 23, 0];
+        let mut observed = Vec::new();
+        for seed in [
+            None,
+            Some(legacy),
+            Some(ext().execute_with(|| {
+                System::register_extra_weight_unchecked(
+                    Weight::from_parts(9_000_000_000, 999_999),
+                    DispatchClass::Mandatory,
+                );
+                frame_system::BlockWeight::<Runtime>::get().encode()
+            })),
+        ] {
+            for use_adapter in [false, true] {
+                observed.push(ext().execute_with(|| {
+                    System::set_block_number(0);
+                    let key = frame_system::BlockWeight::<Runtime>::hashed_key();
+                    if let Some(value) = &seed {
+                        sp_io::storage::set(&key, value);
+                    } else {
+                        frame_system::BlockWeight::<Runtime>::kill();
+                    }
+                    // Import checks the same authored state root for every seed.
+                    crate::Executive::execute_block(block.clone().into());
+                    let imported = frame_system::BlockWeight::<Runtime>::get();
+                    let elected = if use_adapter {
+                        AdmissionElection::elect(0)
+                    } else {
+                        FilteredElection::elect(0)
+                    }
+                    .unwrap();
+                    assert_eq!(elected.len(), 2);
+                    let charged = frame_system::BlockWeight::<Runtime>::get();
+                    assert!(charged.total().ref_time() > imported.total().ref_time());
+                    (imported, charged)
+                }));
+            }
+        }
+        assert!(observed.windows(2).all(|pair| pair[0] == pair[1]));
     }
 }
