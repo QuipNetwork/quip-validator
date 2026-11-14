@@ -800,6 +800,16 @@ mod benchmarks {
                 )
                 .is_ok());
             }
+            // Pruning must measure maximum encoded payloads for every slot,
+            // not only the one-solution setup needed to establish rankings.
+            for winner in &winners {
+                OrderSolutions::<T>::mutate(order_id, winner, |entry| {
+                    let entry = entry.as_mut().expect("accepted solver payload");
+                    entry.solutions =
+                        solutions_with_dimensions::<T>(T::MaxNodes::get(), T::MaxSolutions::get());
+                    entry.num_valid = T::MaxSolutions::get();
+                });
+            }
             order_ids.push(order_id);
         }
 
@@ -816,6 +826,9 @@ mod benchmarks {
         for order_id in order_ids {
             let order = JobOrders::<T>::get(order_id).expect("order exists");
             assert_eq!(order.status, types::OrderStatus::Expired);
+            assert!(OrderSolutions::<T>::iter_key_prefix(order_id)
+                .next()
+                .is_none());
             assert_eq!(
                 OrderResults::<T>::get(order_id)
                     .expect("poll result is stored")

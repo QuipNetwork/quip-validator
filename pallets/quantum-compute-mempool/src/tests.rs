@@ -2924,3 +2924,110 @@ fn vv_poc_open_order_ids_limit_one_decodes_one_order() {
         assert_eq!(decodes, 1, "limit=1 should decode only the returned order");
     });
 }
+
+#[test]
+fn a6f_open_order_caps_solvers_and_prunes() {
+    new_test_ext().execute_with(|| {
+        let cap = 32u64; // keep in sync with types::MAX_SOLVERS_PER_OPEN_ORDER
+        let first_solver = 10u64;
+        // Fund and register cap + 1 distinct solvers (the mock only endows
+        // accounts 1..=4, so top up the rest to cover the deposit + fees).
+        for who in first_solver..=first_solver + cap {
+            let _ = <Balances as frame_support::traits::Currency<u64>>::make_free_balance_be(
+                &who, 1_000_000,
+            );
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(who),
+                MinerType::Cpu
+            ));
+        }
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::TopNEqual { n: 3 },
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        // The first `cap` distinct solvers are admitted.
+        for who in first_solver..first_solver + cap {
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(who),
+                0,
+                sample_solution()
+            ));
+        }
+        assert_eq!(
+            OrderSolutions::<Test>::iter_prefix(0).count() as u64,
+            cap,
+            "every distinct solver up to the cap should be stored"
+        );
+        // The (cap + 1)-th distinct solver is rejected once the cap exists.
+        // On pinned source there is no cap, so this submission succeeds and the
+        // assertion below fails.
+        let over = QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(first_solver + cap),
+            0,
+            sample_solution(),
+        );
+        assert!(
+            over.is_err(),
+            "the (cap + 1)-th distinct solver must be rejected by the per-order cap"
+        );
+        // Settlement at expiry prunes every stored submission. On pinned source
+        // nothing prunes OrderSolutions, so the prefix is non-empty here.
+        run_to_block(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(9),
+            0
+        ));
+        assert_eq!(
+            OrderSolutions::<Test>::iter_prefix(0).count(),
+            0,
+            "settlement must prune the per-order submission map"
+        );
+    });
+}
+
+#[test]
+fn full_solver_cap_allows_improvements_without_new_payload_slots() {
+    use frame_support::traits::Currency;
+    new_test_ext().execute_with(|| {
+        let id = propose_single_best(1, 2, 1);
+        for who in 10..42 {
+            let _ = Balances::make_free_balance_be(&who, 1_000_000);
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(who),
+                MinerType::Cpu
+            ));
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(who),
+                id,
+                alternate_solution()
+            ));
+        }
+        assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(10),
+            id,
+            sample_solution()
+        ));
+        assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
+        assert_eq!(OrderSolutions::<Test>::iter_key_prefix(id).count(), 32);
+        run_to_block(2);
+        assert!(OrderSolutions::<Test>::iter_key_prefix(id).next().is_none());
+        assert_eq!(crate::OrderFrontRunner::<Test>::get(id).unwrap().solver, 10);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            id
+        ));
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Closed
+        );
+    });
+}

@@ -13,6 +13,15 @@ use frame_support::{
     weights::Weight,
 };
 
+/// Conservative unmeasured allowance for deleting all 32 maximum-size payloads.
+/// Keep until the reference runner measures the enlarged expiry/closure paths.
+pub const SOLUTION_PRUNING_PROOF_FLOOR: u64 = 4 * 1024 * 1024;
+pub fn solution_pruning_weight<T: crate::Config>() -> Weight {
+    let cap = u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER);
+    Weight::from_parts(100_000_000, SOLUTION_PRUNING_PROOF_FLOOR)
+        .saturating_add(T::DbWeight::get().reads_writes(cap + 1, cap))
+}
+
 /// Conservative settlement proof floor under the documented SDK trie model.
 pub const CLAIM_REWARD_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const RECLAIM_ORDER_PROOF_FLOOR: u64 = 1024 * 1024;
@@ -105,6 +114,12 @@ pub fn submit_solution_proof_envelope<T: crate::Config>() -> u64 {
 /// Fail runtime integrity validation if the fixed floor or normal call limit
 /// no longer covers settlement. Currency/VM changes also require rebenchmarking.
 pub fn check_claim_reward_weight<T: crate::Config>() {
+    assert!(
+        storage_key_envelope::<crate::OrderSolutions<T>>()
+            .saturating_mul(u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER))
+            <= SOLUTION_PRUNING_PROOF_FLOOR,
+        "solution pruning proof floor no longer covers the payload cap"
+    );
     assert_eq!(
         crate::types::MAX_REWARD_WINNERS,
         32,
@@ -148,11 +163,13 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
             PROPOSE_JOB_PROOF_FLOOR,
         ),
         (
-            <T as crate::Config>::WeightInfo::claim_reward(),
+            <T as crate::Config>::WeightInfo::claim_reward()
+                .saturating_add(solution_pruning_weight::<T>()),
             CLAIM_REWARD_PROOF_FLOOR,
         ),
         (
-            <T as crate::Config>::WeightInfo::reclaim_order(),
+            <T as crate::Config>::WeightInfo::reclaim_order()
+                .saturating_add(solution_pruning_weight::<T>()),
             RECLAIM_ORDER_PROOF_FLOOR,
         ),
         (

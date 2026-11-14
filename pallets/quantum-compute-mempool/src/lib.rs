@@ -528,6 +528,8 @@ pub mod pallet {
         VmStepLimitExceeded,
         /// The transform exceeded the per-execution memory bound.
         VmMemoryLimitExceeded,
+        /// An open order already holds the maximum number of distinct solvers.
+        OrderSolverCapReached,
     }
 
     #[pallet::call]
@@ -681,7 +683,7 @@ pub mod pallet {
         /// Settle an expired solved order. Any signed account may call; rewards
         /// go only to the selected solvers, with no bounty for the caller.
         #[pallet::call_index(5)]
-        #[pallet::weight(<T as Config>::WeightInfo::claim_reward())]
+        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()))]
         pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let _caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
@@ -729,6 +731,7 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
+            Self::prune_solutions(order_id);
             Self::release_proposer_slot(&order.proposer, order_id);
             JobSpecs::<T>::mutate(order.spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
@@ -744,7 +747,7 @@ pub mod pallet {
         }
 
         #[pallet::call_index(6)]
-        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order())]
+        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()))]
         pub fn reclaim_order(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
@@ -765,6 +768,7 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
+            Self::prune_solutions(order_id);
             Self::release_proposer_slot(&order.proposer, order_id);
 
             Self::deposit_event(Event::RewardReclaimed {
@@ -865,6 +869,9 @@ pub mod pallet {
             let (finalised, buckets_visited) = Self::finalise_expired_orders(now);
             <T as Config>::WeightInfo::finalise_expired_orders(finalised)
                 .saturating_add(T::DbWeight::get().reads(buckets_visited))
+                .saturating_add(
+                    weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
+                )
         }
 
         /// Cumulative migration to the in-code `STORAGE_VERSION`.
@@ -1403,6 +1410,12 @@ pub mod pallet {
             ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
 
             let previous = OrderSolutions::<T>::get(order_id, &solver);
+            // solution_count increments only on the first accepted submission
+            // by an account. Improvements reuse its existing slot and payload.
+            ensure!(
+                previous.is_some() || order.solution_count < types::MAX_SOLVERS_PER_OPEN_ORDER,
+                Error::<T>::OrderSolverCapReached
+            );
             ensure!(
                 previous
                     .as_ref()
@@ -1724,6 +1737,17 @@ pub mod pallet {
                     frame_support::defensive!("finalise_order: payouts unavailable", err);
                 }
             }
+            Self::prune_solutions(order_id);
+        }
+
+        /// Admission caps this prefix at 32 entries, including replacements.
+        /// Expiry freezes further submissions; payouts use the retained ranking.
+        fn prune_solutions(order_id: u64) {
+            let _ = OrderSolutions::<T>::clear_prefix(
+                order_id,
+                types::MAX_SOLVERS_PER_OPEN_ORDER,
+                None,
+            );
         }
 
         fn update_ranking(

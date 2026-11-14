@@ -217,6 +217,11 @@ fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String
             "docs": [
                 "The transform exceeded the per-execution memory bound."
             ]
+        },
+        {
+            "name": "OrderSolverCapReached",
+            "index": 45,
+            "docs": ["An open order already holds the maximum number of distinct solvers."]
         }
     ]);
     let errors = error_variants(after)?;
@@ -638,7 +643,7 @@ mod tests {
     fn requires_exact_errors_and_constants_on_both_sides() {
         let (before, after) = metadata_pair();
         check(&before, &after).unwrap();
-        for index in 36..45 {
+        for index in 36..46 {
             for field in ["name", "index", "docs", "fields"] {
                 let mut wrong = after.clone();
                 error_variants(&mut wrong).unwrap()[index][field] = serde_json::json!("mutated");
