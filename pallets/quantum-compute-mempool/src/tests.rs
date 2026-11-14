@@ -3116,3 +3116,78 @@ fn solver_deposit_failure_and_duplicates_are_atomic_and_refund_is_once() {
         );
     });
 }
+
+// QUIP-26 handover, with a thread-local ED override and an above-ED leader
+// control. Deregistration keeps the reaped-winner case valid after QUIP-29.
+#[test]
+fn poc_reaped_sub_ed_winner_locks_order_reward() {
+    new_test_ext().execute_with(|| {
+        ExistentialDeposit::set(50);
+        for solver in [2, 3] {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(solver),
+                MinerType::Cpu
+            ));
+        }
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            101,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2, 3])),
+                miner_types: None
+            },
+            RewardResolution::TopNWeighted { n: 2 },
+            2,
+            1,
+            ResultDelivery::OnChainOnly
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution()
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            0,
+            alternate_solution()
+        ));
+        assert_ok!(QuantumComputeMempool::deregister_solver(
+            RuntimeOrigin::signed(3)
+        ));
+        let bal3 = Balances::free_balance(3);
+        assert_ok!(Balances::transfer_allow_death(
+            RuntimeOrigin::signed(3),
+            4,
+            bal3
+        ));
+        assert_eq!(Balances::free_balance(3), 0);
+        run_to_block(2);
+        let leader_before = Balances::free_balance(2);
+        let proposer_before = Balances::free_balance(1);
+        let issuance = Balances::total_issuance();
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(
+            JobOrders::<Test>::get(0).unwrap().status,
+            OrderStatus::Closed
+        );
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(Balances::free_balance(2), leader_before + 68);
+        assert_eq!(Balances::free_balance(3), 0);
+        assert_eq!(Balances::free_balance(1), proposer_before + 33);
+        assert_eq!(Balances::total_issuance(), issuance);
+        assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 68);
+        assert!(!System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::RewardClaimed {
+                solver: 3,
+                ..
+            })
+        )));
+    });
+}

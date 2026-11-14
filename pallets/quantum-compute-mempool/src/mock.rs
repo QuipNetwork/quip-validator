@@ -1,7 +1,7 @@
 use crate as pallet_quantum_compute_mempool;
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32, ConstU64},
+    traits::{ConstU32, ConstU64},
 };
 use sp_runtime::BuildStorage;
 use std::cell::RefCell;
@@ -166,7 +166,7 @@ impl pallet_balances::Config for Test {
     type Balance = Balance;
     type RuntimeEvent = RuntimeEvent;
     type DustRemoval = ();
-    type ExistentialDeposit = ConstU128<1>;
+    type ExistentialDeposit = ExistentialDeposit;
     type AccountStore = System;
     type WeightInfo = ();
     type FreezeIdentifier = RuntimeFreezeReason;
@@ -177,6 +177,7 @@ impl pallet_balances::Config for Test {
 }
 
 parameter_types! {
+    pub static ExistentialDeposit: Balance = 1;
     pub static MaxTransformSteps: u64 = 1000;
     pub static VmMemory: u64 = 1024 * 1024;
     pub VmStepWeight: frame_support::weights::Weight = frame_support::weights::Weight::from_parts(10_000, 0);
@@ -224,6 +225,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 pub fn new_test_ext_with_default_ising_spec(
     seed_default_ising_spec: bool,
 ) -> sp_io::TestExternalities {
+    ExistentialDeposit::set(1);
     let mut storage = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();

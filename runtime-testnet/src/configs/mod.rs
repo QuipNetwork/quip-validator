@@ -709,6 +709,16 @@ parameter_types! {
         pallet_xqvm::SubstrateWeight::<Runtime>::store_program(MaxProgramSize::get(), MaxProgramBlocks::get());
 }
 
+// QUIP-26: rank-weighted TopN has the smallest tail share. Keep the
+// production constants above ED, independently of the defensive payout skip.
+const _: () = {
+    let winners = pallet_quantum_compute_mempool::types::MAX_REWARD_WINNERS as u128;
+    assert!(
+        QuantumMinReward::get() / (winners * (winners + 1) / 2) >= EXISTENTIAL_DEPOSIT,
+        "minimum compute reward permits a sub-ED winner share"
+    );
+};
+
 impl pallet_quantum_compute_mempool::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
@@ -800,6 +810,14 @@ impl pallet_miner_registry::Config for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimum_compute_reward_covers_worst_ranked_tail_share() {
+        let winners = pallet_quantum_compute_mempool::types::MAX_REWARD_WINNERS as u128;
+        let tail = QuantumMinReward::get() / (winners * (winners + 1) / 2);
+        assert_eq!(tail, 1_893_939_393);
+        assert!(tail >= EXISTENTIAL_DEPOSIT);
+    }
 
     #[test]
     fn network_clock_and_lifecycle_use_the_approved_durations() {

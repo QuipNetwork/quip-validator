@@ -716,7 +716,10 @@ pub mod pallet {
 
             for (winner, payout_u128, _) in &payouts {
                 let payout: BalanceOf<T> = (*payout_u128).saturated_into();
-                if payout.is_zero() {
+                // Do not let a reaped recipient with a sub-ED share revert
+                // every other winner's payment. The skipped share stays with
+                // the proposer after escrow is unreserved.
+                if payout < T::Currency::minimum_balance() {
                     continue;
                 }
                 T::Currency::transfer(&order.proposer, winner, payout, AllowDeath)?;
