@@ -1334,3 +1334,98 @@ fn a_removed_program_can_be_stored_again() {
         assert_eq!(held(1), 0);
     });
 }
+
+// Audit acceptance goes through the signed dispatchable: rejecting after a
+// direct verifier call would not prove that an untrusted transaction returns.
+#[test]
+fn audit_signed_store_rejects_all_register_cycle_without_hanging() {
+    use std::{sync::mpsc, time::Duration};
+
+    for registers in [255_u16, 256] {
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            new_test_ext().execute_with(|| {
+                let bytecode = build_program(|b| {
+                    b.emit(xqvm::Instruction::Nop {});
+                    let cycle = b.label();
+                    b.place(cycle).unwrap();
+                    b.emit(xqvm::Instruction::Target {});
+                    for slot in 0..registers {
+                        b.emit(xqvm::Instruction::Bsmx {
+                            reg: Register(slot as u8),
+                        });
+                    }
+                    b.emit_jump(cycle).emit_halt();
+                });
+                let program = Program::decode(&bytecode).unwrap();
+                let shape = ControlFlowShape::of(program.code());
+                assert!(shape.blocks <= MaxProgramBlocks::get());
+                assert!(shape.loop_depth <= MaxLoopDepth::get());
+                let hash = program_hash(&bytecode);
+                assert_noop!(
+                    Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+                    Error::<Test>::VerifierStackFault,
+                );
+                assert!(!Programs::<Test>::contains_key(hash));
+                assert!(!ProgramOwner::<Test>::contains_key(hash));
+                assert!(!crate::ProgramDeposit::<Test>::contains_key(hash));
+                assert_eq!(Balances::free_balance(1), INITIAL_BALANCE);
+            });
+            sender.send(()).unwrap();
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("signed all-register-cycle rejection must terminate");
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn audit_signed_store_distinguishes_dead_reads_and_rejects_hidden_peak() {
+    use xqvm::{bytecode::codec, Instruction};
+
+    new_test_ext().execute_with(|| {
+        let code = |live: bool| {
+            let mut instructions = Vec::new();
+            if !live {
+                instructions.push(Instruction::Halt {});
+            }
+            instructions.extend([
+                Instruction::Target {},
+                Instruction::Drop { reg: Register(0) },
+                Instruction::Jump2 { label: 1 },
+                Instruction::Target {},
+                Instruction::Load { reg: Register(0) },
+                Instruction::Halt {},
+            ]);
+            raw_program(instructions.iter().flat_map(codec::encode).collect())
+        };
+        let dead = code(false);
+        let hash = program_hash(&dead);
+        assert_ok!(Xqvm::store_program(RuntimeOrigin::signed(1), bounded(dead)));
+        assert_eq!(ProgramOwner::<Test>::get(hash), Some(1));
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(code(true))),
+            Error::<Test>::VerifierReadUnsetRegister,
+        );
+        for peak in [8192, 8193] {
+            let bytecode = build_program(|b| {
+                for _ in 0..peak {
+                    b.emit_push(1);
+                }
+                b.emit_sclr().emit_halt();
+            });
+            if peak == 8192 {
+                assert_ok!(Xqvm::store_program(
+                    RuntimeOrigin::signed(1),
+                    bounded(bytecode)
+                ));
+            } else {
+                assert_noop!(
+                    Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+                    Error::<Test>::VerifierStackFault,
+                );
+            }
+        }
+    });
+}

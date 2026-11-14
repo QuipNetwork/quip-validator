@@ -26,8 +26,8 @@ scale-info = { features = ["derive"], workspace = true }
 sp-api.workspace = true
 sp-core.workspace = true
 sp-runtime.workspace = true
-# Keep this slice independent of the pallet-xqvm dependency upgrade.
-xqvm = { version = "=0.5.0", default-features = false }
+# Both execution pallets share the audited verifier and VM.
+xqvm.workspace = true
 
 [dev-dependencies]
 sp-io = { default-features = true, workspace = true }
