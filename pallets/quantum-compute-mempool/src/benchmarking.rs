@@ -8,7 +8,7 @@ use alloc::{vec, vec::Vec};
 use frame_benchmarking::v2::*;
 use frame_support::{
     pallet_prelude::ConstU32,
-    traits::{Currency, Get, Hooks},
+    traits::{Currency, Get, Hooks, ReservableCurrency},
     BoundedVec,
 };
 use frame_system::RawOrigin;
@@ -141,6 +141,10 @@ fn register_spec_for<T: Config>(builder: &T::AccountId) -> T::Hash {
 }
 
 fn register_solver_for<T: Config>(solver: &T::AccountId) {
+    fund_account::<T>(
+        solver,
+        T::Currency::minimum_balance().saturating_mul(2u32.into()),
+    );
     assert!(QuantumComputeMempool::<T>::register_solver(
         RawOrigin::Signed(solver.clone()).into(),
         types::MinerType::Cpu,
@@ -356,6 +360,10 @@ mod benchmarks {
     #[benchmark]
     fn register_solver() {
         let caller: T::AccountId = whitelisted_caller();
+        fund_account::<T>(
+            &caller,
+            T::Currency::minimum_balance().saturating_mul(2u32.into()),
+        );
 
         #[extrinsic_call]
         QuantumComputeMempool::register_solver(
@@ -363,7 +371,11 @@ mod benchmarks {
             types::MinerType::Cpu,
         );
 
-        assert!(Solvers::<T>::contains_key(caller));
+        assert!(Solvers::<T>::contains_key(&caller));
+        assert_eq!(
+            T::Currency::reserved_balance(&caller),
+            T::Currency::minimum_balance()
+        );
     }
 
     #[benchmark]
@@ -374,7 +386,12 @@ mod benchmarks {
         #[extrinsic_call]
         QuantumComputeMempool::deregister_solver(RawOrigin::Signed(caller.clone()));
 
-        assert!(!Solvers::<T>::contains_key(caller));
+        assert!(!Solvers::<T>::contains_key(&caller));
+        assert_eq!(T::Currency::reserved_balance(&caller), 0u32.into());
+        assert_eq!(
+            T::Currency::free_balance(&caller),
+            T::Currency::minimum_balance().saturating_mul(2u32.into())
+        );
     }
 
     #[benchmark]
