@@ -154,6 +154,7 @@ impl frame_system::Config for Runtime {
     type MaxConsumers = frame_support::traits::ConstU32<16>;
     type SingleBlockMigrations = SingleBlockMigrations;
     type OnSetCode = NetworkIdentityGuard;
+    type PostInherents = election::RestartZeroWeightSnapshot;
 }
 
 parameter_types! {

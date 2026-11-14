@@ -258,6 +258,7 @@ fn next_session() {
     for offset in 1..=3 {
         System::set_block_number(block + offset);
         let mut meter = WeightMeter::with_limit(super::super::RuntimeBlockWeights::get().max_block);
+        <<Runtime as frame_system::Config>::PostInherents as frame_support::traits::PostInherents>::post_inherents();
         <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(block + offset, &mut meter);
     }
 }

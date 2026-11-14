@@ -201,19 +201,42 @@ impl ElectionDataProvider for AdmissionData {
         if page != 0 {
             return Err("only one election page is supported");
         }
-        let targets = Self::candidates();
-        let mut voters: Vec<VoterOf<Self>> = targets
-            .iter()
-            .map(|who| {
-                let stake = Staking::weight_of(who);
-                (
-                    who.clone(),
-                    stake,
-                    vec![who.clone()].try_into().expect("one self vote fits"),
-                )
-            })
-            .filter(|(_, stake, _)| *stake > 0)
-            .collect();
+        // QUIP-03: target collection and voter collection happen in different
+        // blocks. Preserve the round's targets even if an intent was chilled.
+        use pallet_election_provider_multi_block::{PagedTargetSnapshot, Round};
+        System::register_extra_weight_unchecked(
+            <Runtime as frame_system::Config>::DbWeight::get()
+                .reads(2)
+                .saturating_add(Weight::from_parts(0, 5_000)),
+            DispatchClass::Mandatory,
+        );
+        let targets = PagedTargetSnapshot::<Runtime>::get(Round::<Runtime>::get(), 0)
+            .map(|targets| targets.into_inner())
+            .unwrap_or_else(Self::candidates);
+        // Issuance plus the stash mapping, ledger and mapping integrity check
+        // for each bounded target. The no-snapshot fallback also pays candidates().
+        System::register_extra_weight_unchecked(
+            Weight::from_parts(100_000_000, 512_000).saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads(1 + 3 * u64::from(MaxAdmittedAuthorities::get())),
+            ),
+            DispatchClass::Mandatory,
+        );
+        let weight_of = Staking::weight_of_fn();
+        let mut voters: Vec<VoterOf<Self>> = Vec::with_capacity(targets.len());
+        for who in &targets {
+            let stake = weight_of(who);
+            // Production's PostInherents guard restarts before on_poll reaches
+            // this provider. Standalone callers must not receive a partial page.
+            if stake == 0 {
+                return Err("snapshotted target has zero voting weight");
+            }
+            voters.push((
+                who.clone(),
+                stake,
+                vec![who.clone()].try_into().expect("one self vote fits"),
+            ));
+        }
         let mut eligible = voters.len() as u32;
         // The runtime ceiling applies even when a caller supplies no bound.
         let limit = bounds
@@ -250,7 +273,7 @@ impl ElectionDataProvider for AdmissionData {
             if votes.is_empty() {
                 continue;
             }
-            let stake = Staking::weight_of(&nominator);
+            let stake = weight_of(&nominator);
             if stake == 0 {
                 continue;
             }
@@ -1435,6 +1458,116 @@ pub(super) mod tests {
             }
             assert_eq!(Session::validators(), before);
             assert_eq!(pallet_grandpa::Authorities::<Runtime>::get().len(), 2);
+        });
+    }
+    #[test]
+    fn vv_poc_status_change_between_snapshots_breaks_desired_count() {
+        use frame_support::traits::Hooks;
+        use mbe::unsigned::miner::OffchainWorkerMiner;
+        use pallet_election_provider_multi_block as mbe;
+
+        ext().execute_with(|| {
+            let victim = pallet_session::Validators::<Runtime>::get()[1].clone();
+            pallet_staking::MinimumValidatorCount::<Runtime>::put(2);
+            assert_ok!(crate::MultiBlockElection::start());
+            let poll = |now| {
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            };
+            poll(2);
+            let round = mbe::Round::<Runtime>::get();
+            assert_eq!(mbe::DesiredTargets::<Runtime>::get(round), Some(2));
+            assert!(mbe::PagedTargetSnapshot::<Runtime>::get(round, 0)
+                .unwrap()
+                .contains(&victim));
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim.clone())));
+            assert!(!pallet_staking::Validators::<Runtime>::contains_key(&victim));
+            poll(3);
+            let voters = mbe::PagedVoterSnapshot::<Runtime>::get(round, 0).unwrap();
+            let victim_in_voters = voters.iter().any(|v| v.0 == victim);
+            assert_ok!(Staking::validate(
+                RuntimeOrigin::signed(victim.clone()),
+                Default::default()
+            ));
+            assert_eq!(AdmissionData::candidates().len(), 2);
+            let solution = OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            let call = mbe::unsigned::Call::<Runtime>::submit_unsigned {
+                paged_solution: alloc::boxed::Box::new(solution),
+            };
+            let checked = <crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call);
+            let fallback_count = crate::MultiBlockElection::elect(0).unwrap().len();
+            if !victim_in_voters && checked.is_err() {
+                println!(
+                    "VV-BUG-REPRODUCED: live_candidates=2, desired=2, snapshot_voters={}, unsigned_pre_dispatch={checked:?}, fallback_count={fallback_count}",
+                    voters.len(),
+                );
+            }
+            assert!(victim_in_voters);
+            assert!(checked.is_ok(), "in-flight round must accept a solution: {checked:?}");
+            assert_eq!(fallback_count, 2);
+        });
+    }
+
+    #[test]
+    fn vv_control_chill_before_snapshots_reduces_desired_count() {
+        use frame_support::traits::Hooks;
+        use mbe::unsigned::miner::OffchainWorkerMiner;
+        use pallet_election_provider_multi_block as mbe;
+
+        ext().execute_with(|| {
+            let victim = pallet_session::Validators::<Runtime>::get()[1].clone();
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim)));
+            assert_ok!(crate::MultiBlockElection::start());
+            for now in [2, 3] {
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            }
+            let round = mbe::Round::<Runtime>::get();
+            assert_eq!(mbe::DesiredTargets::<Runtime>::get(round), Some(1));
+            let solution = OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            let call = mbe::unsigned::Call::<Runtime>::submit_unsigned {
+                paged_solution: alloc::boxed::Box::new(solution),
+            };
+            assert!(<crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call).is_ok());
+        });
+    }
+
+    #[test]
+    fn vv_disprover_chill_after_voter_snapshot_keeps_round_valid() {
+        use frame_support::traits::Hooks;
+        use mbe::unsigned::miner::OffchainWorkerMiner;
+        use pallet_election_provider_multi_block as mbe;
+
+        ext().execute_with(|| {
+            let victim = pallet_session::Validators::<Runtime>::get()[1].clone();
+            assert_ok!(crate::MultiBlockElection::start());
+            for now in [2, 3] {
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            }
+            let round = mbe::Round::<Runtime>::get();
+            assert_eq!(mbe::DesiredTargets::<Runtime>::get(round), Some(2));
+            assert_eq!(mbe::PagedVoterSnapshot::<Runtime>::get(round, 0).unwrap().len(), 2);
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim.clone())));
+            assert_ok!(Staking::validate(
+                RuntimeOrigin::signed(victim),
+                Default::default()
+            ));
+            let solution = OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            let call = mbe::unsigned::Call::<Runtime>::submit_unsigned {
+                paged_solution: alloc::boxed::Box::new(solution),
+            };
+            assert!(<crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call).is_ok());
+            assert_eq!(crate::MultiBlockElection::elect(0).unwrap().len(), 2);
         });
     }
 }

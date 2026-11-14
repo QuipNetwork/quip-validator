@@ -147,6 +147,53 @@ impl pallet_validator_admission::OnAdmissionRemoval for InvalidateAdmissionRound
     }
 }
 
+/// Catch stake lost between the target and voter snapshots. Executive calls
+/// PostInherents immediately before on_poll, so rotation must happen here, not
+/// inside the data provider (the engine advances phase after that call returns).
+pub struct RestartZeroWeightSnapshot;
+impl frame_support::traits::PostInherents for RestartZeroWeightSnapshot {
+    fn post_inherents() {
+        use pallet_validator_admission::OnAdmissionRemoval;
+        System::register_extra_weight_unchecked(
+            <Runtime as frame_system::Config>::DbWeight::get()
+                .reads(1)
+                .saturating_add(Weight::from_parts(0, 500)),
+            DispatchClass::Mandatory,
+        );
+        if multi_block::CurrentPhase::<Runtime>::get() != multi_block::Phase::Snapshot(0) {
+            return;
+        }
+        // One target page, bounded by TargetSnapshotPerBlock (64). Charge round,
+        // page, issuance, and all three staking reads per target, including the
+        // second stash-mapping integrity read. This is a conservative bound.
+        let target_bound = u64::from(TargetSnapshotPerBlock::get());
+        System::register_extra_weight_unchecked(
+            Weight::from_parts(100_000_000, 5_000 + 8_000 * target_bound).saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get().reads(3 + 3 * target_bound),
+            ),
+            DispatchClass::Mandatory,
+        );
+        let round = multi_block::Round::<Runtime>::get();
+        let Some(targets) = multi_block::PagedTargetSnapshot::<Runtime>::get(round, 0) else {
+            return;
+        };
+        let weight_of = Staking::weight_of_fn();
+        if targets.iter().any(|who| weight_of(who) == 0) {
+            System::register_extra_weight_unchecked(
+                InvalidateAdmissionRound::weight(),
+                DispatchClass::Mandatory,
+            );
+            // Rotation cleans the old page and moves to a fresh round at
+            // Snapshot(1), or Off under ForceNone. A second pass cannot rotate
+            // this round again before it has collected its own target page.
+            assert!(
+                InvalidateAdmissionRound::on_removal().is_ok(),
+                "could not restart zero-weight election snapshot"
+            );
+        }
+    }
+}
+
 /// Classic staking requires its own data-provider associated type. The actual
 /// MBE snapshot and fallback retain the admission-first provider.
 pub struct AdmissionMultiBlockElection;
@@ -359,7 +406,11 @@ mod tests {
     use super::*;
     use crate::{MultiBlockElection, MultiBlockElectionUnsigned};
     use frame_election_provider_support::ElectionProvider;
-    use frame_support::{assert_noop, assert_ok, traits::Hooks, weights::WeightMeter};
+    use frame_support::{
+        assert_noop, assert_ok,
+        traits::{Hooks, PostInherents},
+        weights::WeightMeter,
+    };
     use multi_block::verifier::Verifier;
     use pallet_session::Validators;
     use sp_runtime::traits::BlockNumberProvider;
@@ -367,6 +418,7 @@ mod tests {
     fn poll() {
         let now = System::current_block_number().saturating_add(1);
         System::set_block_number(now);
+        <Runtime as frame_system::Config>::PostInherents::post_inherents();
         let mut meter = WeightMeter::with_limit(RuntimeBlockWeights::get().max_block);
         <MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
     }
@@ -1143,5 +1195,91 @@ mod tests {
                 assert!(MultiBlockElection::status().is_ok()); // ForceAlways plans the next round
             });
         }
+    }
+
+    #[test]
+    fn executive_restarts_zero_weight_target_before_voter_snapshot() {
+        validator_onboarding::tests::ext().execute_with(|| {
+            let victim = Validators::<Runtime>::get()[1].clone();
+            assert_ok!(MultiBlockElection::start());
+            poll();
+            let old_round = multi_block::Round::<Runtime>::get();
+            assert_eq!(
+                multi_block::CurrentPhase::<Runtime>::get(),
+                multi_block::Phase::Snapshot(0)
+            );
+            assert_eq!(
+                multi_block::DesiredTargets::<Runtime>::get(old_round),
+                Some(2)
+            );
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim.clone())));
+            assert_ok!(Staking::unbond(
+                RuntimeOrigin::signed(victim.clone()),
+                Balance::MAX
+            ));
+            assert_eq!(Staking::weight_of(&victim), 0);
+            System::set_block_number(System::block_number() + 1);
+            // Exercise the real engine order: the guard must run before MBE
+            // tries to snapshot voters, then on_poll creates the fresh targets.
+            crate::Executive::inherents_applied();
+            let round = multi_block::Round::<Runtime>::get();
+            assert_eq!(round, old_round + 1);
+            assert!(multi_block::PagedTargetSnapshot::<Runtime>::get(old_round, 0).is_none());
+            assert!(multi_block::PagedVoterSnapshot::<Runtime>::get(old_round, 0).is_none());
+            assert_eq!(multi_block::DesiredTargets::<Runtime>::get(round), Some(1));
+            assert!(!multi_block::PagedTargetSnapshot::<Runtime>::get(round, 0)
+                .unwrap()
+                .contains(&victim));
+            RestartZeroWeightSnapshot::post_inherents();
+            RestartZeroWeightSnapshot::post_inherents();
+            assert_eq!(
+                multi_block::Round::<Runtime>::get(),
+                round,
+                "no restart loop"
+            );
+            poll();
+            let voters = multi_block::PagedVoterSnapshot::<Runtime>::get(round, 0).unwrap();
+            assert_eq!(
+                voters.len() as u32,
+                multi_block::DesiredTargets::<Runtime>::get(round).unwrap()
+            );
+            assert!(voters
+                .iter()
+                .all(|(who, weight, _)| who != &victim && *weight > 0));
+            let solution = miner::OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            assert_ok!(MultiBlockElectionUnsigned::submit_unsigned(
+                RuntimeOrigin::none(),
+                alloc::boxed::Box::new(solution)
+            ));
+            poll();
+            assert_eq!(AdmissionMultiBlockElection::elect(0).unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn zero_weight_guard_only_restarts_a_collected_target_page_once() {
+        validator_onboarding::tests::ext().execute_with(|| {
+            assert_ok!(MultiBlockElection::start());
+            let round = multi_block::Round::<Runtime>::get();
+            RestartZeroWeightSnapshot::post_inherents();
+            assert_eq!(multi_block::Round::<Runtime>::get(), round);
+            // Even a malformed phase with no page is not a reason to restart.
+            multi_block::CurrentPhase::<Runtime>::put(multi_block::Phase::Snapshot(0));
+            RestartZeroWeightSnapshot::post_inherents();
+            assert_eq!(multi_block::Round::<Runtime>::get(), round);
+            multi_block::CurrentPhase::<Runtime>::put(multi_block::Phase::Snapshot(1));
+            poll();
+            let victim = Validators::<Runtime>::get()[1].clone();
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim.clone())));
+            assert_ok!(Staking::unbond(RuntimeOrigin::signed(victim), Balance::MAX));
+            RestartZeroWeightSnapshot::post_inherents();
+            assert_eq!(multi_block::Round::<Runtime>::get(), round + 1);
+            assert_eq!(
+                multi_block::CurrentPhase::<Runtime>::get(),
+                multi_block::Phase::Snapshot(1)
+            );
+            RestartZeroWeightSnapshot::post_inherents();
+            assert_eq!(multi_block::Round::<Runtime>::get(), round + 1);
+        });
     }
 }

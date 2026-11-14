@@ -197,3 +197,12 @@ If this leaves fewer winners than `MinimumValidatorCount`, staking keeps the
 current era and emits `StakingElectionFailed`: the minimum is a safety floor.
 Rebond the validator, or remove it from admission and admit a funded replacement.
 This fix does not promise uninterrupted era progression at the minimum count.
+
+### Stake changes between election snapshots (QUIP-03)
+
+Voters use the round's saved target page. Chilling an intent between target and
+voter collection does not silently remove its self-vote. If a saved target loses
+all voting weight in that interval, `System::PostInherents` restarts the round
+before the next `on_poll`; the replacement page excludes zero-weight targets.
+The bounded checks and round cleanup register mandatory weight explicitly.
+Their conservative allowance must be measured on the reference runner.
