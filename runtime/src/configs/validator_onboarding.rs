@@ -434,41 +434,11 @@ impl ElectionProvider for AdmissionElection {
     }
 }
 
-/// Appending staking to legacy state must never default to unlimited nominators.
-/// This does not activate a live network: rollout uses fresh genesis, or a
-/// separately reviewed dormant-pallet then consensus-flip migration.
-pub struct InitializeStakingLimits;
-impl frame_support::traits::OnRuntimeUpgrade for InitializeStakingLimits {
-    fn on_runtime_upgrade() -> Weight {
-        if !pallet_staking::MaxNominatorsCount::<Runtime>::exists() {
-            pallet_staking::MaxNominatorsCount::<Runtime>::put(0);
-            return <Runtime as frame_system::Config>::DbWeight::get().reads_writes(1, 1);
-        }
-        <Runtime as frame_system::Config>::DbWeight::get().reads(1)
-    }
-    #[cfg(feature = "try-runtime")]
-    fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-        Ok(pallet_staking::MaxNominatorsCount::<Runtime>::get().encode())
-    }
-    #[cfg(feature = "try-runtime")]
-    fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-        let before = Option::<u32>::decode(&mut &state[..])
-            .map_err(|_| "invalid pre-upgrade nominator limit")?;
-        frame_support::ensure!(
-            pallet_staking::MaxNominatorsCount::<Runtime>::get() == Some(before.unwrap_or(0)),
-            "nominator limit must preserve its previous value or initialize to zero if absent"
-        );
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::{FoundationMembership, RuntimeGenesisConfig, ValidatorAdmission};
-    use frame_support::{
-        assert_noop, assert_ok, dispatch::GetDispatchInfo, traits::OnRuntimeUpgrade,
-    };
+    use frame_support::{assert_noop, assert_ok, dispatch::GetDispatchInfo};
     use sp_runtime::{
         traits::{Dispatchable, Hash as _},
         BuildStorage,
@@ -1077,39 +1047,28 @@ pub(super) mod tests {
             <<AdmissionData as ElectionDataProvider>::MaxVotesPerVoter as Get<u32>>::get() >= 16
         );
     }
+
     #[test]
-    fn migration_closes_missing_nominator_limit() {
+    fn genesis_installs_staking_limits_and_storage_versions() {
+        use frame_support::traits::StorageVersion;
         ext().execute_with(|| {
-            pallet_staking::MaxNominatorsCount::<Runtime>::kill();
-            InitializeStakingLimits::on_runtime_upgrade();
+            #[cfg(not(feature = "runtime-benchmarks"))]
             assert_eq!(
                 pallet_staking::MaxNominatorsCount::<Runtime>::get(),
-                Some(0)
+                Some(super::super::election::MaxNominators::get())
             );
+            for (actual, expected) in [
+                (StorageVersion::get::<crate::Offences>(), 1),
+                (StorageVersion::get::<crate::MinerRegistry>(), 2),
+                (StorageVersion::get::<crate::QuantumComputeMempool>(), 4),
+                (StorageVersion::get::<crate::QuantumPow>(), 6),
+                (StorageVersion::get::<crate::EmissionController>(), 2),
+                (StorageVersion::get::<crate::FaucetOps>(), 1),
+            ] {
+                assert_eq!(actual, StorageVersion::new(expected));
+            }
         });
     }
-    #[cfg(feature = "try-runtime")]
-    #[test]
-    fn migration_postcheck_preserves_existing_nominator_limits() {
-        for before in [Some(1024), Some(2048), Some(0), None] {
-            ext().execute_with(|| {
-                pallet_staking::MaxNominatorsCount::<Runtime>::set(before);
-                let state = InitializeStakingLimits::pre_upgrade().unwrap();
-                InitializeStakingLimits::on_runtime_upgrade();
-                let expected = before.unwrap_or(0);
-                assert_eq!(
-                    pallet_staking::MaxNominatorsCount::<Runtime>::get(),
-                    Some(expected)
-                );
-                assert_ok!(InitializeStakingLimits::post_upgrade(state.clone()));
-                // The postcheck must also reject a changed cap, not just accept
-                // every nonzero value or ignore the captured pre-upgrade state.
-                pallet_staking::MaxNominatorsCount::<Runtime>::put(expected + 1);
-                assert!(InitializeStakingLimits::post_upgrade(state).is_err());
-            });
-        }
-    }
-
     #[test]
     fn foundation_proposal_reaches_root_and_membership_updates_collective() {
         ext().execute_with(|| {

@@ -318,7 +318,7 @@ fn network_genesis(
                 .collect::<Vec<_>>(),
             ..Default::default()
         },
-        // Must match QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58 on the canonical testnet
+        // Attribute the genesis default spec to this preset's configured builder.
         quantum_compute_mempool: QuantumComputeMempoolConfig {
             default_ising_spec_builder: Some(roles.ising_spec_builder),
         },
