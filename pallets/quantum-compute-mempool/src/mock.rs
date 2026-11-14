@@ -1,8 +1,5 @@
 use crate as pallet_quantum_compute_mempool;
-use frame_support::{
-    derive_impl, parameter_types,
-    traits::ConstU32,
-};
+use frame_support::{derive_impl, parameter_types, traits::ConstU32};
 use sp_runtime::BuildStorage;
 use std::cell::RefCell;
 
