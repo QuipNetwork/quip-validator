@@ -533,7 +533,7 @@ fn before_vesting_metadata() -> RuntimeMetadataV16 {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn vesting_weights_mempool_vm_and_staking_params_are_the_only_semantic_metadata_deltas() {
+fn reviewed_audit_changes_are_only_semantic_metadata_deltas() {
     let before = serde_json::to_value(before_vesting_metadata()).unwrap();
     let after = serde_json::to_value(metadata_v16()).unwrap();
     vesting_metadata_delta::check(&before, &after).unwrap();
@@ -708,4 +708,41 @@ fn empty_vesting_and_removed_legacy_genesis_charge_are_only_deltas() {
         .map(|(k, v)| (hex::encode(k), hex::encode(v)))
         .collect();
     assert_eq!(after, before);
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn commission_error_delta_is_exact_on_both_sides() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let after = serde_json::to_value(metadata_v16()).unwrap();
+    vesting_metadata_delta::check(&before, &after).unwrap();
+    for (field, value) in [
+        ("name", serde_json::json!("Unexpected")),
+        ("index", serde_json::json!(35)),
+        ("fields", serde_json::json!([{"type": 0}])),
+        ("docs", serde_json::json!([])),
+    ] {
+        let mut wrong = after.clone();
+        vesting_metadata_delta::staking_error_variants(&mut wrong)
+            .unwrap()
+            .last_mut()
+            .unwrap()[field] = value;
+        assert!(vesting_metadata_delta::check(&before, &wrong).is_err());
+    }
+    let mut missing = after.clone();
+    vesting_metadata_delta::staking_error_variants(&mut missing)
+        .unwrap()
+        .pop();
+    assert!(vesting_metadata_delta::check(&before, &missing).is_err());
+    let mut wrong_baseline = before.clone();
+    let mut candidate = after.clone();
+    let extra = vesting_metadata_delta::staking_error_variants(&mut candidate)
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    vesting_metadata_delta::staking_error_variants(&mut wrong_baseline)
+        .unwrap()
+        .push(extra);
+    assert!(vesting_metadata_delta::check(&wrong_baseline, &after).is_err());
 }

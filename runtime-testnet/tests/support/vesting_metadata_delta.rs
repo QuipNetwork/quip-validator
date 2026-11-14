@@ -1,6 +1,7 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
-//! enumerated regenerated-weight values, mempool VM delta and staking constants below.
+//! enumerated regenerated-weight values, exact mempool changes, staking constants,
+//! and appended staking commission error below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -645,10 +646,49 @@ impl Comparison {
     }
 }
 
+// QUIP-12 appends one error without changing any prior index or field.
+pub fn staking_error_variants(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    let id = metadata["pallets"]
+        .as_array()
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == "Staking"))
+        .and_then(|pallet| pallet["error"]["ty"].as_u64())
+        .ok_or("missing staking error type")?;
+    let id = usize::try_from(id).map_err(|_| "staking error id does not fit usize")?;
+    metadata
+        .get_mut("types")
+        .and_then(|types| types.get_mut("types"))
+        .and_then(|types| types.get_mut(id))
+        .and_then(|ty| ty.pointer_mut("/type/def/variant/variants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "missing staking error variants".into())
+}
+
+fn normalize_commission_error(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let baseline = staking_error_variants(before)?;
+    if baseline.len() != 34
+        || baseline
+            .last()
+            .is_none_or(|v| v["name"] != "Restricted" || v["index"] != 33)
+    {
+        return Err("unexpected baseline staking error surface".into());
+    }
+    let candidate = staking_error_variants(after)?;
+    let expected = serde_json::json!({
+        "name": "CommissionChangeDuringElection",
+        "index": 34,
+        "docs": ["Commission cannot rise while an election is holding a voter snapshot."]
+    });
+    if candidate.len() != 35 || candidate.last() != Some(&expected) {
+        return Err("unexpected commission error delta".into());
+    }
+    candidate.pop();
+    Ok(())
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
-    for pallet in [MEMPOOL, "Xqvm"] {
+    for pallet in [MEMPOOL, "Xqvm", "Staking"] {
         check_pallet_references(before, pallet).map_err(|error| format!("baseline: {error}"))?;
         check_pallet_references(after, pallet).map_err(|error| format!("candidate: {error}"))?;
     }
@@ -679,6 +719,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     normalize_audit_retention(&mut left, &mut right)?;
     normalize_audit_expiry_storage(&mut left, &mut right)?;
     normalize_mempool(&mut left, &mut right)?;
+    normalize_commission_error(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?
