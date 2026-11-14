@@ -235,6 +235,7 @@ fn next_session() {
     for offset in 1..=3 {
         System::set_block_number(block + offset);
         let mut meter = WeightMeter::with_limit(super::super::RuntimeBlockWeights::get().max_block);
+        <<Runtime as frame_system::Config>::PostInherents as frame_support::traits::PostInherents>::post_inherents();
         <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(block + offset, &mut meter);
     }
 }
@@ -1970,6 +1971,154 @@ fn active_babe_proof_rejects_shorter_session_list_even_when_historical_accepts()
         assert_eq!(
             ActiveBabeKeyOwner::check_proof(key, original).unwrap().0,
             validators[index]
+        );
+    });
+}
+
+#[test]
+fn real_babe_slash_excludes_zero_weight_and_rebond_restores_eras() {
+    use frame_election_provider_support::{ElectionDataProvider, ElectionProvider};
+    use sp_runtime::BuildStorage;
+
+    fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
+        match (target, patch) {
+            (serde_json::Value::Object(t), serde_json::Value::Object(p)) => {
+                for (key, value) in p {
+                    merge(t.entry(key).or_insert(serde_json::Value::Null), value);
+                }
+            }
+            (t, p) => *t = p,
+        }
+    }
+
+    let mut config = serde_json::to_value(crate::RuntimeGenesisConfig::default()).unwrap();
+    merge(
+        &mut config,
+        crate::genesis_config_presets::local_three_validator_config_genesis(),
+    );
+    config["staking"]["minimumValidatorCount"] = serde_json::json!(3);
+    let config: crate::RuntimeGenesisConfig = serde_json::from_value(config).unwrap();
+    let mut ext = sp_io::TestExternalities::new(config.build_storage().unwrap());
+    let (pool, state) = sp_core::offchain::testing::TestTransactionPoolExt::new();
+    ext.register_extension(sp_core::offchain::TransactionPoolExt::new(pool));
+    ext.execute_with(|| {
+        crate::System::set_block_number(1);
+        assert_eq!(pallet_session::Validators::<Runtime>::get().len(), 3);
+        assert_eq!(pallet_staking::MinimumValidatorCount::<Runtime>::get(), 3);
+        for _ in 0..12 {
+            next_session();
+            if pallet_staking::ActiveEra::<Runtime>::get().is_some_and(|e| e.index >= 1) {
+                break;
+            }
+        }
+        let offence_era = pallet_staking::ActiveEra::<Runtime>::get().unwrap().index;
+        assert_eq!(offence_era, 1);
+        let evidence = babe_evidence();
+        assert!(sp_consensus_babe::check_equivocation_proof(
+            evidence.clone()
+        ));
+        let proof: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+            "BabeApi_generate_key_ownership_proof",
+            (evidence.slot, evidence.offender.clone()),
+        );
+        let proof = proof.expect("key ownership proof");
+        let submitted: Option<()> = api(
+            "BabeApi_submit_report_equivocation_unsigned_extrinsic",
+            (evidence, proof),
+        );
+        assert_eq!(submitted, Some(()));
+        let transactions = &state.read().transactions;
+        assert_eq!(transactions.len(), 1);
+        let extrinsic = UncheckedExtrinsic::decode(&mut &transactions[0][..]).unwrap();
+        let RuntimeCall::Babe(call) = &extrinsic.0.function else {
+            panic!("expected BABE report");
+        };
+        assert_ok!(Babe::validate_unsigned(TransactionSource::Local, call));
+        assert_ok!(extrinsic.0.function.clone().dispatch(RuntimeOrigin::none()));
+        let who = quip_transaction_crypto::account_id_from_public(
+            &quip_transaction_crypto::HybridPair::from_string("//Alice", None)
+                .unwrap()
+                .public(),
+        );
+        let apply_era = offence_era + 28;
+        let slashes = pallet_staking::UnappliedSlashes::<Runtime>::get(apply_era);
+        assert_eq!(slashes.len(), 1);
+        assert_eq!(slashes[0].validator, who);
+        assert_eq!(slashes[0].own, Staking::slashable_balance_of(&who));
+        println!(
+            "C3-QUEUED era={offence_era} apply_era={apply_era} own={}",
+            slashes[0].own
+        );
+
+        let mut applied = false;
+        for _ in 0..180 {
+            next_session();
+            if Staking::weight_of(&who) == 0 {
+                applied = true;
+                break;
+            }
+        }
+        assert!(applied, "deferred full slash must apply");
+        assert!(pallet_staking::ActiveEra::<Runtime>::get().unwrap().index >= apply_era);
+        assert!(pallet_staking::UnappliedSlashes::<Runtime>::get(apply_era).is_empty());
+        assert!(pallet_validator_admission::Approved::<Runtime>::get().contains(&who));
+        assert!(pallet_staking::Validators::<Runtime>::contains_key(&who));
+        assert!(pallet_session::NextKeys::<Runtime>::contains_key(&who));
+
+        let targets = super::super::validator_onboarding::AdmissionData::electable_targets(
+            Default::default(),
+            0,
+        )
+        .unwrap();
+        let voters = super::super::validator_onboarding::AdmissionData::electing_voters(
+            Default::default(),
+            0,
+        )
+        .unwrap();
+        let desired = super::super::validator_onboarding::AdmissionData::desired_targets().unwrap();
+        let elected = super::super::validator_onboarding::AdmissionElection::elect(0)
+            .map(|supports| supports.len());
+        assert!(!targets.contains(&who));
+        assert_eq!(targets.len(), 2);
+        assert_eq!(desired, 2);
+        assert_eq!(voters.len(), 2);
+        assert!(voters.iter().all(|(voter, weight, votes)| voter != &who
+            && *weight > 0
+            && votes.as_slice() == [voter.clone()]));
+        assert_eq!(elected.unwrap(), 2);
+
+        // The consistent two-winner election must still respect the configured
+        // safety floor. Do not invent a vote for a validator with no stake.
+        let era_before = pallet_staking::CurrentEra::<Runtime>::get();
+        crate::System::reset_events();
+        for _ in 0..8 {
+            next_session();
+        }
+        assert_eq!(pallet_staking::CurrentEra::<Runtime>::get(), era_before);
+        assert_eq!(pallet_staking::MinimumValidatorCount::<Runtime>::get(), 3);
+        assert!(crate::System::events().iter().any(|record| matches!(
+            &record.event,
+            RuntimeEvent::Staking(pallet_staking::Event::StakingElectionFailed)
+        )));
+
+        assert_ok!(Staking::bond_extra(
+            RuntimeOrigin::signed(who.clone()),
+            1_000 * crate::UNIT
+        ));
+        assert!(Staking::weight_of(&who) > 0);
+        assert_eq!(
+            super::super::validator_onboarding::AdmissionData::desired_targets().unwrap(),
+            3
+        );
+        for _ in 0..12 {
+            next_session();
+            if pallet_staking::CurrentEra::<Runtime>::get() > era_before {
+                break;
+            }
+        }
+        assert!(
+            pallet_staking::CurrentEra::<Runtime>::get() > era_before,
+            "funding the third eligible validator restores era progression"
         );
     });
 }

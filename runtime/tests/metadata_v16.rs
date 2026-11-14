@@ -662,14 +662,14 @@ fn vesting_metadata_comparison_rejects_out_of_bounds_call_type() {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn empty_vesting_genesis_adds_only_its_version_keys() {
+fn empty_vesting_and_removed_legacy_genesis_charge_are_only_deltas() {
     use sp_runtime::BuildStorage;
     let baseline = if quip_protocol_runtime::VERSION.spec_name.as_ref() == "quip" {
         include_str!("../../tests/fixtures/pre-vesting/quip-storage.json")
     } else {
         include_str!("../../tests/fixtures/pre-vesting/quip-testnet-storage.json")
     };
-    let before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
+    let mut before: Vec<(String, String)> = serde_json::from_str(baseline).unwrap();
     let mut after = quip_protocol_runtime::RuntimeGenesisConfig::default()
         .build_storage()
         .unwrap()
@@ -689,6 +689,20 @@ fn empty_vesting_genesis_adds_only_its_version_keys() {
         after.remove(frame_version.as_slice()).unwrap(),
         0u16.encode()
     );
+    // The old fixture includes the pre-existing genesis election charge.
+    // Production genesis now removes all off-chain election weight.
+    // Require deletion of exactly that legacy key; recapture no fixture.
+    let weight_key = frame_support::storage::storage_prefix(b"System", b"BlockWeight");
+    let old_weight = "0000000007407fac630d02701700";
+    assert_eq!(
+        before
+            .iter()
+            .find(|(key, _)| *key == hex::encode(weight_key))
+            .map(|(_, value)| value.as_str()),
+        Some(old_weight)
+    );
+    assert!(!after.contains_key(weight_key.as_slice()));
+    before.retain(|(key, _)| *key != hex::encode(weight_key));
     let after: Vec<_> = after
         .iter()
         .map(|(k, v)| (hex::encode(k), hex::encode(v)))

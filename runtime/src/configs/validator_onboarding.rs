@@ -158,15 +158,21 @@ pub struct AdmissionData;
 impl AdmissionData {
     fn candidates() -> Vec<AccountId> {
         System::register_extra_weight_unchecked(
-            Weight::from_parts(100_000_000, 128_000)
-                .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads(200)),
+            // Approved + issuance, then intent, keys, stash mapping, ledger and its integrity check
+            // for each of the at most 64 admitted authorities.
+            Weight::from_parts(100_000_000, 512_000).saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads(2 + 5 * u64::from(MaxAdmittedAuthorities::get())),
+            ),
             DispatchClass::Mandatory,
         );
+        let weight_of = Staking::weight_of_fn();
         pallet_validator_admission::Approved::<Runtime>::get()
             .into_iter()
             .filter(|who| {
                 pallet_staking::Validators::<Runtime>::contains_key(who)
                     && pallet_session::NextKeys::<Runtime>::contains_key(who)
+                    && weight_of(who) > 0
             })
             .collect()
     }
@@ -196,19 +202,42 @@ impl ElectionDataProvider for AdmissionData {
         if page != 0 {
             return Err("only one election page is supported");
         }
-        let targets = Self::candidates();
-        let mut voters: Vec<VoterOf<Self>> = targets
-            .iter()
-            .map(|who| {
-                let stake = Staking::weight_of(who);
-                (
-                    who.clone(),
-                    stake,
-                    vec![who.clone()].try_into().expect("one self vote fits"),
-                )
-            })
-            .filter(|(_, stake, _)| *stake > 0)
-            .collect();
+        // QUIP-03: target collection and voter collection happen in different
+        // blocks. Preserve the round's targets even if an intent was chilled.
+        use pallet_election_provider_multi_block::{PagedTargetSnapshot, Round};
+        System::register_extra_weight_unchecked(
+            <Runtime as frame_system::Config>::DbWeight::get()
+                .reads(2)
+                .saturating_add(Weight::from_parts(0, 5_000)),
+            DispatchClass::Mandatory,
+        );
+        let targets = PagedTargetSnapshot::<Runtime>::get(Round::<Runtime>::get(), 0)
+            .map(|targets| targets.into_inner())
+            .unwrap_or_else(Self::candidates);
+        // Issuance plus the stash mapping, ledger and mapping integrity check
+        // for each bounded target. The no-snapshot fallback also pays candidates().
+        System::register_extra_weight_unchecked(
+            Weight::from_parts(100_000_000, 512_000).saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads(1 + 3 * u64::from(MaxAdmittedAuthorities::get())),
+            ),
+            DispatchClass::Mandatory,
+        );
+        let weight_of = Staking::weight_of_fn();
+        let mut voters: Vec<VoterOf<Self>> = Vec::with_capacity(targets.len());
+        for who in &targets {
+            let stake = weight_of(who);
+            // Production's PostInherents guard restarts before on_poll reaches
+            // this provider. Standalone callers must not receive a partial page.
+            if stake == 0 {
+                return Err("snapshotted target has zero voting weight");
+            }
+            voters.push((
+                who.clone(),
+                stake,
+                vec![who.clone()].try_into().expect("one self vote fits"),
+            ));
+        }
         let mut eligible = voters.len() as u32;
         // The runtime ceiling applies even when a caller supplies no bound.
         let limit = bounds
@@ -245,7 +274,7 @@ impl ElectionDataProvider for AdmissionData {
             if votes.is_empty() {
                 continue;
             }
-            let stake = Staking::weight_of(&nominator);
+            let stake = weight_of(&nominator);
             if stake == 0 {
                 continue;
             }
@@ -410,7 +439,8 @@ impl onchain::Config for BenchmarkOnChainConfig {
 type FilteredElection = onchain::OnChainExecution<OnChainConfig>;
 /// The pinned staking Config requires DataProvider = Staking. This bridge keeps
 /// that associated-type contract while the actual solver exclusively consumes
-/// AdmissionData, for both normal and genesis elections.
+/// AdmissionData. Production uses this bridge for genesis; block elections use
+/// AdmissionMultiBlockElection and its on-chain fallback directly.
 pub struct AdmissionElection;
 impl ElectionProvider for AdmissionElection {
     type AccountId = AccountId;
@@ -422,7 +452,17 @@ impl ElectionProvider for AdmissionElection {
     type Pages = ConstU32<1>;
     type DataProvider = Staking;
     fn elect(page: PageIndex) -> Result<BoundedSupportsOf<Self>, Self::Error> {
-        FilteredElection::elect(page)
+        if System::block_number() == 0 {
+            // Session's production genesis builder calls Staking, which calls
+            // this adapter. Both the provider and SDK solver register weight;
+            // genesis is not a block. Always restore the defined empty weight
+            // state, independent of the elected set, solver or prior charges.
+            let result = FilteredElection::elect(page);
+            frame_system::BlockWeight::<Runtime>::kill();
+            result
+        } else {
+            FilteredElection::elect(page)
+        }
     }
     fn start() -> Result<(), Self::Error> {
         FilteredElection::start()
@@ -1390,5 +1430,220 @@ pub(super) mod tests {
             assert_eq!(Session::validators(), before);
             assert_eq!(pallet_grandpa::Authorities::<Runtime>::get().len(), 2);
         });
+    }
+    #[test]
+    fn vv_poc_status_change_between_snapshots_breaks_desired_count() {
+        use frame_support::traits::Hooks;
+        use mbe::unsigned::miner::OffchainWorkerMiner;
+        use pallet_election_provider_multi_block as mbe;
+
+        ext().execute_with(|| {
+            let victim = pallet_session::Validators::<Runtime>::get()[1].clone();
+            pallet_staking::MinimumValidatorCount::<Runtime>::put(2);
+            assert_ok!(crate::MultiBlockElection::start());
+            let poll = |now| {
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            };
+            poll(2);
+            let round = mbe::Round::<Runtime>::get();
+            assert_eq!(mbe::DesiredTargets::<Runtime>::get(round), Some(2));
+            assert!(mbe::PagedTargetSnapshot::<Runtime>::get(round, 0)
+                .unwrap()
+                .contains(&victim));
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim.clone())));
+            assert!(!pallet_staking::Validators::<Runtime>::contains_key(&victim));
+            poll(3);
+            let voters = mbe::PagedVoterSnapshot::<Runtime>::get(round, 0).unwrap();
+            let victim_in_voters = voters.iter().any(|v| v.0 == victim);
+            assert_ok!(Staking::validate(
+                RuntimeOrigin::signed(victim.clone()),
+                Default::default()
+            ));
+            assert_eq!(AdmissionData::candidates().len(), 2);
+            let solution = OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            let call = mbe::unsigned::Call::<Runtime>::submit_unsigned {
+                paged_solution: alloc::boxed::Box::new(solution),
+            };
+            let checked = <crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call);
+            let fallback_count = crate::MultiBlockElection::elect(0).unwrap().len();
+            if !victim_in_voters && checked.is_err() {
+                println!(
+                    "VV-BUG-REPRODUCED: live_candidates=2, desired=2, snapshot_voters={}, unsigned_pre_dispatch={checked:?}, fallback_count={fallback_count}",
+                    voters.len(),
+                );
+            }
+            assert!(victim_in_voters);
+            assert!(checked.is_ok(), "in-flight round must accept a solution: {checked:?}");
+            assert_eq!(fallback_count, 2);
+        });
+    }
+
+    #[test]
+    fn vv_control_chill_before_snapshots_reduces_desired_count() {
+        use frame_support::traits::Hooks;
+        use mbe::unsigned::miner::OffchainWorkerMiner;
+        use pallet_election_provider_multi_block as mbe;
+
+        ext().execute_with(|| {
+            let victim = pallet_session::Validators::<Runtime>::get()[1].clone();
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim)));
+            assert_ok!(crate::MultiBlockElection::start());
+            for now in [2, 3] {
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            }
+            let round = mbe::Round::<Runtime>::get();
+            assert_eq!(mbe::DesiredTargets::<Runtime>::get(round), Some(1));
+            let solution = OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            let call = mbe::unsigned::Call::<Runtime>::submit_unsigned {
+                paged_solution: alloc::boxed::Box::new(solution),
+            };
+            assert!(<crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call).is_ok());
+        });
+    }
+
+    #[test]
+    fn vv_disprover_chill_after_voter_snapshot_keeps_round_valid() {
+        use frame_support::traits::Hooks;
+        use mbe::unsigned::miner::OffchainWorkerMiner;
+        use pallet_election_provider_multi_block as mbe;
+
+        ext().execute_with(|| {
+            let victim = pallet_session::Validators::<Runtime>::get()[1].clone();
+            assert_ok!(crate::MultiBlockElection::start());
+            for now in [2, 3] {
+                System::set_block_number(now);
+                let mut meter = frame_support::weights::WeightMeter::with_limit(
+                    RuntimeBlockWeights::get().max_block,
+                );
+                <crate::MultiBlockElection as Hooks<BlockNumber>>::on_poll(now, &mut meter);
+            }
+            let round = mbe::Round::<Runtime>::get();
+            assert_eq!(mbe::DesiredTargets::<Runtime>::get(round), Some(2));
+            assert_eq!(mbe::PagedVoterSnapshot::<Runtime>::get(round, 0).unwrap().len(), 2);
+            assert_ok!(Staking::chill(RuntimeOrigin::signed(victim.clone())));
+            assert_ok!(Staking::validate(
+                RuntimeOrigin::signed(victim),
+                Default::default()
+            ));
+            let solution = OffchainWorkerMiner::<Runtime>::mine_solution(1, true).unwrap();
+            let call = mbe::unsigned::Call::<Runtime>::submit_unsigned {
+                paged_solution: alloc::boxed::Box::new(solution),
+            };
+            assert!(<crate::MultiBlockElectionUnsigned as frame_support::unsigned::ValidateUnsigned>::pre_dispatch(&call).is_ok());
+            assert_eq!(crate::MultiBlockElection::elect(0).unwrap().len(), 2);
+        });
+    }
+
+    #[test]
+    fn production_genesis_election_has_zero_weight_but_block_elections_charge() {
+        let empty = RuntimeGenesisConfig::default().build_storage().unwrap();
+        let key = frame_system::BlockWeight::<Runtime>::hashed_key();
+        assert!(!empty.top.contains_key(key.as_slice()));
+        // ext() runs the real funded local Session/Staking genesis builders,
+        // then only sets the block number to one. No block hooks are simulated.
+        ext().execute_with(|| {
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            System::set_block_number(0);
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            System::register_extra_weight_unchecked(
+                Weight::from_parts(777, 99),
+                DispatchClass::Mandatory,
+            );
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            assert!(AdmissionElection::elect(1).is_err());
+            assert!(!frame_system::BlockWeight::<Runtime>::exists());
+            System::set_block_number(1);
+            assert_eq!(AdmissionElection::elect(0).unwrap().len(), 2);
+            assert!(
+                frame_system::BlockWeight::<Runtime>::get()
+                    .total()
+                    .ref_time()
+                    > 0
+            );
+        });
+    }
+
+    #[test]
+    fn block_one_import_and_election_charges_ignore_genesis_weight() {
+        use sp_runtime::traits::{Block as _, Header as _};
+        let timestamp: crate::UncheckedExtrinsic =
+            sp_runtime::generic::UncheckedExtrinsic::new_bare(RuntimeCall::Timestamp(
+                pallet_timestamp::Call::set { now: 6_000 },
+            ))
+            .into();
+        let block = ext().execute_with(|| {
+            System::set_block_number(0);
+            let digest = sp_consensus_babe::digests::PreDigest::SecondaryPlain(
+                sp_consensus_babe::digests::SecondaryPlainPreDigest {
+                    authority_index: 0,
+                    slot: sp_consensus_babe::Slot::from(1),
+                },
+            );
+            let header = crate::Header::new(
+                1,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                sp_runtime::generic::Digest {
+                    logs: vec![sp_runtime::generic::DigestItem::PreRuntime(
+                        sp_consensus_babe::BABE_ENGINE_ID,
+                        digest.encode(),
+                    )],
+                },
+            );
+            crate::Executive::initialize_block(&header);
+            assert_ok!(crate::Executive::apply_extrinsic(timestamp.clone()).unwrap());
+            crate::Block::new(crate::Executive::finalize_block(), vec![timestamp])
+        });
+        // Exact legacy default-genesis weight, plus an unrelated larger charge.
+        let legacy = vec![0, 0, 0, 0, 7, 64, 127, 172, 99, 13, 2, 112, 23, 0];
+        let mut observed = Vec::new();
+        for seed in [
+            None,
+            Some(legacy),
+            Some(ext().execute_with(|| {
+                System::register_extra_weight_unchecked(
+                    Weight::from_parts(9_000_000_000, 999_999),
+                    DispatchClass::Mandatory,
+                );
+                frame_system::BlockWeight::<Runtime>::get().encode()
+            })),
+        ] {
+            for use_adapter in [false, true] {
+                observed.push(ext().execute_with(|| {
+                    System::set_block_number(0);
+                    let key = frame_system::BlockWeight::<Runtime>::hashed_key();
+                    if let Some(value) = &seed {
+                        sp_io::storage::set(&key, value);
+                    } else {
+                        frame_system::BlockWeight::<Runtime>::kill();
+                    }
+                    // Import checks the same authored state root for every seed.
+                    crate::Executive::execute_block(block.clone().into());
+                    let imported = frame_system::BlockWeight::<Runtime>::get();
+                    let elected = if use_adapter {
+                        AdmissionElection::elect(0)
+                    } else {
+                        FilteredElection::elect(0)
+                    }
+                    .unwrap();
+                    assert_eq!(elected.len(), 2);
+                    let charged = frame_system::BlockWeight::<Runtime>::get();
+                    assert!(charged.total().ref_time() > imported.total().ref_time());
+                    (imported, charged)
+                }));
+            }
+        }
+        assert!(observed.windows(2).all(|pair| pair[0] == pair[1]));
     }
 }

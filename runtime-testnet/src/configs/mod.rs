@@ -144,6 +144,7 @@ impl frame_system::Config for Runtime {
     type SS58Prefix = SS58Prefix;
     type MaxConsumers = frame_support::traits::ConstU32<16>;
     type OnSetCode = NetworkIdentityGuard;
+    type PostInherents = election::RestartZeroWeightSnapshot;
 }
 
 parameter_types! {
