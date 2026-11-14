@@ -640,6 +640,192 @@ mod tests {
             );
         }
 
+        fn vv_next_session_with_rewards() {
+            let index = pallet_session::CurrentIndex::<Runtime>::get() + 1;
+            let block = index * EpochDuration::get() as u32;
+            System::set_block_number(block);
+            pallet_babe::CurrentSlot::<Runtime>::put(sp_consensus_babe::Slot::from(u64::from(
+                block,
+            )));
+            pallet_babe::Initialized::<Runtime>::put(None::<sp_consensus_babe::digests::PreDigest>);
+            crate::Timestamp::set_timestamp(1 + u64::from(block) * 6_000);
+            crate::Session::rotate_session();
+            <crate::Grandpa as Hooks<BlockNumber>>::on_finalize(block);
+            <Staking as Hooks<BlockNumber>>::on_finalize(block);
+            for _ in 0..3 {
+                poll();
+            }
+        }
+
+        fn commission_snapshot_rewards_protected(mode: u8) {
+            use frame_support::traits::Currency;
+            use pallet_staking::{ActiveEra, CurrentEra, ErasStakersPaged, ErasValidatorPrefs};
+
+            validator_onboarding::tests::ext().execute_with(|| {
+                let validator = Validators::<Runtime>::get()[0].clone();
+                let nominator = AccountId::new([174; 32]);
+                let _ = Balances::make_free_balance_be(&nominator, 10_001 * crate::UNIT);
+                assert_ok!(Staking::bond(
+                    RuntimeOrigin::signed(nominator.clone()),
+                    10_000 * crate::UNIT,
+                    pallet_staking::RewardDestination::Stash,
+                ));
+                assert_ok!(Staking::nominate(
+                    RuntimeOrigin::signed(nominator.clone()),
+                    vec![crate::Address::Id(validator.clone())],
+                ));
+                assert_ok!(Staking::set_payee(
+                    RuntimeOrigin::signed(validator.clone()),
+                    pallet_staking::RewardDestination::Stash,
+                ));
+                assert_ok!(Staking::validate(
+                    RuntimeOrigin::signed(validator.clone()),
+                    pallet_staking::ValidatorPrefs {
+                        commission: Perbill::zero(),
+                        blocked: false,
+                    },
+                ));
+
+                crate::Timestamp::set_timestamp(1);
+                <Staking as Hooks<BlockNumber>>::on_finalize(System::current_block_number());
+
+                for _ in 0..9 {
+                    vv_next_session_with_rewards();
+                }
+                assert_eq!(CurrentEra::<Runtime>::get(), Some(1));
+                finish_round();
+                let round = multi_block::Round::<Runtime>::get();
+                let voters = multi_block::PagedVoterSnapshot::<Runtime>::get(round, 0).unwrap();
+                assert!(voters
+                    .iter()
+                    .any(|(who, stake, _)| who == &nominator
+                        && *stake == Staking::weight_of(&nominator)));
+
+                // Even a signed chill after the snapshot cannot remove this stake
+                // from the already queued era-2 election.
+                assert_ok!(Staking::chill(RuntimeOrigin::signed(nominator.clone())));
+                let high_prefs = pallet_staking::ValidatorPrefs {
+                    commission: Perbill::from_percent(100),
+                    blocked: false,
+                };
+                if mode == 0 {
+                    assert_noop!(
+                        Staking::validate(RuntimeOrigin::signed(validator.clone()), high_prefs),
+                        pallet_staking::Error::<Runtime>::CommissionChangeDuringElection,
+                    );
+                } else {
+                    let exit = if mode == 1 {
+                        RuntimeCall::Staking(pallet_staking::Call::chill {})
+                    } else {
+                        let other = Validators::<Runtime>::get()[1].clone();
+                        RuntimeCall::Staking(pallet_staking::Call::nominate {
+                            targets: vec![crate::Address::Id(other)],
+                        })
+                    };
+                    assert_noop!(
+                        crate::Utility::batch_all(
+                            RuntimeOrigin::signed(validator.clone()),
+                            vec![
+                                exit,
+                                RuntimeCall::Staking(pallet_staking::Call::validate {
+                                    prefs: high_prefs
+                                })
+                            ],
+                        )
+                        .map_err(|error| error.error),
+                        pallet_staking::Error::<Runtime>::CommissionChangeDuringElection,
+                    );
+                }
+                assert_eq!(CurrentEra::<Runtime>::get(), Some(1));
+                vv_next_session_with_rewards();
+                vv_next_session_with_rewards();
+                assert_eq!(CurrentEra::<Runtime>::get(), Some(2));
+                assert_eq!(
+                    ErasValidatorPrefs::<Runtime>::get(2, &validator).commission,
+                    Perbill::zero()
+                );
+                let exposure = ErasStakersPaged::<Runtime>::get((2, &validator, 0)).unwrap();
+                assert!(exposure
+                    .others
+                    .iter()
+                    .any(|other| other.who == nominator && other.value == 10_000 * crate::UNIT));
+
+                vv_next_session_with_rewards();
+                assert_eq!(ActiveEra::<Runtime>::get().unwrap().index, 2);
+                <Staking as pallet_authorship::EventHandler<AccountId, BlockNumber>>::note_author(
+                    validator.clone(),
+                );
+                let nominator_before = Balances::free_balance(&nominator);
+                let validator_before = Balances::free_balance(&validator);
+                for _ in 0..6 {
+                    vv_next_session_with_rewards();
+                }
+                let budget = pallet_staking::ErasValidatorReward::<Runtime>::get(2).unwrap();
+                assert!(budget > 0);
+                assert_ok!(Staking::payout_stakers(
+                    RuntimeOrigin::signed(nominator.clone()),
+                    validator.clone(),
+                    2,
+                ));
+                let nominator_paid = Balances::free_balance(&nominator) - nominator_before;
+                let validator_paid = Balances::free_balance(&validator) - validator_before;
+                assert!(
+                    nominator_paid > 0,
+                    "snapshot commission must protect the nominator"
+                );
+                assert!(validator_paid < budget);
+            });
+        }
+
+        #[test]
+        fn high_commission_before_snapshot_has_no_nominator() {
+            use pallet_staking::{CurrentEra, ErasStakersPaged, ErasValidatorPrefs};
+
+            validator_onboarding::tests::ext().execute_with(|| {
+                let validator = Validators::<Runtime>::get()[0].clone();
+                assert_ok!(Staking::validate(
+                    RuntimeOrigin::signed(validator.clone()),
+                    pallet_staking::ValidatorPrefs {
+                        commission: Perbill::from_percent(100),
+                        blocked: false,
+                    },
+                ));
+                for _ in 0..9 {
+                    next_session();
+                }
+                finish_round();
+                next_session();
+                next_session();
+                assert_eq!(CurrentEra::<Runtime>::get(), Some(2));
+                assert_eq!(
+                    ErasValidatorPrefs::<Runtime>::get(2, &validator).commission,
+                    Perbill::from_percent(100)
+                );
+                let overview =
+                    pallet_staking::ErasStakersOverview::<Runtime>::get(2, &validator).unwrap();
+                assert_eq!(overview.total, overview.own);
+                let others = ErasStakersPaged::<Runtime>::get((2, &validator, 0))
+                    .map(|page| page.others)
+                    .unwrap_or_default();
+                assert!(others.is_empty());
+            });
+        }
+
+        #[test]
+        fn audit_commission_snapshot_rejects_direct_raise_and_preserves_rewards() {
+            commission_snapshot_rewards_protected(0);
+        }
+
+        #[test]
+        fn audit_commission_snapshot_rejects_chill_batch_and_preserves_rewards() {
+            commission_snapshot_rewards_protected(1);
+        }
+
+        #[test]
+        fn audit_commission_snapshot_rejects_nominate_batch_and_preserves_rewards() {
+            commission_snapshot_rewards_protected(2);
+        }
+
         #[test]
         fn starts_at_session_three_and_elects_on_entry_to_five() {
             validator_onboarding::tests::ext().execute_with(|| {
