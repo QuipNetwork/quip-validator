@@ -3214,7 +3214,7 @@ fn overflowing_expiry_head_and_later_bucket_both_progress_within_budget() {
         );
         let after = status_count(&head, OrderStatus::Expired);
         assert!(after >= before + 4 && after < head.len());
-        assert!(after - before + 1 <= crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
+        assert!(after - before < crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
         let mut previous = after;
         for now in 4..=10 {
             run_to_block(now);
