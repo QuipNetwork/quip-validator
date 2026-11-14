@@ -49,6 +49,10 @@ fn real_runtime_wiring_changes_persisted_spins() {
         let proposer = AccountId::new([1; 32]);
         let solver = AccountId::new([2; 32]);
         <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 100 * UNIT);
+        <Balances as Currency<AccountId>>::make_free_balance_be(
+            &solver,
+            2 * <Balances as Currency<AccountId>>::minimum_balance(),
+        );
         let mut b = InstructionBuilder::new();
         b.emit_push(0)
             .emit_input(Register(0))

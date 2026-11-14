@@ -202,6 +202,155 @@ fn register_program_docs(metadata: &mut Value) -> Result<&mut Value, String> {
         .ok_or_else(|| "missing register_job_spec docs".into())
 }
 
+fn mempool_storage_entries(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    metadata["pallets"]
+        .as_array_mut()
+        .ok_or("missing pallets")?
+        .iter_mut()
+        .find(|pallet| pallet["name"] == MEMPOOL)
+        .and_then(|pallet| pallet.get_mut("storage"))
+        .and_then(|storage| storage.get_mut("entries"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "missing mempool storage".into())
+}
+
+fn mempool_constants(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    metadata["pallets"]
+        .as_array_mut()
+        .ok_or("missing pallets")?
+        .iter_mut()
+        .find(|pallet| pallet["name"] == MEMPOOL)
+        .and_then(|pallet| pallet.get_mut("constants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "missing mempool constants".into())
+}
+
+fn normalize_audit_retention(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let names = ["OrdersPrunableAt", "NextPruneBucket"];
+    if mempool_storage_entries(before)?
+        .iter()
+        .any(|entry| names.iter().any(|name| entry["name"] == *name))
+    {
+        return Err("unexpected baseline retention storage".into());
+    }
+    if mempool_constants(before)?
+        .iter()
+        .any(|constant| constant["name"] == "OrderRetentionBlocks")
+    {
+        return Err("unexpected baseline retention constant".into());
+    }
+    let epoch: Vec<u8> =
+        serde_json::from_value(constant_value(after, "Babe", "EpochDuration")?.clone())
+            .map_err(|_| "invalid epoch bytes")?;
+    let epoch = u64::from_le_bytes(epoch.try_into().map_err(|_| "invalid epoch length")?);
+    let retention = u32::try_from(epoch.checked_mul(28 * 6).ok_or("retention overflow")?)
+        .map_err(|_| "retention exceeds BlockNumber")?;
+    let entries = mempool_storage_entries(after)?;
+    for (name, template, docs) in [
+        (
+            "OrdersPrunableAt",
+            "OrdersExpiringAt",
+            " Closed orders indexed by the block when their retention window ends.",
+        ),
+        (
+            "NextPruneBucket",
+            "NextExpiryBucket",
+            " Earliest retention bucket to inspect, absent when no cleanup is queued.",
+        ),
+    ] {
+        let mut expected = entries
+            .iter()
+            .find(|entry| entry["name"] == template)
+            .ok_or("missing retention template")?
+            .clone();
+        expected["name"] = Value::from(name);
+        expected["docs"] = serde_json::json!([docs]);
+        if name == "NextPruneBucket" {
+            expected["modifier"] = Value::from("Optional");
+            expected["default"] = serde_json::json!([0]);
+        }
+        let found: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry["name"] == name)
+            .collect();
+        if found.len() != 1 || *found[0] != expected {
+            return Err(format!("unexpected required retention storage {name}"));
+        }
+    }
+    entries.retain(|entry| !names.iter().any(|name| entry["name"] == *name));
+    let constants = mempool_constants(after)?;
+    let mut expected = constants
+        .iter()
+        .find(|constant| constant["name"] == "ResultTtlBlocks")
+        .ok_or("missing retention constant template")?
+        .clone();
+    expected["name"] = Value::from("OrderRetentionBlocks");
+    expected["value"] = serde_json::json!(retention.to_le_bytes());
+    expected["docs"] =
+        serde_json::json!([" Retention after closure before bounded automatic order cleanup."]);
+    let found: Vec<_> = constants
+        .iter()
+        .filter(|constant| constant["name"] == "OrderRetentionBlocks")
+        .collect();
+    if found.len() != 1 || *found[0] != expected {
+        return Err("unexpected required retention constant".into());
+    }
+    constants.retain(|constant| constant["name"] != "OrderRetentionBlocks");
+    Ok(())
+}
+
+fn normalize_audit_expiry_storage(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let old_entries = mempool_storage_entries(before)?;
+    if old_entries
+        .iter()
+        .any(|entry| entry["name"] == "OldestExpiryBucket")
+    {
+        return Err("unexpected baseline expiry anchor".into());
+    }
+    let old_docs = serde_json::json!([
+        " Earliest `OrdersExpiringAt` bucket that `on_initialize` has not yet",
+        " drained. It lags the current block only while a backlog carries over."
+    ]);
+    let old_cursor = old_entries
+        .iter()
+        .find(|entry| entry["name"] == "NextExpiryBucket")
+        .ok_or("missing baseline expiry cursor")?;
+    if old_cursor["docs"] != old_docs {
+        return Err("unexpected baseline expiry cursor docs".into());
+    }
+    let entries = mempool_storage_entries(after)?;
+    let cursor = entries
+        .iter()
+        .find(|entry| entry["name"] == "NextExpiryBucket")
+        .ok_or("missing candidate expiry cursor")?;
+    if cursor["docs"]
+        != serde_json::json!([
+            " Next bucket visited by the fairness scan, independently of the head."
+        ])
+    {
+        return Err("unexpected fairness cursor docs".into());
+    }
+    // Bind the new anchor to the existing cursor's exact type, default and
+    // modifier. The remaining graph comparison checks that cursor unchanged.
+    let mut expected = cursor.clone();
+    expected["name"] = Value::from("OldestExpiryBucket");
+    expected["docs"] =
+        serde_json::json!([" Oldest expiry bucket not yet drained; advanced with bounded work."]);
+    let anchors: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["name"] == "OldestExpiryBucket")
+        .collect();
+    if anchors.len() != 1 || *anchors[0] != expected {
+        return Err("unexpected required expiry anchor".into());
+    }
+    entries.retain(|entry| entry["name"] != "OldestExpiryBucket");
+    entries
+        .iter_mut()
+        .find(|entry| entry["name"] == "NextExpiryBucket")
+        .unwrap()["docs"] = old_docs;
+    Ok(())
+}
+
 fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String> {
     let baseline_docs = register_program_docs(before)?
         .as_array()
@@ -286,6 +435,11 @@ fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String
             "docs": [
                 "The transform exceeded the per-execution memory bound."
             ]
+        },
+        {
+            "name": "OrderSolverCapReached",
+            "index": 45,
+            "docs": ["An open order already holds the maximum number of distinct solvers."]
         }
     ]);
     let errors = error_variants(after)?;
@@ -522,6 +676,8 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
             ));
         }
     }
+    normalize_audit_retention(&mut left, &mut right)?;
+    normalize_audit_expiry_storage(&mut left, &mut right)?;
     normalize_mempool(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
@@ -721,7 +877,7 @@ mod tests {
     fn requires_exact_errors_and_constants_on_both_sides() {
         let (before, after) = metadata_pair();
         check(&before, &after).unwrap();
-        for index in 36..45 {
+        for index in 36..46 {
             for field in ["name", "index", "docs", "fields"] {
                 let mut wrong = after.clone();
                 error_variants(&mut wrong).unwrap()[index][field] = serde_json::json!("mutated");
@@ -861,5 +1017,71 @@ mod tests {
         check(&before, &renumbered_after).unwrap();
         check(&renumbered_before, &after).unwrap();
         check(&renumbered_before, &renumbered_after).unwrap();
+    }
+
+    #[test]
+    fn requires_exact_expiry_anchor_and_cursor_delta() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for field in ["name", "modifier", "type", "default", "docs"] {
+            let mut wrong = after.clone();
+            mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["name"] == "OldestExpiryBucket")
+                .unwrap()[field] = Value::from("mutated");
+            assert!(check(&before, &wrong).is_err(), "accepted anchor {field}");
+        }
+        let mut missing = after.clone();
+        mempool_storage_entries(&mut missing)
+            .unwrap()
+            .retain(|entry| entry["name"] != "OldestExpiryBucket");
+        assert!(check(&before, &missing).is_err());
+        let mut wrong_before = before.clone();
+        mempool_storage_entries(&mut wrong_before)
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["name"] == "NextExpiryBucket")
+            .unwrap()["docs"] = Value::from("mutated");
+        assert!(check(&wrong_before, &after).is_err());
+    }
+
+    #[test]
+    fn requires_exact_retention_storage_and_constant() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for name in ["OrdersPrunableAt", "NextPruneBucket"] {
+            for field in ["name", "modifier", "type", "default", "docs"] {
+                let mut wrong = after.clone();
+                mempool_storage_entries(&mut wrong)
+                    .unwrap()
+                    .iter_mut()
+                    .find(|entry| entry["name"] == name)
+                    .unwrap()[field] = Value::from("mutated");
+                assert!(check(&before, &wrong).is_err(), "accepted {name}.{field}");
+            }
+            let mut missing = after.clone();
+            mempool_storage_entries(&mut missing)
+                .unwrap()
+                .retain(|entry| entry["name"] != name);
+            assert!(check(&before, &missing).is_err());
+        }
+        for field in ["name", "type", "value", "docs"] {
+            let mut wrong = after.clone();
+            mempool_constants(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["name"] == "OrderRetentionBlocks")
+                .unwrap()[field] = Value::from("mutated");
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted retention {field}"
+            );
+        }
+        let mut missing = after.clone();
+        mempool_constants(&mut missing)
+            .unwrap()
+            .retain(|constant| constant["name"] != "OrderRetentionBlocks");
+        assert!(check(&before, &missing).is_err());
     }
 }

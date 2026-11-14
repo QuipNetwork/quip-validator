@@ -41,6 +41,10 @@ pub use weights::*;
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+#[cfg(test)]
+std::thread_local! {
+    static OPEN_ORDER_DECODES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
 use frame_support::traits::{Currency, Get};
 
 type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
@@ -236,6 +240,10 @@ pub mod pallet {
         #[pallet::constant]
         type ResultTtlBlocks: Get<BlockNumberFor<Self>>;
 
+        /// Retention after closure before bounded automatic order cleanup.
+        #[pallet::constant]
+        type OrderRetentionBlocks: Get<BlockNumberFor<Self>>;
+
         /// Canonical plain Ising job spec id exposed through metadata for SDKs.
         #[pallet::constant]
         type DefaultIsingSpecId: Get<Self::Hash>;
@@ -302,6 +310,15 @@ pub mod pallet {
     #[pallet::storage]
     pub type NextOrderId<T: Config> = StorageValue<_, u64, ValueQuery>;
 
+    /// Closed orders indexed by the block when their retention window ends.
+    #[pallet::storage]
+    pub type OrdersPrunableAt<T: Config> =
+        StorageDoubleMap<_, Twox64Concat, BlockNumberFor<T>, Twox64Concat, u64, (), OptionQuery>;
+
+    /// Earliest retention bucket to inspect, absent when no cleanup is queued.
+    #[pallet::storage]
+    pub type NextPruneBucket<T: Config> = StorageValue<_, BlockNumberFor<T>>;
+
     /// Recovery index for orders that are still considered open by stored
     /// lifecycle state. Expired orders are removed lazily when the pallet next
     /// touches them; runtime APIs filter against the current block so callers
@@ -319,10 +336,13 @@ pub mod pallet {
     pub type OrdersExpiringAt<T: Config> =
         StorageDoubleMap<_, Twox64Concat, BlockNumberFor<T>, Twox64Concat, u64, (), OptionQuery>;
 
-    /// Earliest `OrdersExpiringAt` bucket that `on_initialize` has not yet
-    /// drained. It lags the current block only while a backlog carries over.
+    /// Next bucket visited by the fairness scan, independently of the head.
     #[pallet::storage]
     pub type NextExpiryBucket<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+    /// Oldest expiry bucket not yet drained; advanced with bounded work.
+    #[pallet::storage]
+    pub type OldestExpiryBucket<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
     #[pallet::storage]
     pub type OrderSolutions<T: Config> = StorageDoubleMap<
@@ -520,12 +540,14 @@ pub mod pallet {
         VmStepLimitExceeded,
         /// The transform exceeded the per-execution memory bound.
         VmMemoryLimitExceeded,
+        /// An open order already holds the maximum number of distinct solvers.
+        OrderSolverCapReached,
     }
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
-        #[pallet::weight(<T as Config>::WeightInfo::register_solver())]
+        #[pallet::weight(<T as Config>::WeightInfo::register_solver().saturating_add(weights::solver_deposit_weight::<T>()))]
         pub fn register_solver(
             origin: OriginFor<T>,
             solver_type: types::MinerType,
@@ -535,6 +557,9 @@ pub mod pallet {
                 !Solvers::<T>::contains_key(&who),
                 Error::<T>::SolverAlreadyRegistered
             );
+
+            // Refundable ED deposit makes each registered identity cost funds.
+            T::Currency::reserve(&who, T::Currency::minimum_balance())?;
 
             Solvers::<T>::insert(
                 &who,
@@ -552,7 +577,7 @@ pub mod pallet {
         }
 
         #[pallet::call_index(1)]
-        #[pallet::weight(<T as Config>::WeightInfo::deregister_solver())]
+        #[pallet::weight(<T as Config>::WeightInfo::deregister_solver().saturating_add(weights::solver_deposit_weight::<T>()))]
         pub fn deregister_solver(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(
@@ -560,6 +585,7 @@ pub mod pallet {
                 Error::<T>::SolverNotRegistered
             );
             Solvers::<T>::remove(&who);
+            let _ = T::Currency::unreserve(&who, T::Currency::minimum_balance());
             Self::deposit_event(Event::SolverDeregistered { who });
             Ok(())
         }
@@ -673,7 +699,7 @@ pub mod pallet {
         /// Settle an expired solved order. Any signed account may call; rewards
         /// go only to the selected solvers, with no bounty for the caller.
         #[pallet::call_index(5)]
-        #[pallet::weight(<T as Config>::WeightInfo::claim_reward())]
+        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()))]
         pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let _caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
@@ -702,7 +728,10 @@ pub mod pallet {
 
             for (winner, payout_u128, _) in &payouts {
                 let payout: BalanceOf<T> = (*payout_u128).saturated_into();
-                if payout.is_zero() {
+                // Do not let a reaped recipient with a sub-ED share revert
+                // every other winner's payment. The skipped share stays with
+                // the proposer after escrow is unreserved.
+                if payout < T::Currency::minimum_balance() {
                     continue;
                 }
                 T::Currency::transfer(&order.proposer, winner, payout, AllowDeath)?;
@@ -721,7 +750,9 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
+            Self::prune_solutions(order_id);
             Self::release_proposer_slot(&order.proposer, order_id);
+            Self::schedule_order_pruning(order_id);
             JobSpecs::<T>::mutate(order.spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
                     spec.successful_orders = spec.successful_orders.saturating_add(1);
@@ -736,7 +767,7 @@ pub mod pallet {
         }
 
         #[pallet::call_index(6)]
-        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order())]
+        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()))]
         pub fn reclaim_order(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
@@ -757,7 +788,9 @@ pub mod pallet {
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
+            Self::prune_solutions(order_id);
             Self::release_proposer_slot(&order.proposer, order_id);
+            Self::schedule_order_pruning(order_id);
 
             Self::deposit_event(Event::RewardReclaimed {
                 order_id,
@@ -847,16 +880,37 @@ pub mod pallet {
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn integrity_test() {
             weights::check_claim_reward_weight::<T>();
+            assert!(
+                T::OrderRetentionBlocks::get() >= T::ResultTtlBlocks::get(),
+                "order retention must cover the poll-result TTL"
+            );
+            assert!(
+                !T::OrderRetentionBlocks::get().is_zero(),
+                "order retention must be positive"
+            );
         }
 
         /// Finalise the orders whose effective expiry is at or before `now`.
         ///
         /// Work is bounded by `MAX_FINALISED_ORDERS_PER_BLOCK`. Overflow
-        /// stays in its bucket and carries over to the next block.
+        /// shares capacity with later due buckets while the head progresses.
         fn on_initialize(now: BlockNumberFor<T>) -> Weight {
             let (finalised, buckets_visited) = Self::finalise_expired_orders(now);
+            let (pruned, prune_buckets) = Self::prune_closed_orders(now);
             <T as Config>::WeightInfo::finalise_expired_orders(finalised)
-                .saturating_add(T::DbWeight::get().reads(buckets_visited))
+                // Extra cursor plus the bounded look-ahead key on every visit.
+                .saturating_add(T::DbWeight::get().reads_writes(1 + 2 * buckets_visited, 1))
+                .saturating_add(Weight::from_parts(
+                    50_000_000,
+                    5_000 + 5_000 * buckets_visited,
+                ))
+                .saturating_add(
+                    weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
+                )
+                .saturating_add(weights::closed_order_pruning_weight::<T>(
+                    pruned,
+                    prune_buckets,
+                ))
         }
     }
 
@@ -903,10 +957,17 @@ pub mod pallet {
                 return Vec::new();
             }
 
-            let now = frame_system::Pallet::<T>::block_number();
             let mut ids: Vec<u64> = OpenOrders::<T>::iter_keys()
                 .filter(|order_id| start_after.map(|cursor| *order_id > cursor).unwrap_or(true))
+                .collect();
+            ids.sort_unstable();
+            let now = frame_system::Pallet::<T>::block_number();
+            // Key enumeration/sorting remain O(N)/O(N log N). Decode only until
+            // the requested live page is filled; stale keys may add reads.
+            ids.into_iter()
                 .filter(|order_id| {
+                    #[cfg(test)]
+                    crate::OPEN_ORDER_DECODES.with(|count| count.set(count.get() + 1));
                     let Some(order) = JobOrders::<T>::get(order_id) else {
                         return false;
                     };
@@ -918,11 +979,8 @@ pub mod pallet {
                             &order.timing,
                         )
                 })
-                .collect();
-
-            ids.sort_unstable();
-            ids.truncate(limit);
-            ids
+                .take(limit)
+                .collect()
         }
 
         /// Derive the storage key hash for a job spec tuple.
@@ -1283,6 +1341,12 @@ pub mod pallet {
             ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
 
             let previous = OrderSolutions::<T>::get(order_id, &solver);
+            // solution_count increments only on the first accepted submission
+            // by an account. Improvements reuse its existing slot and payload.
+            ensure!(
+                previous.is_some() || order.solution_count < types::MAX_SOLVERS_PER_OPEN_ORDER,
+                Error::<T>::OrderSolverCapReached
+            );
             ensure!(
                 previous
                     .as_ref()
@@ -1494,45 +1558,78 @@ pub mod pallet {
             }
         }
 
-        /// Drain expiry buckets at or before `now`, at most
-        /// `MAX_FINALISED_ORDERS_PER_BLOCK` orders and as many bucket reads
-        /// per call.
-        ///
-        /// Each loop iteration either drains one bucket and advances, or
-        /// stops on a bucket that may still hold entries so the next block
-        /// resumes there. The bucket budget bounds the loop when the cursor
-        /// lags behind `now` across empty buckets. Returns the number of
-        /// orders finalised and the number of buckets visited.
+        /// Drain at most eight orders/bucket visits. The head gets its share
+        /// first, then the saved scan serves later due buckets. If the scan is
+        /// caught up, unused capacity returns to the head. Only two cursors are
+        /// stored; processed keys are removed, so no per-bucket list is needed.
         fn finalise_expired_orders(now: BlockNumberFor<T>) -> (u32, u64) {
-            let mut order_budget = types::MAX_FINALISED_ORDERS_PER_BLOCK;
-            let mut bucket_budget = types::MAX_FINALISED_ORDERS_PER_BLOCK;
-            let mut bucket = NextExpiryBucket::<T>::get();
-            let mut finalised: u32 = 0;
-            let mut buckets_visited: u64 = 0;
-
-            while bucket <= now && order_budget > 0 && bucket_budget > 0 {
-                let order_ids: Vec<u64> = OrdersExpiringAt::<T>::iter_key_prefix(bucket)
-                    .take(order_budget as usize)
-                    .collect();
-                let taken = order_ids.len() as u32;
-                for order_id in order_ids {
-                    OrdersExpiringAt::<T>::remove(bucket, order_id);
-                    Self::finalise_order(order_id);
-                }
-                finalised = finalised.saturating_add(taken);
-                buckets_visited = buckets_visited.saturating_add(1);
-
-                if taken == order_budget {
-                    // The bucket may hold more entries. Resume here next block.
+            let mut remaining = types::MAX_FINALISED_ORDERS_PER_BLOCK;
+            let mut visits = types::MAX_FINALISED_ORDERS_PER_BLOCK;
+            let mut head_share = types::EXPIRY_BUCKET_SHARE;
+            let mut head = OldestExpiryBucket::<T>::get();
+            let mut scan = NextExpiryBucket::<T>::get();
+            let mut overflow = false;
+            while head <= now && head_share > 0 && visits > 0 {
+                let (taken, drained) = Self::drain_expiry_bucket(head, head_share);
+                remaining -= taken;
+                head_share -= taken;
+                visits -= 1;
+                if !drained {
+                    overflow = true;
                     break;
                 }
-                order_budget = order_budget.saturating_sub(taken);
-                bucket_budget = bucket_budget.saturating_sub(1);
-                bucket = bucket.saturating_add(One::one());
+                head = head.saturating_add(One::one());
             }
+            if overflow {
+                let first_later = head.saturating_add(One::one());
+                scan = if scan > now {
+                    first_later
+                } else {
+                    scan.max(first_later)
+                };
+            } else {
+                // With no overflowing head, preserve ordinary FIFO ordering.
+                scan = head;
+            }
+            while scan <= now && remaining > 0 && visits > 0 {
+                let (taken, drained) =
+                    Self::drain_expiry_bucket(scan, remaining.min(types::EXPIRY_BUCKET_SHARE));
+                remaining -= taken;
+                visits -= 1;
+                if scan == head && drained {
+                    head = head.saturating_add(One::one());
+                }
+                scan = scan.saturating_add(One::one());
+            }
+            if overflow && scan > now && remaining > 0 && visits > 0 {
+                let (taken, drained) = Self::drain_expiry_bucket(head, remaining);
+                remaining -= taken;
+                visits -= 1;
+                if drained {
+                    head = head.saturating_add(One::one());
+                }
+            }
+            OldestExpiryBucket::<T>::put(head);
+            NextExpiryBucket::<T>::put(scan);
+            (
+                types::MAX_FINALISED_ORDERS_PER_BLOCK - remaining,
+                u64::from(types::MAX_FINALISED_ORDERS_PER_BLOCK - visits),
+            )
+        }
 
-            NextExpiryBucket::<T>::put(bucket);
-            (finalised, buckets_visited)
+        fn drain_expiry_bucket(bucket: BlockNumberFor<T>, limit: u32) -> (u32, bool) {
+            // One extra key distinguishes a drained bucket from a full share.
+            let mut ids: Vec<u64> = OrdersExpiringAt::<T>::iter_key_prefix(bucket)
+                .take(limit.saturating_add(1) as usize)
+                .collect();
+            let drained = ids.len() <= limit as usize;
+            ids.truncate(limit as usize);
+            let taken = ids.len() as u32;
+            for order_id in ids {
+                OrdersExpiringAt::<T>::remove(bucket, order_id);
+                Self::finalise_order(order_id);
+            }
+            (taken, drained)
         }
 
         /// Mark an open order expired at its effective expiry and announce the
@@ -1568,6 +1665,82 @@ pub mod pallet {
                     frame_support::defensive!("finalise_order: payouts unavailable", err);
                 }
             }
+            Self::prune_solutions(order_id);
+        }
+
+        fn schedule_order_pruning(order_id: u64) {
+            let when = frame_system::Pallet::<T>::block_number()
+                .saturating_add(T::OrderRetentionBlocks::get());
+            OrdersPrunableAt::<T>::insert(when, order_id, ());
+            NextPruneBucket::<T>::mutate(|cursor| {
+                *cursor = Some(cursor.map_or(when, |current| current.min(when)));
+            });
+        }
+
+        /// Retain closed records for at least the configured window. A bounded
+        /// backlog can delay deletion further; unpaid expired orders are never
+        /// queued. Cleanup also removes all sparse auxiliary per-order state.
+        pub(crate) fn prune_closed_orders(now: BlockNumberFor<T>) -> (u32, u64) {
+            let Some(mut bucket) = NextPruneBucket::<T>::get() else {
+                return (0, 0);
+            };
+            if bucket > now {
+                return (0, 0);
+            }
+            let mut remaining = types::MAX_PRUNED_ORDERS_PER_BLOCK;
+            let mut visits = 0u64;
+            while bucket <= now
+                && remaining > 0
+                && visits < u64::from(types::MAX_PRUNED_ORDERS_PER_BLOCK)
+            {
+                let ids: Vec<_> = OrdersPrunableAt::<T>::iter_key_prefix(bucket)
+                    .take(remaining as usize)
+                    .collect();
+                let taken = ids.len() as u32;
+                for order_id in ids {
+                    OrdersPrunableAt::<T>::remove(bucket, order_id);
+                    // Fail closed if an inconsistent queue entry names an unpaid order.
+                    if JobOrders::<T>::get(order_id)
+                        .is_some_and(|order| order.status == types::OrderStatus::Closed)
+                    {
+                        JobOrders::<T>::remove(order_id);
+                        Self::prune_solutions(order_id);
+                        let _ = OrderPayees::<T>::clear_prefix(
+                            order_id,
+                            types::MAX_SOLVERS_PER_OPEN_ORDER,
+                            None,
+                        );
+                        OrderPayeeRequirements::<T>::remove(order_id);
+                        OrderFrontRunner::<T>::remove(order_id);
+                        OrderTopSolvers::<T>::remove(order_id);
+                        OrderResults::<T>::remove(order_id);
+                        OpenOrders::<T>::remove(order_id);
+                    }
+                }
+                visits += 1;
+                let exhausted = taken == remaining;
+                remaining -= taken;
+                if exhausted {
+                    break;
+                }
+                bucket = bucket.saturating_add(One::one());
+            }
+            if OrdersPrunableAt::<T>::iter_keys().next().is_none() {
+                NextPruneBucket::<T>::kill();
+            } else {
+                NextPruneBucket::<T>::put(bucket);
+            }
+            (types::MAX_PRUNED_ORDERS_PER_BLOCK - remaining, visits)
+        }
+
+        /// Admission caps this prefix at 32 entries, including replacements.
+        /// Expiry freezes further submissions; payouts use the retained ranking.
+        fn prune_solutions(order_id: u64) {
+            let _ = OrderSolutions::<T>::clear_prefix(
+                order_id,
+                types::MAX_SOLVERS_PER_OPEN_ORDER,
+                None,
+            );
         }
 
         fn update_ranking(

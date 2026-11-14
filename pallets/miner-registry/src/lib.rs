@@ -643,19 +643,26 @@ pub mod pallet {
                 return Vec::new();
             }
 
-            let mut entries: Vec<(T::AccountId, ParticipationRecordOf<T>)> =
-                ParticipantsByQBlock::<T>::iter_prefix(qblock_id)
-                    .filter(|(account, _)| {
+            // Enumerate/sort keys for stable pagination, then decode the page.
+            // This still scans O(N) keys and sorts O(N log N) accounts.
+            let mut accounts: Vec<T::AccountId> =
+                ParticipantsByQBlock::<T>::iter_key_prefix(qblock_id)
+                    .filter(|account| {
                         start_after
                             .as_ref()
                             .map(|cursor| account > cursor)
                             .unwrap_or(true)
                     })
                     .collect();
-
-            entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-            entries.truncate(limit);
-            entries
+            accounts.sort_unstable();
+            accounts
+                .into_iter()
+                .take(limit)
+                .filter_map(|account| {
+                    ParticipantsByQBlock::<T>::get(qblock_id, &account)
+                        .map(|record| (account, record))
+                })
+                .collect()
         }
 
         fn validate_and_store_descriptor(

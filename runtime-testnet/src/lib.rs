@@ -619,7 +619,7 @@ mod tests {
             assert!(expected_fee > 0);
             assert_ok!(Executive::apply_extrinsic(xt).unwrap());
             assert_eq!(Balances::free_balance(&caller), initial - expected_fee);
-            assert_eq!(Balances::free_balance(&winner), initial + reward);
+            assert_eq!(Balances::free_balance(&winner), initial - EXISTENTIAL_DEPOSIT + reward);
             assert_eq!(Balances::free_balance(&proposer), initial - reward);
             assert_eq!(Balances::reserved_balance(&proposer), 0);
             assert!(!Solvers::<Runtime>::contains_key(&caller));
@@ -751,7 +751,7 @@ mod tests {
             assert_eq!(Balances::free_balance(&proposer), initial - reward);
             assert_eq!(Balances::reserved_balance(&proposer), reward);
             for (winner, solver_before) in winners.iter().zip(&solvers_before) {
-                assert_eq!(Balances::free_balance(winner), initial);
+                assert_eq!(Balances::free_balance(winner), initial - EXISTENTIAL_DEPOSIT);
                 assert_eq!(Solvers::<Runtime>::get(winner).unwrap(), *solver_before);
             }
             assert_eq!(JobOrders::<Runtime>::get(0).unwrap().encode(), order_before);
@@ -785,7 +785,7 @@ mod tests {
             assert_eq!(Balances::reserved_balance(&proposer), 0);
             assert_eq!(Balances::free_balance(&proposer), initial - reward);
             for (winner, payout) in winners.iter().zip([UNIT + 1, UNIT]) {
-                assert_eq!(Balances::free_balance(winner), initial + payout);
+                assert_eq!(Balances::free_balance(winner), initial - EXISTENTIAL_DEPOSIT + payout);
                 assert_eq!(Solvers::<Runtime>::get(winner).unwrap().rewards_earned, payout);
             }
             assert_eq!(JobSpecs::<Runtime>::get(spec_id).unwrap().successful_orders, 1);
@@ -800,8 +800,8 @@ mod tests {
             assert_eq!(Executive::apply_extrinsic(repeat).unwrap(),
                 Err(pallet_quantum_compute_mempool::Error::<Runtime>::AlreadyClaimed.into()));
             assert_eq!(JobSpecs::<Runtime>::get(spec_id).unwrap().successful_orders, 1);
-            assert_eq!(Balances::free_balance(&winners[0]), initial + UNIT + 1);
-            assert_eq!(Balances::free_balance(&winners[1]), initial + UNIT);
+            assert_eq!(Balances::free_balance(&winners[0]), initial - EXISTENTIAL_DEPOSIT + UNIT + 1);
+            assert_eq!(Balances::free_balance(&winners[1]), initial - EXISTENTIAL_DEPOSIT + UNIT);
         });
     }
 
@@ -824,6 +824,12 @@ mod tests {
             let dust = <Balances as Currency<AccountId>>::minimum_balance() - 1;
             assert!(dust > 0, "production ED must exercise nonzero dust removal");
             <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 100 * UNIT);
+            for winner in &winners {
+                <Balances as Currency<AccountId>>::make_free_balance_be(
+                    winner,
+                    2 * EXISTENTIAL_DEPOSIT,
+                );
+            }
             let spec_id = prepare_two_winner_settlement(&proposer, &winners, reward);
             // Reserving creates a consumer, which forbids losing the last
             // provider. A legitimate independent provider permits sub-ED free
@@ -850,7 +856,8 @@ mod tests {
             assert_eq!(Balances::reserved_balance(&proposer), 0);
             assert_eq!(Balances::total_issuance(), issuance_before - dust);
             for winner in &winners {
-                assert_eq!(Balances::free_balance(winner), UNIT);
+                assert_eq!(Balances::free_balance(winner), EXISTENTIAL_DEPOSIT + UNIT);
+                assert_eq!(Balances::reserved_balance(winner), EXISTENTIAL_DEPOSIT);
                 assert_eq!(
                     Solvers::<Runtime>::get(winner).unwrap().rewards_earned,
                     UNIT
@@ -971,7 +978,7 @@ mod tests {
                         pallet_quantum_compute_mempool::Error::<Runtime>::PayeeChainMismatch.into()
                     );
                     assert_eq!(NextOrderId::<Runtime>::get(), 0);
-                    assert_eq!(Balances::reserved_balance(&caller), 0);
+                    assert_eq!(Balances::reserved_balance(&caller), EXISTENTIAL_DEPOSIT);
                     assert!(OrderPayeeRequirements::<Runtime>::get(0).is_none());
                     assert!(OrderPayees::<Runtime>::get(0, &caller).is_none());
                     assert!(!System::events().iter().any(|event| matches!(
@@ -981,7 +988,10 @@ mod tests {
                 } else {
                     assert_ok!(result);
                     assert_eq!(NextOrderId::<Runtime>::get(), 1);
-                    assert_eq!(Balances::reserved_balance(&caller), UNIT);
+                    assert_eq!(
+                        Balances::reserved_balance(&caller),
+                        EXISTENTIAL_DEPOSIT + UNIT
+                    );
                     assert_eq!(OrderPayees::<Runtime>::get(0, &caller), Some(destination));
                     assert_eq!(OrderPayees::<Runtime>::iter_prefix(0).count(), 1);
                     assert_eq!(OrderPayeeRequirements::<Runtime>::get(0), Some(20033));

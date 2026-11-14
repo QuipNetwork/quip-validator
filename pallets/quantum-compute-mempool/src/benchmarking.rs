@@ -8,7 +8,7 @@ use alloc::{vec, vec::Vec};
 use frame_benchmarking::v2::*;
 use frame_support::{
     pallet_prelude::ConstU32,
-    traits::{Currency, Get, Hooks},
+    traits::{Currency, Get, Hooks, ReservableCurrency},
     BoundedVec,
 };
 use frame_system::RawOrigin;
@@ -141,6 +141,10 @@ fn register_spec_for<T: Config>(builder: &T::AccountId) -> T::Hash {
 }
 
 fn register_solver_for<T: Config>(solver: &T::AccountId) {
+    fund_account::<T>(
+        solver,
+        T::Currency::minimum_balance().saturating_mul(2u32.into()),
+    );
     assert!(QuantumComputeMempool::<T>::register_solver(
         RawOrigin::Signed(solver.clone()).into(),
         types::MinerType::Cpu,
@@ -356,6 +360,10 @@ mod benchmarks {
     #[benchmark]
     fn register_solver() {
         let caller: T::AccountId = whitelisted_caller();
+        fund_account::<T>(
+            &caller,
+            T::Currency::minimum_balance().saturating_mul(2u32.into()),
+        );
 
         #[extrinsic_call]
         QuantumComputeMempool::register_solver(
@@ -363,7 +371,11 @@ mod benchmarks {
             types::MinerType::Cpu,
         );
 
-        assert!(Solvers::<T>::contains_key(caller));
+        assert!(Solvers::<T>::contains_key(&caller));
+        assert_eq!(
+            T::Currency::reserved_balance(&caller),
+            T::Currency::minimum_balance()
+        );
     }
 
     #[benchmark]
@@ -374,7 +386,12 @@ mod benchmarks {
         #[extrinsic_call]
         QuantumComputeMempool::deregister_solver(RawOrigin::Signed(caller.clone()));
 
-        assert!(!Solvers::<T>::contains_key(caller));
+        assert!(!Solvers::<T>::contains_key(&caller));
+        assert_eq!(T::Currency::reserved_balance(&caller), 0u32.into());
+        assert_eq!(
+            T::Currency::free_balance(&caller),
+            T::Currency::minimum_balance().saturating_mul(2u32.into())
+        );
     }
 
     #[benchmark]
@@ -800,6 +817,16 @@ mod benchmarks {
                 )
                 .is_ok());
             }
+            // Pruning must measure maximum encoded payloads for every slot,
+            // not only the one-solution setup needed to establish rankings.
+            for winner in &winners {
+                OrderSolutions::<T>::mutate(order_id, winner, |entry| {
+                    let entry = entry.as_mut().expect("accepted solver payload");
+                    entry.solutions =
+                        solutions_with_dimensions::<T>(T::MaxNodes::get(), T::MaxSolutions::get());
+                    entry.num_valid = T::MaxSolutions::get();
+                });
+            }
             order_ids.push(order_id);
         }
 
@@ -807,6 +834,7 @@ mod benchmarks {
         frame_system::Pallet::<T>::set_block_number(expiry_block);
         // Measure one full bucket, not the empty buckets before it.
         NextExpiryBucket::<T>::put(expiry_block);
+        OldestExpiryBucket::<T>::put(expiry_block);
 
         #[block]
         {
@@ -816,6 +844,9 @@ mod benchmarks {
         for order_id in order_ids {
             let order = JobOrders::<T>::get(order_id).expect("order exists");
             assert_eq!(order.status, types::OrderStatus::Expired);
+            assert!(OrderSolutions::<T>::iter_key_prefix(order_id)
+                .next()
+                .is_none());
             assert_eq!(
                 OrderResults::<T>::get(order_id)
                     .expect("poll result is stored")
@@ -824,6 +855,83 @@ mod benchmarks {
                 winner_count as usize
             );
         }
+    }
+
+    /// Maximum closed record and all sparse auxiliary prefixes, including
+    /// defensive cleanup of 32 maximum-size orphaned solution payloads.
+    #[benchmark]
+    fn prune_closed_orders(k: Linear<0, { types::MAX_PRUNED_ORDERS_PER_BLOCK }>) {
+        let (caller, _, winners, template_id) = setup_claim_reward::<T>();
+        assert!(QuantumComputeMempool::<T>::claim_reward(
+            RawOrigin::Signed(caller).into(),
+            template_id,
+        )
+        .is_ok());
+        let order = JobOrders::<T>::take(template_id).expect("closed template");
+        let result = OrderResults::<T>::take(template_id).expect("poll template");
+        let ranking = OrderTopSolvers::<T>::take(template_id);
+        let now = frame_system::Pallet::<T>::block_number()
+            .saturating_add(T::OrderRetentionBlocks::get());
+        OrdersPrunableAt::<T>::remove(now, template_id);
+        NextPruneBucket::<T>::put(now);
+        let first = winners.first().expect("nonempty winners");
+        for id in 0..u64::from(k) {
+            JobOrders::<T>::insert(id, &order);
+            OrderResults::<T>::insert(id, &result);
+            OrderTopSolvers::<T>::insert(id, &ranking);
+            OrderFrontRunner::<T>::insert(
+                id,
+                types::FrontRunner {
+                    solver: first.clone(),
+                    energy_milli: -1,
+                },
+            );
+            OrderPayeeRequirements::<T>::insert(id, 20033);
+            OpenOrders::<T>::insert(id, ());
+            OrdersPrunableAt::<T>::insert(now, id, ());
+            for winner in &winners {
+                OrderPayees::<T>::insert(
+                    id,
+                    winner,
+                    types::WinnerPayee::V1 {
+                        chain_id: 20033,
+                        address: sp_core::H160::repeat_byte(255),
+                    },
+                );
+                OrderSolutions::<T>::insert(
+                    id,
+                    winner,
+                    types::JobSolution {
+                        solver: winner.clone(),
+                        solver_type: types::MinerType::Cpu,
+                        solutions: solutions_with_dimensions::<T>(
+                            T::MaxNodes::get(),
+                            T::MaxSolutions::get(),
+                        ),
+                        best_energy_milli: -1,
+                        diversity_milli: 0,
+                        num_valid: T::MaxSolutions::get(),
+                        submitted_at: order.created_at,
+                    },
+                );
+            }
+        }
+        frame_system::Pallet::<T>::set_block_number(now);
+        #[block]
+        {
+            QuantumComputeMempool::<T>::prune_closed_orders(now);
+        }
+        for id in 0..u64::from(k) {
+            assert!(!JobOrders::<T>::contains_key(id));
+            assert!(!OrderResults::<T>::contains_key(id));
+            assert!(!OrderTopSolvers::<T>::contains_key(id));
+            assert!(!OrderFrontRunner::<T>::contains_key(id));
+            assert!(!OrderPayeeRequirements::<T>::contains_key(id));
+            assert!(!OpenOrders::<T>::contains_key(id));
+            assert!(OrderPayees::<T>::iter_key_prefix(id).next().is_none());
+            assert!(OrderSolutions::<T>::iter_key_prefix(id).next().is_none());
+        }
+        assert!(!NextPruneBucket::<T>::exists());
     }
 
     impl_benchmark_test_suite!(

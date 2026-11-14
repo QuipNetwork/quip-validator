@@ -282,6 +282,54 @@ A FRAME pallet is comprised of a number of blockchain primitives, including:
 Each pallet has its own `Config` trait which serves as a configuration interface
 to generically define the types and parameters it depends on.
 
+### Compute mempool audit behavior
+
+Open orders accept at most 32 distinct solvers; a solver already admitted to an
+order can still improve its submission. Expiry removes solution payloads while
+retaining ranking, destination and poll-result records for settlement. Solver
+registration reserves one existential deposit and deregistration refunds it.
+Payouts below that deposit are skipped and their shares stay with the proposer.
+The runtime checks that the minimum reward covers the smallest 32-way weighted
+share (1,893,939,393 units versus the 1,000,000,000-unit deposit).
+
+Expiry processes at most eight orders and eight buckets per block. The oldest
+bucket receives the first four-order share; later due buckets share the remaining
+budget. Under overflow, the oldest bucket progresses while later due buckets
+can settle before it empties. A large or sustained backlog still delays work;
+there is no fixed wall-clock settlement guarantee independent of backlog size.
+
+Closed orders and all their per-order auxiliary records are automatically
+removed after at least 28 eras of blocks: 403,200 blocks on the main runtime and
+100,800 on the testnet runtime. This is independent of the staking unbonding
+period. The cleanup hook processes at most eight records and eight buckets per
+block, so backlog can extend retention. Unpaid expired orders retain their
+records and escrow until settlement or reclaim. Poll results survive at least
+their TTL, and order IDs are never reused. Archive consumers must retain closed
+order history off chain before this window ends.
+
+Open-order pagination decodes only the records needed to fill a page, but still
+visits O(N) keys and sorts them in O(N log N); stale index entries can cause extra
+decodes. This residual RPC cost remains part of QUIP-15/R7.
+
+Before release, run the reference-machine benchmarks for the 32 maximum-size
+solution deletions (QUIP-28), ED reserve/refund (QUIP-29), expiry fairness cursor
+and look-ahead reads (QUIP-27), and the eight-order closed-record sweep plus
+queue insertion (QUIP-30). `finalise_expired_orders` populates all 32 solution
+slots at maximum payload size; `prune_closed_orders` also populates every
+auxiliary prefix. Their handwritten CPU, database and proof allowances are
+conservative and unmeasured, and the automatic weight-staleness warning does
+not validate them. Regeneration must reconcile the generated measurements
+with these wrappers and mirror runtime weights before the release gate passes.
+
+QUIP-08 remains pending the owner's acceptance decision: a proposer freeze can
+still delay reserved-reward settlement. The evaluated `repatriate_reserved`
+replacement does not solve it at SDK `d511a17`: `balances/src/impl_currency.rs`
+lines 725-733 use `BestEffort, Polite`, its documented contract preserves the
+source freeze, and `balances/src/lib.rs` line 1298 rejects a new beneficiary
+with `DeadAccount`. The alternative `slash_reserved` plus `resolve_creating`
+emits a misleading `Balances::Slashed` event for an ordinary payout
+(`impl_currency.rs` lines 703-708); no payout-mechanism change is included.
+
 ## Alternatives Installations
 
 Instead of installing dependencies and building this source directly, consider

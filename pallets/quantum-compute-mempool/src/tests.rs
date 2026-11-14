@@ -620,8 +620,14 @@ fn claim_reward_later_transfer_failure_rolls_back_entire_settlement() {
         // Hook expiry and its prepublished result remain committed.
         assert_eq!(Balances::free_balance(1), 999_899);
         assert_eq!(Balances::reserved_balance(1), 101);
-        assert_eq!(Balances::free_balance(2), 1_000_000);
-        assert_eq!(Balances::free_balance(3), 1_000_000);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_000 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_000 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
         assert_eq!(Balances::free_balance(4), 1_000_000);
         for solver in [2, 3] {
             assert_eq!(Solvers::<Test>::get(solver).unwrap().rewards_earned, 0);
@@ -642,8 +648,14 @@ fn claim_reward_later_transfer_failure_rolls_back_entire_settlement() {
             RuntimeOrigin::signed(4),
             0
         ));
-        assert_eq!(Balances::free_balance(2), 1_000_051);
-        assert_eq!(Balances::free_balance(3), 1_000_050);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_051 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_050 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
         assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 51);
         assert_eq!(Solvers::<Test>::get(3).unwrap().rewards_earned, 50);
         assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 1);
@@ -725,7 +737,10 @@ fn claim_reward_single_best_transfers_and_closes_order() {
         assert_eq!(order.status, crate::types::OrderStatus::Closed);
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(1), 999_900);
-        assert_eq!(Balances::free_balance(2), 1_000_100);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_100 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
         assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 100);
         assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 1);
         assert!(!OpenOrders::<Test>::contains_key(0));
@@ -896,8 +911,14 @@ fn claim_reward_top_n_equal_splits_remainder_to_best() {
         assert!(!Solvers::<Test>::contains_key(4));
 
         assert_eq!(Balances::reserved_balance(1), 0);
-        assert_eq!(Balances::free_balance(2), 1_000_051);
-        assert_eq!(Balances::free_balance(3), 1_000_050);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_051 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_050 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
     });
 }
 
@@ -947,8 +968,14 @@ fn claim_reward_top_n_weighted_splits_by_rank() {
         assert!(!Solvers::<Test>::contains_key(4));
 
         assert_eq!(Balances::reserved_balance(1), 0);
-        assert_eq!(Balances::free_balance(2), 1_000_067);
-        assert_eq!(Balances::free_balance(3), 1_000_033);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_067 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_033 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
     });
 }
 
@@ -1690,7 +1717,8 @@ fn on_initialize_finalises_at_most_the_per_block_cap_and_carries_overflow() {
         assert_eq!(status_count(&ids, OrderStatus::Expired), 8);
         assert_eq!(status_count(&ids, OrderStatus::Opened), 1);
         assert_eq!(bucket_ids(2).len(), 1);
-        assert_eq!(NextExpiryBucket::<Test>::get(), 2);
+        assert_eq!(crate::OldestExpiryBucket::<Test>::get(), 2);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 3);
 
         run_to_block(3);
         assert_eq!(status_count(&ids, OrderStatus::Expired), 9);
@@ -1838,7 +1866,10 @@ fn claim_reward_pays_without_emitting_result_ready() {
                 successful: true,
             })
         )));
-        assert_eq!(Balances::free_balance(2), 1_000_100);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_100 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
     });
 }
 
@@ -2190,7 +2221,11 @@ fn proposer_can_complete_more_than_a_lifetime_cap() {
                 OrderStatus::Closed
             );
         }
-        assert_eq!(JobOrders::<Test>::iter().count(), 40);
+        assert_eq!(NextOrderId::<Test>::get(), 40);
+        assert_eq!(
+            JobOrders::<Test>::iter().count(),
+            OrderRetentionBlocks::get() as usize
+        );
     });
 }
 
@@ -2723,3 +2758,470 @@ fn submission_wrapper_covers_every_full_measured_case_without_double_charging_db
 
 #[path = "vm_tests.rs"]
 mod vm_tests;
+
+#[test]
+fn vv_poc_open_order_ids_limit_one_decodes_one_order() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        let template = JobOrders::<Test>::get(0).unwrap();
+        for id in 1..=10_000 {
+            JobOrders::<Test>::insert(id, template.clone());
+            OpenOrders::<Test>::insert(id, ());
+        }
+
+        crate::OPEN_ORDER_DECODES.with(|count| count.set(0));
+        let ids = QuantumComputeMempool::open_order_ids(None, 1);
+        let decodes = crate::OPEN_ORDER_DECODES.with(|count| count.get());
+        if decodes > 1 {
+            eprintln!("VV-BUG-REPRODUCED: limit=1 decoded {decodes} full orders");
+        }
+        assert_eq!(ids, vec![0]);
+        assert_eq!(decodes, 1, "limit=1 should decode only the returned order");
+    });
+}
+
+#[test]
+fn a6f_open_order_caps_solvers_and_prunes() {
+    new_test_ext().execute_with(|| {
+        let cap = 32u64; // keep in sync with types::MAX_SOLVERS_PER_OPEN_ORDER
+        let first_solver = 10u64;
+        // Fund and register cap + 1 distinct solvers (the mock only endows
+        // accounts 1..=4, so top up the rest to cover the deposit + fees).
+        for who in first_solver..=first_solver + cap {
+            let _ = <Balances as frame_support::traits::Currency<u64>>::make_free_balance_be(
+                &who, 1_000_000,
+            );
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(who),
+                MinerType::Cpu
+            ));
+        }
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::TopNEqual { n: 3 },
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        // The first `cap` distinct solvers are admitted.
+        for who in first_solver..first_solver + cap {
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(who),
+                0,
+                sample_solution()
+            ));
+        }
+        assert_eq!(
+            OrderSolutions::<Test>::iter_prefix(0).count() as u64,
+            cap,
+            "every distinct solver up to the cap should be stored"
+        );
+        // The (cap + 1)-th distinct solver is rejected once the cap exists.
+        // On pinned source there is no cap, so this submission succeeds and the
+        // assertion below fails.
+        let over = QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(first_solver + cap),
+            0,
+            sample_solution(),
+        );
+        assert!(
+            over.is_err(),
+            "the (cap + 1)-th distinct solver must be rejected by the per-order cap"
+        );
+        // Settlement at expiry prunes every stored submission. On pinned source
+        // nothing prunes OrderSolutions, so the prefix is non-empty here.
+        run_to_block(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(9),
+            0
+        ));
+        assert_eq!(
+            OrderSolutions::<Test>::iter_prefix(0).count(),
+            0,
+            "settlement must prune the per-order submission map"
+        );
+    });
+}
+
+#[test]
+fn full_solver_cap_allows_improvements_without_new_payload_slots() {
+    use frame_support::traits::Currency;
+    new_test_ext().execute_with(|| {
+        let id = propose_single_best(1, 2, 1);
+        for who in 10..42 {
+            let _ = Balances::make_free_balance_be(&who, 1_000_000);
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(who),
+                MinerType::Cpu
+            ));
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(who),
+                id,
+                alternate_solution()
+            ));
+        }
+        assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(10),
+            id,
+            sample_solution()
+        ));
+        assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
+        assert_eq!(OrderSolutions::<Test>::iter_key_prefix(id).count(), 32);
+        run_to_block(2);
+        assert!(OrderSolutions::<Test>::iter_key_prefix(id).next().is_none());
+        assert_eq!(crate::OrderFrontRunner::<Test>::get(id).unwrap().solver, 10);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            id
+        ));
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Closed
+        );
+    });
+}
+
+#[test]
+fn a6f_solver_registration_reserves_deposit() {
+    new_test_ext().execute_with(|| {
+        let who = 2u64;
+        let ed = <Balances as frame_support::traits::Currency<u64>>::minimum_balance();
+        assert!(ed > 0);
+        let before = Balances::reserved_balance(who);
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+        assert_eq!(
+            Balances::reserved_balance(who),
+            before + ed,
+            "register_solver did not reserve the registration deposit"
+        );
+        assert!(Solvers::<Test>::contains_key(who));
+    });
+}
+
+#[test]
+fn solver_deposit_failure_and_duplicates_are_atomic_and_refund_is_once() {
+    new_test_ext().execute_with(|| {
+        let initial = Balances::free_balance(2);
+        assert_noop!(
+            QuantumComputeMempool::register_solver(RuntimeOrigin::signed(99), MinerType::Cpu),
+            pallet_balances::Error::<Test>::InsufficientBalance
+        );
+        assert!(!Solvers::<Test>::contains_key(99));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let reserved = Balances::reserved_balance(2);
+        assert_eq!(
+            reserved,
+            <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_noop!(
+            QuantumComputeMempool::register_solver(RuntimeOrigin::signed(2), MinerType::Cpu),
+            crate::Error::<Test>::SolverAlreadyRegistered
+        );
+        assert_eq!(Balances::reserved_balance(2), reserved);
+        assert_ok!(QuantumComputeMempool::deregister_solver(
+            RuntimeOrigin::signed(2)
+        ));
+        assert_eq!(Balances::free_balance(2), initial);
+        assert_eq!(Balances::reserved_balance(2), 0);
+        assert_noop!(
+            QuantumComputeMempool::deregister_solver(RuntimeOrigin::signed(2)),
+            crate::Error::<Test>::SolverNotRegistered
+        );
+    });
+}
+
+// QUIP-26 handover, with a thread-local ED override and an above-ED leader
+// control. Deregistration keeps the reaped-winner case valid after QUIP-29.
+#[test]
+fn poc_reaped_sub_ed_winner_locks_order_reward() {
+    new_test_ext().execute_with(|| {
+        ExistentialDeposit::set(50);
+        for solver in [2, 3] {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(solver),
+                MinerType::Cpu
+            ));
+        }
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            101,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2, 3])),
+                miner_types: None
+            },
+            RewardResolution::TopNWeighted { n: 2 },
+            2,
+            1,
+            ResultDelivery::OnChainOnly
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution()
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            0,
+            alternate_solution()
+        ));
+        assert_ok!(QuantumComputeMempool::deregister_solver(
+            RuntimeOrigin::signed(3)
+        ));
+        let bal3 = Balances::free_balance(3);
+        assert_ok!(Balances::transfer_allow_death(
+            RuntimeOrigin::signed(3),
+            4,
+            bal3
+        ));
+        assert_eq!(Balances::free_balance(3), 0);
+        run_to_block(2);
+        let leader_before = Balances::free_balance(2);
+        let proposer_before = Balances::free_balance(1);
+        let issuance = Balances::total_issuance();
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(
+            JobOrders::<Test>::get(0).unwrap().status,
+            OrderStatus::Closed
+        );
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(Balances::free_balance(2), leader_before + 68);
+        assert_eq!(Balances::free_balance(3), 0);
+        assert_eq!(Balances::free_balance(1), proposer_before + 33);
+        assert_eq!(Balances::total_issuance(), issuance);
+        assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 68);
+        assert!(!System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumComputeMempool(QuantumComputeMempoolEvent::RewardClaimed {
+                solver: 3,
+                ..
+            })
+        )));
+    });
+}
+
+#[test]
+fn overflowing_expiry_head_and_later_bucket_both_progress_within_budget() {
+    new_test_ext().execute_with(|| {
+        let mut head = Vec::new();
+        for proposer in [1, 2, 3] {
+            for _ in 0..8 {
+                head.push(propose_single_best(proposer, 1, 1));
+            }
+        }
+        let later = propose_single_best(4, 2, 1);
+        run_to_block(2);
+        assert_eq!(status_count(&head, OrderStatus::Expired), 8);
+        let before = status_count(&head, OrderStatus::Expired);
+        run_to_block(3);
+        assert_eq!(
+            JobOrders::<Test>::get(later).unwrap().status,
+            OrderStatus::Expired,
+            "later due bucket must receive work before the head drains"
+        );
+        let after = status_count(&head, OrderStatus::Expired);
+        assert!(after >= before + 4 && after < head.len());
+        assert!(after - before < crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
+        let mut previous = after;
+        for now in 4..=10 {
+            run_to_block(now);
+            let current = status_count(&head, OrderStatus::Expired);
+            assert!(current - previous <= crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
+            assert!(
+                current > previous || current == head.len(),
+                "head must not starve"
+            );
+            previous = current;
+        }
+        assert_eq!(previous, head.len());
+        assert!(bucket_ids(2).is_empty() && bucket_ids(3).is_empty());
+    });
+}
+
+#[test]
+fn small_expiry_buckets_keep_fifo_order_with_the_same_total_budget() {
+    new_test_ext().execute_with(|| {
+        let early: Vec<_> = (0..3).map(|_| propose_single_best(1, 1, 1)).collect();
+        let later: Vec<_> = (0..6).map(|_| propose_single_best(2, 2, 1)).collect();
+        // A skipped hook models catching up to two due buckets at once.
+        System::set_block_number(3);
+        QuantumComputeMempool::on_initialize(3);
+        assert_eq!(status_count(&early, OrderStatus::Expired), 3);
+        assert_eq!(status_count(&later, OrderStatus::Expired), 5);
+        run_to_block(4);
+        assert_eq!(status_count(&later, OrderStatus::Expired), 6);
+    });
+}
+
+// QUIP-30 handover's six closed records now disappear after the retention
+// window, while the seventh unpaid record and its escrow remain claimable.
+#[test]
+fn closed_orders_are_retained_then_pruned_without_touching_unpaid_orders() {
+    new_test_ext().execute_with(|| {
+        for _ in 0..7 {
+            propose_single_best(1, 1, 1);
+        }
+        run_to_block(2);
+        for id in 0..6 {
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+        }
+        run_to_block(21);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 7);
+        assert_eq!(Balances::reserved_balance(1), 100);
+        run_to_block(22);
+        assert_eq!(JobOrders::<Test>::iter_keys().collect::<Vec<_>>(), vec![6]);
+        assert_eq!(Balances::reserved_balance(1), 100);
+        assert_eq!(NextOrderId::<Test>::get(), 7);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+        assert_noop!(
+            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), 0),
+            crate::Error::<Test>::OrderNotFound
+        );
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(1),
+            6
+        ));
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(propose_single_best(1, 1, 1), 7);
+    });
+}
+
+#[test]
+fn retention_sweep_limits_work_and_resumes_the_bucket() {
+    new_test_ext().execute_with(|| {
+        for _ in 0..8 {
+            propose_single_best(1, 1, 1);
+        }
+        propose_single_best(4, 1, 1);
+        run_to_block(3);
+        for id in 0..9 {
+            let proposer = JobOrders::<Test>::get(id).unwrap().proposer;
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(proposer),
+                id
+            ));
+        }
+        run_to_block(22);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 9);
+        run_to_block(23);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 1);
+        assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(23));
+        run_to_block(24);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 0);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+    });
+}
+
+#[test]
+fn retention_sweep_preserves_poll_ttl_then_removes_all_auxiliary_records() {
+    new_test_ext().execute_with(|| {
+        propose_required_payee(RewardResolution::TopNEqual { n: 2 });
+        JobOrders::<Test>::mutate(0, |order| {
+            order.as_mut().unwrap().delivery = ResultDelivery::CallbackWithPoll {
+                endpoint: bounded(b"https://example.invalid/result".to_vec()),
+            };
+        });
+        for solver in [2, 3] {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(solver),
+                MinerType::Cpu
+            ));
+            assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::signed(solver),
+                0,
+                sample_solution(),
+                payee(20033, solver as u8)
+            ));
+        }
+        run_to_block(6);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(crate::OrderPayees::<Test>::iter_prefix(0).count(), 2);
+        assert!(crate::OrderPayeeRequirements::<Test>::contains_key(0));
+        assert!(!OrderFrontRunner::<Test>::contains_key(0));
+        // Exercise defensive cleanup of sparse stale data as well.
+        OrderFrontRunner::<Test>::insert(
+            0,
+            crate::types::FrontRunner {
+                solver: 2,
+                energy_milli: -1_000,
+            },
+        );
+        assert!(crate::OrderTopSolvers::<Test>::contains_key(0));
+        run_to_block(15);
+        assert!(crate::OrderResults::<Test>::contains_key(0));
+        assert!(JobOrders::<Test>::contains_key(0));
+        run_to_block(25);
+        assert!(JobOrders::<Test>::contains_key(0));
+        run_to_block(26);
+        assert!(!JobOrders::<Test>::contains_key(0));
+        assert_eq!(crate::OrderPayees::<Test>::iter_prefix(0).count(), 0);
+        assert!(!crate::OrderPayeeRequirements::<Test>::contains_key(0));
+        assert!(!OrderFrontRunner::<Test>::contains_key(0));
+        assert!(!crate::OrderTopSolvers::<Test>::contains_key(0));
+        assert!(!crate::OrderResults::<Test>::contains_key(0));
+        assert_eq!(OrderSolutions::<Test>::iter_prefix(0).count(), 0);
+        assert!(!OpenOrders::<Test>::contains_key(0));
+    });
+}
+
+#[test]
+fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry() {
+    new_test_ext().execute_with(|| {
+        let id = propose_single_best(1, 1, 1);
+        run_to_block(2);
+        crate::OrdersPrunableAt::<Test>::insert(12, id, ());
+        crate::NextPruneBucket::<Test>::put(0);
+        System::set_block_number(12);
+        QuantumComputeMempool::on_initialize(12);
+        assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(8));
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Expired
+        );
+        run_to_block(13);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Expired
+        );
+        assert_eq!(Balances::reserved_balance(1), 100);
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(1),
+            id
+        ));
+    });
+}
