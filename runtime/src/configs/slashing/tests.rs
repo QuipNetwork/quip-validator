@@ -835,3 +835,173 @@ fn root_upgrade_and_heap_paths_remain_allowed() {
         );
     });
 }
+
+// Ported from the QUIP-22 audit handover; exercises the real BABE hooks.
+// Append this test to quip-validator/runtime/src/configs/slashing/tests.rs.
+// It reuses that module's pinned runtime genesis and genuine BABE equivocation helpers.
+fn vv_rehearsal_ext() -> sp_io::TestExternalities {
+    use crate::{RuntimeGenesisConfig, System};
+    use sp_runtime::BuildStorage;
+
+    fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
+        match (target, patch) {
+            (serde_json::Value::Object(t), serde_json::Value::Object(p)) => {
+                for (k, v) in p {
+                    merge(t.entry(k).or_insert(serde_json::Value::Null), v);
+                }
+            }
+            (t, p) => *t = p,
+        }
+    }
+    let mut config = serde_json::to_value(RuntimeGenesisConfig::default()).unwrap();
+    merge(
+        &mut config,
+        crate::genesis_config_presets::rehearsal_config_genesis(),
+    );
+    let config: RuntimeGenesisConfig = serde_json::from_value(config).unwrap();
+    let mut ext = sp_io::TestExternalities::new(config.build_storage().unwrap());
+    ext.execute_with(|| {
+        System::set_block_number(1);
+        for _ in 0..12 {
+            next_session();
+            if pallet_staking::ActiveEra::<Runtime>::get().is_some_and(|e| e.index >= 1) {
+                break;
+            }
+        }
+        assert_eq!(
+            pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+            1
+        );
+    });
+    ext
+}
+
+fn vv_assigned_secondary_slot(authority_index: u32, after: Slot) -> Slot {
+    let authorities = pallet_babe::Authorities::<Runtime>::get();
+    let randomness = pallet_babe::Randomness::<Runtime>::get();
+    (1..=super::super::EpochDuration::get())
+        .map(|delta| after + Slot::from(delta))
+        .find(|slot| {
+            let hash = (randomness, *slot).using_encoded(sp_core::hashing::blake2_256);
+            let assigned =
+                sp_core::U256::from_big_endian(&hash) % sp_core::U256::from(authorities.len());
+            assigned == sp_core::U256::from(authority_index)
+        })
+        .expect("offender has a later secondary slot in this epoch")
+}
+
+#[test]
+fn vv_poc_offence_disable_bypass() {
+    use crate::{Session, System};
+    use frame_support::traits::Hooks;
+
+    let (pool, state) = sp_core::offchain::testing::TestTransactionPoolExt::new();
+    let mut ext = vv_rehearsal_ext();
+    ext.register_extension(sp_core::offchain::TransactionPoolExt::new(pool));
+    ext.execute_with(|| {
+        assert!(
+            Session::validators().len() >= 4,
+            "disable limit needs four validators"
+        );
+        let evidence = babe_evidence();
+        let offender_index = pallet_babe::Authorities::<Runtime>::get()
+            .iter()
+            .position(|(key, _)| *key == evidence.offender)
+            .unwrap() as u32;
+        let later_slot = vv_assigned_secondary_slot(offender_index, evidence.slot);
+        let proof: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+            "BabeApi_generate_key_ownership_proof",
+            (evidence.slot, evidence.offender.clone()),
+        );
+        let submitted: Option<()> = api(
+            "BabeApi_submit_report_equivocation_unsigned_extrinsic",
+            (evidence, proof.expect("ownership proof")),
+        );
+        assert_eq!(submitted, Some(()));
+        let transactions = &state.read().transactions;
+        assert_eq!(transactions.len(), 1);
+        let extrinsic = UncheckedExtrinsic::decode(&mut &transactions[0][..]).unwrap();
+        assert_ok!(extrinsic.0.function.dispatch(RuntimeOrigin::none()));
+        assert!(Session::disabled_validators().contains(&offender_index));
+
+        // Initialize a later block through the real System and BABE hooks with
+        // the offender's BABE pre-digest. The session helper skips the prior
+        // BABE finalizer, so clear its temporary state first.
+        pallet_babe::Initialized::<Runtime>::kill();
+        let next_block = System::block_number() + 1;
+        let digest = Digest {
+            logs: vec![DigestItem::babe_pre_digest(PreDigest::SecondaryPlain(
+                SecondaryPlainPreDigest {
+                    authority_index: offender_index,
+                    slot: later_slot,
+                },
+            ))],
+        };
+        System::initialize(&next_block, &H256::zero(), &digest);
+        <Babe as Hooks<crate::BlockNumber>>::on_initialize(next_block);
+        assert!(pallet_babe::Initialized::<Runtime>::get().is_some());
+        let finalized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            <Babe as Hooks<crate::BlockNumber>>::on_finalize(next_block);
+        }));
+        if finalized.is_ok() {
+            println!("VV-BUG-REPRODUCED: disabled offender authored a later BABE block");
+            panic!("BABE accepted a disabled author");
+        }
+    });
+}
+
+// Adversarial boundary: the two-validator local preset has a zero disable
+// budget, so a reported validator must remain an eligible BABE author.
+#[test]
+fn vv_control_offence_disable_limit() {
+    use crate::{Session, System};
+    use frame_support::traits::Hooks;
+
+    let (pool, state) = sp_core::offchain::testing::TestTransactionPoolExt::new();
+    let mut ext = ext();
+    ext.register_extension(sp_core::offchain::TransactionPoolExt::new(pool));
+    ext.execute_with(|| {
+        assert_eq!(Session::validators().len(), 2);
+        let evidence = babe_evidence();
+        let offender_index = pallet_babe::Authorities::<Runtime>::get()
+            .iter()
+            .position(|(key, _)| *key == evidence.offender)
+            .unwrap() as u32;
+        let later_slot = vv_assigned_secondary_slot(offender_index, evidence.slot);
+        let proof: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+            "BabeApi_generate_key_ownership_proof",
+            (evidence.slot, evidence.offender.clone()),
+        );
+        let submitted: Option<()> = api(
+            "BabeApi_submit_report_equivocation_unsigned_extrinsic",
+            (evidence, proof.expect("ownership proof")),
+        );
+        assert_eq!(submitted, Some(()));
+        let transactions = &state.read().transactions;
+        assert_eq!(transactions.len(), 1);
+        let extrinsic = UncheckedExtrinsic::decode(&mut &transactions[0][..]).unwrap();
+        assert_ok!(extrinsic.0.function.dispatch(RuntimeOrigin::none()));
+        assert!(Session::disabled_validators().is_empty());
+
+        pallet_babe::Initialized::<Runtime>::kill();
+        let next_block = System::block_number() + 1;
+        let digest = Digest {
+            logs: vec![DigestItem::babe_pre_digest(PreDigest::SecondaryPlain(
+                SecondaryPlainPreDigest {
+                    authority_index: offender_index,
+                    slot: later_slot,
+                },
+            ))],
+        };
+        System::initialize(&next_block, &H256::zero(), &digest);
+        <Babe as Hooks<crate::BlockNumber>>::on_initialize(next_block);
+        assert!(pallet_babe::Initialized::<Runtime>::get().is_some());
+        let finalized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            <Babe as Hooks<crate::BlockNumber>>::on_finalize(next_block);
+        }));
+        assert!(
+            finalized.is_ok(),
+            "a validator never disabled by Session must still author"
+        );
+    });
+}

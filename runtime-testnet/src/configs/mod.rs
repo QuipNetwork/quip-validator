@@ -167,7 +167,7 @@ impl pallet_babe::Config for Runtime {
     type EpochDuration = EpochDuration;
     type ExpectedBlockTime = ExpectedBlockTime;
     type EpochChangeTrigger = pallet_babe::ExternalTrigger;
-    type DisabledValidators = ();
+    type DisabledValidators = crate::Session;
     type WeightInfo = slashing::EquivocationWeights;
     type MaxAuthorities = ConstU32<64>;
     type MaxNominators = election::MaxBackersPerWinnerFinal;
