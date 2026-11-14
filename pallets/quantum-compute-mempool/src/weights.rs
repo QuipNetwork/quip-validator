@@ -27,6 +27,38 @@ pub fn solver_deposit_weight<T: crate::Config>() -> Weight {
     Weight::from_parts(100_000_000, 16_000).saturating_add(T::DbWeight::get().reads_writes(4, 3))
 }
 
+/// Bound all auxiliary order records in addition to solution payload pruning.
+pub const CLOSED_ORDER_PRUNING_PROOF_FLOOR: u64 = 2 * 1024 * 1024;
+pub fn schedule_order_pruning_weight<T: crate::Config>() -> Weight {
+    Weight::from_parts(50_000_000, 10_000).saturating_add(T::DbWeight::get().reads_writes(2, 2))
+}
+
+/// Conservative unmeasured cleanup bound, including empty-bucket traversal.
+pub fn closed_order_pruning_weight<T: crate::Config>(orders: u32, buckets: u64) -> Weight {
+    let orders = u64::from(orders);
+    Weight::from_parts(50_000_000, 5_000 + 5_000 * buckets)
+        .saturating_add(
+            Weight::from_parts(100_000_000, CLOSED_ORDER_PRUNING_PROOF_FLOOR)
+                .saturating_mul(orders),
+        )
+        .saturating_add(T::DbWeight::get().reads_writes(2 + buckets + 35 * orders, 1 + 40 * orders))
+        .saturating_add(solution_pruning_weight::<T>().saturating_mul(orders))
+}
+
+fn closed_order_pruning_proof_envelope<T: crate::Config>() -> u64 {
+    storage_key_envelope::<crate::JobOrders<T>>()
+        .saturating_add(
+            storage_key_envelope::<crate::OrderPayees<T>>()
+                .saturating_mul(u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER)),
+        )
+        .saturating_add(storage_key_envelope::<crate::OrderPayeeRequirements<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderFrontRunner<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderTopSolvers<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderResults<T>>())
+        .saturating_add(storage_key_envelope::<crate::OpenOrders<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrdersPrunableAt<T>>())
+}
+
 /// Conservative settlement proof floor under the documented SDK trie model.
 pub const CLAIM_REWARD_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const RECLAIM_ORDER_PROOF_FLOOR: u64 = 1024 * 1024;
@@ -120,6 +152,10 @@ pub fn submit_solution_proof_envelope<T: crate::Config>() -> u64 {
 /// no longer covers settlement. Currency/VM changes also require rebenchmarking.
 pub fn check_claim_reward_weight<T: crate::Config>() {
     assert!(
+        closed_order_pruning_proof_envelope::<T>() <= CLOSED_ORDER_PRUNING_PROOF_FLOOR,
+        "closed order pruning proof bound no longer covers configured records"
+    );
+    assert!(
         storage_key_envelope::<crate::OrderSolutions<T>>()
             .saturating_mul(u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER))
             <= SOLUTION_PRUNING_PROOF_FLOOR,
@@ -169,12 +205,14 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
         ),
         (
             <T as crate::Config>::WeightInfo::claim_reward()
-                .saturating_add(solution_pruning_weight::<T>()),
+                .saturating_add(solution_pruning_weight::<T>())
+                .saturating_add(schedule_order_pruning_weight::<T>()),
             CLAIM_REWARD_PROOF_FLOOR,
         ),
         (
             <T as crate::Config>::WeightInfo::reclaim_order()
-                .saturating_add(solution_pruning_weight::<T>()),
+                .saturating_add(solution_pruning_weight::<T>())
+                .saturating_add(schedule_order_pruning_weight::<T>()),
             RECLAIM_ORDER_PROOF_FLOOR,
         ),
         (

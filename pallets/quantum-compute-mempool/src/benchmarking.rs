@@ -857,6 +857,83 @@ mod benchmarks {
         }
     }
 
+    /// Maximum closed record and all sparse auxiliary prefixes, including
+    /// defensive cleanup of 32 maximum-size orphaned solution payloads.
+    #[benchmark]
+    fn prune_closed_orders(k: Linear<0, { types::MAX_PRUNED_ORDERS_PER_BLOCK }>) {
+        let (caller, _, winners, template_id) = setup_claim_reward::<T>();
+        assert!(QuantumComputeMempool::<T>::claim_reward(
+            RawOrigin::Signed(caller).into(),
+            template_id,
+        )
+        .is_ok());
+        let order = JobOrders::<T>::take(template_id).expect("closed template");
+        let result = OrderResults::<T>::take(template_id).expect("poll template");
+        let ranking = OrderTopSolvers::<T>::take(template_id);
+        let now = frame_system::Pallet::<T>::block_number()
+            .saturating_add(T::OrderRetentionBlocks::get());
+        OrdersPrunableAt::<T>::remove(now, template_id);
+        NextPruneBucket::<T>::put(now);
+        let first = winners.first().expect("nonempty winners");
+        for id in 0..u64::from(k) {
+            JobOrders::<T>::insert(id, &order);
+            OrderResults::<T>::insert(id, &result);
+            OrderTopSolvers::<T>::insert(id, &ranking);
+            OrderFrontRunner::<T>::insert(
+                id,
+                types::FrontRunner {
+                    solver: first.clone(),
+                    energy_milli: -1,
+                },
+            );
+            OrderPayeeRequirements::<T>::insert(id, 20033);
+            OpenOrders::<T>::insert(id, ());
+            OrdersPrunableAt::<T>::insert(now, id, ());
+            for winner in &winners {
+                OrderPayees::<T>::insert(
+                    id,
+                    winner,
+                    types::WinnerPayee::V1 {
+                        chain_id: 20033,
+                        address: sp_core::H160::repeat_byte(255),
+                    },
+                );
+                OrderSolutions::<T>::insert(
+                    id,
+                    winner,
+                    types::JobSolution {
+                        solver: winner.clone(),
+                        solver_type: types::MinerType::Cpu,
+                        solutions: solutions_with_dimensions::<T>(
+                            T::MaxNodes::get(),
+                            T::MaxSolutions::get(),
+                        ),
+                        best_energy_milli: -1,
+                        diversity_milli: 0,
+                        num_valid: T::MaxSolutions::get(),
+                        submitted_at: order.created_at,
+                    },
+                );
+            }
+        }
+        frame_system::Pallet::<T>::set_block_number(now);
+        #[block]
+        {
+            QuantumComputeMempool::<T>::prune_closed_orders(now);
+        }
+        for id in 0..u64::from(k) {
+            assert!(!JobOrders::<T>::contains_key(id));
+            assert!(!OrderResults::<T>::contains_key(id));
+            assert!(!OrderTopSolvers::<T>::contains_key(id));
+            assert!(!OrderFrontRunner::<T>::contains_key(id));
+            assert!(!OrderPayeeRequirements::<T>::contains_key(id));
+            assert!(!OpenOrders::<T>::contains_key(id));
+            assert!(OrderPayees::<T>::iter_key_prefix(id).next().is_none());
+            assert!(OrderSolutions::<T>::iter_key_prefix(id).next().is_none());
+        }
+        assert!(!NextPruneBucket::<T>::exists());
+    }
+
     impl_benchmark_test_suite!(
         QuantumComputeMempool,
         crate::mock::new_test_ext(),

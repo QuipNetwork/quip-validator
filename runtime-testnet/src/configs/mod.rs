@@ -605,6 +605,8 @@ parameter_types! {
     pub const QuantumMaxBlockWait: BlockNumber = 100;
     pub const QuantumMinReward: Balance = UNIT;
     pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
+    // Audit retention policy is 28 eras, independent of the unbonding period.
+    pub const QuantumOrderRetentionBlocks: BlockNumber = 28 * 6 * crate::network_params::EPOCH_DURATION_SLOTS as u32;
     pub const QuantumPowMaxNodes: u32 = 5_000;
     pub const QuantumPowMaxEdges: u32 = 50_000;
     pub const QuantumPowMaxSolutions: u32 = 32;
@@ -731,6 +733,7 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type MaxBlockWait = QuantumMaxBlockWait;
     type MinReward = QuantumMinReward;
     type ResultTtlBlocks = QuantumResultTtlBlocks;
+    type OrderRetentionBlocks = QuantumOrderRetentionBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
     type DefaultJobSpecBuilder = QuantumDefaultJobSpecBuilder;
     type ProgramSource = QuantumProgramSource;

@@ -2363,7 +2363,11 @@ fn proposer_can_complete_more_than_a_lifetime_cap() {
                 OrderStatus::Closed
             );
         }
-        assert_eq!(JobOrders::<Test>::iter().count(), 40);
+        assert_eq!(NextOrderId::<Test>::get(), 40);
+        assert_eq!(
+            JobOrders::<Test>::iter().count(),
+            OrderRetentionBlocks::get() as usize
+        );
     });
 }
 
@@ -3243,5 +3247,150 @@ fn small_expiry_buckets_keep_fifo_order_with_the_same_total_budget() {
         assert_eq!(status_count(&later, OrderStatus::Expired), 5);
         run_to_block(4);
         assert_eq!(status_count(&later, OrderStatus::Expired), 6);
+    });
+}
+
+// QUIP-30 handover's six closed records now disappear after the retention
+// window, while the seventh unpaid record and its escrow remain claimable.
+#[test]
+fn closed_orders_are_retained_then_pruned_without_touching_unpaid_orders() {
+    new_test_ext().execute_with(|| {
+        for _ in 0..7 {
+            propose_single_best(1, 1, 1);
+        }
+        run_to_block(2);
+        for id in 0..6 {
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+        }
+        run_to_block(21);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 7);
+        assert_eq!(Balances::reserved_balance(1), 100);
+        run_to_block(22);
+        assert_eq!(JobOrders::<Test>::iter_keys().collect::<Vec<_>>(), vec![6]);
+        assert_eq!(Balances::reserved_balance(1), 100);
+        assert_eq!(NextOrderId::<Test>::get(), 7);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+        assert_noop!(
+            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), 0),
+            crate::Error::<Test>::OrderNotFound
+        );
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(1),
+            6
+        ));
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(propose_single_best(1, 1, 1), 7);
+    });
+}
+
+#[test]
+fn retention_sweep_limits_work_and_resumes_the_bucket() {
+    new_test_ext().execute_with(|| {
+        for _ in 0..8 {
+            propose_single_best(1, 1, 1);
+        }
+        propose_single_best(4, 1, 1);
+        run_to_block(3);
+        for id in 0..9 {
+            let proposer = JobOrders::<Test>::get(id).unwrap().proposer;
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(proposer),
+                id
+            ));
+        }
+        run_to_block(22);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 9);
+        run_to_block(23);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 1);
+        assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(23));
+        run_to_block(24);
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 0);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+    });
+}
+
+#[test]
+fn retention_sweep_preserves_poll_ttl_then_removes_all_auxiliary_records() {
+    new_test_ext().execute_with(|| {
+        propose_required_payee(RewardResolution::TopNEqual { n: 2 });
+        JobOrders::<Test>::mutate(0, |order| {
+            order.as_mut().unwrap().delivery = ResultDelivery::CallbackWithPoll {
+                endpoint: bounded(b"https://example.invalid/result".to_vec()),
+            };
+        });
+        for solver in [2, 3] {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(solver),
+                MinerType::Cpu
+            ));
+            assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+                RuntimeOrigin::signed(solver),
+                0,
+                sample_solution(),
+                payee(20033, solver as u8)
+            ));
+        }
+        run_to_block(6);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+        assert_eq!(crate::OrderPayees::<Test>::iter_prefix(0).count(), 2);
+        assert!(crate::OrderPayeeRequirements::<Test>::contains_key(0));
+        assert!(!OrderFrontRunner::<Test>::contains_key(0));
+        // Exercise defensive cleanup of sparse stale data as well.
+        OrderFrontRunner::<Test>::insert(
+            0,
+            crate::types::FrontRunner {
+                solver: 2,
+                energy_milli: -1_000,
+            },
+        );
+        assert!(crate::OrderTopSolvers::<Test>::contains_key(0));
+        run_to_block(15);
+        assert!(crate::OrderResults::<Test>::contains_key(0));
+        assert!(JobOrders::<Test>::contains_key(0));
+        run_to_block(25);
+        assert!(JobOrders::<Test>::contains_key(0));
+        run_to_block(26);
+        assert!(!JobOrders::<Test>::contains_key(0));
+        assert_eq!(crate::OrderPayees::<Test>::iter_prefix(0).count(), 0);
+        assert!(!crate::OrderPayeeRequirements::<Test>::contains_key(0));
+        assert!(!OrderFrontRunner::<Test>::contains_key(0));
+        assert!(!crate::OrderTopSolvers::<Test>::contains_key(0));
+        assert!(!crate::OrderResults::<Test>::contains_key(0));
+        assert_eq!(OrderSolutions::<Test>::iter_prefix(0).count(), 0);
+        assert!(!OpenOrders::<Test>::contains_key(0));
+    });
+}
+
+#[test]
+fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry() {
+    new_test_ext().execute_with(|| {
+        let id = propose_single_best(1, 1, 1);
+        run_to_block(2);
+        crate::OrdersPrunableAt::<Test>::insert(12, id, ());
+        crate::NextPruneBucket::<Test>::put(0);
+        System::set_block_number(12);
+        QuantumComputeMempool::on_initialize(12);
+        assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(8));
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Expired
+        );
+        run_to_block(13);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Expired
+        );
+        assert_eq!(Balances::reserved_balance(1), 100);
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(1),
+            id
+        ));
     });
 }

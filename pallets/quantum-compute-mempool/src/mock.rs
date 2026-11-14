@@ -192,6 +192,7 @@ parameter_types! {
     pub const MaxBlockWait: u64 = 20;
     pub const MinReward: Balance = 10;
     pub const ResultTtlBlocks: u64 = 10;
+    pub const OrderRetentionBlocks: u64 = 20;
 }
 
 impl pallet_quantum_compute_mempool::Config for Test {
@@ -206,6 +207,7 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type MaxBlockWait = MaxBlockWait;
     type MinReward = MinReward;
     type ResultTtlBlocks = ResultTtlBlocks;
+    type OrderRetentionBlocks = OrderRetentionBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;
     type DefaultJobSpecBuilder = ConstU64<1>;
     type ProgramSource = TestProgramSource;

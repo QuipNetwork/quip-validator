@@ -18,6 +18,9 @@ pub const MAX_FINALISED_ORDERS_PER_BLOCK: u32 = 8;
 /// Empty-bucket traversal is separately bounded to eight visits per block;
 /// sustained arrivals above eight cannot have a finite global completion bound.
 pub const EXPIRY_BUCKET_SHARE: u32 = 4;
+
+/// Maximum closed orders and expiry buckets inspected by one retention sweep.
+pub const MAX_PRUNED_ORDERS_PER_BLOCK: u32 = 8;
 const _: () =
     assert!(EXPIRY_BUCKET_SHARE > 0 && EXPIRY_BUCKET_SHARE < MAX_FINALISED_ORDERS_PER_BLOCK);
 

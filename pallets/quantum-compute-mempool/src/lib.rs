@@ -240,6 +240,10 @@ pub mod pallet {
         #[pallet::constant]
         type ResultTtlBlocks: Get<BlockNumberFor<Self>>;
 
+        /// Retention after closure before bounded automatic order cleanup.
+        #[pallet::constant]
+        type OrderRetentionBlocks: Get<BlockNumberFor<Self>>;
+
         /// Canonical plain Ising job spec id exposed through metadata for SDKs.
         #[pallet::constant]
         type DefaultIsingSpecId: Get<Self::Hash>;
@@ -309,6 +313,15 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type NextOrderId<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    /// Closed orders indexed by the block when their retention window ends.
+    #[pallet::storage]
+    pub type OrdersPrunableAt<T: Config> =
+        StorageDoubleMap<_, Twox64Concat, BlockNumberFor<T>, Twox64Concat, u64, (), OptionQuery>;
+
+    /// Earliest retention bucket to inspect, absent when no cleanup is queued.
+    #[pallet::storage]
+    pub type NextPruneBucket<T: Config> = StorageValue<_, BlockNumberFor<T>>;
 
     /// Recovery index for orders that are still considered open by stored
     /// lifecycle state. Expired orders are removed lazily when the pallet next
@@ -690,7 +703,7 @@ pub mod pallet {
         /// Settle an expired solved order. Any signed account may call; rewards
         /// go only to the selected solvers, with no bounty for the caller.
         #[pallet::call_index(5)]
-        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()))]
+        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()))]
         pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let _caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
@@ -743,6 +756,7 @@ pub mod pallet {
             OpenOrders::<T>::remove(order_id);
             Self::prune_solutions(order_id);
             Self::release_proposer_slot(&order.proposer, order_id);
+            Self::schedule_order_pruning(order_id);
             JobSpecs::<T>::mutate(order.spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
                     spec.successful_orders = spec.successful_orders.saturating_add(1);
@@ -757,7 +771,7 @@ pub mod pallet {
         }
 
         #[pallet::call_index(6)]
-        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()))]
+        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()))]
         pub fn reclaim_order(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
@@ -780,6 +794,7 @@ pub mod pallet {
             OpenOrders::<T>::remove(order_id);
             Self::prune_solutions(order_id);
             Self::release_proposer_slot(&order.proposer, order_id);
+            Self::schedule_order_pruning(order_id);
 
             Self::deposit_event(Event::RewardReclaimed {
                 order_id,
@@ -869,6 +884,14 @@ pub mod pallet {
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn integrity_test() {
             weights::check_claim_reward_weight::<T>();
+            assert!(
+                T::OrderRetentionBlocks::get() >= T::ResultTtlBlocks::get(),
+                "order retention must cover the poll-result TTL"
+            );
+            assert!(
+                !T::OrderRetentionBlocks::get().is_zero(),
+                "order retention must be positive"
+            );
         }
 
         /// Finalise the orders whose effective expiry is at or before `now`.
@@ -877,6 +900,7 @@ pub mod pallet {
         /// shares capacity with later due buckets while the head progresses.
         fn on_initialize(now: BlockNumberFor<T>) -> Weight {
             let (finalised, buckets_visited) = Self::finalise_expired_orders(now);
+            let (pruned, prune_buckets) = Self::prune_closed_orders(now);
             <T as Config>::WeightInfo::finalise_expired_orders(finalised)
                 // Extra cursor plus the bounded look-ahead key on every visit.
                 .saturating_add(T::DbWeight::get().reads_writes(1 + 2 * buckets_visited, 1))
@@ -887,6 +911,10 @@ pub mod pallet {
                 .saturating_add(
                     weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
                 )
+                .saturating_add(weights::closed_order_pruning_weight::<T>(
+                    pruned,
+                    prune_buckets,
+                ))
         }
 
         /// Cumulative migration to the in-code `STORAGE_VERSION`.
@@ -1787,6 +1815,71 @@ pub mod pallet {
                 }
             }
             Self::prune_solutions(order_id);
+        }
+
+        fn schedule_order_pruning(order_id: u64) {
+            let when = frame_system::Pallet::<T>::block_number()
+                .saturating_add(T::OrderRetentionBlocks::get());
+            OrdersPrunableAt::<T>::insert(when, order_id, ());
+            NextPruneBucket::<T>::mutate(|cursor| {
+                *cursor = Some(cursor.map_or(when, |current| current.min(when)));
+            });
+        }
+
+        /// Retain closed records for at least the configured window. A bounded
+        /// backlog can delay deletion further; unpaid expired orders are never
+        /// queued. Cleanup also removes all sparse auxiliary per-order state.
+        pub(crate) fn prune_closed_orders(now: BlockNumberFor<T>) -> (u32, u64) {
+            let Some(mut bucket) = NextPruneBucket::<T>::get() else {
+                return (0, 0);
+            };
+            if bucket > now {
+                return (0, 0);
+            }
+            let mut remaining = types::MAX_PRUNED_ORDERS_PER_BLOCK;
+            let mut visits = 0u64;
+            while bucket <= now
+                && remaining > 0
+                && visits < u64::from(types::MAX_PRUNED_ORDERS_PER_BLOCK)
+            {
+                let ids: Vec<_> = OrdersPrunableAt::<T>::iter_key_prefix(bucket)
+                    .take(remaining as usize)
+                    .collect();
+                let taken = ids.len() as u32;
+                for order_id in ids {
+                    OrdersPrunableAt::<T>::remove(bucket, order_id);
+                    // Fail closed if an inconsistent queue entry names an unpaid order.
+                    if JobOrders::<T>::get(order_id)
+                        .is_some_and(|order| order.status == types::OrderStatus::Closed)
+                    {
+                        JobOrders::<T>::remove(order_id);
+                        Self::prune_solutions(order_id);
+                        let _ = OrderPayees::<T>::clear_prefix(
+                            order_id,
+                            types::MAX_SOLVERS_PER_OPEN_ORDER,
+                            None,
+                        );
+                        OrderPayeeRequirements::<T>::remove(order_id);
+                        OrderFrontRunner::<T>::remove(order_id);
+                        OrderTopSolvers::<T>::remove(order_id);
+                        OrderResults::<T>::remove(order_id);
+                        OpenOrders::<T>::remove(order_id);
+                    }
+                }
+                visits += 1;
+                let exhausted = taken == remaining;
+                remaining -= taken;
+                if exhausted {
+                    break;
+                }
+                bucket = bucket.saturating_add(One::one());
+            }
+            if OrdersPrunableAt::<T>::iter_keys().next().is_none() {
+                NextPruneBucket::<T>::kill();
+            } else {
+                NextPruneBucket::<T>::put(bucket);
+            }
+            (types::MAX_PRUNED_ORDERS_PER_BLOCK - remaining, visits)
         }
 
         /// Admission caps this prefix at 32 entries, including replacements.
