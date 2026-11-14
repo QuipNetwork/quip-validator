@@ -2892,3 +2892,35 @@ fn submission_wrapper_covers_every_full_measured_case_without_double_charging_db
 
 #[path = "vm_tests.rs"]
 mod vm_tests;
+
+#[test]
+fn vv_poc_open_order_ids_limit_one_decodes_one_order() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        let template = JobOrders::<Test>::get(0).unwrap();
+        for id in 1..=10_000 {
+            JobOrders::<Test>::insert(id, template.clone());
+            OpenOrders::<Test>::insert(id, ());
+        }
+
+        crate::OPEN_ORDER_DECODES.with(|count| count.set(0));
+        let ids = QuantumComputeMempool::open_order_ids(None, 1);
+        let decodes = crate::OPEN_ORDER_DECODES.with(|count| count.get());
+        if decodes > 1 {
+            eprintln!("VV-BUG-REPRODUCED: limit=1 decoded {decodes} full orders");
+        }
+        assert_eq!(ids, vec![0]);
+        assert_eq!(decodes, 1, "limit=1 should decode only the returned order");
+    });
+}

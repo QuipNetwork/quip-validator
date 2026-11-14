@@ -41,6 +41,10 @@ pub use weights::*;
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+#[cfg(test)]
+std::thread_local! {
+    static OPEN_ORDER_DECODES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
 use frame_support::traits::{Currency, Get};
 
 type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
@@ -1015,10 +1019,17 @@ pub mod pallet {
                 return Vec::new();
             }
 
-            let now = frame_system::Pallet::<T>::block_number();
             let mut ids: Vec<u64> = OpenOrders::<T>::iter_keys()
                 .filter(|order_id| start_after.map(|cursor| *order_id > cursor).unwrap_or(true))
+                .collect();
+            ids.sort_unstable();
+            let now = frame_system::Pallet::<T>::block_number();
+            // Key enumeration/sorting remain O(N)/O(N log N). Decode only until
+            // the requested live page is filled; stale keys may add reads.
+            ids.into_iter()
                 .filter(|order_id| {
+                    #[cfg(test)]
+                    crate::OPEN_ORDER_DECODES.with(|count| count.set(count.get() + 1));
                     let Some(order) = JobOrders::<T>::get(order_id) else {
                         return false;
                     };
@@ -1030,11 +1041,8 @@ pub mod pallet {
                             &order.timing,
                         )
                 })
-                .collect();
-
-            ids.sort_unstable();
-            ids.truncate(limit);
-            ids
+                .take(limit)
+                .collect()
         }
 
         /// Derive the storage key hash for a job spec tuple.
