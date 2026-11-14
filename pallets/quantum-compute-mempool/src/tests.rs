@@ -700,8 +700,14 @@ fn claim_reward_later_transfer_failure_rolls_back_entire_settlement() {
         // Hook expiry and its prepublished result remain committed.
         assert_eq!(Balances::free_balance(1), 999_899);
         assert_eq!(Balances::reserved_balance(1), 101);
-        assert_eq!(Balances::free_balance(2), 1_000_000);
-        assert_eq!(Balances::free_balance(3), 1_000_000);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_000 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_000 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
         assert_eq!(Balances::free_balance(4), 1_000_000);
         for solver in [2, 3] {
             assert_eq!(Solvers::<Test>::get(solver).unwrap().rewards_earned, 0);
@@ -722,8 +728,14 @@ fn claim_reward_later_transfer_failure_rolls_back_entire_settlement() {
             RuntimeOrigin::signed(4),
             0
         ));
-        assert_eq!(Balances::free_balance(2), 1_000_051);
-        assert_eq!(Balances::free_balance(3), 1_000_050);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_051 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_050 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
         assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 51);
         assert_eq!(Solvers::<Test>::get(3).unwrap().rewards_earned, 50);
         assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 1);
@@ -805,7 +817,10 @@ fn claim_reward_single_best_transfers_and_closes_order() {
         assert_eq!(order.status, crate::types::OrderStatus::Closed);
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(1), 999_900);
-        assert_eq!(Balances::free_balance(2), 1_000_100);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_100 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
         assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 100);
         assert_eq!(JobSpecs::<Test>::get(spec_id).unwrap().successful_orders, 1);
         assert!(!OpenOrders::<Test>::contains_key(0));
@@ -976,8 +991,14 @@ fn claim_reward_top_n_equal_splits_remainder_to_best() {
         assert!(!Solvers::<Test>::contains_key(4));
 
         assert_eq!(Balances::reserved_balance(1), 0);
-        assert_eq!(Balances::free_balance(2), 1_000_051);
-        assert_eq!(Balances::free_balance(3), 1_000_050);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_051 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_050 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
     });
 }
 
@@ -1027,8 +1048,14 @@ fn claim_reward_top_n_weighted_splits_by_rank() {
         assert!(!Solvers::<Test>::contains_key(4));
 
         assert_eq!(Balances::reserved_balance(1), 0);
-        assert_eq!(Balances::free_balance(2), 1_000_067);
-        assert_eq!(Balances::free_balance(3), 1_000_033);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_067 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_eq!(
+            Balances::free_balance(3),
+            1_000_033 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
     });
 }
 
@@ -1918,7 +1945,10 @@ fn claim_reward_pays_without_emitting_result_ready() {
                 successful: true,
             })
         )));
-        assert_eq!(Balances::free_balance(2), 1_000_100);
+        assert_eq!(
+            Balances::free_balance(2),
+            1_000_100 - <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
     });
 }
 
@@ -3028,6 +3058,61 @@ fn full_solver_cap_allows_improvements_without_new_payload_slots() {
         assert_eq!(
             JobOrders::<Test>::get(id).unwrap().status,
             OrderStatus::Closed
+        );
+    });
+}
+
+#[test]
+fn a6f_solver_registration_reserves_deposit() {
+    new_test_ext().execute_with(|| {
+        let who = 2u64;
+        let ed = <Balances as frame_support::traits::Currency<u64>>::minimum_balance();
+        assert!(ed > 0);
+        let before = Balances::reserved_balance(who);
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+        assert_eq!(
+            Balances::reserved_balance(who),
+            before + ed,
+            "register_solver did not reserve the registration deposit"
+        );
+        assert!(Solvers::<Test>::contains_key(who));
+    });
+}
+
+#[test]
+fn solver_deposit_failure_and_duplicates_are_atomic_and_refund_is_once() {
+    new_test_ext().execute_with(|| {
+        let initial = Balances::free_balance(2);
+        assert_noop!(
+            QuantumComputeMempool::register_solver(RuntimeOrigin::signed(99), MinerType::Cpu),
+            pallet_balances::Error::<Test>::InsufficientBalance
+        );
+        assert!(!Solvers::<Test>::contains_key(99));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let reserved = Balances::reserved_balance(2);
+        assert_eq!(
+            reserved,
+            <Balances as frame_support::traits::Currency<u64>>::minimum_balance()
+        );
+        assert_noop!(
+            QuantumComputeMempool::register_solver(RuntimeOrigin::signed(2), MinerType::Cpu),
+            crate::Error::<Test>::SolverAlreadyRegistered
+        );
+        assert_eq!(Balances::reserved_balance(2), reserved);
+        assert_ok!(QuantumComputeMempool::deregister_solver(
+            RuntimeOrigin::signed(2)
+        ));
+        assert_eq!(Balances::free_balance(2), initial);
+        assert_eq!(Balances::reserved_balance(2), 0);
+        assert_noop!(
+            QuantumComputeMempool::deregister_solver(RuntimeOrigin::signed(2)),
+            crate::Error::<Test>::SolverNotRegistered
         );
     });
 }

@@ -22,6 +22,11 @@ pub fn solution_pruning_weight<T: crate::Config>() -> Weight {
         .saturating_add(T::DbWeight::get().reads_writes(cap + 1, cap))
 }
 
+/// Unmeasured registration reserve/refund allowance pending reference weights.
+pub fn solver_deposit_weight<T: crate::Config>() -> Weight {
+    Weight::from_parts(100_000_000, 16_000).saturating_add(T::DbWeight::get().reads_writes(4, 3))
+}
+
 /// Conservative settlement proof floor under the documented SDK trie model.
 pub const CLAIM_REWARD_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const RECLAIM_ORDER_PROOF_FLOOR: u64 = 1024 * 1024;

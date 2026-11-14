@@ -535,7 +535,7 @@ pub mod pallet {
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
-        #[pallet::weight(<T as Config>::WeightInfo::register_solver())]
+        #[pallet::weight(<T as Config>::WeightInfo::register_solver().saturating_add(weights::solver_deposit_weight::<T>()))]
         pub fn register_solver(
             origin: OriginFor<T>,
             solver_type: types::MinerType,
@@ -545,6 +545,9 @@ pub mod pallet {
                 !Solvers::<T>::contains_key(&who),
                 Error::<T>::SolverAlreadyRegistered
             );
+
+            // Refundable ED deposit makes each registered identity cost funds.
+            T::Currency::reserve(&who, T::Currency::minimum_balance())?;
 
             Solvers::<T>::insert(
                 &who,
@@ -562,7 +565,7 @@ pub mod pallet {
         }
 
         #[pallet::call_index(1)]
-        #[pallet::weight(<T as Config>::WeightInfo::deregister_solver())]
+        #[pallet::weight(<T as Config>::WeightInfo::deregister_solver().saturating_add(weights::solver_deposit_weight::<T>()))]
         pub fn deregister_solver(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(
@@ -570,6 +573,7 @@ pub mod pallet {
                 Error::<T>::SolverNotRegistered
             );
             Solvers::<T>::remove(&who);
+            let _ = T::Currency::unreserve(&who, T::Currency::minimum_balance());
             Self::deposit_event(Event::SolverDeregistered { who });
             Ok(())
         }
