@@ -1282,4 +1282,30 @@ mod tests {
             assert_eq!(multi_block::Round::<Runtime>::get(), round + 1);
         });
     }
+
+    #[test]
+    fn accepted_quip04_keyless_winner_survives_election_export() {
+        validator_onboarding::tests::ext().execute_with(|| {
+            let keyless = Validators::<Runtime>::get()[0].clone();
+            start_and_snapshot();
+            let solution = miner::OffchainWorkerMiner::<Runtime>::mine_solution(1, true)
+                .expect("approved validators are in the snapshot");
+            assert_ok!(MultiBlockElectionUnsigned::submit_unsigned(
+                RuntimeOrigin::none(),
+                alloc::boxed::Box::new(solution),
+            ));
+            poll();
+            assert_ok!(crate::Session::purge_keys(RuntimeOrigin::signed(
+                keyless.clone()
+            )));
+            assert!(pallet_validator_admission::Approved::<Runtime>::get().contains(&keyless));
+            assert!(!pallet_session::NextKeys::<Runtime>::contains_key(&keyless));
+
+            let result = AdmissionMultiBlockElection::elect(0);
+            assert!(
+                result.unwrap().iter().any(|(who, _)| *who == keyless),
+                "QUIP-04 remains an accepted Low; export has no key-presence guard"
+            );
+        });
+    }
 }

@@ -206,3 +206,13 @@ all voting weight in that interval, `System::PostInherents` restarts the round
 before the next `on_poll`; the replacement page excludes zero-weight targets.
 The bounded checks and round cleanup register mandatory weight explicitly.
 Their conservative allowance must be measured on the reference runner.
+
+### Accepted key-purge limitation (QUIP-04)
+
+QUIP-04 remains an Accepted Low. A validator may purge its session keys after
+its election snapshot, and the saved solution can still export that winner.
+There is no new purge-key call filter or export-time key check. This can reject
+late equivocation reports for up to the rest of the era. In-session reports
+still work; the operator loses its own validator slot and no funds move to an
+attacker. Report during the affected session or use the normal rotation/rekeying
+recovery procedure. The accepted regression deliberately preserves this behavior.
