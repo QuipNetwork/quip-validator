@@ -883,7 +883,10 @@ fn vv_poc_post_snapshot_unbond_outlives_deferred_slash() {
         let after_unbond = pallet_staking::Ledger::<Runtime>::get(&stash).unwrap();
         assert_eq!(after_unbond.active, 2_000 * crate::UNIT);
         assert_eq!(after_unbond.unlocking.len(), 1);
-        assert_eq!(after_unbond.unlocking[0].era, 32);
+        assert_eq!(
+            after_unbond.unlocking[0].era,
+            pallet_staking::CurrentEra::<Runtime>::get().unwrap() + BondingDuration::get()
+        );
 
         advance_to_era(2);
         let exposure = pallet_staking::ErasStakersOverview::<Runtime>::get(2, &stash).unwrap();
@@ -1067,7 +1070,10 @@ fn vv_poc_era_offset_after_snapshot() {
             .unlocking[0]
             .clone();
         assert_eq!(chunk.value, stake);
-        assert_eq!(chunk.era, 31);
+        assert_eq!(
+            chunk.era,
+            pallet_staking::CurrentEra::<Runtime>::get().unwrap() + BondingDuration::get()
+        );
 
         vv_advance_active_era_blockwise(2);
         let overview = pallet_staking::ErasStakersOverview::<Runtime>::get(2, &validator).unwrap();
@@ -1259,7 +1265,6 @@ fn vv_poc_grandpa_retention() {
             ).is_some());
             assert!(has_pending_slash_bucket(offence_session));
         };
-        println!("C7-INITIAL era={offence_era} session={} proof_session={offence_session} set={set_id} historical_root={}", pallet_session::CurrentIndex::<Runtime>::get(), pallet_session::historical::HistoricalSessions::<Runtime>::contains_key(offence_session));
         check_proof();
         let mut changes = 0u64;
         let mut alternate = false;
@@ -1292,8 +1297,6 @@ fn vv_poc_grandpa_retention() {
                 }
             }
         }
-        println!("C7-DIAGNOSTIC era={} session={} set={} changes={} predecessor_present={} before={:?}", pallet_staking::ActiveEra::<Runtime>::get().unwrap().index, pallet_session::CurrentIndex::<Runtime>::get(), pallet_grandpa::CurrentSetId::<Runtime>::get(), changes, pallet_grandpa::SetIdSession::<Runtime>::get(set_id - 1).is_some(), before_boundary);
-        println!("C7-HISTORICAL proof_session={} root_present={} stored_range={:?} pending={}", offence_session, pallet_session::historical::HistoricalSessions::<Runtime>::contains_key(offence_session), pallet_session::historical::StoredRange::<Runtime>::get(), has_pending_slash_bucket(offence_session));
         check_proof();
         assert!(control_accepted, "valid report before pruning must queue slash");
         let last_kept = before_boundary.expect("pre-pruning boundary");
