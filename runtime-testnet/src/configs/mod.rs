@@ -175,7 +175,7 @@ impl pallet_babe::Config for Runtime {
     type EquivocationReportSystem = pallet_babe::EquivocationReportSystem<
         Self,
         slashing::ReportOffences,
-        crate::Historical,
+        slashing::ActiveBabeKeyOwner,
         slashing::ReportLongevity,
     >;
 }
@@ -192,6 +192,7 @@ impl pallet_grandpa::Config for Runtime {
     type EquivocationReportSystem = pallet_grandpa::EquivocationReportSystem<
         Self,
         slashing::ReportOffences,
+        // The GRANDPA current-session key-reassignment analogue remains accepted.
         crate::Historical,
         slashing::ReportLongevity,
     >;

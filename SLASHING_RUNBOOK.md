@@ -41,6 +41,25 @@ Dispatch of a late report fails with the SDK consensus pallet's generic
 `DuplicateOffenceReport` error, which also covers reporter rejection; it does not
 prove an earlier report exists. No slash state is written on rejection.
 
+## Current-session key ownership
+
+BABE reports for the current session must bind the signing key to its active
+validator. `ActiveBabeKeyOwner` checks the key's position in BABE's authority list
+against the corresponding session validator after verifying the membership
+proof. Changing `NextKeys` cannot redirect that report to the new key holder.
+A replacement key that is not yet active is also rejected. The check runs during
+unsigned-pool validation and dispatch; past-session proofs still use the stored
+historical root unchanged.
+
+The analogous GRANDPA current-session exposure remains open and is explicitly
+accepted for this launch: GRANDPA still uses `Historical` without this wrapper.
+If an active GRANDPA key is released and registered by another validator before
+rotation, a current-session proof can identify the new holder and queue the slash
+against that holder. The test
+`accepted_grandpa_current_session_key_reassignment_remains_unwrapped` records this
+scope limit. The BABE fix does not close QUIP-05/20's historical-key limitations
+or extend the report-age window described above.
+
 ## Council discretionary slash
 
 `SlashPolicy::discretionary_slash(stash, era, fraction)` checks active-era

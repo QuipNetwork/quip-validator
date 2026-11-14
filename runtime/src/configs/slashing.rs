@@ -4,11 +4,11 @@ use super::{
     validator_onboarding::{BondingDuration, SessionsPerEra},
     EpochDuration,
 };
-use crate::{AccountId, Offences, Runtime, RuntimeEvent, Staking};
+use crate::{AccountId, Historical, Offences, Runtime, RuntimeEvent, Staking};
 use alloc::vec::Vec;
 use frame_support::{
     parameter_types,
-    traits::{OnRuntimeUpgrade, StorageVersion},
+    traits::{Get, KeyOwnerProofSystem, OnRuntimeUpgrade, StorageVersion},
     weights::Weight,
 };
 use sp_staking::offence::{Offence, OffenceError, ReportOffence};
@@ -26,6 +26,42 @@ const _: () = assert!(SLASH_DEFER_ERAS < BondingDuration::get());
 pub type ReportOffences = GuardedReports;
 type HistoricalReports = pallet_staking::FilterHistoricalOffences<Staking, Offences>;
 type Identification = pallet_session::historical::IdentificationTuple<Runtime>;
+
+/// Bind a current-session BABE proof to the active authority's stash.
+/// Historical's current-session trie uses mutable NextKeys, which can already
+/// assign a released signing key to a different validator. Past sessions keep
+/// using their stored historical roots without this active-set cross-check.
+pub struct ActiveBabeKeyOwner;
+impl<D: AsRef<[u8]>> KeyOwnerProofSystem<(sp_runtime::KeyTypeId, D)> for ActiveBabeKeyOwner {
+    type Proof = sp_session::MembershipProof;
+    type IdentificationTuple = Identification;
+
+    fn prove(key: (sp_runtime::KeyTypeId, D)) -> Option<Self::Proof> {
+        Historical::prove(key)
+    }
+
+    fn check_proof(key: (sp_runtime::KeyTypeId, D), proof: Self::Proof) -> Option<Identification> {
+        let active_index =
+            if proof.session == pallet_session::CurrentIndex::<Runtime>::get() {
+                if key.0 != sp_consensus_babe::KEY_TYPE {
+                    return None;
+                }
+                Some(pallet_babe::Authorities::<Runtime>::get().iter().position(
+                    |(authority, _)| AsRef::<[u8]>::as_ref(authority) == key.1.as_ref(),
+                )?)
+            } else {
+                None
+            };
+        let owner = Historical::check_proof(key, proof)?;
+        if let Some(index) = active_index {
+            // Session supplies BABE authorities in the same order as Validators.
+            if pallet_session::Validators::<Runtime>::get().get(index) != Some(&owner.0) {
+                return None;
+            }
+        }
+        Some(owner)
+    }
+}
 
 /// Match staking's session-to-era lookup, then require a bucket that has not been processed.
 /// Shared by API preflight and the authoritative reporter check at dispatch.
@@ -70,11 +106,32 @@ impl<O: Offence<Identification>> ReportOffence<AccountId, Identification, O> for
     }
 }
 
-/// SDK weights plus the bounded report-age guard's three reads and era-list scan.
+/// SDK weights plus the report-age guard and BABE's active-owner cross-check.
 pub struct EquivocationWeights;
 fn bucket_guard_weight() -> Weight {
     Weight::from_parts(10_000_000, 10_000)
         .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads(3))
+}
+
+fn active_babe_owner_weight() -> Weight {
+    // Charge the current session index and BOTH full bounded lists: 64 hybrid
+    // BABE keys with weights, and the corresponding 64 validator account IDs.
+    // Include compact-length/trie overhead and conservative CPU headroom. This
+    // same check also runs during unsigned-pool validation, outside block weight.
+    let max_authorities: u32 = <Runtime as pallet_babe::Config>::MaxAuthorities::get();
+    let authorities = u64::from(max_authorities);
+    let authority_bytes = <(
+        sp_consensus_babe::AuthorityId,
+        sp_consensus_babe::BabeAuthorityWeight,
+    ) as codec::MaxEncodedLen>::max_encoded_len() as u64;
+    let account_bytes = <AccountId as codec::MaxEncodedLen>::max_encoded_len() as u64;
+    Weight::from_parts(
+        50_000_000,
+        authorities
+            .saturating_mul(authority_bytes + account_bytes)
+            .saturating_add(10_000),
+    )
+    .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads(3))
 }
 impl pallet_babe::WeightInfo for EquivocationWeights {
     fn plan_config_change() -> Weight {
@@ -83,6 +140,7 @@ impl pallet_babe::WeightInfo for EquivocationWeights {
     fn report_equivocation(validators: u32, nominators: u32) -> Weight {
         <() as pallet_babe::WeightInfo>::report_equivocation(validators, nominators)
             .saturating_add(bucket_guard_weight())
+            .saturating_add(active_babe_owner_weight())
     }
 }
 impl pallet_grandpa::WeightInfo for EquivocationWeights {
