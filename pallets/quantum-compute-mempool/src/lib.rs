@@ -327,10 +327,13 @@ pub mod pallet {
     pub type OrdersExpiringAt<T: Config> =
         StorageDoubleMap<_, Twox64Concat, BlockNumberFor<T>, Twox64Concat, u64, (), OptionQuery>;
 
-    /// Earliest `OrdersExpiringAt` bucket that `on_initialize` has not yet
-    /// drained. It lags the current block only while a backlog carries over.
+    /// Next bucket visited by the fairness scan, independently of the head.
     #[pallet::storage]
     pub type NextExpiryBucket<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+    /// Oldest expiry bucket not yet drained; advanced with bounded work.
+    #[pallet::storage]
+    pub type OldestExpiryBucket<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
     #[pallet::storage]
     pub type OrderSolutions<T: Config> = StorageDoubleMap<
@@ -871,11 +874,16 @@ pub mod pallet {
         /// Finalise the orders whose effective expiry is at or before `now`.
         ///
         /// Work is bounded by `MAX_FINALISED_ORDERS_PER_BLOCK`. Overflow
-        /// stays in its bucket and carries over to the next block.
+        /// shares capacity with later due buckets while the head progresses.
         fn on_initialize(now: BlockNumberFor<T>) -> Weight {
             let (finalised, buckets_visited) = Self::finalise_expired_orders(now);
             <T as Config>::WeightInfo::finalise_expired_orders(finalised)
-                .saturating_add(T::DbWeight::get().reads(buckets_visited))
+                // Extra cursor plus the bounded look-ahead key on every visit.
+                .saturating_add(T::DbWeight::get().reads_writes(1 + 2 * buckets_visited, 1))
+                .saturating_add(Weight::from_parts(
+                    50_000_000,
+                    5_000 + 5_000 * buckets_visited,
+                ))
                 .saturating_add(
                     weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
                 )
@@ -1667,48 +1675,82 @@ pub mod pallet {
             }
 
             NextExpiryBucket::<T>::put(now.saturating_add(One::one()));
-            T::DbWeight::get().reads_writes(reads, writes)
+            OldestExpiryBucket::<T>::put(now.saturating_add(One::one()));
+            T::DbWeight::get().reads_writes(reads, writes.saturating_add(1))
         }
 
-        /// Drain expiry buckets at or before `now`, at most
-        /// `MAX_FINALISED_ORDERS_PER_BLOCK` orders and as many bucket reads
-        /// per call.
-        ///
-        /// Each loop iteration either drains one bucket and advances, or
-        /// stops on a bucket that may still hold entries so the next block
-        /// resumes there. The bucket budget bounds the loop when the cursor
-        /// lags behind `now` across empty buckets. Returns the number of
-        /// orders finalised and the number of buckets visited.
+        /// Drain at most eight orders/bucket visits. The head gets its share
+        /// first, then the saved scan serves later due buckets. If the scan is
+        /// caught up, unused capacity returns to the head. Only two cursors are
+        /// stored; processed keys are removed, so no per-bucket list is needed.
         fn finalise_expired_orders(now: BlockNumberFor<T>) -> (u32, u64) {
-            let mut order_budget = types::MAX_FINALISED_ORDERS_PER_BLOCK;
-            let mut bucket_budget = types::MAX_FINALISED_ORDERS_PER_BLOCK;
-            let mut bucket = NextExpiryBucket::<T>::get();
-            let mut finalised: u32 = 0;
-            let mut buckets_visited: u64 = 0;
-
-            while bucket <= now && order_budget > 0 && bucket_budget > 0 {
-                let order_ids: Vec<u64> = OrdersExpiringAt::<T>::iter_key_prefix(bucket)
-                    .take(order_budget as usize)
-                    .collect();
-                let taken = order_ids.len() as u32;
-                for order_id in order_ids {
-                    OrdersExpiringAt::<T>::remove(bucket, order_id);
-                    Self::finalise_order(order_id);
-                }
-                finalised = finalised.saturating_add(taken);
-                buckets_visited = buckets_visited.saturating_add(1);
-
-                if taken == order_budget {
-                    // The bucket may hold more entries. Resume here next block.
+            let mut remaining = types::MAX_FINALISED_ORDERS_PER_BLOCK;
+            let mut visits = types::MAX_FINALISED_ORDERS_PER_BLOCK;
+            let mut head_share = types::EXPIRY_BUCKET_SHARE;
+            let mut head = OldestExpiryBucket::<T>::get();
+            let mut scan = NextExpiryBucket::<T>::get();
+            let mut overflow = false;
+            while head <= now && head_share > 0 && visits > 0 {
+                let (taken, drained) = Self::drain_expiry_bucket(head, head_share);
+                remaining -= taken;
+                head_share -= taken;
+                visits -= 1;
+                if !drained {
+                    overflow = true;
                     break;
                 }
-                order_budget = order_budget.saturating_sub(taken);
-                bucket_budget = bucket_budget.saturating_sub(1);
-                bucket = bucket.saturating_add(One::one());
+                head = head.saturating_add(One::one());
             }
+            if overflow {
+                let first_later = head.saturating_add(One::one());
+                scan = if scan > now {
+                    first_later
+                } else {
+                    scan.max(first_later)
+                };
+            } else {
+                // With no overflowing head, preserve ordinary FIFO ordering.
+                scan = head;
+            }
+            while scan <= now && remaining > 0 && visits > 0 {
+                let (taken, drained) =
+                    Self::drain_expiry_bucket(scan, remaining.min(types::EXPIRY_BUCKET_SHARE));
+                remaining -= taken;
+                visits -= 1;
+                if scan == head && drained {
+                    head = head.saturating_add(One::one());
+                }
+                scan = scan.saturating_add(One::one());
+            }
+            if overflow && scan > now && remaining > 0 && visits > 0 {
+                let (taken, drained) = Self::drain_expiry_bucket(head, remaining);
+                remaining -= taken;
+                visits -= 1;
+                if drained {
+                    head = head.saturating_add(One::one());
+                }
+            }
+            OldestExpiryBucket::<T>::put(head);
+            NextExpiryBucket::<T>::put(scan);
+            (
+                types::MAX_FINALISED_ORDERS_PER_BLOCK - remaining,
+                u64::from(types::MAX_FINALISED_ORDERS_PER_BLOCK - visits),
+            )
+        }
 
-            NextExpiryBucket::<T>::put(bucket);
-            (finalised, buckets_visited)
+        fn drain_expiry_bucket(bucket: BlockNumberFor<T>, limit: u32) -> (u32, bool) {
+            // One extra key distinguishes a drained bucket from a full share.
+            let mut ids: Vec<u64> = OrdersExpiringAt::<T>::iter_key_prefix(bucket)
+                .take(limit.saturating_add(1) as usize)
+                .collect();
+            let drained = ids.len() <= limit as usize;
+            ids.truncate(limit as usize);
+            let taken = ids.len() as u32;
+            for order_id in ids {
+                OrdersExpiringAt::<T>::remove(bucket, order_id);
+                Self::finalise_order(order_id);
+            }
+            (taken, drained)
         }
 
         /// Mark an open order expired at its effective expiry and announce the

@@ -12,6 +12,15 @@ pub const MAX_SOLVERS_PER_OPEN_ORDER: u32 = 32;
 /// beyond this bound carry over to the following blocks in bucket order.
 pub const MAX_FINALISED_ORDERS_PER_BLOCK: u32 = 8;
 
+/// Reserve four finalisations for the oldest due bucket and four for the scan.
+/// Once reached, a head with N remaining orders drains in at most ceil(N/4)
+/// blocks. Later due buckets receive the other share without waiting for it.
+/// Empty-bucket traversal is separately bounded to eight visits per block;
+/// sustained arrivals above eight cannot have a finite global completion bound.
+pub const EXPIRY_BUCKET_SHARE: u32 = 4;
+const _: () =
+    assert!(EXPIRY_BUCKET_SHARE > 0 && EXPIRY_BUCKET_SHARE < MAX_FINALISED_ORDERS_PER_BLOCK);
+
 /// Registered problem families. v0 supports Ising only.
 #[derive(
     Clone,

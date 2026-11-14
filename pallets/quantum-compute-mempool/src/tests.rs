@@ -1797,7 +1797,8 @@ fn on_initialize_finalises_at_most_the_per_block_cap_and_carries_overflow() {
         assert_eq!(status_count(&ids, OrderStatus::Expired), 8);
         assert_eq!(status_count(&ids, OrderStatus::Opened), 1);
         assert_eq!(bucket_ids(2).len(), 1);
-        assert_eq!(NextExpiryBucket::<Test>::get(), 2);
+        assert_eq!(crate::OldestExpiryBucket::<Test>::get(), 2);
+        assert_eq!(NextExpiryBucket::<Test>::get(), 3);
 
         run_to_block(3);
         assert_eq!(status_count(&ids, OrderStatus::Expired), 9);
@@ -3189,5 +3190,58 @@ fn poc_reaped_sub_ed_winner_locks_order_reward() {
                 ..
             })
         )));
+    });
+}
+
+#[test]
+fn overflowing_expiry_head_and_later_bucket_both_progress_within_budget() {
+    new_test_ext().execute_with(|| {
+        let mut head = Vec::new();
+        for proposer in [1, 2, 3] {
+            for _ in 0..8 {
+                head.push(propose_single_best(proposer, 1, 1));
+            }
+        }
+        let later = propose_single_best(4, 2, 1);
+        run_to_block(2);
+        assert_eq!(status_count(&head, OrderStatus::Expired), 8);
+        let before = status_count(&head, OrderStatus::Expired);
+        run_to_block(3);
+        assert_eq!(
+            JobOrders::<Test>::get(later).unwrap().status,
+            OrderStatus::Expired,
+            "later due bucket must receive work before the head drains"
+        );
+        let after = status_count(&head, OrderStatus::Expired);
+        assert!(after >= before + 4 && after < head.len());
+        assert!(after - before + 1 <= crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
+        let mut previous = after;
+        for now in 4..=10 {
+            run_to_block(now);
+            let current = status_count(&head, OrderStatus::Expired);
+            assert!(current - previous <= crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
+            assert!(
+                current > previous || current == head.len(),
+                "head must not starve"
+            );
+            previous = current;
+        }
+        assert_eq!(previous, head.len());
+        assert!(bucket_ids(2).is_empty() && bucket_ids(3).is_empty());
+    });
+}
+
+#[test]
+fn small_expiry_buckets_keep_fifo_order_with_the_same_total_budget() {
+    new_test_ext().execute_with(|| {
+        let early: Vec<_> = (0..3).map(|_| propose_single_best(1, 1, 1)).collect();
+        let later: Vec<_> = (0..6).map(|_| propose_single_best(2, 2, 1)).collect();
+        // A skipped hook models catching up to two due buckets at once.
+        System::set_block_number(3);
+        QuantumComputeMempool::on_initialize(3);
+        assert_eq!(status_count(&early, OrderStatus::Expired), 3);
+        assert_eq!(status_count(&later, OrderStatus::Expired), 5);
+        run_to_block(4);
+        assert_eq!(status_count(&later, OrderStatus::Expired), 6);
     });
 }

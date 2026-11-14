@@ -133,6 +133,70 @@ fn register_program_docs(metadata: &mut Value) -> Result<&mut Value, String> {
         .ok_or_else(|| "missing register_job_spec docs".into())
 }
 
+fn mempool_storage_entries(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    metadata["pallets"]
+        .as_array_mut()
+        .ok_or("missing pallets")?
+        .iter_mut()
+        .find(|pallet| pallet["name"] == MEMPOOL)
+        .and_then(|pallet| pallet.get_mut("storage"))
+        .and_then(|storage| storage.get_mut("entries"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "missing mempool storage".into())
+}
+
+fn normalize_audit_expiry_storage(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let old_entries = mempool_storage_entries(before)?;
+    if old_entries
+        .iter()
+        .any(|entry| entry["name"] == "OldestExpiryBucket")
+    {
+        return Err("unexpected baseline expiry anchor".into());
+    }
+    let old_docs = serde_json::json!([
+        " Earliest `OrdersExpiringAt` bucket that `on_initialize` has not yet",
+        " drained. It lags the current block only while a backlog carries over."
+    ]);
+    let old_cursor = old_entries
+        .iter()
+        .find(|entry| entry["name"] == "NextExpiryBucket")
+        .ok_or("missing baseline expiry cursor")?;
+    if old_cursor["docs"] != old_docs {
+        return Err("unexpected baseline expiry cursor docs".into());
+    }
+    let entries = mempool_storage_entries(after)?;
+    let cursor = entries
+        .iter()
+        .find(|entry| entry["name"] == "NextExpiryBucket")
+        .ok_or("missing candidate expiry cursor")?;
+    if cursor["docs"]
+        != serde_json::json!([
+            " Next bucket visited by the fairness scan, independently of the head."
+        ])
+    {
+        return Err("unexpected fairness cursor docs".into());
+    }
+    // Bind the new anchor to the existing cursor's exact type, default and
+    // modifier. The remaining graph comparison checks that cursor unchanged.
+    let mut expected = cursor.clone();
+    expected["name"] = Value::from("OldestExpiryBucket");
+    expected["docs"] =
+        serde_json::json!([" Oldest expiry bucket not yet drained; advanced with bounded work."]);
+    let anchors: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["name"] == "OldestExpiryBucket")
+        .collect();
+    if anchors.len() != 1 || *anchors[0] != expected {
+        return Err("unexpected required expiry anchor".into());
+    }
+    entries.retain(|entry| entry["name"] != "OldestExpiryBucket");
+    entries
+        .iter_mut()
+        .find(|entry| entry["name"] == "NextExpiryBucket")
+        .unwrap()["docs"] = old_docs;
+    Ok(())
+}
+
 fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String> {
     let baseline_docs = register_program_docs(before)?
         .as_array()
@@ -447,6 +511,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
             ));
         }
     }
+    normalize_audit_expiry_storage(&mut left, &mut right)?;
     normalize_mempool(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
@@ -783,5 +848,32 @@ mod tests {
         check(&before, &renumbered_after).unwrap();
         check(&renumbered_before, &after).unwrap();
         check(&renumbered_before, &renumbered_after).unwrap();
+    }
+
+    #[test]
+    fn requires_exact_expiry_anchor_and_cursor_delta() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for field in ["name", "modifier", "type", "default", "docs"] {
+            let mut wrong = after.clone();
+            mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["name"] == "OldestExpiryBucket")
+                .unwrap()[field] = Value::from("mutated");
+            assert!(check(&before, &wrong).is_err(), "accepted anchor {field}");
+        }
+        let mut missing = after.clone();
+        mempool_storage_entries(&mut missing)
+            .unwrap()
+            .retain(|entry| entry["name"] != "OldestExpiryBucket");
+        assert!(check(&before, &missing).is_err());
+        let mut wrong_before = before.clone();
+        mempool_storage_entries(&mut wrong_before)
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["name"] == "NextExpiryBucket")
+            .unwrap()["docs"] = Value::from("mutated");
+        assert!(check(&wrong_before, &after).is_err());
     }
 }

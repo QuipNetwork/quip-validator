@@ -817,6 +817,7 @@ mod benchmarks {
         frame_system::Pallet::<T>::set_block_number(expiry_block);
         // Measure one full bucket, not the empty buckets before it.
         NextExpiryBucket::<T>::put(expiry_block);
+        OldestExpiryBucket::<T>::put(expiry_block);
 
         #[block]
         {
