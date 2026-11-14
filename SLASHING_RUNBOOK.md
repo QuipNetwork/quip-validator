@@ -202,7 +202,11 @@ Use the in-place migration to initialize Offences' on-chain storage version to
 and signing versions remain unchanged in this work.
 
 Regenerate the new pallet's conservative initial weights and the admission
-filter overhead on the serialized reference runner before release. Run the
+filter overhead on the serialized reference runner before release. Include the
+handwritten `EquivocationWeights` delta for `ActiveBabeKeyOwner` explicitly:
+`weights-staleness-check` cannot detect it, and the registered allowance is not
+a measurement. Measure the extra current-session authority/validator reads and
+comparison in both unsigned-pool validation and dispatch. Run the
 runtime API evidence tests, deferred application/burn test, boundary regression,
 council bypass tests, pallet budget tests, benchmark preflight, no_std build,
 try-runtime checks, clippy, and workspace tests against the final design.

@@ -1189,3 +1189,43 @@ fn accepted_grandpa_current_session_key_reassignment_remains_unwrapped() {
         assert_ne!(slashes[0].validator, alice);
     });
 }
+
+#[test]
+fn active_babe_proof_rejects_shorter_session_list_even_when_historical_accepts() {
+    ext().execute_with(|| {
+        let validators = pallet_session::Validators::<Runtime>::get();
+        let authorities = pallet_babe::Authorities::<Runtime>::get();
+        assert!(validators.len() > 1);
+        assert_eq!(validators.len(), authorities.len());
+        let index = authorities.len() - 1;
+        let key = (sp_consensus_babe::KEY_TYPE, authorities[index].0.clone());
+        let original = Historical::prove(key.clone()).unwrap();
+        assert_eq!(
+            ActiveBabeKeyOwner::check_proof(key.clone(), original.clone())
+                .unwrap()
+                .0,
+            validators[index]
+        );
+
+        // Model a partially replaced session list: the authority is still at
+        // the old BABE index, but its owner is now the sole Session validator.
+        // Prove against the short list so Historical itself genuinely accepts;
+        // an old proof would fail its count check before reaching our guard.
+        pallet_session::Validators::<Runtime>::put(vec![validators[index].clone()]);
+        let skewed = Historical::prove(key.clone()).unwrap();
+        assert_eq!(
+            Historical::check_proof(key.clone(), skewed.clone())
+                .unwrap()
+                .0,
+            validators[index]
+        );
+        assert!(ActiveBabeKeyOwner::check_proof(key.clone(), skewed).is_none());
+        assert_eq!(pallet_babe::Authorities::<Runtime>::get(), authorities);
+
+        pallet_session::Validators::<Runtime>::put(validators.clone());
+        assert_eq!(
+            ActiveBabeKeyOwner::check_proof(key, original).unwrap().0,
+            validators[index]
+        );
+    });
+}
