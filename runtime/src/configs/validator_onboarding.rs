@@ -31,8 +31,9 @@ parameter_types! {
     /// 64-wide authority and election bounds, which are headroom above it.
     pub const MaxValidatorSetCap: u32 = 50;
     pub const SessionsPerEra: u32 = 6;
-    pub const BondingDuration: u32 = 28;
-    pub const SetIdSessionEntries: u64 = 28 * 6;
+    pub const BondingDuration: u32 = 30;
+    // Retain the predecessor set at the edge of the equivocation report horizon.
+    pub const SetIdSessionEntries: u64 = 30 * 6 + 1;
     pub const FoundationMotionDuration: BlockNumber = 24 * super::super::HOURS;
     pub FoundationProposalWeight: Weight = RuntimeBlockWeights::get().max_block / 2;
     // Both genesis and MBE fallback must fit every admitted candidate and the

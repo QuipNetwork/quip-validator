@@ -14,7 +14,7 @@ its stored exposure for the offence era; the zero exposure carried by
 `DefaultExposureOf` in a membership proof is an identification compatibility
 value, not the amount at risk.
 
-`ReportLongevity = 403200` is transaction-pool validity/revalidation in blocks.
+`ReportLongevity = 432000` is transaction-pool validity/revalidation in blocks.
 It does not guarantee that a proof remains actionable for that period. Historical
 roots, bonded-era retention, and the report acceptance policy determine that.
 
@@ -59,7 +59,10 @@ runtime code upgrade.
 
 The per-dispatch limit (`MaxDiscretionarySlashPerMotion`) defaults to 1% and can be set within 0.1%–5%. The
 cumulative limit defaults to 4% and can be set within 1%–10%; it must be at least
-the per-dispatch limit. The window defaults to 28 eras and may be increased to 84.
+the per-dispatch limit. The window defaults to 30 eras and may be increased to 84.
+The default follows `BondingDuration`: the pallet requires `window >= BondingDuration`.
+This is a storage default, so the change from 28 to 30 adds no genesis write and
+does not rewrite an explicitly stored window; runtime 120 uses fresh genesis.
 History is retained for 84 eras even when the selected window is shorter.
 Each stash has a bounded vector with at most one entry per era. Entries outside
 the configured window stop counting toward the budget; entries older than 84
