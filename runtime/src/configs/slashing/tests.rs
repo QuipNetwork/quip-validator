@@ -1005,3 +1005,112 @@ fn vv_control_offence_disable_limit() {
         );
     });
 }
+
+// Ported from the QUIP-21 audit handover.
+#[test]
+fn vv_poc_parent_session_proof_rejects_boundary_equivocation() {
+    let (pool, state) = sp_core::offchain::testing::TestTransactionPoolExt::new();
+    let mut ext = ext();
+    ext.register_extension(sp_core::offchain::TransactionPoolExt::new(pool));
+    ext.execute_with(|| {
+        let pair = AuthorityPair::from_string("//Alice", None).unwrap();
+        let old_session = pallet_session::CurrentIndex::<Runtime>::get();
+        let next_epoch_slot = pallet_babe::GenesisSlot::<Runtime>::get()
+            + Slot::from(
+                (pallet_babe::EpochIndex::<Runtime>::get() + 1)
+                    * super::super::EpochDuration::get(),
+            );
+        let parent_proof: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+            "BabeApi_generate_key_ownership_proof",
+            (next_epoch_slot, pair.public()),
+        );
+        let parent_proof = parent_proof.map(|proof| {
+            let decoded: sp_session::MembershipProof = proof.decode().unwrap();
+            assert_eq!(decoded.session, old_session);
+            sp_consensus_babe::OpaqueKeyOwnershipProof::new(decoded.encode())
+        });
+        let used_parent = parent_proof.is_some();
+
+        next_session();
+        assert_eq!(pallet_session::CurrentIndex::<Runtime>::get(), old_session + 1);
+        let make_header = |root: u8| {
+            let pre_digest = PreDigest::SecondaryPlain(SecondaryPlainPreDigest {
+                authority_index: pallet_babe::Authorities::<Runtime>::get()
+                    .iter()
+                    .position(|(key, _)| *key == pair.public())
+                    .unwrap() as u32,
+                slot: next_epoch_slot,
+            });
+            let mut header = Header::new(
+                1,
+                H256::repeat_byte(root),
+                H256::zero(),
+                H256::zero(),
+                Digest {
+                    logs: vec![DigestItem::babe_pre_digest(pre_digest)],
+                },
+            );
+            let signature = pair.sign(header.hash().as_ref());
+            header.digest_mut().push(DigestItem::babe_seal(signature));
+            header
+        };
+        let evidence = EquivocationProof {
+            slot: next_epoch_slot,
+            offender: pair.public(),
+            first_header: make_header(1),
+            second_header: make_header(2),
+        };
+        assert!(sp_consensus_babe::check_equivocation_proof(evidence.clone()));
+        let selected_proof = parent_proof.or_else(|| {
+            api::<Option<sp_consensus_babe::OpaqueKeyOwnershipProof>>(
+                "BabeApi_generate_key_ownership_proof",
+                (evidence.slot, evidence.offender.clone()),
+            )
+        }).expect("continuing authority is provable");
+        let submitted: Option<()> = api(
+            "BabeApi_submit_report_equivocation_unsigned_extrinsic",
+            (evidence, selected_proof),
+        );
+        assert_eq!(submitted, Some(()));
+        let transactions = &state.read().transactions;
+        assert_eq!(transactions.len(), 1);
+        let extrinsic = UncheckedExtrinsic::decode(&mut &transactions[0][..]).unwrap();
+        let _dispatch = extrinsic.0.function.dispatch(RuntimeOrigin::none());
+        let reports = pallet_offences::Reports::<Runtime>::iter().count();
+        if reports == 0 {
+            println!(
+                "VV-BUG-REPRODUCED: boundary slot old_session={} current={} used_parent={} reports=0",
+                old_session,
+                pallet_session::CurrentIndex::<Runtime>::get(),
+                used_parent
+            );
+        }
+        assert_eq!(reports, 1, "stock client selection must report boundary equivocation");
+    });
+}
+
+#[test]
+fn babe_key_ownership_proof_excludes_next_epoch_slots() {
+    ext().execute_with(|| {
+        let authority = AuthorityPair::from_string("//Alice", None)
+            .unwrap()
+            .public();
+        let boundary =
+            Babe::current_epoch_start().saturating_add(super::super::EpochDuration::get());
+        let last_current: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+            "BabeApi_generate_key_ownership_proof",
+            (boundary - Slot::from(1), authority.clone()),
+        );
+        assert!(last_current.is_some());
+        for slot in [boundary, boundary + Slot::from(1), Slot::from(u64::MAX)] {
+            let proof: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+                "BabeApi_generate_key_ownership_proof",
+                (slot, authority.clone()),
+            );
+            assert!(
+                proof.is_none(),
+                "future epoch slot must retry against newer state"
+            );
+        }
+    });
+}
