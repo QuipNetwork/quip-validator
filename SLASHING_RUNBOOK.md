@@ -178,9 +178,11 @@ own pallet; they are not moved into this ledger.
 
 ## Release checks
 
-Use the in-place migration to initialize Offences' on-chain storage version to
-1. It is idempotent and preserves existing reports. Existing pallet/call indices
-and signing versions remain unchanged in this work.
+Runtime 120 starts from fresh genesis. The genesis builder initializes
+Offences' on-chain storage version to 1; the genesis tests also check the other
+pallet versions and staking limits. Legacy upgrade migrations are removed for
+this reset. Future in-place upgrades add migrations normally. Existing
+pallet/call indices and signing versions remain unchanged by this reset.
 
 Regenerate the new pallet's conservative initial weights and the admission
 filter overhead on the serialized reference runner before release. Run the
