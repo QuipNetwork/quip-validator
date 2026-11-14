@@ -533,7 +533,7 @@ fn before_vesting_metadata() -> RuntimeMetadataV16 {
 
 #[cfg(not(feature = "runtime-benchmarks"))]
 #[test]
-fn vesting_weights_and_mempool_vm_are_the_only_semantic_metadata_deltas() {
+fn vesting_weights_mempool_vm_and_staking_params_are_the_only_semantic_metadata_deltas() {
     let before = serde_json::to_value(before_vesting_metadata()).unwrap();
     let after = serde_json::to_value(metadata_v16()).unwrap();
     vesting_metadata_delta::check(&before, &after).unwrap();
@@ -551,6 +551,46 @@ fn vesting_weights_and_mempool_vm_are_the_only_semantic_metadata_deltas() {
             Err(format!(
                 "missing required regenerated-weight delta: {pallet}.{constant}.value"
             ))
+        );
+    }
+}
+
+#[cfg(not(feature = "runtime-benchmarks"))]
+#[test]
+fn approved_staking_constant_deltas_require_exact_values_on_both_sides() {
+    let before = serde_json::to_value(before_vesting_metadata()).unwrap();
+    let after = serde_json::to_value(metadata_v16()).unwrap();
+    vesting_metadata_delta::check(&before, &after).unwrap();
+    for delta in vesting_metadata_delta::APPROVED_CONSTANT_DELTAS {
+        let mut wrong = after.clone();
+        *delta.value(&mut wrong).unwrap() = serde_json::json!(delta.baseline);
+        assert_eq!(
+            vesting_metadata_delta::check(&before, &wrong),
+            Err(format!(
+                "missing or incorrect approved constant delta: {}",
+                delta.path()
+            ))
+        );
+
+        // Neither an adjacent value nor a shorter policy window is approved.
+        for first_byte in [delta.candidate[0] + 1, 1] {
+            let mut unexpected = delta.candidate.to_vec();
+            unexpected[0] = first_byte;
+            *delta.value(&mut wrong).unwrap() = serde_json::json!(unexpected);
+            assert_eq!(
+                vesting_metadata_delta::check(&before, &wrong),
+                Err(format!(
+                    "missing or incorrect approved constant delta: {}",
+                    delta.path()
+                ))
+            );
+        }
+
+        let mut wrong_baseline = before.clone();
+        *delta.value(&mut wrong_baseline).unwrap() = serde_json::json!(delta.candidate);
+        assert_eq!(
+            vesting_metadata_delta::check(&wrong_baseline, &after),
+            Err(format!("unexpected baseline constant: {}", delta.path()))
         );
     }
 }

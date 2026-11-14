@@ -311,7 +311,7 @@ fn deferred_consensus_slash_is_applied_at_scheduled_era_and_burns_issuance() {
 }
 
 #[test]
-fn oldest_bonded_report_is_rejected_before_any_slash_accounting() {
+fn processed_slash_bucket_report_is_rejected_before_any_slash_accounting() {
     use frame_support::assert_noop;
     let (pool, state) = sp_core::offchain::testing::TestTransactionPoolExt::new();
     let mut ext = ext();
@@ -351,7 +351,7 @@ fn oldest_bonded_report_is_rejected_before_any_slash_accounting() {
                 .first()
                 .unwrap()
                 .0,
-            1
+            29u32.saturating_sub(BondingDuration::get())
         );
         assert!(!has_pending_slash_bucket(babe_owner.session));
         let result: Option<()> = api(
@@ -660,6 +660,7 @@ fn council_wrapper_defaults_schedule_and_root_path_can_cancel_then_force_unstake
             pallet_slash_policy::BudgetWindow::<Runtime>::get(),
             BondingDuration::get()
         );
+        assert_eq!(pallet_slash_policy::BudgetWindow::<Runtime>::get(), 30);
         let minority: RuntimeOrigin = pallet_collective::RawOrigin::<
             crate::AccountId,
             pallet_collective::Instance1,
@@ -833,5 +834,489 @@ fn root_upgrade_and_heap_paths_remain_allowed() {
         crate::System::assert_last_event(
             pallet_validator_admission::Event::RootDispatched { result: Ok(()) }.into(),
         );
+    });
+}
+
+// Ported from the QUIP-09/part-a audit handover.
+#[test]
+fn vv_poc_post_snapshot_unbond_outlives_deferred_slash() {
+    use frame_support::traits::KeyOwnerProofSystem;
+
+    ext().execute_with(|| {
+        let current_evidence = babe_evidence();
+        let current_owner = crate::Historical::prove((
+            sp_consensus_babe::KEY_TYPE,
+            current_evidence.offender.clone(),
+        ))
+        .unwrap();
+        let (stash, _) = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, current_evidence.offender),
+            current_owner,
+        )
+        .unwrap();
+        assert_ok!(Staking::bond_extra(
+            RuntimeOrigin::signed(stash.clone()),
+            1_000 * crate::UNIT,
+        ));
+        // Staking announces era 2 while era 1 remains active. The next-era
+        // election has already taken its voter snapshot at this point.
+        for _ in 0..8 {
+            if pallet_staking::CurrentEra::<Runtime>::get() == Some(2)
+                && pallet_staking::ActiveEra::<Runtime>::get().unwrap().index == 1
+            {
+                break;
+            }
+            next_session();
+        }
+        assert_eq!(pallet_staking::CurrentEra::<Runtime>::get(), Some(2));
+        assert_eq!(
+            pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+            1
+        );
+
+        let before = pallet_staking::Ledger::<Runtime>::get(&stash).unwrap();
+        assert_eq!(before.active, 3_000 * crate::UNIT);
+        assert_ok!(Staking::unbond(
+            RuntimeOrigin::signed(stash.clone()),
+            1_000 * crate::UNIT,
+        ));
+        let after_unbond = pallet_staking::Ledger::<Runtime>::get(&stash).unwrap();
+        assert_eq!(after_unbond.active, 2_000 * crate::UNIT);
+        assert_eq!(after_unbond.unlocking.len(), 1);
+        assert_eq!(after_unbond.unlocking[0].era, 32);
+
+        advance_to_era(2);
+        let exposure = pallet_staking::ErasStakersOverview::<Runtime>::get(2, &stash).unwrap();
+        assert_eq!(exposure.total, 3_000 * crate::UNIT);
+
+        let evidence = babe_evidence();
+        let owner =
+            crate::Historical::prove((sp_consensus_babe::KEY_TYPE, evidence.offender.clone()))
+                .unwrap();
+        let (offender_stash, _) = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, evidence.offender.clone()),
+            owner.clone(),
+        )
+        .unwrap();
+        assert_eq!(offender_stash, stash);
+        assert_ok!(Babe::report_equivocation_unsigned(
+            RuntimeOrigin::none(),
+            Box::new(evidence),
+            owner,
+        ));
+        assert_eq!(
+            pallet_staking::UnappliedSlashes::<Runtime>::get(30).len(),
+            1
+        );
+
+        advance_to_era(29);
+        for _ in 0..8 {
+            if pallet_staking::CurrentEra::<Runtime>::get() == Some(30) {
+                break;
+            }
+            next_session();
+        }
+        assert_eq!(pallet_staking::CurrentEra::<Runtime>::get(), Some(30));
+        assert_eq!(
+            pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+            29
+        );
+        assert_eq!(
+            pallet_staking::UnappliedSlashes::<Runtime>::get(30).len(),
+            1
+        );
+
+        let total_before_withdrawal = pallet_staking::Ledger::<Runtime>::get(&stash)
+            .unwrap()
+            .total;
+        assert_ok!(Staking::withdraw_unbonded(
+            RuntimeOrigin::signed(stash.clone()),
+            0,
+        ));
+        let total_after_withdrawal = pallet_staking::Ledger::<Runtime>::get(&stash)
+            .unwrap()
+            .total;
+        let escaped = total_before_withdrawal - total_after_withdrawal;
+        assert_eq!(
+            escaped, 0,
+            "snapshotted validator stake must remain slashable"
+        );
+        let issuance_before_slash = crate::Balances::total_issuance();
+        advance_to_era(30);
+        let burned = issuance_before_slash - crate::Balances::total_issuance();
+        assert_eq!(burned, exposure.total);
+    });
+}
+
+// Ported from the QUIP-09/part-b audit handover.
+// The nominator case needs 30 eras: 29 closes only the validator variant.
+
+fn vv_poll_election_block() {
+    use frame_support::{traits::Hooks, weights::WeightMeter};
+    let now = crate::System::block_number() + 1;
+    crate::System::set_block_number(now);
+    let mut meter = WeightMeter::with_limit(super::super::RuntimeBlockWeights::get().max_block);
+    <crate::MultiBlockElection as Hooks<crate::BlockNumber>>::on_poll(now, &mut meter);
+}
+
+fn vv_next_session_blockwise() {
+    use frame_support::traits::Hooks;
+    let index = pallet_session::CurrentIndex::<Runtime>::get() + 1;
+    let block = index * super::super::EpochDuration::get() as u32;
+    while crate::System::block_number() < block - 1 {
+        vv_poll_election_block();
+    }
+    crate::System::set_block_number(block);
+    pallet_babe::CurrentSlot::<Runtime>::put(Slot::from(u64::from(block)));
+    pallet_babe::Initialized::<Runtime>::put(None::<PreDigest>);
+    crate::Timestamp::set_timestamp(1 + u64::from(block) * 6_000);
+    crate::Session::rotate_session();
+    <crate::Grandpa as Hooks<crate::BlockNumber>>::on_finalize(block);
+    <Staking as Hooks<crate::BlockNumber>>::on_finalize(block);
+}
+
+fn vv_finish_election_round() {
+    for _ in
+        0..super::super::election::Pages::get() + 1 + super::super::election::UnsignedPhase::get()
+    {
+        vv_poll_election_block();
+    }
+    assert_eq!(
+        pallet_election_provider_multi_block::CurrentPhase::<Runtime>::get(),
+        pallet_election_provider_multi_block::Phase::Done,
+    );
+}
+
+fn vv_advance_active_era_blockwise(target: u32) {
+    for _ in 0..200 {
+        if pallet_staking::ActiveEra::<Runtime>::get().is_some_and(|e| e.index >= target) {
+            break;
+        }
+        vv_next_session_blockwise();
+    }
+    assert_eq!(
+        pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+        target,
+    );
+}
+
+fn vv_setup_era_offset_nominator() -> (crate::AccountId, crate::AccountId) {
+    use frame_support::traits::Currency;
+    vv_advance_active_era_blockwise(1);
+    let validator = quip_transaction_crypto::account_id_from_public(
+        &quip_transaction_crypto::HybridPair::from_string("//Alice", None)
+            .unwrap()
+            .public(),
+    );
+    assert!(crate::Session::validators().contains(&validator));
+    let nominator = crate::AccountId::new([181; 32]);
+    let stake = 3_000 * crate::UNIT;
+    let _ = crate::Balances::make_free_balance_be(&nominator, stake + 2 * crate::UNIT);
+    assert_ok!(Staking::bond(
+        RuntimeOrigin::signed(nominator.clone()),
+        stake,
+        pallet_staking::RewardDestination::Staked,
+    ));
+    assert_ok!(Staking::nominate(
+        RuntimeOrigin::signed(nominator.clone()),
+        vec![crate::Address::Id(validator.clone())],
+    ));
+    while pallet_session::CurrentIndex::<Runtime>::get() < 9 {
+        vv_next_session_blockwise();
+    }
+    assert_eq!(
+        pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+        1,
+    );
+    assert_eq!(pallet_staking::CurrentEra::<Runtime>::get(), Some(1));
+    (validator, nominator)
+}
+
+#[test]
+fn vv_poc_era_offset_after_snapshot() {
+    use frame_support::traits::KeyOwnerProofSystem;
+    super::super::validator_onboarding::tests::ext().execute_with(|| {
+        let (validator, nominator) = vv_setup_era_offset_nominator();
+        let stake = 3_000 * crate::UNIT;
+        vv_finish_election_round();
+        let round = pallet_election_provider_multi_block::Round::<Runtime>::get();
+        let snapshot =
+            pallet_election_provider_multi_block::PagedVoterSnapshot::<Runtime>::get(round, 0)
+                .expect("voter page exists after the election round");
+        assert!(snapshot.iter().any(|(who, weight, _)| {
+            *who == nominator && *weight == Staking::weight_of(&nominator)
+        }));
+        assert_eq!(pallet_staking::CurrentEra::<Runtime>::get(), Some(1));
+        assert_eq!(
+            pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+            1
+        );
+
+        // Keep a small active ledger alongside the snapshotted unlocking stake.
+        assert_ok!(Staking::bond_extra(
+            RuntimeOrigin::signed(nominator.clone()),
+            crate::UNIT,
+        ));
+        assert_ok!(Staking::chill(RuntimeOrigin::signed(nominator.clone())));
+        assert_ok!(Staking::unbond(
+            RuntimeOrigin::signed(nominator.clone()),
+            stake
+        ));
+        let chunk = pallet_staking::Ledger::<Runtime>::get(&nominator)
+            .unwrap()
+            .unlocking[0]
+            .clone();
+        assert_eq!(chunk.value, stake);
+        assert_eq!(chunk.era, 31);
+
+        vv_advance_active_era_blockwise(2);
+        let overview = pallet_staking::ErasStakersOverview::<Runtime>::get(2, &validator).unwrap();
+        let page = pallet_staking::ErasStakersPaged::<Runtime>::get((2, &validator, 0)).unwrap();
+        assert_eq!(overview.total, 5_000 * crate::UNIT);
+        assert!(page
+            .others
+            .iter()
+            .any(|other| other.who == nominator && other.value == stake));
+
+        let evidence = babe_evidence();
+        let owner =
+            crate::Historical::prove((sp_consensus_babe::KEY_TYPE, evidence.offender.clone()))
+                .unwrap();
+        let (offender, _) = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, evidence.offender.clone()),
+            owner.clone(),
+        )
+        .unwrap();
+        assert_eq!(offender, validator);
+        assert_ok!(Babe::report_equivocation_unsigned(
+            RuntimeOrigin::none(),
+            Box::new(evidence),
+            owner,
+        ));
+        let pending = pallet_staking::UnappliedSlashes::<Runtime>::get(30);
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0]
+            .others
+            .iter()
+            .any(|(who, amount)| *who == nominator && *amount == stake));
+
+        let queued = pending[0].own
+            + pending[0]
+                .others
+                .iter()
+                .map(|(_, amount)| *amount)
+                .sum::<crate::Balance>();
+        vv_advance_active_era_blockwise(29);
+        for _ in 0..8 {
+            if pallet_staking::CurrentEra::<Runtime>::get() == Some(30) {
+                break;
+            }
+            vv_next_session_blockwise();
+        }
+        assert_eq!(pallet_staking::CurrentEra::<Runtime>::get(), Some(30));
+        assert_eq!(
+            pallet_staking::ActiveEra::<Runtime>::get().unwrap().index,
+            29
+        );
+        assert_eq!(
+            pallet_staking::UnappliedSlashes::<Runtime>::get(30).len(),
+            1
+        );
+        let total_before = pallet_staking::Ledger::<Runtime>::get(&nominator)
+            .unwrap()
+            .total;
+        let spans = pallet_staking::SlashingSpans::<Runtime>::get(&nominator)
+            .map_or(0, |spans| spans.prior.len() as u32 + 1);
+        assert_ok!(Staking::withdraw_unbonded(
+            RuntimeOrigin::signed(nominator.clone()),
+            spans,
+        ));
+        let total_after =
+            pallet_staking::Ledger::<Runtime>::get(&nominator).map_or(0, |ledger| ledger.total);
+        let released = total_before - total_after;
+        assert_eq!(
+            released, 0,
+            "snapshotted stake must remain slashable until era 30"
+        );
+        let issuance_before = crate::Balances::total_issuance();
+        vv_advance_active_era_blockwise(30);
+        let burned = issuance_before - crate::Balances::total_issuance();
+        assert_eq!(
+            burned, queued,
+            "the full queued validator and nominator slash must burn"
+        );
+        assert!(pallet_staking::UnappliedSlashes::<Runtime>::get(30).is_empty());
+        assert_eq!(
+            pallet_staking::Ledger::<Runtime>::get(&nominator)
+                .unwrap()
+                .total,
+            total_before - stake,
+            "the full snapshotted nominator stake must be slashed before withdrawal"
+        );
+    });
+}
+
+#[test]
+fn vv_poc_era_offset_control_before_snapshot() {
+    super::super::validator_onboarding::tests::ext().execute_with(|| {
+        let (validator, nominator) = vv_setup_era_offset_nominator();
+        assert_ok!(Staking::chill(RuntimeOrigin::signed(nominator.clone())));
+        assert_ok!(Staking::unbond(
+            RuntimeOrigin::signed(nominator.clone()),
+            3_000 * crate::UNIT,
+        ));
+        vv_finish_election_round();
+        let round = pallet_election_provider_multi_block::Round::<Runtime>::get();
+        let snapshot =
+            pallet_election_provider_multi_block::PagedVoterSnapshot::<Runtime>::get(round, 0)
+                .expect("voter page exists after the election round");
+        assert!(snapshot.iter().all(|(who, _, _)| *who != nominator));
+        vv_advance_active_era_blockwise(2);
+        let overview = pallet_staking::ErasStakersOverview::<Runtime>::get(2, &validator).unwrap();
+        assert_eq!(overview.total, 2_000 * crate::UNIT);
+        let page = pallet_staking::ErasStakersPaged::<Runtime>::get((2, &validator, 0));
+        assert!(page.is_none_or(|page| page.others.iter().all(|other| other.who != nominator)));
+    });
+}
+
+// Ported from the R13 audit handover.
+
+#[test]
+fn vv_poc_grandpa_retention() {
+    use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
+    use sp_consensus_grandpa::{AuthorityPair, Equivocation, EquivocationProof};
+    use sp_core::proof_of_possession::ProofOfPossessionGenerator;
+
+    fn change_keys(owner: &str, seed: &str) {
+        let who = quip_transaction_crypto::account_id_from_public(
+            &quip_transaction_crypto::HybridPair::from_string(owner, None)
+                .unwrap()
+                .public(),
+        );
+        let mut babe = sr25519_fndsa512::Pair::from_string(seed, None).unwrap();
+        let mut grandpa = ed25519_fndsa512::Pair::from_string(seed, None).unwrap();
+        let keys = crate::SessionKeys {
+            babe: babe.public().into(),
+            grandpa: grandpa.public().into(),
+        }
+        .into();
+        let proof = (
+            babe.generate_proof_of_possession(&who.encode()),
+            grandpa.generate_proof_of_possession(&who.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(who),
+            keys,
+            proof
+        ));
+    }
+
+    let mut ext = ext();
+    ext.execute_with(|| {
+        // A queued change becomes effective one session after it is first queued.
+        change_keys("//Alice", "//Charlie");
+        while pallet_staking::ActiveEra::<Runtime>::get().unwrap().index < 2 {
+            if pallet_session::CurrentIndex::<Runtime>::get() ==
+                pallet_staking::ErasStartSessionIndex::<Runtime>::get(1).unwrap() + 5 {
+                change_keys("//Bob", "//Eve");
+            }
+            next_session();
+        }
+        // Restore Bob NextKeys to the keys used when session 12 historical root
+        // was planned; its already-queued Eve keys still activate next session.
+        change_keys("//Bob", "//Bob");
+        let offence_era = pallet_staking::ActiveEra::<Runtime>::get().unwrap().index;
+        let pair = AuthorityPair::from_string("//Charlie", None).unwrap();
+        assert!(pallet_grandpa::Authorities::<Runtime>::get()
+            .iter().any(|(key, _)| key == &pair.public()));
+        let set_id = pallet_grandpa::CurrentSetId::<Runtime>::get();
+        assert!(set_id > 0);
+        let round = 7;
+        let vote = |root| {
+            let prevote = finality_grandpa::Prevote {
+                target_hash: H256::repeat_byte(root), target_number: 1u32,
+            };
+            let payload = sp_consensus_grandpa::localized_payload(
+                round, set_id, &finality_grandpa::Message::Prevote(prevote.clone()),
+            );
+            (prevote, pair.sign(&payload))
+        };
+        let evidence = EquivocationProof::new(set_id, Equivocation::Prevote(
+            finality_grandpa::Equivocation {
+                round_number: round, identity: pair.public(),
+                first: vote(1), second: vote(2),
+            },
+        ));
+        assert!(sp_consensus_grandpa::check_equivocation_proof(evidence.clone()));
+        let proof: sp_session::MembershipProof =
+            crate::Historical::prove((sp_consensus_grandpa::KEY_TYPE, pair.public())).unwrap();
+        let offence_session = proof.session;
+        assert!(pallet_grandpa::SetIdSession::<Runtime>::get(set_id - 1).is_some());
+        let check_proof = || {
+            assert!(crate::Historical::check_proof(
+                (sp_consensus_grandpa::KEY_TYPE, pair.public()), proof.clone(),
+            ).is_some());
+            assert!(has_pending_slash_bucket(offence_session));
+        };
+        println!("C7-INITIAL era={offence_era} session={} proof_session={offence_session} set={set_id} historical_root={}", pallet_session::CurrentIndex::<Runtime>::get(), pallet_session::historical::HistoricalSessions::<Runtime>::contains_key(offence_session));
+        check_proof();
+        let mut changes = 0u64;
+        let mut alternate = false;
+        let mut before_boundary = None;
+        let mut control_accepted = false;
+        while pallet_staking::ActiveEra::<Runtime>::get().unwrap().index < offence_era + 27
+            || pallet_session::CurrentIndex::<Runtime>::get()
+                < pallet_staking::ErasStartSessionIndex::<Runtime>::get(offence_era + 27).unwrap() + 5
+        {
+            change_keys("//Alice", if alternate { "//Charlie" } else { "//Dave" });
+            alternate = !alternate;
+            let old = pallet_grandpa::CurrentSetId::<Runtime>::get();
+            next_session();
+            let new = pallet_grandpa::CurrentSetId::<Runtime>::get();
+            if new != old {
+                assert_eq!(new, old + 1);
+                changes += 1;
+            }
+            if pallet_grandpa::SetIdSession::<Runtime>::get(set_id - 1).is_some() {
+                before_boundary = Some((pallet_session::CurrentIndex::<Runtime>::get(), changes));
+                if !control_accepted && pallet_staking::ActiveEra::<Runtime>::get().unwrap().index == offence_era + 27 {
+                    check_proof();
+                    sp_io::storage::start_transaction();
+                    assert_ok!(crate::Grandpa::report_equivocation_unsigned(
+                        RuntimeOrigin::none(), Box::new(evidence.clone()), proof.clone(),
+                    ));
+                    assert_eq!(pallet_staking::UnappliedSlashes::<Runtime>::get(offence_era + 28).len(), 1);
+                    sp_io::storage::rollback_transaction();
+                    control_accepted = true;
+                }
+            }
+        }
+        println!("C7-DIAGNOSTIC era={} session={} set={} changes={} predecessor_present={} before={:?}", pallet_staking::ActiveEra::<Runtime>::get().unwrap().index, pallet_session::CurrentIndex::<Runtime>::get(), pallet_grandpa::CurrentSetId::<Runtime>::get(), changes, pallet_grandpa::SetIdSession::<Runtime>::get(set_id - 1).is_some(), before_boundary);
+        println!("C7-HISTORICAL proof_session={} root_present={} stored_range={:?} pending={}", offence_session, pallet_session::historical::HistoricalSessions::<Runtime>::contains_key(offence_session), pallet_session::historical::StoredRange::<Runtime>::get(), has_pending_slash_bucket(offence_session));
+        check_proof();
+        assert!(control_accepted, "valid report before pruning must queue slash");
+        let last_kept = before_boundary.expect("pre-pruning boundary");
+        assert!(changes > 0, "ordinary key rotations must change sets");
+        assert_eq!(changes, 167, "each eligible session should change sets");
+        if pallet_grandpa::SetIdSession::<Runtime>::get(set_id - 1).is_none() {
+            assert!(last_kept.1 < changes);
+        }
+        assert_eq!(pallet_staking::ActiveEra::<Runtime>::get().unwrap().index, offence_era + 27);
+        let apply_era = offence_era + 28;
+        assert_eq!(pallet_staking::UnappliedSlashes::<Runtime>::get(apply_era).len(), 0);
+        // Security expectation: any historically valid equivocation within a pending bucket
+        // reaches offence accounting despite ordinary validator-owned rotations.
+        let result = crate::Grandpa::report_equivocation_unsigned(
+            RuntimeOrigin::none(), Box::new(evidence), proof,
+        );
+        if let Err(error) = &result {
+            assert_eq!(error.error, pallet_grandpa::Error::<Runtime>::InvalidEquivocationProof.into());
+            assert_eq!(pallet_staking::UnappliedSlashes::<Runtime>::get(apply_era).len(), 0);
+            println!("VV-BUG-REPRODUCED: era={offence_era} current_era={} set={set_id} changes={changes} prior_boundary={last_kept:?}",
+                pallet_staking::ActiveEra::<Runtime>::get().unwrap().index);
+        }
+        assert_ok!(result);
+        assert_eq!(pallet_staking::UnappliedSlashes::<Runtime>::get(apply_era).len(), 1);
     });
 }

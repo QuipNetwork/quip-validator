@@ -1,6 +1,6 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
-//! enumerated regenerated-weight values and exact mempool VM delta below.
+//! enumerated regenerated-weight values, mempool VM delta and staking constants below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -14,6 +14,75 @@ pub const REGENERATED_WEIGHT_VALUES: &[(&str, &str)] = &[
     ("System", "BlockWeights"),
     ("Xqvm", "MaxStepLimit"),
     ("Xqvm", "WeightPerStep"),
+];
+
+// QUIP-09 / R13: pin BOTH the immutable baseline and reviewed SCALE bytes.
+// BudgetWindow is a storage default derived from BondingDuration, not a pallet
+// constant; keep its metadata location explicit so no other surface is waived.
+enum ConstantLocation {
+    PalletConstant,
+    StorageDefault,
+}
+
+pub struct ApprovedConstantDelta {
+    pallet: &'static str,
+    name: &'static str,
+    location: ConstantLocation,
+    pub baseline: &'static [u8],
+    pub candidate: &'static [u8],
+}
+
+impl ApprovedConstantDelta {
+    pub fn path(&self) -> String {
+        let field = match self.location {
+            ConstantLocation::PalletConstant => "value",
+            ConstantLocation::StorageDefault => "default",
+        };
+        format!("{}.{}.{field}", self.pallet, self.name)
+    }
+
+    pub fn value<'a>(&self, metadata: &'a mut Value) -> Result<&'a mut Value, String> {
+        match self.location {
+            ConstantLocation::PalletConstant => constant_value(metadata, self.pallet, self.name),
+            ConstantLocation::StorageDefault => metadata["pallets"]
+                .as_array_mut()
+                .and_then(|pallets| pallets.iter_mut().find(|p| p["name"] == self.pallet))
+                .and_then(|pallet| pallet.pointer_mut("/storage/entries"))
+                .and_then(Value::as_array_mut)
+                .and_then(|entries| entries.iter_mut().find(|e| e["name"] == self.name))
+                .and_then(|entry| entry.get_mut("default"))
+                .ok_or_else(|| {
+                    format!(
+                        "missing metadata storage default {}.{}",
+                        self.pallet, self.name
+                    )
+                }),
+        }
+    }
+}
+
+pub const APPROVED_CONSTANT_DELTAS: &[ApprovedConstantDelta] = &[
+    ApprovedConstantDelta {
+        pallet: "Staking",
+        name: "BondingDuration",
+        location: ConstantLocation::PalletConstant,
+        baseline: &[28, 0, 0, 0],
+        candidate: &[30, 0, 0, 0],
+    },
+    ApprovedConstantDelta {
+        pallet: "Grandpa",
+        name: "MaxSetIdSessionEntries",
+        location: ConstantLocation::PalletConstant,
+        baseline: &[168, 0, 0, 0, 0, 0, 0, 0],
+        candidate: &[181, 0, 0, 0, 0, 0, 0, 0],
+    },
+    ApprovedConstantDelta {
+        pallet: "SlashPolicy",
+        name: "BudgetWindow",
+        location: ConstantLocation::StorageDefault,
+        baseline: &[28, 0, 0, 0],
+        candidate: &[30, 0, 0, 0],
+    },
 ];
 
 pub fn constant_value<'a>(
@@ -431,6 +500,17 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     let mut left = before.clone();
     let mut right = after.clone();
+    for delta in APPROVED_CONSTANT_DELTAS {
+        if *delta.value(&mut left)? != serde_json::json!(delta.baseline) {
+            return Err(format!("unexpected baseline constant: {}", delta.path()));
+        }
+        if *delta.value(&mut right)? != serde_json::json!(delta.candidate) {
+            return Err(format!(
+                "missing or incorrect approved constant delta: {}",
+                delta.path()
+            ));
+        }
+    }
     // Before normalize_mempool: restoring an Xqvm value would otherwise surface
     // as a mempool mismatch, because the mempool values are compared to Xqvm's.
     for &(pallet, constant) in REGENERATED_WEIGHT_VALUES {
@@ -506,6 +586,9 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
         // Normalize ONLY this named encoded value. The rest of the constant,
         // pallet and reachable type graph still undergo the strict comparison.
         *candidate = baseline.clone();
+    }
+    for delta in APPROVED_CONSTANT_DELTAS {
+        *delta.value(&mut right)? = delta.value(&mut left)?.clone();
     }
     left.as_object_mut().unwrap().remove("types");
     right.as_object_mut().unwrap().remove("types");

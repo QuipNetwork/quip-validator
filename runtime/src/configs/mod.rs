@@ -807,8 +807,8 @@ mod tests {
 
         let (session_hours, era_hours, slack, longevity) =
             match crate::network_params::EPOCH_DURATION_SLOTS {
-                2_400 => (4, 24, 1_200, 403_200),
-                600 => (1, 6, 300, 100_800),
+                2_400 => (4, 24, 1_200, 432_000),
+                600 => (1, 6, 300, 108_000),
                 other => panic!("unapproved epoch duration: {other}"),
             };
         assert_eq!(crate::SLOT_DURATION, 6_000);
@@ -816,7 +816,7 @@ mod tests {
         assert_eq!(validator_onboarding::SessionsPerEra::get(), 6);
         assert_eq!(6 * EpochDuration::get(), era_hours * crate::HOURS as u64);
         assert_eq!(election::MinimumElectionSlack::get(), slack);
-        assert_eq!(validator_onboarding::BondingDuration::get(), 28);
+        assert_eq!(validator_onboarding::BondingDuration::get(), 30);
         assert_eq!(
             <<Runtime as pallet_staking::Config>::SlashDeferDuration as Get<u32>>::get(),
             27
@@ -825,7 +825,7 @@ mod tests {
             <<Runtime as pallet_staking::Config>::HistoryDepth as Get<u32>>::get(),
             84
         );
-        assert_eq!(validator_onboarding::SetIdSessionEntries::get(), 168);
+        assert_eq!(validator_onboarding::SetIdSessionEntries::get(), 181);
         assert_eq!(slashing::ReportLongevity::get(), longevity);
     }
 
