@@ -157,15 +157,21 @@ pub struct AdmissionData;
 impl AdmissionData {
     fn candidates() -> Vec<AccountId> {
         System::register_extra_weight_unchecked(
-            Weight::from_parts(100_000_000, 128_000)
-                .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads(200)),
+            // Approved + issuance, then intent, keys, stash mapping, ledger and its integrity check
+            // for each of the at most 64 admitted authorities.
+            Weight::from_parts(100_000_000, 512_000).saturating_add(
+                <Runtime as frame_system::Config>::DbWeight::get()
+                    .reads(2 + 5 * u64::from(MaxAdmittedAuthorities::get())),
+            ),
             DispatchClass::Mandatory,
         );
+        let weight_of = Staking::weight_of_fn();
         pallet_validator_admission::Approved::<Runtime>::get()
             .into_iter()
             .filter(|who| {
                 pallet_staking::Validators::<Runtime>::contains_key(who)
                     && pallet_session::NextKeys::<Runtime>::contains_key(who)
+                    && weight_of(who) > 0
             })
             .collect()
     }

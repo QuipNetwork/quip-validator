@@ -187,3 +187,13 @@ filter overhead on the serialized reference runner before release. Run the
 runtime API evidence tests, deferred application/burn test, boundary regression,
 council bypass tests, pallet budget tests, benchmark preflight, no_std build,
 try-runtime checks, clippy, and workspace tests against the final design.
+
+### Fully slashed validators and the election minimum (QUIP-10)
+
+Only approved validators with staking intent, session keys and positive vote
+weight count as election targets. A fully slashed validator is excluded from
+both the target count and self-votes. The solver and fallback therefore agree.
+If this leaves fewer winners than `MinimumValidatorCount`, staking keeps the
+current era and emits `StakingElectionFailed`: the minimum is a safety floor.
+Rebond the validator, or remove it from admission and admit a funded replacement.
+This fix does not promise uninterrupted era progression at the minimum count.
