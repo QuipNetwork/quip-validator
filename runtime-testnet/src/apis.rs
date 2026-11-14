@@ -176,9 +176,16 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
         }
 
         fn generate_key_ownership_proof(
-            _slot: sp_consensus_babe::Slot,
+            slot: sp_consensus_babe::Slot,
             authority_id: sp_consensus_babe::AuthorityId,
         ) -> Option<sp_consensus_babe::OpaqueKeyOwnershipProof> {
+            // At an epoch boundary the header's parent still belongs to the
+            // previous session. Let the BABE client retry at current best state.
+            if slot >= Babe::current_epoch_start()
+                .saturating_add(crate::configs::EpochDuration::get())
+            {
+                return None;
+            }
             Historical::prove((sp_consensus_babe::KEY_TYPE, authority_id))
                 .map(|proof| sp_consensus_babe::OpaqueKeyOwnershipProof::new(proof.encode()))
         }

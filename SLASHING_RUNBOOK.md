@@ -155,9 +155,12 @@ and emergency-use requirements are governance policy.
    `force_unstake` is separate: it removes staking state immediately, not a
    monetary penalty, and can affect a pending slash's ability to collect funds.
 
-BABE's `DisabledValidators = ()` remains unchanged (QUI-2068). Do not rely on W3
-for immediate BABE authoring exclusion. The offence penalty is the deferred
-slash; removal from admission affects subsequent elections.
+BABE uses the session's disabled-validator set. When offence handling disables
+an author, BABE rejects that author's later blocks for the rest of the session;
+its assigned slots remain empty. The session's bounded disabling policy still
+applies (a two-validator set has no disabling budget), so inspect
+`Session::DisabledValidators` rather than assuming every report disables its
+offender. Removal from admission affects subsequent elections.
 
 ## Launch operations
 
