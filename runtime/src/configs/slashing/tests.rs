@@ -1579,3 +1579,397 @@ fn vv_poc_grandpa_retention() {
         assert_eq!(pallet_staking::UnappliedSlashes::<Runtime>::get(apply_era).len(), 1);
     });
 }
+
+// Ported from QUIP-11 part-a: reject the reassigned current-session owner.
+#[test]
+fn vv_poc_equivocation_offender_misbind() {
+    use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
+    use sp_core::proof_of_possession::ProofOfPossessionGenerator;
+
+    ext().execute_with(|| {
+        let alice = quip_transaction_crypto::account_id_from_public(
+            &quip_transaction_crypto::HybridPair::from_string("//Alice", None)
+                .unwrap()
+                .public(),
+        );
+        let bob = quip_transaction_crypto::account_id_from_public(
+            &quip_transaction_crypto::HybridPair::from_string("//Bob", None)
+                .unwrap()
+                .public(),
+        );
+        let mut alice_babe = sr25519_fndsa512::Pair::from_string("//Alice", None).unwrap();
+        let mut alice_new_babe = sr25519_fndsa512::Pair::from_string("//Dave", None).unwrap();
+        let mut alice_grandpa = ed25519_fndsa512::Pair::from_string("//Alice", None).unwrap();
+        let mut bob_grandpa = ed25519_fndsa512::Pair::from_string("//Bob", None).unwrap();
+        let old_key = alice_babe.public();
+
+        assert!(pallet_babe::Authorities::<Runtime>::get()
+            .iter()
+            .any(|(key, _)| *key == old_key.clone().into()));
+        let control = crate::Historical::prove((sp_consensus_babe::KEY_TYPE, old_key.clone()));
+        let (control_owner, _) = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, old_key.clone()),
+            control.expect("Alice owns the active key before rekeying"),
+        )
+        .expect("control proof verifies");
+        assert_eq!(control_owner, alice, "control: active key belongs to Alice");
+
+        let alice_keys: crate::BoxedSessionKeys = crate::SessionKeys {
+            babe: alice_new_babe.public().into(),
+            grandpa: alice_grandpa.public().into(),
+        }
+        .into();
+        let alice_pop = (
+            alice_new_babe.generate_proof_of_possession(&alice.encode()),
+            alice_grandpa.generate_proof_of_possession(&alice.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(alice.clone()),
+            alice_keys,
+            alice_pop,
+        ));
+        assert_eq!(
+            crate::Session::key_owner(sp_consensus_babe::KEY_TYPE, old_key.as_ref()),
+            None
+        );
+        let future_key = alice_new_babe.public();
+        let future_proof =
+            ActiveBabeKeyOwner::prove((sp_consensus_babe::KEY_TYPE, future_key.clone()))
+                .expect("the replacement exists in NextKeys");
+        assert!(
+            ActiveBabeKeyOwner::check_proof(
+                (sp_consensus_babe::KEY_TYPE, future_key),
+                future_proof,
+            )
+            .is_none(),
+            "a replacement key is not active in the current session"
+        );
+
+        let bob_keys: crate::BoxedSessionKeys = crate::SessionKeys {
+            babe: old_key.clone().into(),
+            grandpa: bob_grandpa.public().into(),
+        }
+        .into();
+        let bob_pop = (
+            alice_babe.generate_proof_of_possession(&bob.encode()),
+            bob_grandpa.generate_proof_of_possession(&bob.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(bob.clone()),
+            bob_keys,
+            bob_pop,
+        ));
+
+        assert!(pallet_babe::Authorities::<Runtime>::get()
+            .iter()
+            .any(|(key, _)| *key == old_key.clone().into()));
+        assert_eq!(
+            crate::Session::key_owner(sp_consensus_babe::KEY_TYPE, old_key.as_ref()),
+            Some(bob.clone()),
+        );
+        let evidence = babe_evidence();
+        assert_eq!(evidence.offender, old_key.clone().into());
+        assert!(sp_consensus_babe::check_equivocation_proof(
+            evidence.clone()
+        ));
+        let proof: Option<sp_consensus_babe::OpaqueKeyOwnershipProof> = api(
+            "BabeApi_generate_key_ownership_proof",
+            (evidence.slot, evidence.offender.clone()),
+        );
+        let proof: sp_session::MembershipProof =
+            proof.expect("claimed key is provable").decode().unwrap();
+        let (claimed_owner, _) = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, evidence.offender.clone()),
+            proof.clone(),
+        )
+        .expect("claimant proof verifies");
+        assert_eq!(claimed_owner, bob);
+        assert_ne!(claimed_owner, alice);
+
+        let era = pallet_staking::ActiveEra::<Runtime>::get().unwrap().index;
+        let alice_bond = Staking::slashable_balance_of(&alice);
+        let call = pallet_babe::Call::<Runtime>::report_equivocation_unsigned {
+            equivocation_proof: Box::new(evidence.clone()),
+            key_owner_proof: proof.clone(),
+        };
+        assert!(Babe::validate_unsigned(TransactionSource::Local, &call).is_err());
+        let result =
+            Babe::report_equivocation_unsigned(RuntimeOrigin::none(), Box::new(evidence), proof);
+        assert_eq!(
+            result,
+            Err(pallet_babe::Error::<Runtime>::InvalidKeyOwnershipProof.into())
+        );
+        assert_eq!(pallet_offences::Reports::<Runtime>::iter().count(), 0);
+        let slashes = pallet_staking::UnappliedSlashes::<Runtime>::get(era + 28);
+        if slashes.iter().any(|slash| slash.validator == bob) {
+            assert!(result.is_ok());
+            assert!(slashes.iter().all(|slash| slash.validator != alice));
+            assert_eq!(Staking::slashable_balance_of(&alice), alice_bond);
+            println!("VV-BUG-REPRODUCED: Alice's BABE equivocation queued a slash for Bob");
+            panic!("active key signer and queued slash offender differ");
+        }
+        assert!(result.is_err() || slashes.iter().any(|slash| slash.validator == alice));
+        assert!(slashes.iter().all(|slash| slash.validator != bob));
+    });
+}
+
+// Ported from QUIP-11 part-b: only the original historical owner is slashable.
+#[test]
+fn vv_poc_same_slot_two_offender_slashes() {
+    use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
+    use sp_core::proof_of_possession::ProofOfPossessionGenerator;
+
+    ext().execute_with(|| {
+        let alice = quip_transaction_crypto::account_id_from_public(
+            &quip_transaction_crypto::HybridPair::from_string("//Alice", None)
+                .unwrap()
+                .public(),
+        );
+        let bob = quip_transaction_crypto::account_id_from_public(
+            &quip_transaction_crypto::HybridPair::from_string("//Bob", None)
+                .unwrap()
+                .public(),
+        );
+        let mut alice_babe = sr25519_fndsa512::Pair::from_string("//Alice", None).unwrap();
+        let mut alice_replacement = sr25519_fndsa512::Pair::from_string("//Dave", None).unwrap();
+        let mut alice_grandpa = ed25519_fndsa512::Pair::from_string("//Alice", None).unwrap();
+        let mut bob_grandpa = ed25519_fndsa512::Pair::from_string("//Bob", None).unwrap();
+        let old_key = alice_babe.public();
+        let evidence = babe_evidence();
+        assert_eq!(evidence.offender, old_key.clone().into());
+        assert!(sp_consensus_babe::check_equivocation_proof(evidence.clone()));
+
+        let alice_proof = crate::Historical::prove((
+            sp_consensus_babe::KEY_TYPE,
+            evidence.offender.clone(),
+        ))
+        .expect("Alice has the original key ownership proof");
+        let (old_owner, _) = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, evidence.offender.clone()),
+            alice_proof.clone(),
+        )
+        .expect("original proof verifies");
+        assert_eq!(old_owner, alice);
+
+        let alice_keys: crate::BoxedSessionKeys = crate::SessionKeys {
+            babe: alice_replacement.public().into(),
+            grandpa: alice_grandpa.public().into(),
+        }
+        .into();
+        let alice_pop = (
+            alice_replacement.generate_proof_of_possession(&alice.encode()),
+            alice_grandpa.generate_proof_of_possession(&alice.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(alice.clone()),
+            alice_keys,
+            alice_pop,
+        ));
+        let bob_keys: crate::BoxedSessionKeys = crate::SessionKeys {
+            babe: old_key.clone().into(),
+            grandpa: bob_grandpa.public().into(),
+        }
+        .into();
+        let bob_pop = (
+            alice_babe.generate_proof_of_possession(&bob.encode()),
+            bob_grandpa.generate_proof_of_possession(&bob.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(bob.clone()),
+            bob_keys,
+            bob_pop,
+        ));
+        assert_eq!(
+            crate::Session::key_owner(sp_consensus_babe::KEY_TYPE, old_key.as_ref()),
+            Some(bob.clone()),
+        );
+
+        let era = pallet_staking::ActiveEra::<Runtime>::get().unwrap().index;
+        let bob_proof = crate::Historical::prove((
+            sp_consensus_babe::KEY_TYPE,
+            evidence.offender.clone(),
+        ));
+        let first_accepted = match bob_proof {
+            Some(proof) => Babe::report_equivocation_unsigned(
+                RuntimeOrigin::none(),
+                Box::new(evidence.clone()),
+                proof,
+            )
+            .is_ok(),
+            None => false,
+        };
+        let after_first = pallet_staking::UnappliedSlashes::<Runtime>::get(era + 28);
+        let first_bob = after_first.iter().any(|slash| slash.validator == bob);
+        assert!(!first_accepted);
+        assert!(after_first.is_empty());
+
+        next_session();
+        let historical_owner = crate::Historical::check_proof(
+            (sp_consensus_babe::KEY_TYPE, evidence.offender.clone()),
+            alice_proof.clone(),
+        );
+        assert_eq!(historical_owner.as_ref().map(|owner| &owner.0), Some(&alice));
+        let second_accepted = Babe::report_equivocation_unsigned(
+            RuntimeOrigin::none(),
+            Box::new(evidence.clone()),
+            alice_proof.clone(),
+        )
+        .is_ok();
+        let slashes = pallet_staking::UnappliedSlashes::<Runtime>::get(era + 28);
+        let alice_queued = slashes.iter().any(|slash| slash.validator == alice);
+        let bob_queued = slashes.iter().any(|slash| slash.validator == bob);
+        let report_count = pallet_offences::Reports::<Runtime>::iter().count();
+        assert!(second_accepted);
+        assert!(alice_queued);
+        assert!(!bob_queued);
+        assert_eq!(report_count, 1);
+        assert!(Babe::report_equivocation_unsigned(
+            RuntimeOrigin::none(), Box::new(evidence), alice_proof,
+        ).is_err());
+        assert_eq!(pallet_offences::Reports::<Runtime>::iter().count(), 1);
+        println!(
+            "first_accepted={first_accepted} first_bob={first_bob} second_accepted={second_accepted} historical_owner={historical_owner:?} alice_queued={alice_queued} bob_queued={bob_queued} report_count={report_count} slash_count={}",
+            slashes.len(),
+        );
+        if first_accepted
+            && first_bob
+            && second_accepted
+            && alice_queued
+            && bob_queued
+            && report_count >= 2
+        {
+            println!("VV-BUG-REPRODUCED: one BABE header pair queued Alice and Bob slashes");
+            panic!("one equivocation pair caused two offender slashes");
+        }
+        assert!(report_count <= 1 || !(alice_queued && bob_queued));
+    });
+}
+
+/// QUIP-11 scope control: the analogous GRANDPA exposure is explicitly accepted.
+#[test]
+fn accepted_grandpa_current_session_key_reassignment_remains_unwrapped() {
+    use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
+    use sp_core::proof_of_possession::ProofOfPossessionGenerator;
+
+    ext().execute_with(|| {
+        let account = |seed| {
+            quip_transaction_crypto::account_id_from_public(
+                &quip_transaction_crypto::HybridPair::from_string(seed, None)
+                    .unwrap()
+                    .public(),
+            )
+        };
+        let alice = account("//Alice");
+        let bob = account("//Bob");
+        let mut alice_babe = sr25519_fndsa512::Pair::from_string("//Alice", None).unwrap();
+        let mut bob_babe = sr25519_fndsa512::Pair::from_string("//Bob", None).unwrap();
+        let mut old_grandpa = ed25519_fndsa512::Pair::from_string("//Alice", None).unwrap();
+        let mut replacement = ed25519_fndsa512::Pair::from_string("//Dave", None).unwrap();
+        let evidence = grandpa_evidence();
+        assert_eq!(evidence.offender(), &old_grandpa.public().into());
+        assert!(sp_consensus_grandpa::check_equivocation_proof(
+            evidence.clone()
+        ));
+
+        let keys: crate::BoxedSessionKeys = crate::SessionKeys {
+            babe: alice_babe.public().into(),
+            grandpa: replacement.public().into(),
+        }
+        .into();
+        let pop = (
+            alice_babe.generate_proof_of_possession(&alice.encode()),
+            replacement.generate_proof_of_possession(&alice.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(alice.clone()),
+            keys,
+            pop
+        ));
+        let keys: crate::BoxedSessionKeys = crate::SessionKeys {
+            babe: bob_babe.public().into(),
+            grandpa: old_grandpa.public().into(),
+        }
+        .into();
+        let pop = (
+            bob_babe.generate_proof_of_possession(&bob.encode()),
+            old_grandpa.generate_proof_of_possession(&bob.encode()),
+        )
+            .encode();
+        assert_ok!(crate::Session::set_keys(
+            RuntimeOrigin::signed(bob.clone()),
+            keys,
+            pop
+        ));
+
+        assert!(pallet_grandpa::Authorities::<Runtime>::get()
+            .iter()
+            .any(|(authority, _)| authority == evidence.offender()));
+        let proof =
+            Historical::prove((sp_consensus_grandpa::KEY_TYPE, evidence.offender().clone()))
+                .expect("the reassigned GRANDPA key has a current-session proof");
+        assert_eq!(
+            Historical::check_proof(
+                (sp_consensus_grandpa::KEY_TYPE, evidence.offender().clone()),
+                proof.clone(),
+            )
+            .unwrap()
+            .0,
+            bob,
+        );
+        assert_ok!(crate::Grandpa::report_equivocation_unsigned(
+            RuntimeOrigin::none(),
+            Box::new(evidence),
+            proof,
+        ));
+        let era = pallet_staking::ActiveEra::<Runtime>::get().unwrap().index;
+        let slashes = pallet_staking::UnappliedSlashes::<Runtime>::get(era + 28);
+        assert_eq!(slashes.len(), 1);
+        assert_eq!(slashes[0].validator, bob);
+        assert_ne!(slashes[0].validator, alice);
+    });
+}
+
+#[test]
+fn active_babe_proof_rejects_shorter_session_list_even_when_historical_accepts() {
+    ext().execute_with(|| {
+        let validators = pallet_session::Validators::<Runtime>::get();
+        let authorities = pallet_babe::Authorities::<Runtime>::get();
+        assert!(validators.len() > 1);
+        assert_eq!(validators.len(), authorities.len());
+        let index = authorities.len() - 1;
+        let key = (sp_consensus_babe::KEY_TYPE, authorities[index].0.clone());
+        let original = Historical::prove(key.clone()).unwrap();
+        assert_eq!(
+            ActiveBabeKeyOwner::check_proof(key.clone(), original.clone())
+                .unwrap()
+                .0,
+            validators[index]
+        );
+
+        // Model a partially replaced session list: the authority is still at
+        // the old BABE index, but its owner is now the sole Session validator.
+        // Prove against the short list so Historical itself genuinely accepts;
+        // an old proof would fail its count check before reaching our guard.
+        pallet_session::Validators::<Runtime>::put(vec![validators[index].clone()]);
+        let skewed = Historical::prove(key.clone()).unwrap();
+        assert_eq!(
+            Historical::check_proof(key.clone(), skewed.clone())
+                .unwrap()
+                .0,
+            validators[index]
+        );
+        assert!(ActiveBabeKeyOwner::check_proof(key.clone(), skewed).is_none());
+        assert_eq!(pallet_babe::Authorities::<Runtime>::get(), authorities);
+
+        pallet_session::Validators::<Runtime>::put(validators.clone());
+        assert_eq!(
+            ActiveBabeKeyOwner::check_proof(key, original).unwrap().0,
+            validators[index]
+        );
+    });
+}
