@@ -161,6 +161,20 @@ slash; removal from admission affects subsequent elections.
 
 ## Launch operations
 
+Before exporting either new network, provision `MAINNET_LAUNCH_AT` or
+`TESTNET_RELAUNCH_LAUNCH_AT` in the runtime source with its intended launch
+instant in Unix seconds. Both constants remain unset until the owner supplies
+them, and the corresponding presets refuse export with a named reason. This
+does not add a runnable mainnet or relaunch chain alias.
+
+The instant must match the intended launch: an earlier value backfills the
+emission pots and overpays era one by the elapsed span; a later value prevents
+authoring until that time. The timestamp inherent enforces
+`now_ms / 1000 >= start_at` before staking anchors its first era. A launch slip
+requires rebuilding the Wasm, regenerating the raw spec, and updating its hash
+pin. The epoch is not a node CLI input. Dev, local, local3, rehearsal and the
+existing live-testnet preset retain `start_at = None`.
+
 A payout bot is required from launch (QUI-2065). Staking rewards are entitlements
 until claimed, not immediate issuance. Claims expire after `HistoryDepth = 84`
 eras; unclaimed rewards are never minted. Missing claims therefore reduce

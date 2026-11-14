@@ -180,6 +180,7 @@ fn testnet_genesis(
         roles,
         chain_id,
         minimum_validator_count,
+        None,
     )
 }
 
@@ -195,6 +196,7 @@ fn network_genesis(
     roles: GenesisRoles,
     chain_id: u64,
     minimum_validator_count: u32,
+    start_at: Option<u64>,
 ) -> Value {
     assert!(
         !initial_authorities.is_empty() && initial_authorities.len() <= 32,
@@ -325,7 +327,7 @@ fn network_genesis(
         faucet_ops: funding.faucet,
         emission_controller: pallet_emission_controller::GenesisConfig {
             enabled: true,
-            start_at: None,
+            start_at: start_at,
             // Split the controller's 30M QUIP/year equally between these pots.
             // Staking mints its separate 10M share on claims; adding a staking
             // route here would double-count that share of the 40M envelope.
@@ -348,6 +350,11 @@ fn network_genesis(
 /// Mainnet export remains blocked until QUI-2080 provisions real accounts and session keys.
 pub const QUIP_MAINNET_RUNTIME_PRESET: &str = "quip-mainnet";
 pub const MAINNET_CHAIN_ID: u64 = 20_049;
+/// Intended launch instant in Unix seconds, provisioned with the real launch inputs.
+/// Earlier backfills emissions and era-one rewards; later blocks authoring until
+/// then. A launch slip requires rebuilding the Wasm and regenerating/pinning the
+/// raw spec. Never substitute the wall clock or a placeholder timestamp.
+pub const MAINNET_LAUNCH_AT: Option<u64> = None;
 const VALIDATOR_BOND: crate::Balance = 2_000 * crate::UNIT;
 const TEST_CURRENCY_ENDOWMENT: crate::Balance = 1u128 << 60;
 
@@ -392,6 +399,7 @@ struct MainnetInputs {
     council_float: Option<crate::Balance>,
     spec_builder_float: Option<crate::Balance>,
     allocation: MainnetAllocation,
+    launch_at: Option<u64>,
 }
 
 /// Hash an account ID, not a signing seed. No key pair is generated or provisioned.
@@ -437,6 +445,7 @@ fn mainnet_inputs() -> MainnetInputs {
         council_float: MAINNET_COUNCIL_FLOAT,
         spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
         allocation: MainnetAllocation::unresolved(),
+        launch_at: MAINNET_LAUNCH_AT,
     }
 }
 
@@ -445,6 +454,17 @@ fn resolved_float(value: Option<crate::Balance>, name: &str) -> Result<crate::Ba
     if value == 0 || value < crate::EXISTENTIAL_DEPOSIT {
         return Err(format!(
             "mainnet genesis blocked: {name} must fund a usable operational account"
+        ));
+    }
+    Ok(value)
+}
+
+fn resolved_launch_at(value: Option<u64>, name: &str) -> Result<u64, String> {
+    let value =
+        value.ok_or_else(|| format!("genesis blocked: {name} intended launch instant is TBD"))?;
+    if value == 0 || value > u64::MAX / 1_000 {
+        return Err(format!(
+            "genesis blocked: {name} must be a nonzero Unix second representable by Timestamp"
         ));
     }
     Ok(value)
@@ -633,6 +653,7 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     validate_session_keys(&authorities)?;
+    let launch_at = resolved_launch_at(inputs.launch_at, "MAINNET_LAUNCH_AT")?;
     let validator_float = resolved_float(inputs.validator_float, "MAINNET_VALIDATOR_FLOAT")?;
     let council_float = resolved_float(inputs.council_float, "MAINNET_COUNCIL_FLOAT")?;
     let spec_builder_float =
@@ -688,12 +709,14 @@ fn mainnet_genesis(inputs: MainnetInputs) -> Result<Value, String> {
         },
         MAINNET_CHAIN_ID,
         3,
+        Some(launch_at),
     ))
 }
 
 /// Build mainnet only after all launch inputs are resolved. Raw-spec provenance
 /// and proof of key possession are separate QUI-2080 launch gates.
 pub fn quip_mainnet_config_genesis() -> Result<Value, String> {
+    resolved_launch_at(MAINNET_LAUNCH_AT, "MAINNET_LAUNCH_AT")?;
     mainnet_genesis(mainnet_inputs())
 }
 
@@ -861,10 +884,15 @@ pub fn quip_testnet_config_genesis() -> Value {
 pub const QUIP_TESTNET_RELAUNCH_RUNTIME_PRESET: &str = "quip-testnet-relaunch";
 /// QUI-2080 must supply three real, independently held council account IDs.
 pub const TESTNET_RELAUNCH_COUNCIL_TBD: Option<[AccountId; 3]> = None;
+/// Intended relaunch instant; the same timing and rebuild requirements as mainnet.
+pub const TESTNET_RELAUNCH_LAUNCH_AT: Option<u64> = None;
 /// Finite test-currency budget, intentionally the same as the legacy testnet.
 pub const TESTNET_RELAUNCH_FAUCET_BUDGET: u128 = 1_000_000_000 * crate::UNIT;
 
-fn testnet_relaunch_genesis(council: Option<[AccountId; 3]>) -> Result<Value, String> {
+fn testnet_relaunch_genesis(
+    council: Option<[AccountId; 3]>,
+    launch_at: Option<u64>,
+) -> Result<Value, String> {
     let council = council.ok_or_else(|| String::from(
         "testnet relaunch genesis blocked: TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs provisioned through QUI-2080",
     ))?.to_vec();
@@ -890,6 +918,7 @@ fn testnet_relaunch_genesis(council: Option<[AccountId; 3]>) -> Result<Value, St
     assert_council_disjoint(&council, &operators, true)
         .map_err(|reason| format!("testnet relaunch genesis blocked: {reason}"))?;
     let op1 = operators[0].clone();
+    let launch_at = resolved_launch_at(launch_at, "TESTNET_RELAUNCH_LAUNCH_AT")?;
     let funding = GenesisFunding {
         balances: operators
             .iter()
@@ -914,12 +943,14 @@ fn testnet_relaunch_genesis(council: Option<[AccountId; 3]>) -> Result<Value, St
         },
         pallet_evm_chain_id::TESTNET_CHAIN_ID,
         3,
+        Some(launch_at),
     ))
 }
 
-/// Refuse export until the deferred council is supplied; no placeholder fallback.
+/// Refuse export until the council and intended launch instant are supplied.
 pub fn quip_testnet_relaunch_config_genesis() -> Result<Value, String> {
-    testnet_relaunch_genesis(TESTNET_RELAUNCH_COUNCIL_TBD)
+    resolved_launch_at(TESTNET_RELAUNCH_LAUNCH_AT, "TESTNET_RELAUNCH_LAUNCH_AT")?;
+    testnet_relaunch_genesis(TESTNET_RELAUNCH_COUNCIL_TBD, TESTNET_RELAUNCH_LAUNCH_AT)
 }
 
 /// Four-validator rehearsal with a safety floor of four; dev seeds are not
@@ -1292,6 +1323,8 @@ mod tests {
     // Fixture-only identities, in a separate derivation domain from every
     // legacy/dev preset. Never a production fallback or real keys. The floats
     // use the approved mainnet policy; negative tests override them explicitly.
+    const FIXTURE_LAUNCH_AT: u64 = 1_763_000_000;
+
     fn ready_mainnet_fixture() -> MainnetInputs {
         MainnetInputs {
             council: (40..46).map(|i| AccountId::new([i; 32])).collect(),
@@ -1313,6 +1346,7 @@ mod tests {
             council_float: MAINNET_COUNCIL_FLOAT,
             spec_builder_float: MAINNET_SPEC_BUILDER_FLOAT,
             allocation: mainnet_allocation::fixture(),
+            launch_at: Some(FIXTURE_LAUNCH_AT),
         }
     }
 
@@ -1340,7 +1374,7 @@ mod tests {
         assert_eq!(patch["staking"]["validatorCount"], validator_count);
         assert_eq!(patch["staking"]["minimumValidatorCount"], 3);
         assert_eq!(patch["emissionController"]["enabled"], true);
-        assert_eq!(patch["emissionController"]["startAt"], Value::Null);
+        assert_eq!(patch["emissionController"]["startAt"], FIXTURE_LAUNCH_AT);
         let council: Vec<AccountId> =
             serde_json::from_value(patch["foundationMembership"]["members"].clone()).unwrap();
         let approved: Vec<AccountId> =
@@ -1472,7 +1506,7 @@ mod tests {
             assert!(pallet_emission_controller::Enabled::<crate::Runtime>::get());
             assert_eq!(
                 pallet_emission_controller::StartAt::<crate::Runtime>::get(),
-                None
+                Some(FIXTURE_LAUNCH_AT)
             );
             assert_eq!(
                 pallet_emission_controller::FaucetBudget::<crate::Runtime>::get(),
@@ -1769,8 +1803,9 @@ mod tests {
             .all(|v| v.session_keys.is_none()));
         assert!(preset_names().contains(&PresetId::from("quip-mainnet")));
         let reason = quip_mainnet_config_genesis().unwrap_err();
-        assert_eq!(reason,
-            "mainnet genesis blocked: unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"
+        assert_eq!(
+            reason,
+            "genesis blocked: MAINNET_LAUNCH_AT intended launch instant is TBD"
         );
         let panic =
             std::panic::catch_unwind(|| get_preset(&PresetId::from("quip-mainnet"))).unwrap_err();
@@ -1980,7 +2015,7 @@ mod tests {
         assert!(!native);
         let reason = result.unwrap_err().to_string();
         assert!(
-            reason.contains("TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs"),
+            reason.contains("TESTNET_RELAUNCH_LAUNCH_AT intended launch instant is TBD"),
             "{reason}"
         );
         let args = Some(PresetId::from("quip-mainnet")).encode();
@@ -1993,7 +2028,10 @@ mod tests {
         );
         assert!(!native);
         let reason = result.unwrap_err().to_string();
-        assert!(reason.contains("mainnet genesis blocked: unresolved council placeholders: Rick, Colton, Vik, Roman, David, BVI Admin"), "{reason}");
+        assert!(
+            reason.contains("genesis blocked: MAINNET_LAUNCH_AT intended launch instant is TBD"),
+            "{reason}"
+        );
     }
     #[test]
     fn relaunch_council_is_deferred_and_export_is_blocked() {
@@ -2001,13 +2039,33 @@ mod tests {
         assert!(preset_names().contains(&PresetId::from("quip-testnet-relaunch")));
         assert!(preset_names().contains(&PresetId::from("quip-mainnet")));
         let reason = quip_testnet_relaunch_config_genesis().unwrap_err();
-        assert!(
-            reason.contains("TESTNET_RELAUNCH_COUNCIL_TBD needs three real council account IDs")
-        );
+        assert!(reason.contains("TESTNET_RELAUNCH_LAUNCH_AT intended launch instant is TBD"));
         let panic =
             std::panic::catch_unwind(|| get_preset(&PresetId::from("quip-testnet-relaunch")))
                 .unwrap_err();
         assert_eq!(panic.downcast_ref::<String>().unwrap(), &reason);
+    }
+
+    #[test]
+    fn launch_presets_require_an_explicit_representable_epoch() {
+        assert_eq!(MAINNET_LAUNCH_AT, None);
+        assert_eq!(TESTNET_RELAUNCH_LAUNCH_AT, None);
+        let fixture = ready_mainnet_fixture();
+        let council = [
+            AccountId::new([50; 32]),
+            AccountId::new([51; 32]),
+            AccountId::new([52; 32]),
+        ];
+        for launch_at in [None, Some(0), Some(u64::MAX)] {
+            let mut input = fixture.clone();
+            input.launch_at = launch_at;
+            assert!(mainnet_genesis(input)
+                .unwrap_err()
+                .contains("MAINNET_LAUNCH_AT"));
+            assert!(testnet_relaunch_genesis(Some(council.clone()), launch_at)
+                .unwrap_err()
+                .contains("TESTNET_RELAUNCH_LAUNCH_AT"));
+        }
     }
 
     #[test]
@@ -2018,7 +2076,8 @@ mod tests {
             AccountId::new([51; 32]),
             AccountId::new([52; 32]),
         ];
-        let patch = testnet_relaunch_genesis(Some(council.clone())).unwrap();
+        let patch =
+            testnet_relaunch_genesis(Some(council.clone()), Some(FIXTURE_LAUNCH_AT)).unwrap();
         let legacy = quip_testnet_config_genesis();
         let expected_operators: Vec<AccountId> = [
             "c5c1e685e181d2939fddaf43e61455c0f00a99d2716d59b1f90674e5c0292510",
@@ -2077,22 +2136,28 @@ mod tests {
         ];
         let mut duplicate = council.clone();
         duplicate[1] = duplicate[0].clone();
-        assert!(testnet_relaunch_genesis(Some(duplicate))
-            .unwrap_err()
-            .contains("distinct council seats"));
+        assert!(
+            testnet_relaunch_genesis(Some(duplicate), Some(FIXTURE_LAUNCH_AT))
+                .unwrap_err()
+                .contains("distinct council seats")
+        );
         for (operator, _, _) in quip_testnet_authorities() {
             let mut overlapping = council.clone();
             overlapping[0] = operator;
-            assert!(testnet_relaunch_genesis(Some(overlapping))
-                .unwrap_err()
-                .contains("also a validator operator"));
+            assert!(
+                testnet_relaunch_genesis(Some(overlapping), Some(FIXTURE_LAUNCH_AT))
+                    .unwrap_err()
+                    .contains("also a validator operator")
+            );
         }
         for sentinel in reserved_mainnet_accounts() {
             let mut unresolved = council.clone();
             unresolved[0] = sentinel;
-            assert!(testnet_relaunch_genesis(Some(unresolved))
-                .unwrap_err()
-                .contains("reserved placeholder council account"));
+            assert!(
+                testnet_relaunch_genesis(Some(unresolved), Some(FIXTURE_LAUNCH_AT))
+                    .unwrap_err()
+                    .contains("reserved placeholder council account")
+            );
         }
     }
 }

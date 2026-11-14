@@ -29,7 +29,7 @@ Aliases for the public testnet: `quip_testnet`, `testnet`. A path argument loads
 
 There is **no mainnet network to join**, and no `--chain` value for it. Do not add one.
 
-The two presets in the last two rows exist in both runtime crates and are registered in the GenesisBuilder API, but they **refuse to export** until the owner supplies real inputs: the six mainnet council accounts, five validator stash accounts with BABE/GRANDPA keys, the three relaunch testnet council accounts, and the vesting allocation total, recipients, custody account and tranche terms. `quip_mainnet_config_genesis()` returns `Err` with a named reason rather than emitting placeholders.
+The two presets in the last two rows exist in both runtime crates and are registered in the GenesisBuilder API, but they **refuse to export** until the owner supplies real inputs: the six mainnet council accounts, five validator stash accounts with BABE/GRANDPA keys, the three relaunch testnet council accounts, the vesting allocation total, recipients, custody account and tranche terms, and each network's intended launch epoch in Unix seconds. `MAINNET_LAUNCH_AT` and `TESTNET_RELAUNCH_LAUNCH_AT` remain unset; both presets return a named refusal until their launch epoch is provisioned. `quip_mainnet_config_genesis()` returns `Err` rather than emitting placeholders.
 
 To see the refusal rather than take this on faith:
 
@@ -45,7 +45,7 @@ Why there is no flag rather than a flag that refuses: a chain alias promises a l
 
 What must happen before mainnet can run, in order:
 
-1. Owner supplies the addresses, keys and allocation figures above.
+1. Owner supplies the addresses, keys, allocation figures and intended launch epochs above. The epochs are runtime-source constants; a launch slip requires a Wasm rebuild, a regenerated raw spec and a new hash pin.
 2. The preset exports successfully; generate canonical raw specs through the preset, not by hand.
 3. Vendor the raw spec and pin its SHA-256, mirroring what the testnet did in QUI-2080 part 1 (`chain-specs/`, `scripts/check-live-testnet-spec.py`).
 4. Wire the alias in `load_spec`, delete or update the negative test above, and re-run the live-spec gate.

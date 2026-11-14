@@ -216,7 +216,7 @@ impl pallet_session::Config for Runtime {
 impl pallet_timestamp::Config for Runtime {
     /// A timestamp: milliseconds since the unix epoch.
     type Moment = u64;
-    type OnTimestampSet = Babe;
+    type OnTimestampSet = (launch_time::TimestampFloor, Babe);
     type MinimumPeriod = ConstU64<{ SLOT_DURATION / 2 }>;
     type WeightInfo = ();
 }
@@ -975,6 +975,7 @@ mod xqvm_weights {
 pub mod election;
 #[cfg(test)]
 mod governance_matrix;
+pub mod launch_time;
 pub mod staking_rewards;
 pub mod validator_onboarding;
 
