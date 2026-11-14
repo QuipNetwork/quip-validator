@@ -451,3 +451,21 @@ Operator validator slots are committed in
 [`runtime/src/genesis_config_presets.rs`](runtime/src/genesis_config_presets.rs).
 The [`scripts/derive-operator-keys.sh`](scripts/derive-operator-keys.sh) helper
 derives operator keys.
+
+### Temporary audit XQVM pin
+
+This branch is a draft dependency pin to xquad commit
+`279cf29bfcc64d09ee08c0d30b098691c24a8c7f` (`0.5.3-dev`). Both execution
+pallets and both runtime test dependencies use the same workspace dependency.
+The committed lockfile contains one XQVM package. This pin is temporary: the
+`0.5.3` release is required before this change can proceed, and its published
+version must replace the git pin. Releasing xquad is a separate operation.
+
+The dependency fixes QUIP-02/16/17 and O3/O7; its newer instruction and fault
+handling also closes the version drift behind QUIP-19/O8. Signed
+`store_program` regressions cover the all-register cycle, unreachable reads and
+transient stack peaks, including the 8192/8193 boundary. The two-second cycle
+watchdog catches nontermination; it is not a benchmark or a weight estimate.
+The verifier's maximum program-size/block-count paths need a reference-machine
+weight pass before release; dependency-only changes do not trigger the pallet
+source staleness warning.

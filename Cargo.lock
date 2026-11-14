@@ -7514,7 +7514,7 @@ dependencies = [
  "sp-core",
  "sp-io",
  "sp-runtime",
- "xqvm 0.5.0",
+ "xqvm",
 ]
 
 [[package]]
@@ -7840,7 +7840,7 @@ dependencies = [
  "sp-core",
  "sp-io",
  "sp-runtime",
- "xqvm 0.4.0",
+ "xqvm",
 ]
 
 [[package]]
@@ -9394,7 +9394,7 @@ dependencies = [
  "sp-weights",
  "substrate-wasm-builder",
  "subxt-core",
- "xqvm 0.5.0",
+ "xqvm",
 ]
 
 [[package]]
@@ -9471,7 +9471,7 @@ dependencies = [
  "sp-weights",
  "substrate-wasm-builder",
  "subxt-core",
- "xqvm 0.5.0",
+ "xqvm",
 ]
 
 [[package]]
@@ -15837,24 +15837,8 @@ dependencies = [
 
 [[package]]
 name = "xqvm"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af6d182a5a3348282a815ef44ec4beb5421f12ca6ce0c15d3911da9bd3ad4a69"
-dependencies = [
- "crc32fast",
- "hashbrown 0.15.5",
- "miette",
- "pastey",
- "serde",
- "serde_yaml_ng",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "xqvm"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1c39a40ef950ea465ff7cabedd92f15261ec9f8e6ce66fb22ee017d826b318f"
+version = "0.5.3-dev"
+source = "git+https://gitlab.com/quip.network/xquad.git?rev=279cf29bfcc64d09ee08c0d30b098691c24a8c7f#279cf29bfcc64d09ee08c0d30b098691c24a8c7f"
 dependencies = [
  "crc32fast",
  "hashbrown 0.15.5",
