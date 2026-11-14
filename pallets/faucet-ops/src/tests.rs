@@ -3,6 +3,32 @@ use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
 #[test]
+fn genesis_sets_faucet_state_and_authority() {
+    use frame_support::traits::BuildGenesisConfig;
+    new_test_ext().execute_with(|| {
+        assert_eq!(crate::State::<Test>::get(), crate::FaucetState::Enabled);
+        assert_eq!(crate::Authority::<Test>::get(), Some(1));
+        crate::GenesisConfig::<Test>::default().build();
+        assert_eq!(
+            crate::State::<Test>::get(),
+            crate::FaucetState::PermanentlyDisabled
+        );
+        assert!(!crate::Authority::<Test>::exists());
+    });
+}
+
+#[test]
+fn absent_state_fails_closed() {
+    new_test_ext().execute_with(|| {
+        crate::State::<Test>::kill();
+        assert_noop!(
+            FaucetOps::mint(RuntimeOrigin::signed(1), 2, 1),
+            Error::<Test>::Disabled
+        );
+    });
+}
+
+#[test]
 fn authority_can_mint_to_specified_account() {
     new_test_ext().execute_with(|| {
         assert_ok!(FaucetOps::mint(RuntimeOrigin::signed(1), 2, 500));
@@ -63,8 +89,7 @@ fn root_is_not_the_faucet_authority() {
     });
 }
 #[test]
-fn fuse_is_one_way_and_survives_repeated_upgrade() {
-    use frame_support::traits::Hooks;
+fn fuse_is_one_way() {
     new_test_ext().execute_with(|| {
         assert_ok!(FaucetOps::disable(RuntimeOrigin::signed(1)));
         assert_noop!(
@@ -75,30 +100,10 @@ fn fuse_is_one_way_and_survives_repeated_upgrade() {
             FaucetOps::disable(RuntimeOrigin::signed(1)),
             Error::<Test>::Disabled
         );
-        FaucetOps::on_runtime_upgrade();
         assert_eq!(
             crate::State::<Test>::get(),
             crate::FaucetState::PermanentlyDisabled
         );
-    });
-}
-#[test]
-fn absent_state_and_legacy_upgrade_fail_closed() {
-    use frame_support::traits::{Hooks, StorageVersion};
-    new_test_ext().execute_with(|| {
-        crate::State::<Test>::kill();
-        assert_noop!(
-            FaucetOps::mint(RuntimeOrigin::signed(1), 2, 1),
-            Error::<Test>::Disabled
-        );
-        StorageVersion::new(0).put::<FaucetOps>();
-        #[cfg(feature = "try-runtime")]
-        let before = FaucetOps::pre_upgrade().unwrap();
-        FaucetOps::on_runtime_upgrade();
-        #[cfg(feature = "try-runtime")]
-        FaucetOps::post_upgrade(before).unwrap();
-        assert_eq!(crate::State::<Test>::get(), crate::FaucetState::Paused);
-        assert!(!crate::Authority::<Test>::exists());
     });
 }
 #[test]

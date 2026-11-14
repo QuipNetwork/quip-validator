@@ -30,9 +30,7 @@ use frame_support::{
     derive_impl,
     dispatch::DispatchClass,
     parameter_types,
-    traits::{
-        ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Get, InstanceFilter, VariantCountOf,
-    },
+    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, InstanceFilter, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -40,7 +38,6 @@ use frame_support::{
 };
 use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
-use sp_core::crypto::Ss58Codec;
 use sp_runtime::{
     traits::{BlakeTwo256, ConvertInto, One, OpaqueKeys},
     FixedU128, Perbill,
@@ -97,12 +94,6 @@ parameter_types! {
     pub const SS58Prefix: u8 = 42;
 }
 
-/// All migrations of the runtime, aside from the ones declared in the pallets.
-///
-/// This can be a tuple of types, each implementing `OnRuntimeUpgrade`.
-#[allow(unused_parens)]
-type SingleBlockMigrations = (validator_onboarding::InitializeStakingLimits,);
-
 /// Stable error shared by all runtime-upgrade entry points.
 pub const RUNTIME_IDENTITY_MISMATCH: &str = "Runtime spec_name does not match this network";
 
@@ -152,7 +143,6 @@ impl frame_system::Config for Runtime {
     /// This is used as an identifier of the chain. 42 is the generic substrate prefix.
     type SS58Prefix = SS58Prefix;
     type MaxConsumers = frame_support::traits::ConstU32<16>;
-    type SingleBlockMigrations = SingleBlockMigrations;
     type OnSetCode = NetworkIdentityGuard;
 }
 
@@ -670,24 +660,6 @@ parameter_types! {
     pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
 }
 
-/// Account attributed as the builder for migration-inserted default job specs.
-///
-/// Genesis presets can record each preset's actual root account directly, but
-/// runtime migrations need one chain-independent account baked into the
-/// runtime. This is operator 1's account on quip-testnet; note that spec 120
-/// removed `pallet-sudo`, so the attribution no longer implies any sudo key.
-pub const QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58: &str =
-    "5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi";
-
-pub struct QuantumDefaultJobSpecBuilder;
-
-impl Get<AccountId> for QuantumDefaultJobSpecBuilder {
-    fn get() -> AccountId {
-        AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
-            .expect("default job spec builder SS58 address is valid")
-    }
-}
-
 /// The source owns bounded, content-addressed bytes admitted by pallet-xqvm's
 /// size, basic-block and loop-depth guards. No program storage is duplicated.
 pub struct QuantumProgramSource;
@@ -722,7 +694,6 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type MinReward = QuantumMinReward;
     type ResultTtlBlocks = QuantumResultTtlBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
-    type DefaultJobSpecBuilder = QuantumDefaultJobSpecBuilder;
     type ProgramSource = QuantumProgramSource;
     type MaxTransformStepsPerSubmission = QuantumMaxTransformSteps;
     type MaxVmMemory = MaxVmMemory;
@@ -879,16 +850,6 @@ mod tests {
         RuntimeBlockWeights::get()
             .validate()
             .expect("runtime block weights must be internally consistent");
-    }
-
-    /// Catches typos and silent address drift in the hardcoded SS58 string.
-    /// Without this, a malformed constant would only surface as a panic inside
-    /// `on_runtime_upgrade` on a live chain — a chain-bricking failure mode.
-    #[test]
-    fn default_job_spec_builder_ss58_decodes() {
-        let parsed = AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
-            .expect("hardcoded SS58 must decode");
-        assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
     }
 }
 

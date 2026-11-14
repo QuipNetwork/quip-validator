@@ -1,10 +1,7 @@
 use super::*;
 use crate::{Babe, Header, RuntimeCall, RuntimeOrigin, UncheckedExtrinsic};
 use codec::{Decode, Encode};
-use frame_support::{
-    assert_ok,
-    traits::{KeyOwnerProofSystem, OnRuntimeUpgrade},
-};
+use frame_support::{assert_ok, traits::KeyOwnerProofSystem};
 use sp_consensus_babe::{
     digests::{CompatibleDigestItem, PreDigest, SecondaryPlainPreDigest},
     AuthorityPair, EquivocationProof, Slot,
@@ -143,26 +140,6 @@ fn runtime_api_rejects_malformed_membership_proof() {
         );
         assert_eq!(submitted, None);
         assert_eq!(pallet_offences::Reports::<Runtime>::iter().count(), 0);
-    });
-}
-
-#[test]
-fn offences_upgrade_initializes_version_once_without_clearing_reports() {
-    ext().execute_with(|| {
-        let id = H256::repeat_byte(7);
-        let report = sp_staking::offence::OffenceDetails {
-            offender: (crate::AccountId::new([7; 32]), Default::default()),
-            reporters: vec![],
-        };
-        pallet_offences::Reports::<Runtime>::insert(id, report.clone());
-        StorageVersion::new(0).put::<Offences>();
-        InitializeOffences::on_runtime_upgrade();
-        assert_eq!(pallet_offences::Reports::<Runtime>::get(id), Some(report));
-        assert_eq!(StorageVersion::get::<Offences>(), StorageVersion::new(1));
-        assert_eq!(
-            InitializeOffences::on_runtime_upgrade(),
-            <Runtime as frame_system::Config>::DbWeight::get().reads(1)
-        );
     });
 }
 

@@ -6,11 +6,7 @@ use super::{
 };
 use crate::{AccountId, Offences, Runtime, RuntimeEvent, Staking};
 use alloc::vec::Vec;
-use frame_support::{
-    parameter_types,
-    traits::{OnRuntimeUpgrade, StorageVersion},
-    weights::Weight,
-};
+use frame_support::{parameter_types, weights::Weight};
 use sp_staking::offence::{Offence, OffenceError, ReportOffence};
 
 parameter_types! {
@@ -110,29 +106,6 @@ const _: () = {
             >= MaxBackersPerWinnerFinal::get()
     );
 };
-
-/// Adding Offences to an existing chain must install its version even without genesis.
-pub struct InitializeOffences;
-impl OnRuntimeUpgrade for InitializeOffences {
-    fn on_runtime_upgrade() -> Weight {
-        let db = <Runtime as frame_system::Config>::DbWeight::get();
-        if StorageVersion::get::<Offences>() == StorageVersion::new(0) {
-            StorageVersion::new(1).put::<Offences>();
-            db.reads_writes(1, 1)
-        } else {
-            db.reads(1)
-        }
-    }
-
-    #[cfg(feature = "try-runtime")]
-    fn post_upgrade(_: alloc::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-        frame_support::ensure!(
-            StorageVersion::get::<Offences>() == StorageVersion::new(1),
-            "Offences storage version not initialized"
-        );
-        Ok(())
-    }
-}
 
 #[cfg(test)]
 mod tests;

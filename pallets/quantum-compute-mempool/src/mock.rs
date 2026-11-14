@@ -1,7 +1,7 @@
 use crate as pallet_quantum_compute_mempool;
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32, ConstU64},
+    traits::{ConstU128, ConstU32},
 };
 use sp_runtime::BuildStorage;
 use std::cell::RefCell;
@@ -206,7 +206,6 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type MinReward = MinReward;
     type ResultTtlBlocks = ResultTtlBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;
-    type DefaultJobSpecBuilder = ConstU64<1>;
     type ProgramSource = TestProgramSource;
     type MaxTransformStepsPerSubmission = MaxTransformSteps;
     type MaxVmMemory = VmMemory;

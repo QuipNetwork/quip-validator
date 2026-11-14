@@ -11,7 +11,6 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-pub mod migrations;
 pub mod weights;
 pub use weights::*;
 
