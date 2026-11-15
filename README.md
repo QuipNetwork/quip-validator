@@ -321,14 +321,20 @@ conservative and unmeasured, and the automatic weight-staleness warning does
 not validate them. Regeneration must reconcile the generated measurements
 with these wrappers and mirror runtime weights before the release gate passes.
 
-QUIP-08 remains pending the owner's acceptance decision: a proposer freeze can
-still delay reserved-reward settlement. The evaluated `repatriate_reserved`
-replacement does not solve it at SDK `d511a17`: `balances/src/impl_currency.rs`
-lines 725-733 use `BestEffort, Polite`, its documented contract preserves the
-source freeze, and `balances/src/lib.rs` line 1298 rejects a new beneficiary
-with `DeadAccount`. The alternative `slash_reserved` plus `resolve_creating`
-emits a misleading `Balances::Slashed` event for an ordinary payout
-(`impl_currency.rs` lines 703-708); no payout-mechanism change is included.
+QUIP-08 — **Accepted Low** (owner decision): a proposer freeze can prevent
+reserved-reward settlement. The attacker costs itself the entire reward it
+denies: `reclaim_order` is closed once a solution exists, so no funds reach the
+attacker and the solver loses its expected payment. `claim_reward` retains
+`unreserve` followed by `transfer`.
+
+The evaluated `repatriate_reserved` replacement does not solve this at SDK
+`d511a17`: `balances/src/impl_currency.rs` lines 725-733 call
+`do_transfer_reserved` with `BestEffort, Polite`, which cannot move frozen
+funds; `balances/src/lib.rs` line 1298 also rejects a new beneficiary with
+`DeadAccount`. `slash_reserved` plus `resolve_creating` was rejected because
+it emits a misleading `Balances::Slashed` event on every settlement
+(`impl_currency.rs` lines 703-708). Escrow based on holds was rejected as
+disproportionate for a Low finding.
 
 ## Alternatives Installations
 
