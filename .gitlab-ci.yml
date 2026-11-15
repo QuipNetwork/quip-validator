@@ -288,6 +288,7 @@ browser-signer-test:
         cargo binstall --no-confirm --locked "wasm-pack@${WASM_PACK_VERSION}"
       fi
   script:
+    - node --test scripts/resolve-xqvm-source.test.mjs
     - cargo test -p quip-transaction-crypto-core -p quip-transaction-crypto -p quip-transaction-crypto-wasm
     - cargo test -p quip-protocol-runtime --test signing_fixture
     - cargo check -p quip-transaction-crypto-wasm --target wasm32-unknown-unknown

@@ -469,3 +469,10 @@ watchdog catches nontermination; it is not a benchmark or a weight estimate.
 The verifier's maximum program-size/block-count paths need a reference-machine
 weight pass before release; dependency-only changes do not trigger the pallet
 source staleness warning.
+
+The on-chain xqvm conformance suite resolves the locked Cargo package graph.
+A draft git dependency fetches its exact commit; a registry release fetches
+its version tag and verifies it against the published crate's
+`.cargo_vcs_info.json`. Replacing the draft pin with published xqvm 0.5.3
+therefore requires no stale hard-coded commit to be carried forward. The
+`XQUAD_DIR` override must match the same resolved source identity.
