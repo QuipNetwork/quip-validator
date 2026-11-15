@@ -316,7 +316,11 @@ solution deletions (QUIP-28), ED reserve/refund (QUIP-29), expiry fairness curso
 and look-ahead reads (QUIP-27), and the eight-order closed-record sweep plus
 queue insertion (QUIP-30). `finalise_expired_orders` populates all 32 solution
 slots at maximum payload size; `prune_closed_orders` also populates every
-auxiliary prefix. Their handwritten CPU, database and proof allowances are
+auxiliary prefix. The `prune_closed_orders(k)` weight-table entry uses the same handwritten
+bound at the maximum eight bucket visits; the hook keeps its actual
+order/bucket allowance as a componentwise floor. This entry is explicitly
+unmeasured and must be replaced by the reference-machine `benchmark-weights`
+job before release. The handwritten CPU, database and proof allowances are
 conservative and unmeasured, and the automatic weight-staleness warning does
 not validate them. Regeneration must reconcile the generated measurements
 with these wrappers and mirror runtime weights before the release gate passes.

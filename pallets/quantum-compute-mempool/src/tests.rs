@@ -3375,7 +3375,11 @@ fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry()
         crate::OrdersPrunableAt::<Test>::insert(12, id, ());
         crate::NextPruneBucket::<Test>::put(0);
         System::set_block_number(12);
-        QuantumComputeMempool::on_initialize(12);
+        let charged = QuantumComputeMempool::on_initialize(12);
+        assert!(charged.all_gte(crate::weights::closed_order_pruning_weight::<Test>(0, 8)));
+        assert!(charged.all_gte(
+            <<Test as crate::Config>::WeightInfo as crate::weights::WeightInfo>::prune_closed_orders(0)
+        ));
         assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(8));
         assert_eq!(
             JobOrders::<Test>::get(id).unwrap().status,
@@ -3393,4 +3397,22 @@ fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry()
             id
         ));
     });
+}
+
+#[test]
+fn pruning_weight_providers_cover_every_bounded_cleanup_shape() {
+    use crate::{benchmark_weights, types, weights};
+    for orders in 0..=types::MAX_PRUNED_ORDERS_PER_BLOCK {
+        for buckets in 0..=u64::from(types::MAX_PRUNED_ORDERS_PER_BLOCK) {
+            let floor = weights::closed_order_pruning_weight::<Test>(orders, buckets);
+            for bound in [
+                <benchmark_weights::SubstrateWeight<Test> as benchmark_weights::WeightInfo>::prune_closed_orders(orders),
+                <() as benchmark_weights::WeightInfo>::prune_closed_orders(orders),
+                <weights::SubstrateWeight<Test> as weights::WeightInfo>::prune_closed_orders(orders),
+                <() as weights::WeightInfo>::prune_closed_orders(orders),
+            ] {
+                assert!(bound.all_gte(floor), "cleanup bound below existing floor: {orders} orders, {buckets} buckets");
+            }
+        }
+    }
 }

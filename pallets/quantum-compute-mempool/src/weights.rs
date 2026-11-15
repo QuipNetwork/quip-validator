@@ -298,6 +298,7 @@ pub trait WeightInfo {
     fn reclaim_order() -> Weight;
     fn purge_result() -> Weight;
     fn finalise_expired_orders(k: u32) -> Weight;
+    fn prune_closed_orders(k: u32) -> Weight;
 }
 
 pub struct SubstrateWeight<T>(PhantomData<T>);
@@ -340,6 +341,9 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     fn finalise_expired_orders(k: u32) -> Weight {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::finalise_expired_orders(k)
     }
+    fn prune_closed_orders(k: u32) -> Weight {
+        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::prune_closed_orders(k)
+    }
 }
 impl WeightInfo for () {
     fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
@@ -377,5 +381,8 @@ impl WeightInfo for () {
     }
     fn finalise_expired_orders(k: u32) -> Weight {
         <() as BenchmarkWeightInfo>::finalise_expired_orders(k)
+    }
+    fn prune_closed_orders(k: u32) -> Weight {
+        <() as BenchmarkWeightInfo>::prune_closed_orders(k)
     }
 }
