@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let output_slots = inputs["output_slots"].as_u64().unwrap_or(16);
         let program = xqvm::Program::decode(&std::fs::read(input)?)?;
         let mut vm = xqvm::Vm::new();
-        vm.set_memory_limit(memory_limit)
+        let _ = vm.set_memory_limit(memory_limit)
             .set_step_limit(step_limit)
             .set_output_slots(usize::try_from(output_slots)?)
             .set_calldata(calldata.into_iter().map(xqvm::RegVal::Int).collect());

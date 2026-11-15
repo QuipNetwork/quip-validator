@@ -476,3 +476,12 @@ its version tag and verifies it against the published crate's
 `.cargo_vcs_info.json`. Replacing the draft pin with published xqvm 0.5.3
 therefore requires no stale hard-coded commit to be carried forward. The
 `XQUAD_DIR` override must match the same resolved source identity.
+
+The on-chain replay uses the pinned `xqasm` library and `xqvm/tests/vectors`.
+It compares every output slot in the pallet event format (unset slots become
+zero), and checks memory rejection against the same native VM at the chain's
+actual allocation limit. Vectors with unset calldata slots are reported as
+outside the pallet's integer-only calldata API; they are not counted as
+on-chain passes. Native conformance remains responsible for those host-only
+inputs. This distinction also avoids treating upstream vectors with a 64 GiB
+allocation budget as successful executions under the chain's 16 MiB bound.
