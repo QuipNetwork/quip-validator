@@ -451,3 +451,25 @@ Operator validator slots are committed in
 [`runtime/src/genesis_config_presets.rs`](runtime/src/genesis_config_presets.rs).
 The [`scripts/derive-operator-keys.sh`](scripts/derive-operator-keys.sh) helper
 derives operator keys.
+
+### Audit BABE randomness fix (QUIP-31 F1)
+
+SDK revision `dc07d5ce59d269bc071098a634af38045a226265` consumes the actively
+filling randomness segment at epoch rotation, including an exactly full
+256-output segment. Every segment is removed after consumption, so partial
+outputs cannot carry over. All SDK requirements use this revision and the
+committed lockfile contains one SDK source.
+
+The fork includes separate test-harness and equivocation-fixture repairs. Five
+regressions fail on the original `d511a17` production code and pass with F1:
+one output, two outputs, 256 outputs, 257 outputs, and consecutive epochs.
+There is no storage-layout, client or genesis change.
+
+F1 does **not** close the final-primary-author residual. The additional
+one-session commitment delay requires a session-pallet change and 8–12 hours
+of key-rotation latency; it remains a separate ticket outside runtime 120.
+
+This review branch starts at validator audit base `962ea17`, and its SDK fork
+starts at `d511a17`. The independently reviewed QUIP-12 commission guard must
+be combined with F1 in one SDK revision before integration; replacing the
+integration pin with this isolated revision would drop that guard.
