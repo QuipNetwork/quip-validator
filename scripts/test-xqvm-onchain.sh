@@ -89,15 +89,43 @@ echo "== Building the assembler =="
 # so its assembler and lockfile supply the exact bytecode used by the vectors.
 mkdir -p "$xquad_dir/xqasm/examples"
 cat > "$xquad_dir/xqasm/examples/quip_onchain_assemble.rs" <<'RUST'
+//! Adapter for validator conformance: assemble and check the chain memory budget.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
+    let mode = args.next().ok_or("missing mode")?;
     let input = args.next().ok_or("missing input path")?;
-    let output = args.next().ok_or("missing output path")?;
+    if mode == "assemble" {
+        let output = args.next().ok_or("missing output path")?;
+        let program = xqasm::assemble_source(&std::fs::read_to_string(input)?)?;
+        std::fs::write(output, program.encode())?;
+    } else if mode == "check-memory" {
+        let inputs_path = args.next().ok_or("missing vector inputs")?;
+        let memory_limit: u64 = args.next().ok_or("missing memory limit")?.parse()?;
+        let step_limit: u64 = args.next().ok_or("missing step limit")?.parse()?;
+        let inputs: serde_json::Value = serde_json::from_slice(&std::fs::read(inputs_path)?)?;
+        let calldata: Vec<i64> = serde_json::from_value(inputs["calldata"].clone())?;
+        let output_slots = inputs["output_slots"].as_u64().unwrap_or(16);
+        let program = xqvm::Program::decode(&std::fs::read(input)?)?;
+        let mut vm = xqvm::Vm::new();
+        vm.set_memory_limit(memory_limit)
+            .set_step_limit(step_limit)
+            .set_output_slots(usize::try_from(output_slots)?)
+            .set_calldata(calldata.into_iter().map(xqvm::RegVal::Int).collect());
+        // Successful vectors can exceed the chain's smaller memory budget.
+        // Only that fault is an accepted change from their recorded success.
+        let outcome = match vm.run(&program) {
+            Ok(()) => "ok",
+            Err(xqvm::Error::MemoryLimitExceeded { .. }) => "memory-limit",
+            Err(error) => return Err(error.into()),
+        };
+        use std::io::Write;
+        writeln!(std::io::stdout(), "{outcome}")?;
+    } else {
+        return Err("unknown mode".into());
+    }
     if args.next().is_some() {
         return Err("unexpected argument".into());
     }
-    let program = xqasm::assemble_source(&std::fs::read_to_string(input)?)?;
-    std::fs::write(output, program.encode())?;
     Ok(())
 }
 RUST
@@ -116,7 +144,7 @@ while IFS= read -r expected; do
   dir="$(dirname "$expected")"
   name="$(basename "$dir")"
 
-  "$xquad_bin" "$dir/program.xqasm" "$vectors_out/$name.xqb" >/dev/null
+  "$xquad_bin" assemble "$dir/program.xqasm" "$vectors_out/$name.xqb" >/dev/null
   cp "$expected" "$vectors_out/$name.expected.json"
   cp "$dir/inputs.json" "$vectors_out/$name.inputs.json"
   count=$((count + 1))
@@ -135,7 +163,7 @@ TARGET .0
 NOP
 JUMP .0
 PROGRAM
-"$xquad_bin" "$work_dir/runaway.xqasm" "$vectors_out/runaway.xqb" >/dev/null
+"$xquad_bin" assemble "$work_dir/runaway.xqasm" "$vectors_out/runaway.xqb" >/dev/null
 
 # One variable past the runtime's 16 MiB MaxVmMemory, at ~2.1M steps — an
 # order of magnitude inside MaxStepLimit, so the allocation budget is what
@@ -145,7 +173,7 @@ PUSH 2097153
 BSMX r0
 HALT
 PROGRAM
-"$xquad_bin" "$work_dir/alloc.xqasm" "$vectors_out/alloc_over_budget.xqb" >/dev/null
+"$xquad_bin" assemble "$work_dir/alloc.xqasm" "$vectors_out/alloc_over_budget.xqb" >/dev/null
 
 echo "== Starting the node =="
 "$node_binary" --dev --tmp --no-prometheus >"$node_log" 2>&1 &
@@ -184,6 +212,7 @@ fi
 echo "== Running the on-chain suite =="
 if ! QUIP_WS_URL=ws://127.0.0.1:9944 \
   VECTORS_DIR="$vectors_out" \
+  XQVM_REFERENCE_BINARY="$xquad_bin" \
   QUIP_REPO="$PWD" \
   node js/quip-signer/test/xqvm-onchain-smoke.mjs; then
   echo "--- node log ---"

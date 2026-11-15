@@ -15,13 +15,14 @@
 //
 // `scripts/test-xqvm-onchain.sh` does all of this, including the node.
 // To run this file on its own against a node that is already up:
-//   QUIP_WS_URL=ws://127.0.0.1:9944 VECTORS_DIR=... node <this file>
+//   QUIP_WS_URL=ws://127.0.0.1:9944 VECTORS_DIR=... XQVM_REFERENCE_BINARY=... node <this file>
 
 import { ApiPromise, WsProvider } from '@polkadot/api';
 import { GenericExtrinsicSignatureV4 } from '@polkadot/types';
 import { u8aToHex } from '@polkadot/util';
 import { addressEq, blake2AsHex } from '@polkadot/util-crypto';
 import { readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -236,12 +237,32 @@ try {
 
     // ---- execute
     const stepLimit = BigInt(expected.steps) + 100n;
+    const outputSlots = inputs.output_slots ?? 16;
+    // The chain's fixed memory budget is smaller than some upstream vectors'
+    // declared budget. Ask the same pinned VM to classify that exact run;
+    // never skip a vector or assume that a large declared budget requires it.
+    const referenceOutcome = execFileSync(process.env.XQVM_REFERENCE_BINARY, [
+      'check-memory', join(VECTORS_DIR, `${name}.xqb`),
+      join(VECTORS_DIR, `${name}.inputs.json`), String(maxVmMemory), String(stepLimit)
+    ], { encoding: 'utf8' }).trim();
+    if (!['ok', 'memory-limit'].includes(referenceOutcome)) {
+      throw new Error(`unexpected native reference outcome: ${referenceOutcome}`);
+    }
     const executed = await submit(
       api,
-      api.tx.xqvm.execute(hash, inputs.calldata, inputs.output_slots, stepLimit),
+      api.tx.xqvm.execute(hash, inputs.calldata, outputSlots, stepLimit),
       alice,
       signer
     );
+
+    if (referenceOutcome === 'memory-limit') {
+      check(
+        !executed.ok &&
+          describeFailure(api, executed.failed.event ?? executed.failed) === 'xqvm.VmMemoryLimitExceeded',
+        'memory rejection matches the pinned native VM at the chain allocation limit'
+      );
+      continue;
+    }
 
     if (!executed.ok) {
       check(false, `execute failed: ${describeFailure(api, executed.failed.event ?? executed.failed)}`);
@@ -258,9 +279,13 @@ try {
     const outputs = event.data[3].toJSON().map((v) => Number(v));
     const stepsUsed = event.data[2].toBigInt();
 
+    // Vectors omit trailing unset slots and use null for holes. The pallet's
+    // i64 event retains every slot and maps unset values to zero.
+    if (expected.outputs.length > outputSlots) throw new Error('vector outputs exceed its slots');
+    const expectedOutputs = Array.from({ length: outputSlots }, (_, i) => expected.outputs[i] ?? 0);
     check(
-      JSON.stringify(outputs) === JSON.stringify(expected.outputs),
-      `outputs ${JSON.stringify(outputs)} match the vector`
+      JSON.stringify(outputs) === JSON.stringify(expectedOutputs),
+      `outputs ${JSON.stringify(outputs)} match the vector in the pallet event format`
     );
     check(
       stepsUsed === BigInt(expected.steps),
