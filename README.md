@@ -452,9 +452,32 @@ Operator validator slots are committed in
 The [`scripts/derive-operator-keys.sh`](scripts/derive-operator-keys.sh) helper
 derives operator keys.
 
+### Audit SDK commission guard (QUIP-12)
+
+SDK revision `3e74664a56c75e56ece2b894b989717d2ecd9a46` adds an increase-only commission guard for asynchronous election
+providers. Active and ready rounds retain their snapshot commission; equal or
+lower commission remains valid. Synchronous, zero-duration providers are
+unchanged. During an active round an account with no current `Validators`
+entry may only register at zero commission, subject to `MinCommission`.
+Nonzero registration is accepted between rounds. This deliberately covers
+re-entry after `chill` or `nominate`, including atomic batches, without changing
+those exit calls or adding a per-round preference snapshot.
+
+`CommissionChangeDuringElection` is appended at error index 34. The metadata
+gate checks this exact addition on both sides of the immutable baseline;
+previous errors, calls, storage and signed extensions are unchanged. Runtime
+reward regressions cover direct raises and both batched re-entry paths, and
+prove that a chilled nominator still receives its snapshotted reward share.
+
+The additional phase read, 3,500 proof bytes and 5,000,000 picoseconds registered
+for `validate` are conservative, unmeasured allowances. The SDK retains the
+new-validator benchmark and adds `validate_commission_increase`; both require
+a reference-machine pass before release. The manually registered allowance
+is not detected by generated-weight staleness checks.
+
 ### Audit BABE randomness fix (QUIP-31 F1)
 
-SDK revision `dc07d5ce59d269bc071098a634af38045a226265` consumes the actively
+SDK revision `8fcc7e2d686806c0f104e768dd5c17f743704754` consumes the actively
 filling randomness segment at epoch rotation, including an exactly full
 256-output segment. Every segment is removed after consumption, so partial
 outputs cannot carry over. All SDK requirements use this revision and the
@@ -469,7 +492,8 @@ F1 does **not** close the final-primary-author residual. The additional
 one-session commitment delay requires a session-pallet change and 8–12 hours
 of key-rotation latency; it remains a separate ticket outside runtime 120.
 
-This review branch starts at validator audit base `962ea17`, and its SDK fork
-starts at `d511a17`. The independently reviewed QUIP-12 commission guard must
-be combined with F1 in one SDK revision before integration; replacing the
-integration pin with this isolated revision would drop that guard.
+The pinned SDK is a linear stack: the four F1 commits are replayed on the
+reviewed QUIP-12 commission guard at `3e74664a`. Both fixes are present in this
+one revision. The validator pin includes the reviewed commission metadata
+gates and economic regressions. The original QUIP-12 and isolated F1 branches
+remain available at their reviewed heads.
