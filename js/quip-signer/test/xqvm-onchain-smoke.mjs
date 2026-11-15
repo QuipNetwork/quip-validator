@@ -1,5 +1,5 @@
 // @ts-nocheck
-// On-chain smoke test for the pallet-xqvm / XQuad 0.4.0 integration.
+// On-chain smoke test for the pallet-xqvm / locked XQuad integration.
 //
 // Replays XQuad conformance vectors through the running node and asserts the
 // chain reproduces the toolchain's normative expectations exactly: the same
@@ -11,7 +11,7 @@
 //   make wasm-signer && npm run build --prefix js/quip-signer
 //   cargo build -p quip-network-node
 //   target/debug/quip-network-node --dev
-//   vectors assembled with `xquad asm` into VECTORS_DIR
+//   vectors assembled with the locked xqasm library into VECTORS_DIR
 //
 // `scripts/test-xqvm-onchain.sh` does all of this, including the node.
 // To run this file on its own against a node that is already up:

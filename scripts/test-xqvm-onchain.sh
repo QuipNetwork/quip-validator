@@ -69,17 +69,41 @@ if [[ "$actual_commit" != "$xquad_commit" ]]; then
   exit 1
 fi
 
-vectors_src="$xquad_dir/conformance/vectors"
+vectors_src="$xquad_dir/xqvm/tests/vectors"
 if [[ ! -d "$vectors_src" ]]; then
   echo "ERROR: no conformance vectors at $vectors_src" >&2
   exit 1
 fi
 
+# Use a disposable copy even with XQUAD_DIR: build only committed source and
+# never add the assembly adapter to a caller's checkout.
+if [[ -n "${XQUAD_DIR:-}" ]]; then
+  mkdir -p "$work_dir/xquad"
+  git -C "$xquad_dir" archive "$xquad_commit" | tar -x -C "$work_dir/xquad"
+  xquad_dir="$work_dir/xquad"
+  vectors_src="$xquad_dir/xqvm/tests/vectors"
+fi
+
 echo "== Building the assembler =="
-# Keep this other workspace's build artifacts separate from the validator.
+# XQuad no longer ships xqcli. Add a tiny adapter to the disposable checkout
+# so its assembler and lockfile supply the exact bytecode used by the vectors.
+mkdir -p "$xquad_dir/xqasm/examples"
+cat > "$xquad_dir/xqasm/examples/quip_onchain_assemble.rs" <<'RUST'
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    let input = args.next().ok_or("missing input path")?;
+    let output = args.next().ok_or("missing output path")?;
+    if args.next().is_some() {
+        return Err("unexpected argument".into());
+    }
+    let program = xqasm::assemble_source(&std::fs::read_to_string(input)?)?;
+    std::fs::write(output, program.encode())?;
+    Ok(())
+}
+RUST
 xquad_target="$work_dir/xquad-target"
-CARGO_TARGET_DIR="$xquad_target" cargo build --locked --release --manifest-path "$xquad_dir/Cargo.toml" -p xqcli
-xquad_bin="$xquad_target/release/xquad"
+CARGO_TARGET_DIR="$xquad_target" cargo build --locked --release --manifest-path "$xquad_dir/Cargo.toml" -p xqasm --example quip_onchain_assemble
+xquad_bin="$xquad_target/release/examples/quip_onchain_assemble"
 
 # Assemble every vector that pins a step count. Those are the ones whose
 # expectations this suite can check through the chain: outputs and
@@ -92,7 +116,7 @@ while IFS= read -r expected; do
   dir="$(dirname "$expected")"
   name="$(basename "$dir")"
 
-  "$xquad_bin" asm "$dir/program.xqasm" -o "$vectors_out/$name.xqb" >/dev/null
+  "$xquad_bin" "$dir/program.xqasm" "$vectors_out/$name.xqb" >/dev/null
   cp "$expected" "$vectors_out/$name.expected.json"
   cp "$dir/inputs.json" "$vectors_out/$name.inputs.json"
   count=$((count + 1))
@@ -111,7 +135,7 @@ TARGET .0
 NOP
 JUMP .0
 PROGRAM
-"$xquad_bin" asm "$work_dir/runaway.xqasm" -o "$vectors_out/runaway.xqb" >/dev/null
+"$xquad_bin" "$work_dir/runaway.xqasm" "$vectors_out/runaway.xqb" >/dev/null
 
 # One variable past the runtime's 16 MiB MaxVmMemory, at ~2.1M steps — an
 # order of magnitude inside MaxStepLimit, so the allocation budget is what
@@ -121,7 +145,7 @@ PUSH 2097153
 BSMX r0
 HALT
 PROGRAM
-"$xquad_bin" asm "$work_dir/alloc.xqasm" -o "$vectors_out/alloc_over_budget.xqb" >/dev/null
+"$xquad_bin" "$work_dir/alloc.xqasm" "$vectors_out/alloc_over_budget.xqb" >/dev/null
 
 echo "== Starting the node =="
 "$node_binary" --dev --tmp --no-prometheus >"$node_log" 2>&1 &
