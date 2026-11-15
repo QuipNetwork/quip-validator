@@ -546,3 +546,26 @@ for `validate` are conservative, unmeasured allowances. The SDK retains the
 new-validator benchmark and adds `validate_commission_increase`; both require
 a reference-machine pass before release. The manually registered allowance
 is not detected by generated-weight staleness checks.
+
+### Audit BABE randomness fix (QUIP-31 F1)
+
+SDK revision `8fcc7e2d686806c0f104e768dd5c17f743704754` consumes the actively
+filling randomness segment at epoch rotation, including an exactly full
+256-output segment. Every segment is removed after consumption, so partial
+outputs cannot carry over. All SDK requirements use this revision and the
+committed lockfile contains one SDK source.
+
+The fork includes separate test-harness and equivocation-fixture repairs. Five
+regressions fail on the original `d511a17` production code and pass with F1:
+one output, two outputs, 256 outputs, 257 outputs, and consecutive epochs.
+There is no storage-layout, client or genesis change.
+
+F1 does **not** close the final-primary-author residual. The additional
+one-session commitment delay requires a session-pallet change and 8–12 hours
+of key-rotation latency; it remains a separate ticket outside runtime 120.
+
+The pinned SDK is a linear stack: the four F1 commits are replayed on the
+reviewed QUIP-12 commission guard at `3e74664a`. Both fixes are present in this
+one revision. The validator pin includes the reviewed commission metadata
+gates and economic regressions. The original QUIP-12 and isolated F1 branches
+remain available at their reviewed heads.
