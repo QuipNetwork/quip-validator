@@ -528,6 +528,13 @@ The verifier's maximum program-size/block-count paths need a reference-machine
 weight pass before release; dependency-only changes do not trigger the pallet
 source staleness warning.
 
+The on-chain xqvm conformance suite resolves the locked Cargo package graph.
+A draft git dependency fetches its exact commit; a registry release fetches
+its version tag and verifies it against the published crate's
+`.cargo_vcs_info.json`. Replacing the draft pin with published xqvm 0.5.3
+therefore requires no stale hard-coded commit to be carried forward. The
+`XQUAD_DIR` override must match the same resolved source identity.
+
 ### Audit SDK commission guard (QUIP-12)
 
 SDK revision `3e74664a56c75e56ece2b894b989717d2ecd9a46` adds an increase-only commission guard for asynchronous election

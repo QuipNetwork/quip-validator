@@ -10,7 +10,7 @@ set -euo pipefail
 # conformance vectors that assert a step count.
 #
 # The conformance vectors are not vendored. They are read from the xquad
-# repository at the tag matching the `xqvm` version this workspace pins, so
+# repository at the commit resolved by the locked `xqvm` dependency, so
 # the assertions track the toolchain instead of drifting from a copy. Set
 # XQUAD_DIR to reuse an existing checkout instead of cloning.
 #
@@ -39,32 +39,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The pinned xqvm version names the toolchain the vectors come from: same
-# crate, same tag. The requirement is an exact pin (`=0.4.0`), so the
-# leading `=` is stripped to get the version the tag is named after.
-xqvm_version="$(
-  sed -n 's/^xqvm = { version = "=\{0,1\}\([^"]*\)".*/\1/p' Cargo.toml
-)"
-if [[ -z "$xqvm_version" ]]; then
-  echo "ERROR: could not read the pinned xqvm version from Cargo.toml" >&2
-  exit 1
-fi
-echo "== Pinned xqvm: ${xqvm_version} =="
-
-# A tag can be moved; a commit cannot. This is the commit crates.io records
-# for the published xqvm ${xqvm_version} crate (its `.cargo_vcs_info.json`),
-# so the vectors are asserted to come from exactly the source the pallet
-# links against. Update it together with the version pin in Cargo.toml.
-xquad_commit="1e40da31628026e4cdd47cfae2c0119450044e6c"
+# Resolve both draft git pins and their eventual registry release replacement.
+# Registry provenance comes from the published crate's .cargo_vcs_info.json;
+# no manually maintained commit constant can silently outlive a version bump.
+cargo metadata --locked --format-version 1 > "$work_dir/cargo-metadata.json"
+source_info="$(node scripts/resolve-xqvm-source.mjs "$work_dir/cargo-metadata.json")"
+IFS=$'\t' read -r xqvm_version xquad_repository xquad_commit xquad_ref <<< "$source_info"
+echo "== Pinned xqvm: ${xqvm_version} at ${xquad_commit} =="
 
 if [[ -n "${XQUAD_DIR:-}" ]]; then
   xquad_dir="$XQUAD_DIR"
   echo "== Using xquad checkout at ${xquad_dir} =="
 else
   xquad_dir="$work_dir/xquad"
-  echo "== Cloning xquad at v${xqvm_version} =="
-  git clone --quiet --depth 1 --branch "v${xqvm_version}" \
-    https://gitlab.com/quip.network/xquad.git "$xquad_dir"
+  echo "== Fetching xquad at ${xquad_ref} =="
+  git init --quiet "$xquad_dir"
+  git -C "$xquad_dir" remote add origin "$xquad_repository"
+  git -C "$xquad_dir" fetch --quiet --depth 1 origin "$xquad_ref"
+  git -C "$xquad_dir" checkout --quiet --detach FETCH_HEAD
 fi
 
 # Checked for an existing checkout too: the vectors come from whatever HEAD
@@ -84,10 +76,10 @@ if [[ ! -d "$vectors_src" ]]; then
 fi
 
 echo "== Building the assembler =="
-cargo build --release --manifest-path "$xquad_dir/Cargo.toml" -p xqcli
-xquad_bin="$(cargo metadata --format-version 1 --no-deps \
-  --manifest-path "$xquad_dir/Cargo.toml" |
-  sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/xquad"
+# Keep this other workspace's build artifacts separate from the validator.
+xquad_target="$work_dir/xquad-target"
+CARGO_TARGET_DIR="$xquad_target" cargo build --locked --release --manifest-path "$xquad_dir/Cargo.toml" -p xqcli
+xquad_bin="$xquad_target/release/xquad"
 
 # Assemble every vector that pins a step count. Those are the ones whose
 # expectations this suite can check through the chain: outputs and
