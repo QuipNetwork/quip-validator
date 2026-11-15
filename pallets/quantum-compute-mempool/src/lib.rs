@@ -907,9 +907,8 @@ pub mod pallet {
                 .saturating_add(
                     weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
                 )
-                .saturating_add(weights::closed_order_pruning_weight::<T>(
-                    pruned,
-                    prune_buckets,
+                .saturating_add(<T as Config>::WeightInfo::prune_closed_orders(pruned).max(
+                    weights::closed_order_pruning_weight::<T>(pruned, prune_buckets),
                 ))
         }
     }

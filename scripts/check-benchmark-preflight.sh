@@ -118,6 +118,8 @@ check_quantum_compute_mempool_wrapper() {
   normalized="$(normalize_signature < "$file")"
   for required in \
     'usecrate::benchmark_weights' \
+    'fnprune_closed_orders(k:u32)->Weight;' \
+    'asBenchmarkWeightInfo>::prune_closed_orders(k)' \
     'pubconstCLAIM_REWARD_PROOF_FLOOR:u64=1024*1024;' \
     'fnwith_claim_reward_proof_floor(' \
     'weight.max(Weight::from_parts(0,CLAIM_REWARD_PROOF_FLOOR))' \
@@ -176,13 +178,18 @@ check_wrapper_guard() {
   fi
 
   local case_name
-  for case_name in claim_reward_dust submit_solution_replacement submit_solution_clear_payee; do
+  for case_name in claim_reward_dust submit_solution_replacement submit_solution_clear_payee prune_closed_orders; do
     sed "s/$case_name/unused_case/g" pallets/quantum-compute-mempool/src/weights.rs > "$plain_generated"
     if check_quantum_compute_mempool_wrapper "$plain_generated" >/dev/null 2>&1; then
       echo "ERROR: unconsumed $case_name passed the wrapper guard" >&2
       return 1
     fi
   done
+
+  if [[ "$(normalize_signature < pallets/quantum-compute-mempool/src/lib.rs)" != *'WeightInfo::prune_closed_orders(pruned).max(weights::closed_order_pruning_weight::<T>(pruned,prune_buckets))'* ]]; then
+    echo "ERROR: closed-order hook lost its componentwise pruning floor" >&2
+    return 1
+  fi
 
   echo "Quantum PoW and Quantum Compute Mempool public wrapper guard checks passed."
 }

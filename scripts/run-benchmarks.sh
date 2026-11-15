@@ -94,7 +94,7 @@ verify_regenerated_mempool_weights() {
   fi
   # The repository template emits one trait declaration and two implementations.
   # Catch incomplete/stale regeneration even if an old composition still compiles.
-  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust; do
+  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust prune_closed_orders; do
     count="$(awk -v name="$name" '$0 ~ "fn[[:space:]]+" name "[[:space:]]*\\(" {n++} END {print n+0}' "$file")"
     if [ "$count" -ne 3 ]; then
       echo "ERROR: regenerated $name must have a trait declaration and both implementations" >&2
@@ -112,6 +112,7 @@ check_regenerated_mempool_guard() {
   local valid
   local invalid
   local name
+  local occurrence
 
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/quip-regenerated-guard.XXXXXX")"
   trap 'rm -rf "$temp_dir"' RETURN
@@ -119,16 +120,18 @@ check_regenerated_mempool_guard() {
   invalid="$temp_dir/incomplete.rs"
   # Synthetic syntax fixture only; these are not benchmark measurements.
   : > "$valid"
-  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust; do
+  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust prune_closed_orders; do
     printf 'fn %s() -> Weight;\nfn %s() -> Weight {}\nfn %s() -> Weight {}\n' "$name" "$name" "$name" >> "$valid"
   done
   verify_regenerated_mempool_weights "$valid"
-  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust; do
-    awk -v name="$name" '$0 ~ "fn " name && !removed {removed=1; next} {print}' "$valid" > "$invalid"
-    if verify_regenerated_mempool_weights "$invalid" >/dev/null 2>&1; then
-      echo "ERROR: incomplete $name passed regeneration guard" >&2
-      return 1
-    fi
+  for name in propose_job_with_payee_requirement submit_solution submit_solution_with_payee submit_solution_replacement submit_solution_clear_payee claim_reward claim_reward_dust prune_closed_orders; do
+    for occurrence in 1 2 3; do
+      awk -v name="$name" -v occurrence="$occurrence" '$0 ~ "fn " name {seen++; if (seen == occurrence) next} {print}' "$valid" > "$invalid"
+      if verify_regenerated_mempool_weights "$invalid" >/dev/null 2>&1; then
+        echo "ERROR: missing declaration/implementation $occurrence of $name passed regeneration guard" >&2
+        return 1
+      fi
+    done
   done
   cp "$valid" "$invalid"
   printf '%s\n' '// Provisional composition, timing pending regeneration.' >> "$invalid"
