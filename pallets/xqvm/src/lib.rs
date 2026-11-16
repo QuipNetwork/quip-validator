@@ -531,17 +531,17 @@ pub mod pallet {
         /// every account that runs it. It is also what lets `execute` skip
         /// re-verification later (QUI-1057).
         ///
-        /// Decoding is linear in byte length. Verification is bounded but
-        /// not linear in basic blocks: for N blocks and E edges, register
-        /// analysis permits N + 1024*E visits and must-init N + 256*E.
-        /// Each of L loop regions adds a depth walk, so all depth walks
-        /// permit at most (L+1)*N*(3*N+3) visits. Transfers and predecessor
-        /// folds add work per visit; nesting depth alone does not bound L.
+        /// Decoding is linear in byte length. After graph indexing, exact
+        /// stack heights require at most N block transfers and E edge checks.
+        /// Sparse register analysis permits 1024*N constant-work events and
+        /// 1024*E coordinate updates; must-init permits 256*N and 256*E.
+        /// Incoming meets are cached and block writes are summarised once.
+        /// These operation bounds do not replace reference-machine timing.
         ///
         /// The existing byte/block weight model pre-charges at
         /// `MaxProgramBlocks` and refunds to the measured block count.
         /// QUI-2353 must calibrate it against the bounded verifier on the
-        /// reference machine, including sequential and nested loops,
+        /// reference machine, especially register-heavy cyclic joins,
         /// before this integration can restore program admission.
         ///
         /// The program is stored keyed by its Blake2-256 hash for
