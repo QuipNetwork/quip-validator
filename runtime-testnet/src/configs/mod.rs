@@ -122,6 +122,7 @@ impl frame_system::SetCode<Runtime> for NetworkIdentityGuard {
 impl frame_system::Config for Runtime {
     /// The block type for the runtime.
     type Block = Block;
+    type BaseCallFilter = session_keys::SessionKeyCallFilter;
     /// Block & extrinsics weights: base values and limits.
     type BlockWeights = RuntimeBlockWeights;
     /// The maximum length of a block (in bytes).
@@ -200,7 +201,7 @@ impl pallet_session::Config for Runtime {
     type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
     type Keys = BoxedSessionKeys;
     type DisablingStrategy = pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
-    type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+    type WeightInfo = session_keys::SessionWeights;
     type Currency = Balances;
     type KeyDeposit = ();
 }
@@ -963,5 +964,6 @@ pub mod launch_time;
 pub mod staking_rewards;
 pub mod validator_onboarding;
 
+pub mod session_keys;
 pub mod slashing;
 pub mod vesting;

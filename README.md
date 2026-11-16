@@ -580,9 +580,43 @@ regressions fail on the original `d511a17` production code and pass with F1:
 one output, two outputs, 256 outputs, 257 outputs, and consecutive epochs.
 There is no storage-layout, client or genesis change.
 
-F1 does **not** close the final-primary-author residual. The additional
-one-session commitment delay requires a session-pallet change and 8–12 hours
-of key-rotation latency; it remains a separate ticket outside runtime 120.
+Runtime 120 also rejects session `set_keys` and `purge_keys` in the last
+64 BABE slots of each epoch: 384 seconds, or 64/2400 (about 2.67%) of a
+mainnet/dev epoch and 64/600 (about 10.67%) of a testnet epoch. The window
+starts exactly at `epoch_start + epoch_duration - 64` and ends when the
+next epoch begins. This reduces the final-primary-author key-selection
+residual: assuming independent slots with primary probability `c`, a
+secondary-only tail of at least 64 slots has probability `(1 - c)^64`,
+about `1e-8` at the configured `c = 1/4`. This is a probabilistic bound,
+not elimination of the residual; changing `c` or the slot mode requires
+reviewing the cutoff. The council dispatcher rejects `Babe::plan_config_change`
+at every epoch offset, including requests that repeat the current configuration.
+Changing the primary probability or slot mode therefore requires a governed
+runtime code upgrade that reviews this bound; the SDK Root-only API itself
+remains present.
+
+Operators see `system.CallFiltered` for either key call during the window;
+retry after the next epoch boundary. Wrapped calls report that inner error
+through their usual result/event (for example `utility.BatchInterrupted`
+or `proxy.ProxyExecuted`; Revive emits `EthExtrinsicRevert` while its outer
+extrinsic succeeds). Genesis session keys are installed normally,
+and block 1 at epoch offset zero accepts key changes. No repository
+onboarding script submits `set_keys` automatically, so no retry loop changes
+are required here.
+
+Raw Root dispatch bypasses the base call filter, but validators cannot
+obtain Root on their own. The council's two-thirds `dispatch_as_root` path
+also checks the window recursively, including utility calls that change
+the dispatch origin, and rejects a blocked motion with `RootCallDenied`.
+Governance can still replace runtime code through its existing upgrade
+powers. The cutoff changes no storage layout, signed extensions, or call
+indices; the unshipped runtime remains spec 120 / transaction version 7.
+
+Session call weights add a conservative allowance for the filter's five
+storage reads, 8,000 proof bytes and 5,000,000 picoseconds of arithmetic.
+The council filter reads the window once per call tree and charges the same
+allowance once. These allowances are unmeasured and require reference-machine
+weight validation before release; no generated weights were replaced.
 
 The pinned SDK is a linear stack: the four F1 commits are replayed on the
 reviewed QUIP-12 commission guard at `3e74664a`. Both fixes are present in this
