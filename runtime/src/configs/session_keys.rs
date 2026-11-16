@@ -19,6 +19,7 @@ const _: () = {
     ));
 };
 
+/// Only matching Session key calls read BABE storage; all other calls only match the enum.
 pub struct SessionKeyCallFilter;
 impl Contains<RuntimeCall> for SessionKeyCallFilter {
     fn contains(call: &RuntimeCall) -> bool {
@@ -57,9 +58,10 @@ pub(super) fn key_changes_allowed() -> bool {
     })
 }
 
-/// Conservative allowance for five reads of three fixed-size BABE values
-/// (the SDK start helper rereads EpochIndex and GenesisSlot), arithmetic and
-/// their proofs. Include in reference-machine measurement before release.
+/// UNMEASURED: conservative allowance tracked by QUI-2353.
+/// Five reads of three fixed-size BABE values (the SDK start helper rereads
+/// EpochIndex and GenesisSlot), arithmetic and their proofs.
+/// Include in reference-machine measurement before release.
 pub(super) fn filter_weight() -> Weight {
     Weight::from_parts(5_000_000, 8_000)
         .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads(5))

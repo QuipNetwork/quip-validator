@@ -598,24 +598,45 @@ Runtime 120 also rejects session `set_keys` and `purge_keys` in the last
 mainnet/dev epoch and 64/600 (about 10.67%) of a testnet epoch. The window
 starts exactly at `epoch_start + epoch_duration - 64` and ends when the
 next epoch begins. This reduces the final-primary-author key-selection
-residual: assuming independent slots with primary probability `c`, a
-secondary-only tail of at least 64 slots has probability `(1 - c)^64`,
-about `1e-8` at the configured `c = 1/4`. This is a probabilistic bound,
-not elimination of the residual; changing `c` or the slot mode requires
-reviewing the cutoff. The council dispatcher rejects `Babe::plan_config_change`
+residual. Under the independent-slot model, let `α` be the honest-and-online
+share of BABE weight and `c_h = 1 - (1 - c)^α` the probability of an honest,
+online primary in a slot. The probability of a 64-slot tail with no such
+primary is `(1 - c_h)^64 = (1 - c)^(64α)`. At the genesis configuration
+`c = 1/4`, the approximately `1e-8` figure assumes **all validators are honest
+and online** (`α = 1`):
+
+| Honest-and-online share `α` | 1 | 4/5 | 2/3 | 3/5 | 1/2 |
+|---|---:|---:|---:|---:|---:|
+| Per-epoch tail probability | 1.0e-8 | 4.0e-7 | 4.7e-6 | 1.6e-5 | 1.0e-4 |
+
+This is a probabilistic bound, not elimination of the residual. It does not
+cover a coalition publishing or withholding its own tail primaries, whose
+VRF outputs it knows in advance; that grinding opportunity is intrinsic to
+BABE. Offline honest validators, network partitions or denial of service
+against authors near epoch end reduce the honest-and-online share.
+Equivocation adds no randomness. QUI-2352 tracks the separate deterministic
+fix, a one-session key commitment delay, outside runtime 120. The residual
+risk requires an explicit release decision until that fix lands.
+
+Compile-time assertions pin the **genesis configuration**, not the live
+configuration: raw Root can still call `plan_config_change`. Changing `c`
+or the slot mode requires reviewing the cutoff. The council dispatcher rejects `Babe::plan_config_change`
 at every epoch offset, including requests that repeat the current configuration.
 Changing the primary probability or slot mode therefore requires a governed
 runtime code upgrade that reviews this bound; the SDK Root-only API itself
 remains present.
 
 Operators see `system.CallFiltered` for either key call during the window;
-retry after the next epoch boundary. Wrapped calls report that inner error
+retry after the next epoch boundary. Transaction-pool validation does not
+apply `BaseCallFilter`, so a key call included during the window fails with
+`CallFiltered` and still pays its transaction fee. Wrapped calls report that inner error
 through their usual result/event (for example `utility.BatchInterrupted`
 or `proxy.ProxyExecuted`; Revive emits `EthExtrinsicRevert` while its outer
 extrinsic succeeds). Genesis session keys are installed normally,
 and block 1 at epoch offset zero accepts key changes. No repository
 onboarding script submits `set_keys` automatically, so no retry loop changes
-are required here.
+are required here. This statement covers this repository only;
+`quip-node-manager` has not been verified.
 
 Raw Root dispatch bypasses the base call filter, but validators cannot
 obtain Root on their own. The council's two-thirds `dispatch_as_root` path
@@ -628,8 +649,10 @@ indices; the unshipped runtime remains spec 120 / transaction version 7.
 Session call weights add a conservative allowance for the filter's five
 storage reads, 8,000 proof bytes and 5,000,000 picoseconds of arithmetic.
 The council filter reads the window once per call tree and charges the same
-allowance once. These allowances are unmeasured and require reference-machine
-weight validation before release; no generated weights were replaced.
+allowance once on every governed Root dispatch; BABE storage reads occur
+only if the tree contains a matching key call. These allowances are
+**UNMEASURED**, tracked by QUI-2353, and require reference-machine weight
+validation before release; no generated weights were replaced.
 
 The pinned SDK is a linear stack: the four F1 commits are replayed on the
 reviewed QUIP-12 commission guard at `3e74664a`. Both fixes are present in this
