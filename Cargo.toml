@@ -151,7 +151,7 @@ schnorrkel = { version = "0.11.5", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["derive"] }
 wasm-bindgen = { version = "0.2.117" }
-xqvm = { git = "https://gitlab.com/quip.network/xquad.git", rev = "279cf29bfcc64d09ee08c0d30b098691c24a8c7f", version = "=0.5.3-dev", default-features = false }
+xqvm = { git = "https://gitlab.com/quip.network/xquad.git", rev = "85aefe5f5ff877f83c74ddfa127554f63616e929", version = "=0.5.0", default-features = false }
 
 [workspace.lints.rust]
 suspicious_double_ref_op = { level = "allow", priority = 2 }

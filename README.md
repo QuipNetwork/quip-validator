@@ -512,12 +512,24 @@ derives operator keys.
 
 ### Temporary audit XQVM pin
 
-This branch is a draft dependency pin to xquad commit
-`279cf29bfcc64d09ee08c0d30b098691c24a8c7f` (`0.5.3-dev`). Both execution
-pallets and both runtime test dependencies use the same workspace dependency.
-The committed lockfile contains one XQVM package. This pin is temporary: the
-`0.5.3` release is required before this change can proceed, and its published
-version must replace the git pin. Releasing xquad is a separate operation.
+This is a local integration draft, not an admission-restoration release.
+The upstream verifier revision still needs panel review. QUI-2353 must
+recalibrate verification weights on the reference machine before program
+admission can be restored; sequential loop count matters independently of
+nesting depth. Release/runtime-version selection remains a separate step.
+
+This branch pins xquad v0.5.0 plus the audit fixes at commit
+`85aefe5f5ff877f83c74ddfa127554f63616e929`. That commit declares `xqvm 0.5.0`,
+but differs from the published crates.io `xqvm 0.5.0` at `a99f7d2e`.
+The registry release does not contain these audit fixes. Both execution
+pallets and both runtime test dependencies inherit the same workspace git
+dependency; no member may independently select the registry package with
+that version. The lockfile and resolved graph must contain exactly one XQVM
+package, from the pinned git source, to prevent QUIP-19/O8 version drift.
+
+This pin is temporary. Replace it only with a published release containing
+these fixes, after verifying its source identity. Releasing xquad is a
+separate operation.
 
 The dependency fixes QUIP-02/16/17 and O3/O7; its newer instruction and fault
 handling also closes the version drift behind QUIP-19/O8. Signed
@@ -531,9 +543,10 @@ source staleness warning.
 The on-chain xqvm conformance suite resolves the locked Cargo package graph.
 A draft git dependency fetches its exact commit; a registry release fetches
 its version tag and verifies it against the published crate's
-`.cargo_vcs_info.json`. Replacing the draft pin with published xqvm 0.5.3
+`.cargo_vcs_info.json`. A future published release containing the audit fixes
 therefore requires no stale hard-coded commit to be carried forward. The
-`XQUAD_DIR` override must match the same resolved source identity.
+existing registry `0.5.0` is not a replacement for this pin. The `XQUAD_DIR`
+override must match the same resolved source identity.
 
 The on-chain replay uses the pinned `xqasm` library and `xqvm/tests/vectors`.
 It compares every output slot in the pallet event format (unset slots become
