@@ -515,8 +515,9 @@ derives operator keys.
 This is a local integration draft, not an admission-restoration release.
 The upstream verifier revision still needs panel review. QUI-2353 must
 recalibrate verification weights on the reference machine before program
-admission can be restored; sequential loop count matters independently of
-nesting depth. Release/runtime-version selection remains a separate step.
+admission can be restored. Exact-height verification removes repeated loop-body
+walks; register-heavy cyclic joins now drive the cost-calibration inputs.
+Release/runtime-version selection remains a separate step.
 
 This branch pins xquad v0.5.0 plus the audit fixes at commit
 `edce16085da57cad2365e65b9e941f7555edaa9c`. That commit declares `xqvm 0.5.0`,
