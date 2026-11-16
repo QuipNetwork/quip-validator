@@ -363,6 +363,38 @@ pub mod pallet {
         ));
     }
 
+    #[cfg(test)]
+    #[test]
+    fn first_witness_stack_diagnostics_preserve_the_dispatch_error() {
+        use xqvm::VerifierError as V;
+
+        // The upstream FIFO policy can change which stack fault is reported.
+        // Offsets and depths remain upstream details; the dispatch ABI groups
+        // all four variants under the existing VerifierStackFault index.
+        for error in [
+            V::StackUnderflow { offset: 0 },
+            V::StackOverflowRisk {
+                offset: 1,
+                depth: 8193,
+            },
+            V::LoopStackImbalance {
+                opener: 2,
+                entry: 1,
+                exit: 0,
+            },
+            V::StackDepthMismatch {
+                target_offset: 3,
+                depth_a: 1,
+                depth_b: 0,
+            },
+        ] {
+            assert!(matches!(
+                map_verifier_error::<crate::mock::Test>(&error),
+                Error::<crate::mock::Test>::VerifierStackFault
+            ));
+        }
+    }
+
     /// Map a run-time fault onto a dispatch error.
     ///
     /// Exhaustive, and deliberately without a catch-all. The wildcard this
