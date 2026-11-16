@@ -23,6 +23,11 @@ fresh chain database, re-insert the H4 BABE and H2 GRANDPA keys, and sync from
 the new genesis; old signed extrinsics are incompatible (`transaction_version`
 is 7).
 
+Runtime 121 pauses new XQVM program admission pending a verifier update.
+`Xqvm.store_program` returns `system.CallFiltered`; executing stored programs
+and registering mempool specifications referencing them remain available. See the
+[runtime compatibility and upgrade notes](docs/runtime-120-compatibility.md).
+
 ## Getting Started
 
 Depending on your operating system and Rust version, there might be additional
@@ -297,8 +302,8 @@ deposits. A batch caller may also release an existing mapping's held deposit
 back to its owner; the mapping remains. With `OnKilledAccount = ()`, a mapping
 outlives its account being reaped. Each account's owner can reverse its
 mapping with `unmap_account`,
-although a later batch can map it again. This is an accepted property; no
-`BaseCallFilter` restriction is added.
+although a later batch can map it again. This is an accepted property;
+`Revive.batch_map_accounts` remains permitted.
 
 See [runtime 120 compatibility](docs/runtime-120-compatibility.md) for the
 release-specific event, call, storage, signing and weight changes.

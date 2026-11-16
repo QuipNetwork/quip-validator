@@ -1,13 +1,42 @@
-# Runtime 120 compatibility
+# Runtime 120 and 121 compatibility
 
-Runtime 120 was never deployed. The `v0.4.1`-tagged 120 blob must never be
-enacted on any network. This runtime requires fresh genesis and provides no
-upgrade path from older storage versions.
+The live testnet runs `quip-testnet` spec 120 / transaction 7 from release
+`v0.5.0` (`d763e2e8ae637170a75ce120441cb6fd3f5ab55c`), as confirmed by the
+network owner on 2026-11-16. The documented bootnode returned that runtime
+identity on the same date. Earlier text describing the live network as spec
+119 and runtime 120 as never deployed was stale.
 
-Neither the published `v0.4.1` blob nor this branch's 120 blob may be enacted
-on the live spec-119 `quip` testnet: the matching `spec_name` and higher
-`spec_version` would pass the on-chain guards, but the incompatible storage,
-H2/H4 authority encoding and signing changes would halt the chain.
+Runtime 121 is an in-place hotfix for that `v0.5.0` runtime. It pauses new
+XQVM program admission pending a verifier update. It replaces the
+inherited `Everything` base call filter with a filter refusing only
+`Xqvm.store_program`; callers receive `system.CallFiltered` before program
+admission. Stored programs can still execute, and mempool specifications can
+still reference them. Uploading new programs, including re-uploading removed
+ones, is unavailable until the verifier update is deployed. Other calls retain
+their existing filter behavior. Pool validation does not apply the base call
+filter: a submitted storage call can still be included, fail with
+`CallFiltered`, and pay its transaction fee. Clients should stop submitting
+these calls during the pause. Root `Utility.dispatch_as` and
+`dispatch_as_fallible` can bypass the filter; this is an accepted governance
+capability, not permission granted to ordinary signed accounts.
+
+The hotfix changes neither storage layout, call/error indices, signed
+extensions nor transaction version 7. Both runtime crates move to spec 121,
+but the live network requires the **quip-testnet** Wasm, not the `quip` Wasm.
+Clients must refresh runtime metadata and sign new transactions against spec
+121; an unchanged transaction version does not preserve signatures made for
+spec 120.
+Before enactment, operators must confirm the deployed `:code` against the
+approved `v0.5.0` testnet artifact, verify the new blob's `quip-testnet` / 121 / 7
+identity and exact code hash, and complete the normal upgrade-state checks.
+Matching version numbers alone do not establish code provenance. Stop if the
+code hash or storage compatibility differs from the approved baseline.
+
+The older `v0.4.1`-tagged 120 blob remains prohibited on every network. It and
+other incompatible older-120 variants are not valid upgrade bases for this
+hotfix; they required fresh genesis and lacked a compatible migration path.
+An older spec-119/H1-H3 chain must not enact this blob merely because 121 is a
+higher number. Do not purge or replace the live chain database for this upgrade.
 
 Spec 120 / transaction 7 does not uniquely identify runtime code. The
 [`v0.4.1` release tag](https://gitlab.com/quip.network/quip-validator/-/tree/v0.4.1)
@@ -48,7 +77,7 @@ SHA-256 digest, metadata hash and runtime version numbers are different
 identifiers. A matching release code hash identifies a prohibited blob,
 not approval to enact it.
 
-The live spec-119 chain has no `CodeUpdated.hash` event field: a
+The older spec-119 chain had no `CodeUpdated.hash` event field: a
 `System.authorize_upgrade(code_hash)` proposal naming one of the hashes above,
 or a `set_code` call whose code argument hashes to one of them, targets a
 prohibited blob; check the proposed code hash before voting, not after
@@ -63,8 +92,9 @@ appending them: `Slashed`, `Ejected`, `Discarded`, and `Bailed` move from indice
 the published `v0.4.1` 120/7 blob, must refresh their metadata. Revive's
 `DeletionQueue` value changes from `BoundedVec<u8>` to
 `DeletionQueueItem { trie_id, account_id }`. This storage-layout change is safe
-only because runtime 120 launches from fresh genesis; this port is not an
-in-place upgrade for an existing runtime-120 chain.
+only because the stable2609 runtime-120 baseline launched from fresh genesis;
+the port was not an in-place upgrade for an incompatible older runtime-120
+chain. The 121 hotfix preserves the deployed `v0.5.0` layout.
 
 `System.CodeUpdated` (event index 2) gains a `hash: H256` field, so upgrade
 watchers must update their decoders. `Offences.Offence` (event index 0) renames
@@ -124,8 +154,9 @@ reference-machine regeneration in `c67fbdb`. Mempool VM errors occupy
 indices 36–44; its limits are 5,000,000 transform steps per submission and
 16,777,216 bytes of VM memory, with `VmWeightPerStep` matching the XQVM rate.
 
-The runtime remains at spec 120/transaction 7 with the same signed-extension
-set, but its metadata hash has changed. Signers enabling `CheckMetadataHash`
+The historical stable2609 port kept spec 120/transaction 7 with the same
+signed-extension set, but changed the metadata hash. This hotfix advances
+spec to 121 and keeps transaction version 7. Signers enabling `CheckMetadataHash`
 need the new metadata. Wallets caching by `(specName, specVersion)` must
 refetch rather than assume that matching 120/7 identifies the metadata in
 the published `v0.4.1` blob.
@@ -154,5 +185,6 @@ The new decoder replaces the old family decoder without a storage migration.
 Solutions remain in archived extrinsic bodies.
 The [archive procedure](family-activation.md#compact-witnesses-and-archived-winners)
 uses the stored topology and the winning nonce to decode them.
-The runtime adds no solution storage and keeps specification 120 and transaction version 7.
+That witness-codec change added no solution storage and kept specification 120
+and transaction version 7; the admission hotfix now advances specification to 121.
 The new pallet error changes metadata, so clients must refresh cached metadata.

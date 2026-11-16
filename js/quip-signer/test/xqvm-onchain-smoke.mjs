@@ -14,13 +14,14 @@
 //   vectors assembled by the pinned xqasm library into VECTORS_DIR
 //
 // `scripts/test-xqvm-onchain.sh` does all of this, including the node.
-// To run this file on its own against a node that is already up:
+// To run this file on its own against a fresh disposable dev node already up:
 //   QUIP_WS_URL=ws://127.0.0.1:9944 VECTORS_DIR=... node <this file>
 
 import { ApiPromise, WsProvider } from '@polkadot/api';
 import { GenericExtrinsicSignatureV4 } from '@polkadot/types';
 import { u8aToHex } from '@polkadot/util';
 import { addressEq, blake2AsHex } from '@polkadot/util-crypto';
+import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,8 @@ const { DevSeedProvider, patchExtrinsicSignFake, QuipSigner } = await import(
 const WS_URL = process.env.QUIP_WS_URL || 'ws://127.0.0.1:9944';
 const VECTORS_DIR = process.env.VECTORS_DIR;
 const REPO = REPO_ROOT;
+assert(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(WS_URL).hostname),
+  'fixture provisioning requires loopback RPC on a disposable dev chain');
 
 const ALICE = {
   name: 'Quip Alice',
@@ -65,13 +68,21 @@ async function submit (api, tx, account, signer, nonce = -1) {
   return new Promise((resolve, reject) => {
     let unsubscribe = () => undefined;
     let settled = false;
+    let finished = false;
+    const finish = (error, result) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      unsubscribe();
+      error ? reject(error) : resolve(result);
+    };
+    const timer = setTimeout(() => finish(new Error('extrinsic inclusion timed out')), 180_000);
 
     api.rpc.author.submitAndWatchExtrinsic.raw(submittedHex, (rawStatus) => {
       const status = api.createType('ExtrinsicStatus', rawStatus);
 
       if (status.isInvalid || status.isDropped || status.isUsurped || status.isFinalityTimeout) {
-        unsubscribe();
-        reject(new Error(`submission failed with ${status.type}`));
+        finish(new Error(`submission failed with ${status.type}`));
       } else if (status.isInBlock && !settled) {
         settled = true;
         const blockHash = status.asInBlock;
@@ -99,18 +110,12 @@ async function submit (api, tx, account, signer, nonce = -1) {
 
           return { ok, failed, events: mine.map(({ event }) => event), blockHash };
         })()
-          .then((result) => {
-            unsubscribe();
-            resolve(result);
-          })
-          .catch((error) => {
-            unsubscribe();
-            reject(error);
-          });
+          .then((result) => finish(undefined, result))
+          .catch(finish);
       }
     })
-      .then((unsub) => { unsubscribe = unsub; })
-      .catch(reject);
+      .then((unsub) => { unsubscribe = unsub; if (finished) unsub(); })
+      .catch(finish);
   });
 }
 
@@ -124,6 +129,30 @@ function describeFailure (api, failedEvent) {
   }
 
   return dispatchError.toString();
+}
+
+// TEMPORARY for the runtime-121 admission pause. Once the reviewed XQVM
+// verifier fix is integrated and ordinary admission is restored, remove this
+// governed fixture setup and restore signed store_program round trips.
+// Only test fixtures use this existing dev-council path;
+// ordinary signed admission is tested separately below.
+async function storeFixture (api, bytecode, account, signer, nonce = -1) {
+  const store = api.tx.xqvm.storeProgram(u8aToHex(bytecode));
+  const dispatch = api.tx.utility.dispatchAs({ system: { Signed: account.address } }, store.method);
+  const root = api.tx.validatorAdmission.dispatchAsRoot(dispatch.method);
+  const proposal = api.tx.foundation.propose(1, root.method, root.method.encodedLength);
+  const receipt = await submit(api, proposal, account, signer, nonce);
+  assert(receipt.ok, 'fixture proposal extrinsic failed');
+  const executed = receipt.events.find((e) => api.events.foundation.Executed.is(e));
+  assert(executed?.data[1].isOk, 'fixture Foundation execution failed');
+  const rooted = receipt.events.find((e) => api.events.validatorAdmission.RootDispatched.is(e));
+  assert(rooted?.data[0].isOk, 'fixture governed Root dispatch failed');
+  const dispatched = receipt.events.find((e) => api.events.utility.DispatchedAs.is(e));
+  assert(dispatched, 'fixture signed dispatch result missing');
+  const result = dispatched.data[0];
+  // Outer success does not imply that the inner store succeeded. Preserve the
+  // exact error, including the corpus's permitted duplicate-program case.
+  return { ...receipt, ok: result.isOk, failed: result.isErr ? { data: [result.asErr] } : undefined };
 }
 
 // ---------------------------------------------------------------- setup ----
@@ -148,7 +177,15 @@ try {
   // ------------------------------------------------------- node liveness ----
   console.log('== node liveness ==');
   const runtime = api.runtimeVersion;
-  console.log(`    chain: ${await api.rpc.system.chain()}  runtime: ${runtime.specName}/${runtime.specVersion}`);
+  const chain = (await api.rpc.system.chain()).toString();
+  console.log(`    chain: ${chain}  runtime: ${runtime.specName}/${runtime.specVersion}`);
+  assert.equal(chain, 'Development', 'fixture provisioning requires a disposable --dev chain');
+  assert.equal(runtime.specName.toString(), 'quip');
+  assert.equal(runtime.specVersion.toNumber(), 121, 'revisit temporary admission-pause coverage');
+  const members = await api.query.foundation.members();
+  assert.equal(members.length, 1, 'fixture provisioning requires the single-member dev council');
+  assert(addressEq(members[0].toString(), alice.address), 'dev council must be Alice');
+  assert.equal((await api.query.xqvm.programs.keys()).length, 0, 'use a fresh disposable dev chain');
 
   const startHead = await api.rpc.chain.getHeader();
   const start = startHead.number.toNumber();
@@ -180,6 +217,18 @@ try {
     maxVmMemory > 0n && maxVmMemory <= 32n * 1024n * 1024n,
     `MaxVmMemory is set and under the runtime heap (${maxVmMemory} bytes)`
   );
+
+  console.log('== ordinary admission is paused ==');
+  const probe = readFileSync(join(VECTORS_DIR, 'admission_probe.xqb'));
+  const probeHash = blake2AsHex(probe, 256);
+  const refused = await submit(api, api.tx.xqvm.storeProgram(u8aToHex(probe)), alice, signer);
+  assert(!refused.ok && describeFailure(api, refused.failed.event ?? refused.failed) === 'system.CallFiltered',
+    'ordinary benign upload must fail specifically with system.CallFiltered');
+  check(!refused.events.some((e) => api.events.xqvm.ProgramStored.is(e)), 'refused upload emitted no ProgramStored');
+  const atRefusal = await api.at(refused.blockHash);
+  check((await atRefusal.query.xqvm.programs(probeHash)).isNone, 'refused upload stored no program');
+  check((await atRefusal.query.xqvm.programOwner(probeHash)).isNone, 'refused upload stored no owner');
+  check((await atRefusal.query.xqvm.programDeposit(probeHash)).isNone, 'refused upload stored no deposit');
 
   // ------------------------------------------------ conformance replays ----
   const names = readdirSync(VECTORS_DIR)
@@ -215,14 +264,14 @@ try {
   });
 
   // Waiting for each extrinsic before signing the next costs one block per
-  // extrinsic, two per vector. Sign every store_program and then every
+  // extrinsic, two per vector. Sign every fixture proposal and then every
   // execute with ascending nonces and submit them together: the pool orders
   // them by nonce, so each execute applies after every store, and each
   // result is still matched to its own extrinsic.
   const firstNonce = (await api.rpc.system.accountNextIndex(alice.address)).toNumber();
-  const storeResults = vectors.map(({ bytecode }, i) => submit(
+  const storeResults = vectors.map(({ bytecode }, i) => storeFixture(
     api,
-    api.tx.xqvm.storeProgram(u8aToHex(bytecode)),
+    bytecode,
     alice,
     signer,
     firstNonce + i
@@ -342,7 +391,7 @@ try {
   const runaway = readFileSync(join(VECTORS_DIR, 'runaway.xqb'));
   const runawayHash = blake2AsHex(runaway, 256);
 
-  const storedRunaway = await submit(api, api.tx.xqvm.storeProgram(u8aToHex(runaway)), alice, signer);
+  const storedRunaway = await storeFixture(api, runaway, alice, signer);
 
   check(
     storedRunaway.ok ||
@@ -391,9 +440,9 @@ try {
   const overBudget = readFileSync(join(VECTORS_DIR, 'alloc_over_budget.xqb'));
   const overBudgetHash = blake2AsHex(overBudget, 256);
 
-  const storedOverBudget = await submit(
+  const storedOverBudget = await storeFixture(
     api,
-    api.tx.xqvm.storeProgram(u8aToHex(overBudget)),
+    overBudget,
     alice,
     signer
   );
