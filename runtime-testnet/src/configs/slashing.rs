@@ -173,7 +173,9 @@ const _: () = {
 mod tests;
 
 parameter_types! {
-    /// Conservative bounded-tree inspection overhead; include in reference weight regeneration.
+    /// UNMEASURED: bounded-tree overhead plus the session-key filter allowance (QUI-2353).
+    /// Charged on every council Root dispatch; BABE reads occur only if a key call is found,
+    /// at most once per tree. Include both allowances in reference-machine measurement.
     pub RootFilterWeight: Weight = Weight::from_parts(50_000_000, 0)
         .saturating_add(super::session_keys::filter_weight());
 }
