@@ -105,10 +105,10 @@ pub mod pallet {
 
         /// Maximum static loop nesting depth of a stored program.
         ///
-        /// Bounds structured nesting, but not the number of independent
-        /// loop-body analyses. Every loop region has a separate bounded
-        /// depth walk, even at nesting depth one. Cost calibration must
-        /// cover both sequential and nested loops (QUI-2353).
+        /// Retains the admission policy for structured nesting. The pinned
+        /// verifier checks exact heights in one traversal, without separate
+        /// loop-body walks. Register-heavy cyclic joins still require
+        /// reference-machine cost calibration (QUI-2353).
         #[pallet::constant]
         type MaxLoopDepth: Get<u32>;
 
