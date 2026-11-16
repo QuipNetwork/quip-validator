@@ -174,7 +174,8 @@ mod tests;
 
 parameter_types! {
     /// Conservative bounded-tree inspection overhead; include in reference weight regeneration.
-    pub RootFilterWeight: Weight = Weight::from_parts(50_000_000, 0);
+    pub RootFilterWeight: Weight = Weight::from_parts(50_000_000, 0)
+        .saturating_add(super::session_keys::filter_weight());
 }
 
 /// Check nested dispatch calls because Root dispatch bypasses BaseCallFilter.
@@ -193,6 +194,7 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
             call: &crate::RuntimeCall,
             depth: u8,
             remaining: &mut u32,
+            key_changes_allowed: &mut Option<bool>,
         ) -> Result<(), RootCallError> {
             use crate::RuntimeCall;
             if depth > 8 {
@@ -203,6 +205,15 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
             }
             *remaining = remaining.saturating_sub(1);
             match call {
+                // Root bypasses BaseCallFilter. Apply the same time window
+                // to council motions, including nested re-originating calls.
+                RuntimeCall::Session(
+                    pallet_session::Call::set_keys { .. } | pallet_session::Call::purge_keys { .. },
+                ) if !*key_changes_allowed
+                    .get_or_insert_with(super::session_keys::key_changes_allowed) =>
+                {
+                    Err(RootCallError::Denied)
+                }
                 // Grant administration is signed custody only. Root must not
                 // bypass a recipient curve or issue from an arbitrary source.
                 RuntimeCall::Vesting(
@@ -224,43 +235,78 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
                 | RuntimeCall::Multisig(
                     pallet_multisig::Call::as_multi { call, .. }
                     | pallet_multisig::Call::as_multi_threshold_1 { call, .. },
-                ) => allowed(call, depth.saturating_add(1), remaining),
+                ) => allowed(
+                    call,
+                    depth.saturating_add(1),
+                    remaining,
+                    key_changes_allowed,
+                ),
                 RuntimeCall::ValidatorAdmission(
                     pallet_validator_admission::Call::dispatch_as_root { call },
                 )
                 | RuntimeCall::Revive(
                     pallet_revive::Call::eth_substrate_call { call, .. }
                     | pallet_revive::Call::dispatch_as_fallback_account { call },
-                ) => allowed(call, depth.saturating_add(1), remaining),
+                ) => allowed(
+                    call,
+                    depth.saturating_add(1),
+                    remaining,
+                    key_changes_allowed,
+                ),
                 RuntimeCall::Foundation(
                     pallet_collective::Call::execute { proposal, .. }
                     | pallet_collective::Call::propose { proposal, .. },
-                ) => allowed(proposal, depth.saturating_add(1), remaining),
+                ) => allowed(
+                    proposal,
+                    depth.saturating_add(1),
+                    remaining,
+                    key_changes_allowed,
+                ),
                 RuntimeCall::Utility(call) => match call {
                     pallet_utility::Call::batch { calls }
                     | pallet_utility::Call::batch_all { calls }
                     | pallet_utility::Call::force_batch { calls } => {
                         for inner in calls {
-                            allowed(inner, depth.saturating_add(1), remaining)?;
+                            allowed(
+                                inner,
+                                depth.saturating_add(1),
+                                remaining,
+                                key_changes_allowed,
+                            )?;
                         }
                         Ok(())
                     }
                     pallet_utility::Call::as_derivative { call, .. }
                     | pallet_utility::Call::dispatch_as { call, .. }
                     | pallet_utility::Call::dispatch_as_fallible { call, .. }
-                    | pallet_utility::Call::with_weight { call, .. } => {
-                        allowed(call, depth.saturating_add(1), remaining)
-                    }
+                    | pallet_utility::Call::with_weight { call, .. } => allowed(
+                        call,
+                        depth.saturating_add(1),
+                        remaining,
+                        key_changes_allowed,
+                    ),
                     pallet_utility::Call::if_else { main, fallback } => {
-                        allowed(main, depth.saturating_add(1), remaining)?;
-                        allowed(fallback, depth.saturating_add(1), remaining)
+                        allowed(
+                            main,
+                            depth.saturating_add(1),
+                            remaining,
+                            key_changes_allowed,
+                        )?;
+                        allowed(
+                            fallback,
+                            depth.saturating_add(1),
+                            remaining,
+                            key_changes_allowed,
+                        )
                     }
                     _ => Err(RootCallError::Denied),
                 },
                 _ => Ok(()),
             }
         }
-        allowed(call, 0, &mut 256)
+        // Read the block's window at most once, only if the tree actually
+        // contains a key call. Unrelated structural checks remain storage-free.
+        allowed(call, 0, &mut 256, &mut None)
     }
 }
 
