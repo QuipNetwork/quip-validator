@@ -105,14 +105,10 @@ pub mod pallet {
 
         /// Maximum static loop nesting depth of a stored program.
         ///
-        /// The verifier walks every loop region's blocks once per enclosing
-        /// loop, so its work is the block count times the nesting depth, and
-        /// nested loops are cheap to write: one `RANGE` and one `NEXT` per
-        /// level. Without this cap a program under `MaxProgramBlocks` could
-        /// still make verification quadratic in its length. Measured
-        /// natively, 2,048 nested `RANGE`/`NEXT` pairs take 255 ms to
-        /// verify and 16,384 take 20 s -- and that cost is paid before the
-        /// verifier gets round to rejecting them.
+        /// Bounds structured nesting, but not the number of independent
+        /// loop-body analyses. Every loop region has a separate bounded
+        /// depth walk, even at nesting depth one. Cost calibration must
+        /// cover both sequential and nested loops (QUI-2353).
         #[pallet::constant]
         type MaxLoopDepth: Get<u32>;
 
@@ -329,6 +325,10 @@ pub mod pallet {
         /// Appended rather than placed beside the other sample faults so
         /// that the indices of the existing variants do not move.
         VmSampleOutOfDomain,
+        /// The verifier exhausted a derived analysis work bound.
+        /// Indicates an analysis defect, not a normal bytecode fault.
+        /// Appended to preserve every existing pallet error index.
+        VerifierAnalysisBudgetExceeded,
     }
 
     /// Map a static-verification failure onto a dispatch error.
@@ -339,6 +339,7 @@ pub mod pallet {
     fn map_verifier_error<T: Config>(e: &xqvm::VerifierError) -> Error<T> {
         use xqvm::VerifierError as V;
         match e {
+            V::AnalysisBudgetExceeded => Error::<T>::VerifierAnalysisBudgetExceeded,
             V::TruncatedInstruction { .. } | V::BadOpcode { .. } => {
                 Error::<T>::VerifierBadInstruction
             }
@@ -351,6 +352,15 @@ pub mod pallet {
             | V::LoopStackImbalance { .. }
             | V::StackDepthMismatch { .. } => Error::<T>::VerifierStackFault,
         }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn analysis_budget_failure_has_a_distinct_dispatch_error() {
+        assert!(matches!(
+            map_verifier_error::<crate::mock::Test>(&xqvm::VerifierError::AnalysisBudgetExceeded),
+            Error::<crate::mock::Test>::VerifierAnalysisBudgetExceeded
+        ));
     }
 
     /// Map a run-time fault onto a dispatch error.
@@ -489,13 +499,18 @@ pub mod pallet {
         /// every account that runs it. It is also what lets `execute` skip
         /// re-verification later (QUI-1057).
         ///
-        /// The cost has two dimensions. Decoding is linear in the byte
-        /// length, which the call arguments give. Verification is linear in
-        /// the basic-block count (at a bounded nesting depth, which the
-        /// per-block price assumes at its maximum), and the count is only
-        /// known after decoding, so it is pre-charged at `MaxProgramBlocks`
-        /// and refunded to the actual count -- the shape `execute` uses for
-        /// its size.
+        /// Decoding is linear in byte length. Verification is bounded but
+        /// not linear in basic blocks: for N blocks and E edges, register
+        /// analysis permits N + 1024*E visits and must-init N + 256*E.
+        /// Each of L loop regions adds a depth walk, so all depth walks
+        /// permit at most (L+1)*N*(3*N+3) visits. Transfers and predecessor
+        /// folds add work per visit; nesting depth alone does not bound L.
+        ///
+        /// The existing byte/block weight model pre-charges at
+        /// `MaxProgramBlocks` and refunds to the measured block count.
+        /// QUI-2353 must calibrate it against the bounded verifier on the
+        /// reference machine, including sequential and nested loops,
+        /// before this integration can restore program admission.
         ///
         /// The program is stored keyed by its Blake2-256 hash for
         /// deduplication.

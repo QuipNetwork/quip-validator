@@ -480,17 +480,10 @@ parameter_types! {
     pub const MaxProgramBlocks: u32 = 2_048;
     /// Maximum static loop nesting in a stored program.
     ///
-    /// The verifier's loop check walks each region's blocks once per
-    /// enclosing loop, so its time is blocks times depth; without a depth
-    /// bound the block bound alone leaves verification quadratic in program
-    /// length, and the cost is spent before the verifier reports anything.
-    /// Measured natively: 2,048 bare nested `RANGE`/`NEXT` pairs take
-    /// 255 ms, 16,384 take 20 s.
-    ///
-    /// At 2,048 blocks, 32 levels cost ~2.7 ms native over the flat case
-    /// (~40 ns per block visit), which the per-block weight is measured
-    /// with. Real programs nest two or three deep; the VM's own dynamic
-    /// loop-stack limit is 8,192, which is a different resource.
+    /// This bounds structured nesting. Each loop region also incurs a
+    /// separate bounded depth walk, so sequential loops can be expensive
+    /// even at depth one. QUI-2353 must calibrate both loop count and
+    /// nesting at the byte/block caps before restoring program admission.
     pub const MaxLoopDepth: u32 = 32;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;

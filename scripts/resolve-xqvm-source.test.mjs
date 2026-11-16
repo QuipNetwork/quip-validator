@@ -2,29 +2,31 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveXqvmSource } from './resolve-xqvm-source.mjs';
 
-const commit = '279cf29bfcc64d09ee08c0d30b098691c24a8c7f';
+const commit = '85aefe5f5ff877f83c74ddfa127554f63616e929';
 const repository = 'https://gitlab.com/quip.network/xquad';
-const git = { name: 'xqvm', version: '0.5.3-dev', source: `git+${repository}.git?rev=${commit}#${commit}` };
+const git = { name: 'xqvm', version: '0.5.0', source: `git+${repository}.git?rev=${commit}#${commit}` };
 const registry = {
-  name: 'xqvm', version: '0.5.3', repository,
+  name: 'xqvm', version: '0.5.0', repository,
   source: 'registry+https://github.com/rust-lang/crates.io-index',
-  manifest_path: '/cargo/xqvm-0.5.3/Cargo.toml',
+  manifest_path: '/cargo/xqvm-0.5.0/Cargo.toml',
 };
 const graph = pkg => ({ packages: [{ name: 'unrelated' }, pkg] });
 
 test('draft git pin fetches the locked commit, without inventing a release tag', () => {
-  assert.deepEqual(resolveXqvmSource(graph(git)), { version: '0.5.3-dev', repository, commit, ref: commit });
+  assert.deepEqual(resolveXqvmSource(graph(git)), { version: '0.5.0', repository, commit, ref: commit });
 });
 
-test('registry replacement uses its release tag and published VCS commit', () => {
-  const published = '1e40da31628026e4cdd47cfae2c0119450044e6c';
+test('same-version registry source uses its own release tag and published VCS commit', () => {
+  const published = 'a99f7d2e8956b70453dc6d5e4c1b1705a27d9802';
   assert.deepEqual(resolveXqvmSource(graph(registry), path => {
-    assert.equal(path, '/cargo/xqvm-0.5.3/.cargo_vcs_info.json');
+    assert.equal(path, '/cargo/xqvm-0.5.0/.cargo_vcs_info.json');
     return { git: { sha1: published } };
-  }), { version: '0.5.3', repository, commit: published, ref: 'refs/tags/v0.5.3' });
+  }), { version: '0.5.0', repository, commit: published, ref: 'refs/tags/v0.5.0' });
 });
 
-test('missing or split xqvm sources fail closed', () => {
+test('missing or same-version split xqvm sources fail closed', () => {
+  assert.equal(git.version, registry.version);
+  assert.notEqual(git.source, registry.source);
   assert.throws(() => resolveXqvmSource({ packages: [] }), /exactly one/);
   assert.throws(() => resolveXqvmSource({ packages: [git, registry] }), /exactly one/);
 });
@@ -42,7 +44,7 @@ test('foreign repositories and unproven local paths are rejected', () => {
 });
 
 test('registry prereleases and absent or malformed VCS records are rejected', () => {
-  assert.throws(() => resolveXqvmSource(graph({ ...registry, version: '0.5.3-dev' })), /stable release/);
+  assert.throws(() => resolveXqvmSource(graph({ ...registry, version: '0.5.0-dev' })), /stable release/);
   assert.throws(() => resolveXqvmSource(graph(registry), () => ({})), /missing or invalid/);
   assert.throws(() => resolveXqvmSource(graph(registry), () => ({ git: { sha1: 'short' } })), /missing or invalid/);
   assert.throws(() => resolveXqvmSource(graph(registry), () => { throw new Error('missing published record'); }), /missing published record/);
