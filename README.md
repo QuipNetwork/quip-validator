@@ -519,7 +519,7 @@ admission can be restored; sequential loop count matters independently of
 nesting depth. Release/runtime-version selection remains a separate step.
 
 This branch pins xquad v0.5.0 plus the audit fixes at commit
-`85aefe5f5ff877f83c74ddfa127554f63616e929`. That commit declares `xqvm 0.5.0`,
+`edce16085da57cad2365e65b9e941f7555edaa9c`. That commit declares `xqvm 0.5.0`,
 but differs from the published crates.io `xqvm 0.5.0` at `a99f7d2e`.
 The registry release does not contain these audit fixes. Both execution
 pallets and both runtime test dependencies inherit the same workspace git
