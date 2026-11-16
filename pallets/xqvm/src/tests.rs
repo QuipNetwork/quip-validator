@@ -534,10 +534,9 @@ fn store_rejects_loops_nested_past_the_depth_bound() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
-        // Well under the block bound: nesting is what is wrong. The
-        // verifier walks every region's blocks once per enclosing loop, so
-        // without this check the cost of a program grows with depth times
-        // length, and it is spent before any fault is reported.
+        // Well under the block bound: the admission policy limits nesting
+        // independently. The pinned verifier no longer walks each loop body,
+        // but this dependency update does not relax the runtime's depth cap.
         let bytecode = nested_loops(MaxLoopDepth::get() + 1);
         let hash = program_hash(&bytecode);
 
