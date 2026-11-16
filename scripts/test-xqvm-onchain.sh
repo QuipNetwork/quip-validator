@@ -5,7 +5,7 @@ set -euo pipefail
 #   scripts/test-xqvm-onchain.sh
 #
 # Boots a --dev node and runs the pallet-xqvm on-chain suite against it:
-# a PQ-signed store_program + execute round trip, the dispatch errors that
+# paused PQ-signed admission, execution of governed dev fixtures, the errors that
 # guard the step and allocation budgets, and a replay of the XQuad
 # conformance vectors that assert a step count.
 #
@@ -142,8 +142,14 @@ if [[ "$count" -eq 0 ]]; then
 fi
 echo "== Assembled $count step-asserting vectors =="
 
-# Control programs for the budget guards. Both are statically valid, so
-# they store; what must stop them is the runtime bound, not the verifier.
+# Temporary admission-pause assertion; restore ordinary upload round trips
+# after the reviewed XQVM verifier fix is integrated and admission is reopened.
+printf 'HALT\n' >"$work_dir/admission_probe.xqasm"
+"$xquad_bin" "$work_dir/admission_probe.xqasm" "$vectors_out/admission_probe.xqb" >/dev/null
+
+# Control programs for the budget guards. Both are statically valid and are
+# provisioned through the dev council while admission is paused. Execution
+# must stop at the runtime bound, not at the verifier.
 cat >"$work_dir/runaway.xqasm" <<'PROGRAM'
 TARGET .0
 NOP
