@@ -473,10 +473,10 @@ parameter_types! {
     pub const MaxProgramBlocks: u32 = 2_048;
     /// Maximum static loop nesting in a stored program.
     ///
-    /// This bounds structured nesting. Each loop region also incurs a
-    /// separate bounded depth walk, so sequential loops can be expensive
-    /// even at depth one. QUI-2353 must calibrate both loop count and
-    /// nesting at the byte/block caps before restoring program admission.
+    /// This retains the structured-nesting admission policy. The pinned
+    /// verifier checks exact heights without separate loop-body walks.
+    /// QUI-2353 must calibrate register-heavy cyclic joins at the byte/block
+    /// caps on the reference machine before restoring program admission.
     pub const MaxLoopDepth: u32 = 32;
     pub const MaxCallDataLen: u32 = 256;
     pub const MaxOutputSlots: u32 = 256;
