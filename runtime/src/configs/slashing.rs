@@ -220,6 +220,9 @@ impl pallet_validator_admission::RootCallPolicy<crate::RuntimeCall> for CouncilR
                     pallet_vesting::Call::force_vested_transfer { .. }
                     | pallet_vesting::Call::force_remove_vesting_schedule { .. },
                 )
+                // Changing the cutoff probability assumptions requires a
+                // reviewed runtime upgrade, not an epoch-config motion.
+                | RuntimeCall::Babe(pallet_babe::Call::plan_config_change { .. })
                 | RuntimeCall::Staking(pallet_staking::Call::manual_slash { .. })
                 | RuntimeCall::System(
                     frame_system::Call::set_storage { .. }

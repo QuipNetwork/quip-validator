@@ -589,7 +589,11 @@ residual: assuming independent slots with primary probability `c`, a
 secondary-only tail of at least 64 slots has probability `(1 - c)^64`,
 about `1e-8` at the configured `c = 1/4`. This is a probabilistic bound,
 not elimination of the residual; changing `c` or the slot mode requires
-reviewing the cutoff.
+reviewing the cutoff. The council dispatcher rejects `Babe::plan_config_change`
+at every epoch offset, including requests that repeat the current configuration.
+Changing the primary probability or slot mode therefore requires a governed
+runtime code upgrade that reviews this bound; the SDK Root-only API itself
+remains present.
 
 Operators see `system.CallFiltered` for either key call during the window;
 retry after the next epoch boundary. Wrapped calls report that inner error

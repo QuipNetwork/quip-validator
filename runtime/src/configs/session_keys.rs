@@ -81,3 +81,6 @@ impl pallet_session::WeightInfo for SessionWeights {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod policy_tests;
