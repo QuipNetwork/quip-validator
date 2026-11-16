@@ -127,6 +127,7 @@ impl frame_system::SetCode<Runtime> for NetworkIdentityGuard {
 impl frame_system::Config for Runtime {
     /// The block type for the runtime.
     type Block = Block;
+    type BaseCallFilter = xqvm_admission::RuntimeCallFilter;
     /// Block & extrinsics weights: base values and limits.
     type BlockWeights = RuntimeBlockWeights;
     /// The maximum length of a block (in bytes).
@@ -1021,3 +1022,5 @@ pub mod validator_onboarding;
 
 pub mod slashing;
 pub mod vesting;
+
+pub mod xqvm_admission;

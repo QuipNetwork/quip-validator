@@ -1,41 +1,43 @@
 {
-  "capture_kind": "Native Runtime::metadata_at_version(16) and complete default-genesis top-level storage; Wasm build enabled",
+  "capture_kind": "Native Runtime::metadata_at_version(16) and complete default-genesis top-level storage; native capture followed by embedded-Wasm verification",
   "captured_from": "native",
   "files": {
     "quip-storage.json": {
       "bytes": 9445,
-      "sha256": "d577130a5cc8090dc2125e7492bc1054afdc79ee8d517fd0b1bd4a528233d6fb"
+      "sha256": "5d387b65f7e79bb3fabe25500b3f7e1bb3f2c86116969bc4542fe13d45416143"
     },
     "quip-testnet-storage.json": {
       "bytes": 9461,
-      "sha256": "dd2da307c9a6d92ab77cfabb161a596d8bdb535457dcdd0cc497d362105e1e16"
+      "sha256": "a4ce2a5c96543a885e5649bee1f98cf799cce6f9f2bd8b3b77f54e0aee56e49f"
     },
     "quip-testnet.scale": {
       "bytes": 290808,
-      "sha256": "b46ca2e2afbf60d52b1a5fe1e73adca0cbc173fc46d882ec2e84521a2df571fa"
+      "sha256": "e81cc8a2dbae78b309a9385dadd6a0dbd5475c01d6c6de5d84bb2cb41ad7911b"
     },
     "quip.scale": {
       "bytes": 290811,
-      "sha256": "a0c33141fb527fd6ca9625d7376aae067f9b2214f785a0f413ae46363a614b8c"
+      "sha256": "965cae2cf76e7865c04a0c78d3da0bb8503b0c0a56c8f5f12fb696e0dc95a253"
     }
   },
   "metadata_version": 16,
   "native_wasm_metadata_equal": true,
   "provenance": {
-    "cargo_lock_sha256": "d36b8b841118a81c516908de9f9987d49641142a8a0bb8622ed5cbc4097f9ef1",
+    "capture_command": "RUSTUP_TOOLCHAIN=1.95.0 SKIP_WASM_BUILD=1 cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 capture_native_2609_anchor -- --ignored --exact --nocapture",
+    "cargo_lock_sha256": "44da1843fe9590138d0791c1b33d3948b46d40905f3852799e675ba2a718bf56",
     "enforced": false,
-    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
-    "capture_command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16 capture_native_2609_anchor -- --ignored --exact --nocapture",
     "features": [
       "default",
       "std"
-    ]
+    ],
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+    "base_commit": "d763e2e8ae637170a75ce120441cb6fd3f5ab55c",
+    "change": "Runtime 121 admission hotfix: the sole metadata byte change per runtime is System.Version.spec_version 120 to 121; the sole default-genesis storage value change is System.LastRuntimeUpgrade.spec_version 120 to 121."
   },
   "storage_format": "Sorted [hex key, hex value] pairs from RuntimeGenesisConfig::default().build_storage().top, no excluded keys; child storage must be empty",
   "wasm_verification": {
     "SKIP_WASM_BUILD": "unset",
     "build_profile": "test (embedded Wasm from substrate-wasm-builder)",
-    "command": "env -u SKIP_WASM_BUILD cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16",
+    "command": "env -u SKIP_WASM_BUILD RUSTUP_TOOLCHAIN=1.95.0 CI=true cargo test --locked -p quip-protocol-runtime -p quip-testnet-runtime --test metadata_v16",
     "features": [
       "default",
       "std"
@@ -44,6 +46,7 @@
       "Metadata_metadata",
       "Metadata_metadata_at_version(16)"
     ],
-    "timing": "Post-capture verification against the unchanged checked-in native anchor bytes"
+    "timing": "Post-capture verification against the unchanged checked-in native anchor bytes",
+    "result": "Both runtimes: 21 passed, 0 failed, 1 capture test ignored; includes both Wasm metadata API paths, Core_version and upgrade guards."
   }
 }

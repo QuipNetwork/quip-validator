@@ -274,10 +274,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // at `store_program` with a verifier fault, where 0.4.0 accepted it.
     // Previously stored programs still execute; there is no re-verification
     // when a program is loaded for execution.
-    // 120 was never deployed; the v0.4.1-tagged 120 blob must never be enacted
-    // on any network. This fresh-genesis runtime has no upgrade path from
-    // an older storage version.
-    spec_version: 120,
+    // v0.5.0's runtime 120 is deployed; the older v0.4.1-tagged 120 blob
+    // remains prohibited. Runtime 121 pauses new XQVM program admission on
+    // the v0.5.0 baseline without changing storage or transaction encoding.
+    spec_version: 121,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 7,
@@ -429,7 +429,7 @@ pub type UncheckedExtrinsic =
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 
-/// No storage upgrade path: runtime 120 launches from fresh genesis.
+/// Runtime 121 preserves the deployed v0.5.0 layout and needs no storage migration.
 pub type Migrations = ();
 
 /// Executive: handles dispatch to the various modules.
