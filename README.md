@@ -520,7 +520,7 @@ walks; register-heavy cyclic joins now drive the cost-calibration inputs.
 Release/runtime-version selection remains a separate step.
 
 This branch pins xquad v0.5.0 plus the audit fixes at commit
-`edce16085da57cad2365e65b9e941f7555edaa9c`. That commit declares `xqvm 0.5.0`,
+`4a31c966fb46a4ae6588d5f39ca60b162059d004`. That commit declares `xqvm 0.5.0`,
 but differs from the published crates.io `xqvm 0.5.0` at `a99f7d2e`.
 The registry release does not contain these audit fixes. Both execution
 pallets and both runtime test dependencies inherit the same workspace git

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveXqvmSource } from './resolve-xqvm-source.mjs';
 
-const commit = 'edce16085da57cad2365e65b9e941f7555edaa9c';
+const commit = '4a31c966fb46a4ae6588d5f39ca60b162059d004';
 const repository = 'https://gitlab.com/quip.network/xquad';
 const git = { name: 'xqvm', version: '0.5.0', source: `git+${repository}.git?rev=${commit}#${commit}` };
 const registry = {
