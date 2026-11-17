@@ -1,7 +1,7 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
 //! enumerated regenerated-weight values, exact mempool changes, staking constants,
-//! and appended staking commission error below.
+//! appended staking commission error, and exact XQVM audit changes below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -685,6 +685,170 @@ fn normalize_commission_error(before: &mut Value, after: &mut Value) -> Result<(
     Ok(())
 }
 
+// Reviewed XQVM repin delta: these strings are metadata, not a blanket
+// documentation exemption. Resolve by pallet/call name so registry renumbering
+// remains valid; every other field still undergoes the full graph comparison.
+const BASELINE_STORE_PROGRAM_DOCS: &[&str] = &[
+    "Store an XQVM program on-chain.",
+    "",
+    "The bytecode is decoded, which checks the XQBC container, and then",
+    "statically verified, which checks the instruction stream. Both must",
+    "pass before anything is written, so a program that is accepted here",
+    "cannot fail `execute` for a reason the verifier covers.",
+    "",
+    "Verifying at store time rather than at execute time puts the cost",
+    "on the account that introduced the program, once, instead of on",
+    "every account that runs it. It is also what lets `execute` skip",
+    "re-verification later (QUI-1057).",
+    "",
+    "The cost has two dimensions. Decoding is linear in the byte",
+    "length, which the call arguments give. Verification is linear in",
+    "the basic-block count (at a bounded nesting depth, which the",
+    "per-block price assumes at its maximum), and the count is only",
+    "known after decoding, so it is pre-charged at `MaxProgramBlocks`",
+    "and refunded to the actual count -- the shape `execute` uses for",
+    "its size.",
+    "",
+    "The program is stored keyed by its Blake2-256 hash for",
+    "deduplication.",
+];
+
+const BASELINE_MAX_LOOP_DEPTH_DOCS: &[&str] = &[
+    " Maximum static loop nesting depth of a stored program.",
+    "",
+    " The verifier walks every loop region's blocks once per enclosing",
+    " loop, so its work is the block count times the nesting depth, and",
+    " nested loops are cheap to write: one `RANGE` and one `NEXT` per",
+    " level. Without this cap a program under `MaxProgramBlocks` could",
+    " still make verification quadratic in its length. Measured",
+    " natively, 2,048 nested `RANGE`/`NEXT` pairs take 255 ms to",
+    " verify and 16,384 take 20 s -- and that cost is paid before the",
+    " verifier gets round to rejecting them.",
+];
+
+const CANDIDATE_STORE_PROGRAM_DOCS: &[&str] = &[
+    "Store an XQVM program on-chain.",
+    "",
+    "The bytecode is decoded, which checks the XQBC container, and then",
+    "statically verified, which checks the instruction stream. Both must",
+    "pass before anything is written, so a program that is accepted here",
+    "cannot fail `execute` for a reason the verifier covers.",
+    "",
+    "Verifying at store time rather than at execute time puts the cost",
+    "on the account that introduced the program, once, instead of on",
+    "every account that runs it. It is also what lets `execute` skip",
+    "re-verification later (QUI-1057).",
+    "",
+    "Decoding is linear in byte length. After graph indexing, exact",
+    "stack heights require at most N block transfers and E edge checks.",
+    "Sparse register analysis permits 1024*N constant-work events and",
+    "1024*E coordinate updates; must-init permits 256*N and 256*E.",
+    "Incoming meets are cached and block writes are summarised once.",
+    "These operation bounds do not replace reference-machine timing.",
+    "",
+    "The existing byte/block weight model pre-charges at",
+    "`MaxProgramBlocks` and refunds to the measured block count.",
+    "QUI-2353 must calibrate it against the bounded verifier on the",
+    "reference machine, especially register-heavy cyclic joins,",
+    "before this integration can restore program admission.",
+    "",
+    "The program is stored keyed by its Blake2-256 hash for",
+    "deduplication.",
+];
+
+const CANDIDATE_MAX_LOOP_DEPTH_DOCS: &[&str] = &[
+    " Maximum static loop nesting depth of a stored program.",
+    "",
+    " Retains the admission policy for structured nesting. The pinned",
+    " verifier checks exact heights in one traversal, without separate",
+    " loop-body walks. Register-heavy cyclic joins still require",
+    " reference-machine cost calibration (QUI-2353).",
+];
+
+fn xqvm_variants<'a>(metadata: &'a mut Value, kind: &str) -> Result<&'a mut Vec<Value>, String> {
+    let id = metadata["pallets"]
+        .as_array()
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == "Xqvm"))
+        .and_then(|pallet| pallet[kind]["ty"].as_u64())
+        .ok_or_else(|| format!("missing Xqvm.{kind} type"))?;
+    let id = usize::try_from(id).map_err(|_| "Xqvm type id does not fit usize")?;
+    metadata["types"]["types"]
+        .get_mut(id)
+        .and_then(|ty| ty.pointer_mut("/type/def/variant/variants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("missing Xqvm.{kind} variants"))
+}
+
+fn xqvm_docs<'a>(metadata: &'a mut Value, name: &str) -> Result<&'a mut Value, String> {
+    if name == "store_program" {
+        return xqvm_variants(metadata, "calls")?
+            .iter_mut()
+            .find(|call| call["name"] == name)
+            .and_then(|call| call.get_mut("docs"))
+            .ok_or_else(|| "missing Xqvm.store_program docs".into());
+    }
+    metadata["pallets"]
+        .as_array_mut()
+        .and_then(|pallets| pallets.iter_mut().find(|p| p["name"] == "Xqvm"))
+        .and_then(|pallet| pallet["constants"].as_array_mut())
+        .and_then(|constants| {
+            constants
+                .iter_mut()
+                .find(|constant| constant["name"] == name)
+        })
+        .and_then(|constant| constant.get_mut("docs"))
+        .ok_or_else(|| format!("missing Xqvm.{name} docs"))
+}
+
+fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    for (name, baseline, candidate) in [
+        (
+            "store_program",
+            BASELINE_STORE_PROGRAM_DOCS,
+            CANDIDATE_STORE_PROGRAM_DOCS,
+        ),
+        (
+            "MaxLoopDepth",
+            BASELINE_MAX_LOOP_DEPTH_DOCS,
+            CANDIDATE_MAX_LOOP_DEPTH_DOCS,
+        ),
+    ] {
+        if *xqvm_docs(before, name)? != serde_json::json!(baseline) {
+            return Err(format!("unexpected baseline Xqvm.{name} docs"));
+        }
+        let docs = xqvm_docs(after, name)?;
+        if *docs != serde_json::json!(candidate) {
+            return Err(format!(
+                "unexpected required Xqvm.{name} documentation delta"
+            ));
+        }
+        *docs = serde_json::json!(baseline);
+    }
+    let baseline = xqvm_variants(before, "error")?;
+    if baseline.len() != 37
+        || baseline
+            .last()
+            .is_none_or(|v| v["name"] != "VmSampleOutOfDomain" || v["index"] != 36)
+    {
+        return Err("unexpected baseline Xqvm error surface".into());
+    }
+    let candidate = xqvm_variants(after, "error")?;
+    let expected = serde_json::json!({
+        "name": "VerifierAnalysisBudgetExceeded",
+        "index": 37,
+        "docs": [
+            "The verifier exhausted a derived analysis work bound.",
+            "Indicates an analysis defect, not a normal bytecode fault.",
+            "Appended to preserve every existing pallet error index."
+        ]
+    });
+    if candidate.len() != 38 || candidate.last() != Some(&expected) {
+        return Err("unexpected Xqvm analysis-budget error delta".into());
+    }
+    candidate.pop();
+    Ok(())
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
@@ -720,6 +884,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     normalize_audit_expiry_storage(&mut left, &mut right)?;
     normalize_mempool(&mut left, &mut right)?;
     normalize_commission_error(&mut left, &mut right)?;
+    normalize_xqvm(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?
@@ -816,6 +981,84 @@ mod tests {
             serde_json::to_value(super::super::before_vesting_metadata()).unwrap(),
             serde_json::to_value(super::super::metadata_v16()).unwrap(),
         )
+    }
+
+    #[test]
+    fn requires_exact_xqvm_documentation_on_both_sides() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for name in ["store_program", "MaxLoopDepth"] {
+            // Changed, missing, extra and restored old text must all fail.
+            for candidate in [true, false] {
+                for mutation in 0..4 {
+                    let mut old = before.clone();
+                    let mut new = after.clone();
+                    let docs = xqvm_docs(if candidate { &mut new } else { &mut old }, name)
+                        .unwrap()
+                        .as_array_mut()
+                        .unwrap();
+                    match mutation {
+                        0 => docs[0] = Value::from("unreviewed documentation"),
+                        1 => {
+                            docs.pop();
+                        }
+                        2 => docs.push(Value::from("unreviewed addition")),
+                        _ => docs.clear(),
+                    }
+                    assert!(check(&old, &new).is_err(), "accepted {name} docs mutation");
+                }
+            }
+            let mut old = before.clone();
+            let mut restored = after.clone();
+            *xqvm_docs(&mut restored, name).unwrap() = xqvm_docs(&mut old, name).unwrap().clone();
+            assert!(
+                check(&before, &restored).is_err(),
+                "accepted missing {name} delta"
+            );
+        }
+        let mut changed_call = after.clone();
+        xqvm_variants(&mut changed_call, "calls").unwrap()[0]["index"] = Value::from(99);
+        assert!(check(&before, &changed_call).is_err());
+        let mut changed_constant = after.clone();
+        *constant_value(&mut changed_constant, "Xqvm", "MaxLoopDepth").unwrap() =
+            serde_json::json!([31, 0, 0, 0]);
+        assert!(check(&before, &changed_constant).is_err());
+    }
+
+    #[test]
+    fn requires_exact_appended_xqvm_error_and_preserves_existing_errors() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for field in ["name", "index", "docs", "fields", "deprecation_info"] {
+            let mut wrong = after.clone();
+            xqvm_variants(&mut wrong, "error").unwrap()[37][field] = Value::from("mutated");
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted budget error {field}"
+            );
+        }
+        for mutation in 0..4 {
+            let mut wrong = after.clone();
+            let errors = xqvm_variants(&mut wrong, "error").unwrap();
+            match mutation {
+                0 => {
+                    errors.pop();
+                }
+                1 => errors.push(serde_json::json!({"name":"extra", "index":38})),
+                2 => errors.swap(36, 37),
+                _ => errors[0]["docs"] = serde_json::json!(["unreviewed existing error"]),
+            }
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted Xqvm error mutation"
+            );
+        }
+        let mut wrong_baseline = before.clone();
+        let appended = xqvm_variants(&mut after.clone(), "error").unwrap()[37].clone();
+        xqvm_variants(&mut wrong_baseline, "error")
+            .unwrap()
+            .push(appended);
+        assert!(check(&wrong_baseline, &after).is_err());
     }
 
     // Clone the pallet target at the next canonical id and redirect only the
