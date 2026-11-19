@@ -703,6 +703,8 @@ ci-image-toolchain-arm64:
   tags: [docker, arm64]
   variables:
     ARCH: arm64
+    FC_VCPUS: "4"
+    FC_MEM: "8192"
     # Same memory constraint as the node build on this runner: kaniko holds
     # compressed layers in RAM while snapshotting, and this image carries a
     # multi-GB Rust toolchain. Stream to disk instead.
@@ -773,6 +775,8 @@ kaniko-build-arm64:
   tags: [docker, arm64]
   variables:
     ARCH: arm64
+    FC_VCPUS: "8"
+    FC_MEM: "16384"
     # The arm64 runner is a docker-executor on an Apple-Silicon Mac (OrbStack),
     # a far more memory/disk-constrained VM than the amd64 Linux boxes. kaniko's
     # default --compressed-caching=true holds compressed layers in RAM while
@@ -794,6 +798,8 @@ kaniko-build-evm-sidecar-arm64:
   tags: [docker, arm64]
   variables:
     ARCH: arm64
+    FC_VCPUS: "8"
+    FC_MEM: "12288"
     KANIKO_EXTRA: "--compressed-caching=false"
 
 # Maps a release tag to zero or more floating consumer tags. Tag pipelines
