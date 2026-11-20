@@ -579,6 +579,14 @@ fn a_poc_direct_faulting_and_batch_wrappers() {
 fn b_per_run_footprint_by_family() {
     let chain = Chain::new();
     let ms = max_steps();
+    // xqvm pallet index in the runtime, and the two designed post-allocation
+    // fault codes seen in the measured table (stable pallet error indices). A
+    // `samples` run with energy=1 computes ENERGY of a 1-variable model against
+    // an n-variable sample and faults on the size mismatch; a `vec` run faults
+    // in EQUALITY over the built index/coeff vectors.
+    const XQVM_PALLET_INDEX: u8 = 8;
+    const SAMPLES_ENERGY_FAULT: u8 = 30;
+    const VEC_EQUALITY_FAULT: u8 = 19;
     let (halt_block, halt_applied) = chain.author(vec![chain.execute("halt", &[], 10)]);
     let base_author = halt_applied[0].1;
     let (_, base_import) = chain.import(&halt_block);
@@ -596,7 +604,10 @@ fn b_per_run_footprint_by_family() {
     // fault at `VmMemoryLimitExceeded` before reaching its intended allocation
     // and the measured footprint would be meaningless.
     for l in [MIB / 4, MIB / 2, MIB] {
-        let mut cases: Vec<(String, &str, Vec<i64>, u64)> = Vec::new();
+        // Fifth tuple element: the designed outcome (None = success; Some(code)
+        // = the exact post-allocation xqvm fault). energy=0 samples, `linear`
+        // and `quad` complete; energy=1 samples and `vec` fault after allocating.
+        let mut cases: Vec<(String, &str, Vec<i64>, u64, Option<u8>)> = Vec::new();
         for &(n, energy) in &[(l / 8, 0i64), (l / 8, 1), (l / 16 + 1, 1), (l / 32 + 1, 1)] {
             let count = (l / (8 * n)).clamp(1, 252);
             cases.push((
@@ -604,6 +615,11 @@ fn b_per_run_footprint_by_family() {
                 "samples",
                 vec![n as i64, count as i64, energy],
                 8 * n * count,
+                if energy == 0 {
+                    None
+                } else {
+                    Some(SAMPLES_ENERGY_FAULT)
+                },
             ));
         }
         for &n in &[l / 32 + 1, l / 16] {
@@ -612,6 +628,7 @@ fn b_per_run_footprint_by_family() {
                 "vec",
                 vec![n as i64, 1],
                 16 * n,
+                Some(VEC_EQUALITY_FAULT),
             ));
         }
         cases.push((
@@ -619,30 +636,56 @@ fn b_per_run_footprint_by_family() {
             "linear",
             vec![(l / 40) as i64],
             40 * (l / 40),
+            None,
         ));
         cases.push((
             format!("n={}", l / 56),
             "quad",
             vec![(l / 56) as i64],
             56 * (l / 56),
+            None,
         ));
-        for (params, family, calldata, charged) in cases {
+        for (params, family, calldata, charged, expect) in cases {
             let (block, applied) = chain.author(vec![chain.execute(family, &calldata, ms)]);
             let (r, author_heap) = &applied[0];
-            // The measurement is only meaningful if the run actually allocated
-            // its intended footprint. Each case charges <= l < 2 MiB (the cap),
-            // so it must execute, not fault early at `VmMemoryLimitExceeded`; a
-            // capped run would print a bogus small number instead of measuring
-            // the family.
-            assert!(
-                matches!(r, Ok(Ok(()))),
-                "{family} run at L={} MiB (charged {charged} B) did not reach its \
-                 intended allocation: {}",
-                l / MIB,
-                outcome(r),
-            );
             let (_, import_heap) = chain.import(&block);
             let import_net = import_heap.saturating_sub(base_import);
+
+            // Encode each case's designed outcome and assert exactly that: a
+            // success, or the specific post-allocation xqvm fault. (The old
+            // blanket `Ok(Ok(()))` wrongly treated the designed faults as
+            // failures.)
+            match expect {
+                None => assert!(
+                    matches!(r, Ok(Ok(()))),
+                    "{family} ({params}) at L={} MiB: expected success, got {}",
+                    l / MIB,
+                    outcome(r),
+                ),
+                Some(code) => assert!(
+                    matches!(
+                        r,
+                        Ok(Err(sp_runtime::DispatchError::Module(m)))
+                            if m.index == XQVM_PALLET_INDEX && m.error[0] == code
+                    ),
+                    "{family} ({params}) at L={} MiB: expected xqvm module error {code}, got {}",
+                    l / MIB,
+                    outcome(r),
+                ),
+            }
+            // Separately prove the target allocation really happened: the
+            // importer footprint is a large fraction of the charged bytes, which
+            // an early compiled-cap `VmMemoryLimitExceeded` (footprint ~0) could
+            // not reach. Measured ratios run 0.78..2.02, so charged/2 is a safe
+            // floor that still excludes a rejected allocation.
+            assert!(
+                u64::from(import_net) >= charged / 2,
+                "{family} ({params}) at L={} MiB: footprint {import_net} B < charged/2 \
+                 ({} B) -- allocation did not reach its target (early VmMemoryLimitExceeded?)",
+                l / MIB,
+                charged / 2,
+            );
+
             println!(
                 "{family},{},{params},{charged},{:.3},{:.3},{:.3},{:.3},{:.2},{}",
                 l / MIB,
@@ -918,58 +961,46 @@ fn e_largest_legitimate_run() {
     let chain = Chain::new();
     let ms = max_steps();
 
-    // --- Largest checked-in conformance program (xquad xqvm/tests/fixtures) ---
-    // Located via cargo metadata, not a machine-local absolute path. Fail loudly
-    // if the fixture is missing or does not decode (e.g. BadMagic), and assert a
-    // successful on-chain run rather than only printing.
-    let fixture = xquad_conformance_fixture();
-    let bytes = std::fs::read(&fixture)
-        .unwrap_or_else(|e| panic!("conformance fixture {} unreadable: {e}", fixture.display()));
-    let prog = xqvm::Program::decode(&bytes).unwrap_or_else(|e| {
-        panic!(
-            "conformance fixture {} did not decode (BadMagic?): {e:?}",
-            fixture.display()
-        )
-    });
+    // --- Conformance run: a genuine, canonical program that verifies and runs ---
+    // The checked-in `kimi-spine-control.bin` is a raw control-flow STRESS stream
+    // (no XQBC header; wrapping it fails verification with StackDepthMismatch),
+    // not a runnable conformance program -- decoding it as XQBC panics on
+    // BadMagic. So the positive conformance vector is the seeded `linear`
+    // program, which builds an n-variable model and sets n linear coefficients:
+    // it verifies, is canonical, and runs to completion on chain.
+    let conformance = prog_linear();
     assert!(
-        xqvm::verifier::verify(&prog).is_ok(),
-        "conformance fixture must verify"
+        xqvm::verifier::verify(&xqvm::Program::decode(&conformance).expect("linear decodes"))
+            .is_ok(),
+        "conformance program must verify"
     );
-    assert_eq!(
-        prog.encode(),
-        bytes,
-        "conformance fixture must be canonical"
-    );
-    let hash = BlakeTwo256::hash(&bytes);
-    let mut g = chain.genesis.clone();
-    g.top.insert(
-        pallet_xqvm::Programs::<Runtime>::hashed_key_for(hash),
-        bytes.encode(),
-    );
-    let sub = Chain {
-        executor: Executor::builder().build(),
-        genesis: g,
-        genesis_hash: chain.genesis_hash,
-        attacker: HybridPair::from_seed_slice(&[0xA7; 32]).unwrap(),
-        programs: vec![("fix", hash)],
-    };
-    let call = pallet_xqvm::Call::<Runtime>::execute {
-        program_hash: hash,
-        calldata: Default::default(),
-        output_slots: 0,
-        step_limit: ms,
-    }
-    .into();
-    let (_, applied) = sub.author(vec![call]);
+    let n: i64 = 4096;
+    let (_, applied) = chain.author(vec![chain.execute("linear", &[n], ms)]);
     assert!(
         matches!(applied[0].0, Ok(Ok(()))),
         "conformance program must run successfully on chain: {}",
         outcome(&applied[0].0)
     );
     println!(
-        "conformance kimi-spine-control: {} bytes, author heap {:.3} MiB, ok",
-        bytes.len(),
+        "conformance (linear, n={n}): {} program bytes, author heap {:.3} MiB, ok",
+        conformance.len(),
         mib(applied[0].1),
+    );
+
+    // Fixture guard: the checked-in kimi-spine-control.bin must be present (fail
+    // loud if missing) and is the control-flow stress vector it claims to be --
+    // raw code the verifier rejects when wrapped, never a runnable program.
+    let fixture = xquad_conformance_fixture();
+    let fixture_bytes = std::fs::read(&fixture)
+        .unwrap_or_else(|e| panic!("conformance fixture {} unreadable: {e}", fixture.display()));
+    assert!(
+        !fixture_bytes.is_empty(),
+        "conformance fixture must be non-empty"
+    );
+    assert!(
+        xqvm::verifier::verify(&xqvm::Program::new(fixture_bytes)).is_err(),
+        "kimi-spine-control.bin is a control-flow stress stream: wrapping it must be \
+         rejected by the verifier, not run as a program"
     );
 
     // --- Largest legitimate mempool transform, through the REAL transform path ---
