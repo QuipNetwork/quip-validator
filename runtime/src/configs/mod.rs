@@ -520,13 +520,23 @@ parameter_types! {
     /// in one 128 MiB heap (`Core_execute_block`), and the freeing-bump
     /// allocator reuses a freed chunk only within its own power-of-two size
     /// order (`sc-allocator` `freeing_bump.rs`: `Order::from_size` +
-    /// per-order free lists). VM runs are sequential and free everything on
-    /// drop, so the heap a block's runs cause in a given order is the *maximum*
-    /// over runs of that order's live bytes, not the sum. Whole-block VM growth
-    /// is therefore bounded by `Σ_orders (k · MaxVmMemory)`, independent of the
-    /// number of runs, where `k ≈ 2` covers power-of-two rounding, the uncharged
-    /// `ENERGY`/`LVAL` clones (W1-013, until the xquad repin) and the
-    /// `EQUALITY`/`ATLEASTW` input-vec clones.
+    /// per-order free lists). VM runs are sequential and each frees all of its
+    /// own allocations on drop, so the heap a block's runs cause in a given
+    /// order is the *maximum* over runs of that order's live bytes, not the sum.
+    /// Whole-block VM growth is therefore bounded by `Σ_orders (k · MaxVmMemory)`,
+    /// independent of the number of runs, where `k ≈ 2` covers power-of-two
+    /// rounding, the uncharged `ENERGY`/`LVAL` clones (W1-013, until the xquad
+    /// repin) and the `EQUALITY`/`ATLEASTW` input-vec clones.
+    ///
+    /// "Frees on drop" is the VM's own allocations. One term outlives the run
+    /// but not the extrinsic: the compute-mempool accumulates a `transformed:
+    /// Vec<Vec<i8>>` across the per-solution VMs of a single `submit_solution`,
+    /// so it is retained for the extrinsic and freed when the extrinsic ends. It
+    /// is bounded by `QuantumMaxSolutions` (20) × `QuantumMaxNodes` (5000) bytes
+    /// ≈ 0.1 MiB -- far inside the fixed-run term below and small beside the VM
+    /// caps. The `execute` path retains nothing comparable: a `ProgramExecuted`
+    /// event's outputs reach state through `Events::append`, a host storage
+    /// append, so they never reside in the Wasm heap this bound governs.
     ///
     /// Sizing (V-A step-0, measured through `sc_executor::WasmExecutor` with the
     /// node's default heap; harness `runtime/tests/vm_heap_census.rs`). The
@@ -557,8 +567,14 @@ parameter_types! {
     /// transform caps can diverge, but set to the same 2 MiB today: the mempool
     /// builds a fresh `Vm` with the full cap per solution
     /// (`quantum-compute-mempool/src/xqvm.rs`), one instance at a time, so the
-    /// same `Σ_orders(k·L)` argument bounds it. A transform transports at most
-    /// `QuantumMaxNodes` (5000) i64 spins, ~40 KiB, well under the cap.
+    /// same `Σ_orders(k·L)` argument bounds the per-run VM memory. A transform
+    /// transports at most `QuantumMaxNodes` (5000) i64 spins, ~40 KiB, well
+    /// under the cap. What the per-run cap does *not* cover is the per-extrinsic
+    /// retained output: `submit_solution` keeps a `transformed: Vec<Vec<i8>>`
+    /// live across all of a batch's per-solution VMs, bounded by
+    /// `QuantumMaxSolutions` (20) × `QuantumMaxNodes` (5000) bytes ≈ 0.1 MiB and
+    /// freed when the extrinsic ends. See [`MaxVmMemory`]; the pinned budget
+    /// test accounts for it inside the fixed-run term.
     pub const MaxTransformVmMemory: u64 = 2 * 1024 * 1024;
 
     /// Derived from block weight budget so a single execute call always
@@ -931,10 +947,27 @@ mod xqvm_weights {
         // L-independent fixed per-run overhead (regs/stack/loop/program):
         // measured HALT baseline ~0.03 MiB. Rounded up.
         const FIXED_RUN: u64 = MIB; // 1 MiB, generous vs the 0.03 measured
-                                    // Worst-case decoded block the importer holds in the same heap: the
-                                    // encoded block plus the largest single signed extrinsic and its
-                                    // verification copies -- measured 44.0 MiB (test
-                                    // `d_encoded_block_residency_and_largest_extrinsic`, case (b)).
+                                    // Per-extrinsic retained term (kimi W1-002 follow-up): the mempool's
+                                    // `transformed: Vec<Vec<i8>>` lives across the per-solution VMs of one
+                                    // `submit_solution`, bounded by QuantumMaxSolutions x QuantumMaxNodes
+                                    // bytes (one i8 per spin). It is retained for the extrinsic, not a run,
+                                    // and is covered by the fixed-run term's slack rather than a separate
+                                    // budget line. The assertion below keeps that slack visible: if the
+                                    // retained Vec ever outgrew the measured HALT baseline's headroom in
+                                    // FIXED_RUN, it would need its own line.
+        const FIXED_RUN_MEASURED: u64 = 32 * 1024; // ~0.03 MiB measured HALT baseline
+        let transform_retained: u64 =
+            u64::from(QuantumMaxSolutions::get()) * u64::from(QuantumMaxNodes::get()); // ~0.1 MiB
+        assert!(
+            transform_retained.saturating_add(FIXED_RUN_MEASURED) <= FIXED_RUN,
+            "mempool retained transform {transform_retained} B + measured fixed run \
+             {FIXED_RUN_MEASURED} B exceeds the {FIXED_RUN} B fixed-run term; give the \
+             retained Vec its own budget line",
+        );
+        // Worst-case decoded block the importer holds in the same heap: the
+        // encoded block plus the largest single signed extrinsic and its
+        // verification copies -- measured 44.0 MiB (test
+        // `d_encoded_block_residency_and_largest_extrinsic`, case (b)).
         const BLOCK_RESIDENCY: u64 = 45 * MIB;
         // Maximal non-VM dispatch: a `submit_proof` whose weight closure decodes
         // the full 5000-node/50000-edge topology meta plus the packed proof --

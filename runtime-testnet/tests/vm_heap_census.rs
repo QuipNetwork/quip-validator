@@ -9,9 +9,12 @@
 //! Runtime 121 filters `Xqvm::store_program`, so programs are written into
 //! `pallet_xqvm::Programs` at genesis. `execute` reads only that map.
 //!
-//! A candidate cap L' < 16 MiB is emulated by inputs whose total charge stays
-//! <= L': such a run never reaches the compiled 16 MiB check, so it allocates
-//! exactly what it would under a cap of L'.
+//! A candidate cap L' is emulated by inputs whose total charge stays <= L': the
+//! compiled cap is now `MaxVmMemory` = 2 MiB (W1-002), so a run that charges
+//! <= L' <= 2 MiB never reaches the compiled check and allocates exactly what
+//! it would under a cap of L'. Emulated L' values therefore stay below 2 MiB
+//! with headroom for the k ~ 2 clone overhead; a larger L' would just hit the
+//! real cap with `VmMemoryLimitExceeded` and is not a valid per-run measurement.
 //!
 //! Run: `cargo test -p quip-protocol-runtime --test vm_heap_census \
 //!       -- --nocapture --test-threads 1`
@@ -587,7 +590,12 @@ fn b_per_run_footprint_by_family() {
     // importer_net is the binding figure: the whole run executes in the
     // block's single heap. O-A2 is sized against it (adjustment 3).
     println!("family,L_MiB,params,charged_B,author_MiB,author_net_MiB,import_MiB,import_net_MiB,import_ratio_to_L,outcome");
-    for l in [MIB, 2 * MIB, 16 * MIB] {
+    // Emulated caps stay below the compiled 2 MiB cap with headroom for the
+    // k ~ 2 clone overhead (matching `c_block_order_sweep_at_emulated_caps`).
+    // The old 16 MiB row is dropped: it exceeds the current cap, so it would
+    // fault at `VmMemoryLimitExceeded` before reaching its intended allocation
+    // and the measured footprint would be meaningless.
+    for l in [MIB / 4, MIB / 2, MIB] {
         let mut cases: Vec<(String, &str, Vec<i64>, u64)> = Vec::new();
         for &(n, energy) in &[(l / 8, 0i64), (l / 8, 1), (l / 16 + 1, 1), (l / 32 + 1, 1)] {
             let count = (l / (8 * n)).clamp(1, 252);
@@ -621,6 +629,18 @@ fn b_per_run_footprint_by_family() {
         for (params, family, calldata, charged) in cases {
             let (block, applied) = chain.author(vec![chain.execute(family, &calldata, ms)]);
             let (r, author_heap) = &applied[0];
+            // The measurement is only meaningful if the run actually allocated
+            // its intended footprint. Each case charges <= l < 2 MiB (the cap),
+            // so it must execute, not fault early at `VmMemoryLimitExceeded`; a
+            // capped run would print a bogus small number instead of measuring
+            // the family.
+            assert!(
+                matches!(r, Ok(Ok(()))),
+                "{family} run at L={} MiB (charged {charged} B) did not reach its \
+                 intended allocation: {}",
+                l / MIB,
+                outcome(r),
+            );
             let (_, import_heap) = chain.import(&block);
             let import_net = import_heap.saturating_sub(base_import);
             println!(
@@ -647,7 +667,8 @@ fn b_per_run_footprint_by_family() {
 ///   - `linear`:  BTreeMap<usize,i64> leaf + internal node chunks,
 ///   - `quad`:    BTreeMap<(usize,usize),i64> node chunks,
 ///   - `vec`:     the vec<int> buffer order + the EQUALITY double-clone.
-/// Each run charges <= `l`, so under a real cap L'=l none reaches 16 MiB.
+/// Each run charges <= `l`, so under a real cap L'=l none reaches the compiled
+/// 2 MiB cap.
 fn order_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, u64)> {
     let mut out = Vec::new();
     let mut chunk = 8u64;
@@ -863,99 +884,169 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
 // conformance vectors and mempool transforms -- not the adversarial families.
 // ---------------------------------------------------------------------------
 
+/// Locate the checked-in xquad conformance fixture through `cargo metadata`, so
+/// the path follows the pinned `xqvm` dependency rather than a machine-local
+/// absolute path.
+fn xquad_conformance_fixture() -> std::path::PathBuf {
+    let output = std::process::Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1", "--quiet"])
+        .output()
+        .expect("cargo metadata runs");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata emits JSON");
+    let manifest = meta["packages"]
+        .as_array()
+        .expect("metadata packages")
+        .iter()
+        .find(|p| p["name"] == "xqvm")
+        .and_then(|p| p["manifest_path"].as_str())
+        .expect("xqvm package present in cargo metadata");
+    std::path::Path::new(manifest)
+        .parent()
+        .expect("xqvm crate dir")
+        .join("tests/fixtures/kimi-spine-control.bin")
+}
+
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn e_largest_legitimate_run() {
     let chain = Chain::new();
     let ms = max_steps();
 
-    // Largest checked-in conformance program (xquad xqvm/tests/fixtures).
-    let fixture = "/Users/lazycoder/.cargo/git/checkouts/xquad-711ba6058d0e94f9/4a31c96/xqvm/tests/fixtures/kimi-spine-control.bin";
-    match std::fs::read(fixture) {
-        Ok(bytes) => match xqvm::Program::decode(&bytes) {
-            Ok(prog) => {
-                let verdict = xqvm::verifier::verify(&prog);
-                println!(
-                    "conformance kimi-spine-control: {} bytes, canonical={}, verify={}",
-                    bytes.len(),
-                    prog.encode() == bytes,
-                    if verdict.is_ok() {
-                        "accepts"
-                    } else {
-                        "rejects"
-                    }
-                );
-                if verdict.is_ok() && prog.encode() == bytes {
-                    let hash = BlakeTwo256::hash(&bytes);
-                    let mut g = chain.genesis.clone();
-                    g.top.insert(
-                        pallet_xqvm::Programs::<Runtime>::hashed_key_for(hash),
-                        bytes.encode(),
-                    );
-                    let sub = Chain {
-                        executor: Executor::builder().build(),
-                        genesis: g,
-                        genesis_hash: chain.genesis_hash,
-                        attacker: HybridPair::from_seed_slice(&[0xA7; 32]).unwrap(),
-                        programs: vec![("fix", hash)],
-                    };
-                    let call = pallet_xqvm::Call::<Runtime>::execute {
-                        program_hash: hash,
-                        calldata: Default::default(),
-                        output_slots: 0,
-                        step_limit: ms,
-                    }
-                    .into();
-                    let (_, applied) = sub.author(vec![call]);
-                    println!(
-                        "  conformance run author heap {:.3} MiB, {}",
-                        mib(applied[0].1),
-                        outcome(&applied[0].0)
-                    );
-                }
-            }
-            Err(e) => println!("conformance fixture did not decode as a Program: {e:?}"),
-        },
-        Err(e) => println!("conformance fixture unreadable: {e}"),
-    }
-
-    // Largest legitimate mempool transform: the identity program over a maximal
-    // 5,000-spin solution (QuantumMaxNodes). One VM instance, dropped per
-    // solution. Calldata = one VecInt of 5,000 spins.
-    let mut b = InstructionBuilder::new();
-    b.emit_push(0).emit(I::Input { reg: R(0) }); // r0 = calldata[0] (the VecInt)
-    b.emit_push(0).emit(I::Output { reg: R(0) }); // echo it to output slot 0
-    b.emit(I::Halt {});
-    let ident = encode(b);
-    let hash = BlakeTwo256::hash(&ident);
+    // --- Largest checked-in conformance program (xquad xqvm/tests/fixtures) ---
+    // Located via cargo metadata, not a machine-local absolute path. Fail loudly
+    // if the fixture is missing or does not decode (e.g. BadMagic), and assert a
+    // successful on-chain run rather than only printing.
+    let fixture = xquad_conformance_fixture();
+    let bytes = std::fs::read(&fixture)
+        .unwrap_or_else(|e| panic!("conformance fixture {} unreadable: {e}", fixture.display()));
+    let prog = xqvm::Program::decode(&bytes).unwrap_or_else(|e| {
+        panic!(
+            "conformance fixture {} did not decode (BadMagic?): {e:?}",
+            fixture.display()
+        )
+    });
+    assert!(
+        xqvm::verifier::verify(&prog).is_ok(),
+        "conformance fixture must verify"
+    );
+    assert_eq!(
+        prog.encode(),
+        bytes,
+        "conformance fixture must be canonical"
+    );
+    let hash = BlakeTwo256::hash(&bytes);
     let mut g = chain.genesis.clone();
     g.top.insert(
         pallet_xqvm::Programs::<Runtime>::hashed_key_for(hash),
-        ident.encode(),
+        bytes.encode(),
     );
     let sub = Chain {
         executor: Executor::builder().build(),
         genesis: g,
         genesis_hash: chain.genesis_hash,
         attacker: HybridPair::from_seed_slice(&[0xA7; 32]).unwrap(),
-        programs: vec![("ident", hash)],
+        programs: vec![("fix", hash)],
     };
-    let spins: Vec<i64> = (0..5000).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
-    let bounded: BoundedVecCalldata = spins.try_into().unwrap_or_default();
     let call = pallet_xqvm::Call::<Runtime>::execute {
         program_hash: hash,
-        calldata: bounded,
-        output_slots: 1,
+        calldata: Default::default(),
+        output_slots: 0,
         step_limit: ms,
     }
     .into();
     let (_, applied) = sub.author(vec![call]);
-    println!(
-        "5000-spin identity transform shape: author heap {:.3} MiB, {}",
-        mib(applied[0].1),
+    assert!(
+        matches!(applied[0].0, Ok(Ok(()))),
+        "conformance program must run successfully on chain: {}",
         outcome(&applied[0].0)
     );
-    println!("(mempool transport caps calldata at MaxCallDataLen=256; a real transform uses VecInt spins, measured off the same allocators -- << 1 MiB)");
+    println!(
+        "conformance kimi-spine-control: {} bytes, author heap {:.3} MiB, ok",
+        bytes.len(),
+        mib(applied[0].1),
+    );
+
+    // --- Largest legitimate mempool transform, through the REAL transform path ---
+    // The pallet-xqvm `execute` ABI caps calldata at MaxCallDataLen (256) scalar
+    // i64, so it cannot carry a 5000-spin solution: the old test fed the spin
+    // vector through `execute` and silently truncated it to empty via
+    // `unwrap_or_default`, measuring nothing. The mempool transports spins as one
+    // `VecInt` and runs them through `XqvmAdapter::transform_solutions` -- the
+    // pallet's own engine, one `Vm` (capped at MaxTransformVmMemory) per
+    // solution, accumulating the `transformed: Vec<Vec<i8>>`. Drive that path at
+    // the maximum load: QuantumMaxSolutions (20) solutions of QuantumMaxNodes
+    // (5000) spins through a stored identity transform program, and assert
+    // success and output shape.
+    use pallet_quantum_compute_mempool::xqvm::QuantumVm as _;
+    type MempoolVm = <Runtime as pallet_quantum_compute_mempool::Config>::VM;
+    let max_solutions =
+        <Runtime as pallet_quantum_compute_mempool::Config>::MaxSolutions::get() as usize;
+    let max_nodes = <Runtime as pallet_quantum_compute_mempool::Config>::MaxNodes::get() as usize;
+
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) }); // r0 = calldata[0] (the VecInt)
+    b.emit_push(0).emit(I::Output { reg: R(0) }); // echo it to output slot 0
+    b.emit(I::Halt {});
+    let ident = encode(b);
+    let ident_hash = BlakeTwo256::hash(&ident);
+
+    let mut ext = TestExternalities::new(chain.genesis.clone());
+    ext.execute_with(|| {
+        let bounded: BoundedVec<u8, <Runtime as pallet_xqvm::Config>::MaxProgramSize> = ident
+            .clone()
+            .try_into()
+            .expect("identity program fits MaxProgramSize");
+        pallet_xqvm::Programs::<Runtime>::insert(ident_hash, bounded);
+
+        let solver = account_id_from_public(&chain.attacker.public());
+        let solutions: Vec<Vec<i8>> = (0..max_solutions)
+            .map(|_| {
+                (0..max_nodes)
+                    .map(|i| if i % 2 == 0 { 1i8 } else { -1 })
+                    .collect()
+            })
+            .collect();
+        let transform = MempoolVm::transform_solutions(
+            &BlakeTwo256::hash(b"ising-spec"),
+            None,
+            Some(&ident_hash),
+            &solver,
+            solutions,
+        );
+        let transformed = transform
+            .result
+            .expect("real identity transform must succeed at max load");
+        assert_eq!(
+            transformed.len(),
+            max_solutions,
+            "one transformed output per solution"
+        );
+        for (i, out) in transformed.iter().enumerate() {
+            assert_eq!(out.len(), max_nodes, "solution {i} preserves its spin count");
+            assert!(
+                out.iter().all(|s| *s == 1 || *s == -1),
+                "solution {i} spins stay ±1"
+            );
+        }
+        // The `transformed` accumulator holds every solution's output at once
+        // (<= QuantumMaxSolutions x QuantumMaxNodes bytes ~ 0.1 MiB) -- the
+        // per-extrinsic retained term the MaxVmMemory docs and the pinned budget
+        // test account for. Per-run VM residency is capped at
+        // MaxTransformVmMemory; a single WasmExecutor address_space_used for the
+        // whole `submit_solution` would need the order seeded in genesis and is
+        // left to the submit_solution census path.
+        println!(
+            "real mempool transform: {max_solutions} x {max_nodes} spins ok, {} VM steps, retained ~{} KiB",
+            transform.steps_used,
+            (max_solutions * max_nodes) / 1024
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -964,8 +1055,6 @@ fn e_largest_legitimate_run() {
 // maximal packed proof, before failing on the unregistered miner. The importer
 // heap high-water is the decode baseline.
 // ---------------------------------------------------------------------------
-
-type BoundedVecCalldata = BoundedVec<i64, <Runtime as pallet_xqvm::Config>::MaxCallDataLen>;
 
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]

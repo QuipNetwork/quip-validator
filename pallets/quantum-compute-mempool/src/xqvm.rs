@@ -124,9 +124,13 @@ impl<T: crate::Config> XqvmAdapter<T> {
             // This narrow ABI transports integer spins in one VecInt. The
             // pallet-xqvm execute API accepts scalar integers; introducing
             // arbitrary model/sample output semantics here would be a liability.
-            // Only one VM lives at a time: drop it before the next solution.
-            // Peak residency is one VM cap plus bounded calldata/results and
-            // one decoded program, never MaxSolutions simultaneous VM caps.
+            // Only one VM lives at a time: drop it before the next solution, so
+            // peak VM residency is a single `MaxVmMemory` cap, never
+            // `MaxSolutions` simultaneous caps. Two terms are retained across
+            // the loop rather than per run: the one decoded program, and the
+            // `transformed` accumulator below, which grows one output per
+            // solution and is bounded by `MaxSolutions` × `MaxNodes` bytes
+            // (~0.1 MiB). Both are small beside a VM cap.
             let mut vm = Vm::new();
             vm.set_memory_limit(T::MaxVmMemory::get())
                 .set_step_limit(remaining)
