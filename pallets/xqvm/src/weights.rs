@@ -104,10 +104,14 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			// Standard Error: 3
 			.saturating_add(Weight::from_parts(14_331, 0).saturating_mul(s.into()))
 			// Component `o` (declared output slots, W1-008 part 2): pre-charged
-			// and NOT refunded. Its coefficient is regenerated on the reference
-			// machine by the `benchmark-weights` job; it is zero here only until
-			// that owner-played step runs, and `weights-staleness-check` stays
-			// yellow until it does.
+			// and NOT refunded. The coefficient below is a placeholder --
+			// BENCHMARK-PLACEHOLDER(W1-008) -- that is zero until the reference
+			// machine's `benchmark-weights` job regenerates this file, which
+			// overwrites it with the measured per-slot slope and removes this
+			// sentinel. `scripts/check-weights-staleness.sh` treats the sentinel
+			// as stale and fails that job (yellow; it is allow_failure) until the
+			// regeneration runs, so a zero production `o` coefficient cannot ship
+			// unnoticed.
 			.saturating_add(Weight::from_parts(0, 0).saturating_mul(o.into()))
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 	}
@@ -204,10 +208,14 @@ impl WeightInfo for () {
 			// Standard Error: 3
 			.saturating_add(Weight::from_parts(14_331, 0).saturating_mul(s.into()))
 			// Component `o` (declared output slots, W1-008 part 2): pre-charged
-			// and NOT refunded. Its coefficient is regenerated on the reference
-			// machine by the `benchmark-weights` job; it is zero here only until
-			// that owner-played step runs, and `weights-staleness-check` stays
-			// yellow until it does.
+			// and NOT refunded. The coefficient below is a placeholder --
+			// BENCHMARK-PLACEHOLDER(W1-008) -- that is zero until the reference
+			// machine's `benchmark-weights` job regenerates this file, which
+			// overwrites it with the measured per-slot slope and removes this
+			// sentinel. `scripts/check-weights-staleness.sh` treats the sentinel
+			// as stale and fails that job (yellow; it is allow_failure) until the
+			// regeneration runs, so a zero production `o` coefficient cannot ship
+			// unnoticed.
 			.saturating_add(Weight::from_parts(0, 0).saturating_mul(o.into()))
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 	}

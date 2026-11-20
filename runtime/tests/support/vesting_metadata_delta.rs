@@ -776,6 +776,58 @@ const CANDIDATE_MAX_LOOP_DEPTH_DOCS: &[&str] = &[
     " reference-machine cost calibration (QUI-2353).",
 ];
 
+// W1-008 part 2: the `execute` dispatchable gained an output-slot cost
+// dimension, and its doc comment now documents it. Dispatchable docs are part
+// of the call variant's metadata, so this is a reviewed documentation delta
+// (no behavioural metadata change: no constant moved, the weight is not a
+// constant). Baseline is the `execute` call docs in the pinned pre-vesting
+// metadata; candidate is the current build.
+const BASELINE_EXECUTE_DOCS: &[&str] = &[
+    "Execute a stored XQVM program.",
+    "",
+    "Both dimensions of the cost are caller-influenced and neither is",
+    "known from the call arguments alone, so both are pre-charged at",
+    "their worst case and refunded via `PostDispatchInfo`:",
+    "",
+    "* **Program size.** The call carries only a hash, so the length is",
+    "  unknown until storage is read. Decoding runs a full verifier scan",
+    "  over every instruction, which is linear in the byte length, so",
+    "  `MaxProgramSize` is pre-charged and the actual length refunded.",
+    "* **Steps.** Pre-charged on the caller's `step_limit`, refunded to",
+    "  the steps actually executed.",
+    "",
+    "The error path deliberately does not refund: over-charging a failed",
+    "execution is the conservative direction.",
+];
+
+const CANDIDATE_EXECUTE_DOCS: &[&str] = &[
+    "Execute a stored XQVM program.",
+    "",
+    "Both dimensions of the cost are caller-influenced and neither is",
+    "known from the call arguments alone, so both are pre-charged at",
+    "their worst case and refunded via `PostDispatchInfo`:",
+    "",
+    "* **Program size.** The call carries only a hash, so the length is",
+    "  unknown until storage is read. Decoding runs a full verifier scan",
+    "  over every instruction, which is linear in the byte length, so",
+    "  `MaxProgramSize` is pre-charged and the actual length refunded.",
+    "* **Steps.** Pre-charged on the caller's `step_limit`, refunded to",
+    "  the steps actually executed.",
+    "",
+    "A third dimension is pre-charged but deliberately **not** refunded:",
+    "",
+    "* **Output slots (W1-008 part 2).** The caller declares",
+    "  `output_slots`, which sizes the VM's output vector up front. The",
+    "  declared count is known from the call arguments, so it is charged",
+    "  exactly — pre-charged and kept in the actual weight — rather than",
+    "  charged at `MaxOutputSlots` and refunded. Charging the declared",
+    "  count on both sides means a caller cannot declare a large output",
+    "  area, pay the base weight, and have the output cost refunded away.",
+    "",
+    "The error path deliberately does not refund: over-charging a failed",
+    "execution is the conservative direction.",
+];
+
 fn xqvm_variants<'a>(metadata: &'a mut Value, kind: &str) -> Result<&'a mut Vec<Value>, String> {
     let id = metadata["pallets"]
         .as_array()
@@ -791,12 +843,19 @@ fn xqvm_variants<'a>(metadata: &'a mut Value, kind: &str) -> Result<&'a mut Vec<
 }
 
 fn xqvm_docs<'a>(metadata: &'a mut Value, name: &str) -> Result<&'a mut Value, String> {
-    if name == "store_program" {
+    // Dispatchable docs live on the call variant; constant docs on the
+    // constant. Resolve by name against the calls first (`store_program`,
+    // `execute`), then fall back to the constants (e.g. `MaxLoopDepth`).
+    // Resolving by name keeps this valid under registry renumbering.
+    let is_call = xqvm_variants(metadata, "calls")?
+        .iter()
+        .any(|call| call["name"] == name);
+    if is_call {
         return xqvm_variants(metadata, "calls")?
             .iter_mut()
             .find(|call| call["name"] == name)
             .and_then(|call| call.get_mut("docs"))
-            .ok_or_else(|| "missing Xqvm.store_program docs".into());
+            .ok_or_else(|| format!("missing Xqvm.{name} call docs"));
     }
     metadata["pallets"]
         .as_array_mut()
@@ -823,6 +882,7 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
             BASELINE_MAX_LOOP_DEPTH_DOCS,
             CANDIDATE_MAX_LOOP_DEPTH_DOCS,
         ),
+        ("execute", BASELINE_EXECUTE_DOCS, CANDIDATE_EXECUTE_DOCS),
     ] {
         if *xqvm_docs(before, name)? != serde_json::json!(baseline) {
             return Err(format!("unexpected baseline Xqvm.{name} docs"));
@@ -1013,7 +1073,7 @@ mod tests {
     fn requires_exact_xqvm_documentation_on_both_sides() {
         let (before, after) = metadata_pair();
         check(&before, &after).unwrap();
-        for name in ["store_program", "MaxLoopDepth"] {
+        for name in ["store_program", "execute", "MaxLoopDepth"] {
             // Changed, missing, extra and restored old text must all fail.
             for candidate in [true, false] {
                 for mutation in 0..4 {

@@ -908,6 +908,36 @@ fn execute_charges_declared_output_slots_in_precharge_and_actual() {
     });
 }
 
+/// Design test (ii), W1-008 part 2: the production `execute` weight must charge
+/// more for a declared output slot than for none. While `weights.rs` still
+/// carries the `BENCHMARK-PLACEHOLDER` sentinel the `o` coefficient is a
+/// deliberate zero, so this skips with a notice. Once the reference machine
+/// regenerates `weights.rs`, the sentinel is gone and this assertion becomes
+/// binding automatically — no `#[ignore]` to remove, no edit needed. If the
+/// regenerated coefficient comes back at noise level (zero), this fails, which
+/// is the architect's cue to take it to the owner rather than ship a zero term.
+#[test]
+fn execute_weight_charges_output_slots_once_regenerated() {
+    if include_str!("weights.rs").contains("BENCHMARK-PLACEHOLDER") {
+        eprintln!(
+            "skipping: the execute output-slot weight is an unmeasured \
+             BENCHMARK-PLACEHOLDER (zero); run the benchmark-weights job to make \
+             this assertion binding"
+        );
+        return;
+    }
+    let s = 1_024u32;
+    let none = <crate::SubstrateWeight<Test> as crate::WeightInfo>::execute(s, 0);
+    let one = <crate::SubstrateWeight<Test> as crate::WeightInfo>::execute(s, 1);
+    assert!(
+        one.ref_time() > none.ref_time(),
+        "regenerated execute weight must rise with declared output slots: \
+         execute({s}, 1) ref_time {} !> execute({s}, 0) ref_time {}",
+        one.ref_time(),
+        none.ref_time(),
+    );
+}
+
 // ── allocation budget (QUI-1012) ─────────────────────────────────────────
 
 /// Build `PUSH size; BSMX r0; HALT` -- a program whose only work is to
