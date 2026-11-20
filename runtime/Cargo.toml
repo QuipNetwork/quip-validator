@@ -2,7 +2,7 @@
 name = "quip-protocol-runtime"
 description = "A solochain runtime for Quip protocol built with Substrate."
 version = { workspace = true }
-license = "Unlicense"
+license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
