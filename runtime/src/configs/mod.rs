@@ -511,26 +511,55 @@ parameter_types! {
         slope.saturating_mul(STEP_WEIGHT_SAFETY_FACTOR)
     };
 
-    /// Maximum bytes a single `execute` may allocate inside the VM.
+    /// Maximum bytes a single `execute` run may allocate inside the VM
+    /// (W1-002). This is a **stateless per-run cap**: there is no block-scoped
+    /// counter. The block-level bound is an arithmetic consequence of the cap
+    /// plus the Wasm allocator's behaviour, proved below, not a running total.
     ///
-    /// Sized against the Wasm runtime's heap rather than the block's weight
-    /// budget, because that is the resource it protects. The executor's
-    /// default is `DEFAULT_HEAP_ALLOC_PAGES` (2048) 64 KiB pages -- 128 MiB
-    /// -- shared by everything the block does: the storage overlay, decoded
-    /// extrinsics, and every other pallet in the same block. 16 MiB gives the
-    /// VM an eighth of that at the absolute bound and leaves the rest alone.
+    /// Why a per-run cap bounds the whole block. Importers run every extrinsic
+    /// in one 128 MiB heap (`Core_execute_block`), and the freeing-bump
+    /// allocator reuses a freed chunk only within its own power-of-two size
+    /// order (`sc-allocator` `freeing_bump.rs`: `Order::from_size` +
+    /// per-order free lists). VM runs are sequential and free everything on
+    /// drop, so the heap a block's runs cause in a given order is the *maximum*
+    /// over runs of that order's live bytes, not the sum. Whole-block VM growth
+    /// is therefore bounded by `Σ_orders (k · MaxVmMemory)`, independent of the
+    /// number of runs, where `k ≈ 2` covers power-of-two rounding, the uncharged
+    /// `ENERGY`/`LVAL` clones (W1-013, until the xquad repin) and the
+    /// `EQUALITY`/`ATLEASTW` input-vec clones.
     ///
-    /// It is not derived from `MaxStepLimit`, and must not be. The step
-    /// budget bounds allocation only incidentally, through whatever the
-    /// allocating opcodes happen to charge: a sample costs one step per
-    /// element and eight bytes per element, so the step limit alone would
-    /// permit an allocation well past the heap. That incidental coupling is
-    /// what this constant replaces with a stated bound.
+    /// Sizing (V-A step-0, measured through `sc_executor::WasmExecutor` with the
+    /// node's default heap; harness `runtime/tests/vm_heap_census.rs`). The
+    /// importer heap a block can be made to hold is:
     ///
-    /// 16 MiB is 2,097,152 XQMX variables, orders of magnitude above any
-    /// problem the toolchain's own examples encode, so the ceiling binds
-    /// abuse rather than use.
-    pub const MaxVmMemory: u64 = 16 * 1024 * 1024;
+    /// ```text
+    ///   Σ_orders(k·L)   adversarial mixed-family order sweep   ~20 · L
+    /// + fixed_run       regs/stack/loop/program, L-independent  0.03 MiB
+    /// + block_residency encoded block + largest signed xt       44.0 MiB
+    /// + non_vm_baseline maximal submit_proof meta+proof decode   3.3 MiB
+    /// ```
+    ///
+    /// At `L = 2 MiB`: 40 + 0.03 + 44.0 + 3.3 ≈ **87.3 MiB < 128 MiB**, i.e.
+    /// 31.8 % of the heap free. Legitimate runs (conformance vectors ≤ 6 KiB of
+    /// bytecode, mempool transforms ≤ 5000 spins ≈ 40 KiB) sit far below 256 KiB,
+    /// so 2 MiB is ≥ 8× the largest legitimate run. 16 MiB (the old value) put
+    /// the budget past 128 MiB: five `execute` calls built a block only its
+    /// author could import.
+    ///
+    /// It is not derived from `MaxStepLimit`, and must not be: the step budget
+    /// bounds allocation only incidentally (a sample costs one step and eight
+    /// bytes per element), so it alone would permit an allocation well past the
+    /// heap. The pinned budget test below encodes the full derivation.
+    pub const MaxVmMemory: u64 = 2 * 1024 * 1024;
+
+    /// Maximum bytes a single compute-mempool transform run may allocate inside
+    /// the VM. A distinct constant from [`MaxVmMemory`] so the `execute` and
+    /// transform caps can diverge, but set to the same 2 MiB today: the mempool
+    /// builds a fresh `Vm` with the full cap per solution
+    /// (`quantum-compute-mempool/src/xqvm.rs`), one instance at a time, so the
+    /// same `Σ_orders(k·L)` argument bounds it. A transform transports at most
+    /// `QuantumMaxNodes` (5000) i64 spins, ~40 KiB, well under the cap.
+    pub const MaxTransformVmMemory: u64 = 2 * 1024 * 1024;
 
     /// Derived from block weight budget so a single execute call always
     /// fits in one block.  Uses 50 % of the normal dispatch budget to
@@ -705,7 +734,7 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
     type ProgramSource = QuantumProgramSource;
     type MaxTransformStepsPerSubmission = QuantumMaxTransformSteps;
-    type MaxVmMemory = MaxVmMemory;
+    type MaxVmMemory = MaxTransformVmMemory;
     type VmWeightPerStep = XqvmWeightPerStep;
     type VmProgramLookupWeight = QuantumProgramLookupWeight;
     type VmProgramValidationWeight = QuantumProgramValidationWeight;
@@ -874,30 +903,58 @@ mod tests {
 mod xqvm_weights {
     use super::*;
 
-    /// The VM's allocation budget must stay well under the Wasm runtime's
-    /// heap.
+    /// The whole-block importer heap, derived from the per-run VM caps
+    /// (W1-002), must stay under the executor's heap with margin.
     ///
-    /// `MaxVmMemory` is hand-set rather than derived, so nothing else would
-    /// notice it being raised past the heap it is sized against. The failure
-    /// it guards is not a rejected extrinsic: an allocation the heap cannot
-    /// satisfy traps the whole runtime execution, which no dispatch error can
-    /// report.
+    /// This pins the full V-A step-0 derivation, not just a per-run share. The
+    /// failure it guards is not a rejected extrinsic: an allocation the heap
+    /// cannot satisfy traps the whole `Core_execute_block`, which no dispatch
+    /// error can report, so the bound has to hold for the *block*, not one run.
+    /// Every term below is measured through `sc_executor::WasmExecutor` with the
+    /// node's default heap by `runtime/tests/vm_heap_census.rs`; the values are
+    /// restated here as the contract the constants must satisfy, and raising a
+    /// cap past it fails this test rather than silently permitting an
+    /// unimportable block.
     #[test]
     fn vm_memory_budget_stays_under_the_runtime_heap() {
         /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB
         /// pages. Restated rather than imported -- it is a client-side
         /// constant and the runtime does not depend on the executor.
-        const RUNTIME_HEAP_BYTES: u64 = 2048 * 64 * 1024;
-        /// The VM may claim at most this share of the heap at its bound, so
-        /// the storage overlay and every other pallet in the block keep room.
-        /// An eighth, as the `MaxVmMemory` doc promises: 16 MiB of 128 MiB.
-        const MAX_HEAP_SHARE: u64 = 8;
+        const RUNTIME_HEAP_BYTES: u64 = 2048 * 64 * 1024; // 128 MiB
+        const MIB: u64 = 1024 * 1024;
+
+        // Whole-block VM growth across allocator orders, measured as a ratio of
+        // the per-run cap L: the adversarial mixed-family order sweep reached
+        // ~20 x L (test `c_block_order_sweep_at_emulated_caps`). k ~ 2 (rounding
+        // + the uncharged ENERGY/LVAL/EQUALITY clones) is already folded in.
+        const SIGMA_ORDERS_PER_L: u64 = 20;
+        // L-independent fixed per-run overhead (regs/stack/loop/program):
+        // measured HALT baseline ~0.03 MiB. Rounded up.
+        const FIXED_RUN: u64 = MIB; // 1 MiB, generous vs the 0.03 measured
+                                    // Worst-case decoded block the importer holds in the same heap: the
+                                    // encoded block plus the largest single signed extrinsic and its
+                                    // verification copies -- measured 44.0 MiB (test
+                                    // `d_encoded_block_residency_and_largest_extrinsic`, case (b)).
+        const BLOCK_RESIDENCY: u64 = 45 * MIB;
+        // Maximal non-VM dispatch: a `submit_proof` whose weight closure decodes
+        // the full 5000-node/50000-edge topology meta plus the packed proof --
+        // measured 3.27 MiB (test `f_non_vm_baseline_submit_proof`).
+        const NON_VM_BASELINE: u64 = 4 * MIB;
+        // Keep at least a quarter of the heap free (owner/architect gate).
+        const MIN_FREE: u64 = RUNTIME_HEAP_BYTES / 4; // 32 MiB
+
+        let vm_term =
+            SIGMA_ORDERS_PER_L.saturating_mul(MaxVmMemory::get().max(MaxTransformVmMemory::get()));
+        let budget = vm_term
+            .saturating_add(FIXED_RUN)
+            .saturating_add(BLOCK_RESIDENCY)
+            .saturating_add(NON_VM_BASELINE);
 
         assert!(
-            MaxVmMemory::get() <= RUNTIME_HEAP_BYTES / MAX_HEAP_SHARE,
-            "MaxVmMemory is {} bytes against a {} byte heap",
-            MaxVmMemory::get(),
-            RUNTIME_HEAP_BYTES,
+            budget.saturating_add(MIN_FREE) <= RUNTIME_HEAP_BYTES,
+            "importer budget {budget} bytes + {MIN_FREE} min-free exceeds the \
+             {RUNTIME_HEAP_BYTES} byte heap (VM term {vm_term}); lower MaxVmMemory/\
+             MaxTransformVmMemory or re-measure the terms",
         );
     }
 

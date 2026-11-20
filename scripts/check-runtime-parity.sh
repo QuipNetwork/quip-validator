@@ -13,6 +13,7 @@ import_paths = {
     "tests/metadata_v16.rs",
     "tests/signing_fixture.rs",
     "tests/support/signing_fixture.rs",
+    "tests/vm_heap_census.rs",
 }
 
 
