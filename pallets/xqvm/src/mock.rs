@@ -75,7 +75,37 @@ impl pallet_xqvm::Config for Test {
     type MaxStepLimit = MaxStepLimit;
     type MaxVmMemory = MaxVmMemory;
     type WeightPerStep = TestWeightPerStep;
-    type WeightInfo = ();
+    type WeightInfo = TestXqvmWeights;
+}
+
+/// Test weights with a deliberately non-zero output-slot slope on `execute`,
+/// so the `execute` plumbing test (W1-008 part 2) can observe that the
+/// declared `output_slots` reaches both the pre-charged and the actual weight.
+///
+/// Every other component, and `execute` at `o == 0`, delegates unchanged to
+/// the substrate reference weights (`()`), so tests that use zero output slots
+/// (including the refund test, which pins actual weight to `()`) are
+/// unaffected. The reference weights ship a zero `o` coefficient until the
+/// owner regenerates them; this mock supplies a non-zero one so the plumbing
+/// is testable now rather than only after regeneration.
+pub struct TestXqvmWeights;
+impl crate::WeightInfo for TestXqvmWeights {
+    fn store_program(s: u32, b: u32) -> Weight {
+        <() as crate::WeightInfo>::store_program(s, b)
+    }
+    fn execute(s: u32, o: u32) -> Weight {
+        <() as crate::WeightInfo>::execute(s, o)
+            .saturating_add(Weight::from_parts(1_000_000, 8).saturating_mul(o.into()))
+    }
+    fn execute_step(t: u32) -> Weight {
+        <() as crate::WeightInfo>::execute_step(t)
+    }
+    fn remove_program(s: u32) -> Weight {
+        <() as crate::WeightInfo>::remove_program(s)
+    }
+    fn evict_program(s: u32) -> Weight {
+        <() as crate::WeightInfo>::evict_program(s)
+    }
 }
 
 /// Balance every test account starts with. Comfortably above the largest

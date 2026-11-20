@@ -578,7 +578,7 @@ parameter_types! {
         // Reserve half for other extrinsics.
         let budget = normal.ref_time() / 2;
         // Subtract the worst-case decode overhead, then divide by per-step cost.
-        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get(), MaxOutputSlots::get())
             .ref_time();
         let per_step = XqvmWeightPerStep::get().ref_time().max(1);
         budget.saturating_sub(base) / per_step
@@ -701,7 +701,7 @@ parameter_types! {
     // instance, including lookup/decode, setup and proof. The adapter decodes
     // once, so repeated decode/read charges overestimate that part of the batch.
     pub QuantumProgramLookupWeight: Weight =
-        pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
+        pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get(), MaxOutputSlots::get())
             .saturating_mul(u64::from(QuantumMaxSolutions::get()));
     // Registration checks up to two programs; the call charges each bound.
     pub QuantumProgramValidationWeight: Weight =
@@ -975,13 +975,16 @@ mod xqvm_weights {
             .ref_time();
         let reserved = normal / 2;
 
-        let worst_case = pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get())
-            .ref_time()
-            .saturating_add(
-                XqvmWeightPerStep::get()
-                    .ref_time()
-                    .saturating_mul(MaxStepLimit::get()),
-            );
+        let worst_case = pallet_xqvm::SubstrateWeight::<Runtime>::execute(
+            MaxProgramSize::get(),
+            MaxOutputSlots::get(),
+        )
+        .ref_time()
+        .saturating_add(
+            XqvmWeightPerStep::get()
+                .ref_time()
+                .saturating_mul(MaxStepLimit::get()),
+        );
 
         assert!(
             worst_case <= reserved,

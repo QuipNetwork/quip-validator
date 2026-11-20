@@ -792,12 +792,12 @@ fn execute_refunds_unused_size_and_steps() {
 
         // Refunded to what was actually done: this program's real length and
         // the one step it took.
-        let expected = <() as crate::WeightInfo>::execute(len)
+        let expected = <() as crate::WeightInfo>::execute(len, 0)
             .saturating_add(TestWeightPerStep::get().saturating_mul(1));
         assert_eq!(actual, expected);
 
         // And that is strictly less than what was pre-charged, on both axes.
-        let pre_charged = <() as crate::WeightInfo>::execute(MaxProgramSize::get())
+        let pre_charged = <() as crate::WeightInfo>::execute(MaxProgramSize::get(), 0)
             .saturating_add(TestWeightPerStep::get().saturating_mul(step_limit));
         assert!(
             actual.ref_time() < pre_charged.ref_time(),
@@ -813,13 +813,99 @@ fn execute_weight_grows_with_program_length() {
     // The whole point of the size component: a longer program costs more to
     // decode, because decoding rebuilds the jump table by walking every
     // instruction.
-    let short = <() as crate::WeightInfo>::execute(16);
-    let long = <() as crate::WeightInfo>::execute(65_536);
+    let short = <() as crate::WeightInfo>::execute(16, 0);
+    let long = <() as crate::WeightInfo>::execute(65_536, 0);
     assert!(
         long.ref_time() > short.ref_time(),
         "execute({}) should exceed execute(16)",
         65_536,
     );
+}
+
+/// W1-008 part 2 plumbing: the declared `output_slots` must reach both the
+/// pre-charged weight and the actual weight, and the output-slot term must be
+/// charged identically on both sides (pre-charged, not refunded).
+///
+/// The mock `WeightInfo` (`TestXqvmWeights`) carries a non-zero output-slot
+/// slope, so a correctly wired dispatch shows `output_slots` in both places.
+/// This is also the mutation control: dropping `output_slots` from the
+/// pre-charge collapses the `get_dispatch_info` delta; dropping it from the
+/// actual weight collapses the `actual_weight` delta; charging it at
+/// `MaxOutputSlots` on one side and the declared count on the other makes the
+/// two deltas disagree. Each defeats a distinct assertion below.
+#[test]
+fn execute_charges_declared_output_slots_in_precharge_and_actual() {
+    use frame_support::dispatch::GetDispatchInfo;
+
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // A program that halts immediately: no work scales with output_slots,
+        // so any weight difference between the two runs is the output-slot term
+        // alone.
+        let bytecode = build_program(|b| {
+            b.emit_halt();
+        });
+        let hash = program_hash(&bytecode);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode),
+        ));
+
+        let n = MaxOutputSlots::get();
+        assert!(n > 0, "test needs a non-zero MaxOutputSlots to vary");
+        let step_limit = 10_000u64;
+
+        let make_call = |slots: u32| crate::Call::<Test>::execute {
+            program_hash: hash,
+            calldata: BoundedVec::default(),
+            output_slots: slots,
+            step_limit,
+        };
+
+        // Pre-charge: declared weight must rise with declared output_slots.
+        let pre0 = make_call(0).get_dispatch_info().call_weight;
+        let pre_n = make_call(n).get_dispatch_info().call_weight;
+        assert!(
+            pre_n.ref_time() > pre0.ref_time(),
+            "pre-charged weight must include the declared output_slots",
+        );
+
+        // Actual: run both; the executed work is identical (immediate HALT),
+        // so the actual-weight difference is the kept output-slot term.
+        let act0 = Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            step_limit,
+        )
+        .expect("HALT executes")
+        .actual_weight
+        .expect("execute reports actual weight");
+        let act_n = Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            n,
+            step_limit,
+        )
+        .expect("HALT executes")
+        .actual_weight
+        .expect("execute reports actual weight");
+        assert!(
+            act_n.ref_time() > act0.ref_time(),
+            "actual weight must include the declared output_slots and not refund it",
+        );
+
+        // Not refunded: the output-slot term is the same pre-charged and actual.
+        let pre_delta = pre_n.ref_time() - pre0.ref_time();
+        let act_delta = act_n.ref_time() - act0.ref_time();
+        assert_eq!(
+            pre_delta, act_delta,
+            "output-slot term must be charged identically pre-charge and actual (not refunded)",
+        );
+    });
 }
 
 // ── allocation budget (QUI-1012) ─────────────────────────────────────────

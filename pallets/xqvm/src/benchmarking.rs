@@ -37,6 +37,11 @@ const NOP_OPCODE: u8 = 0xF0;
 const MAX_BENCH_BLOCKS: u32 = 2_048;
 const MAX_BENCH_LOOP_DEPTH: u32 = 32;
 
+/// Upper bound of the `execute` output-slot component (W1-008 part 2). A
+/// constant because `Linear` needs one; the benchmark asserts it does not
+/// exceed the configured `MaxOutputSlots`, which is where the bound lives.
+const MAX_BENCH_OUTPUT_SLOTS: u32 = 256;
+
 /// Bytes of one loop level in the shape: `PUSH1 0; PUSH1 1; RANGE` opening
 /// it and `NEXT` closing it.
 const LOOP_LEVEL_BYTES: usize = 6;
@@ -292,7 +297,11 @@ mod benchmarks {
     /// which is linear in instruction count; NOPs are one byte each, so this
     /// is the worst case per byte.
     #[benchmark]
-    fn execute(s: Linear<16, { 65_536 }>) {
+    fn execute(s: Linear<16, { 65_536 }>, o: Linear<0, { MAX_BENCH_OUTPUT_SLOTS }>) {
+        assert!(
+            MAX_BENCH_OUTPUT_SLOTS <= T::MaxOutputSlots::get(),
+            "benchmark output-slot range must stay within MaxOutputSlots"
+        );
         let caller: T::AccountId = whitelisted_caller();
 
         let bytecode = build_halt_first_program(s);
@@ -303,8 +312,11 @@ mod benchmarks {
 
         let calldata: BoundedVec<i64, T::MaxCallDataLen> = BoundedVec::default();
 
+        // `o` declared output slots are pre-charged and not refunded, so the
+        // benchmark declares them on the call. The HALT-first program writes
+        // none; the cost measured is sizing and returning the output vector.
         #[extrinsic_call]
-        execute(RawOrigin::Signed(caller), hash, calldata, 0u32, 1u64);
+        execute(RawOrigin::Signed(caller), hash, calldata, o, 1u64);
     }
 
     /// Cost of `execute` as a function of executed steps, with program length

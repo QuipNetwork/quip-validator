@@ -59,7 +59,7 @@ use core::marker::PhantomData;
 /// Weight functions needed for `pallet_xqvm`.
 pub trait WeightInfo {
 	fn store_program(s: u32, b: u32, ) -> Weight;
-	fn execute(s: u32, ) -> Weight;
+	fn execute(s: u32, o: u32, ) -> Weight;
 	fn execute_step(t: u32, ) -> Weight;
 	fn remove_program(s: u32, ) -> Weight;
 	fn evict_program(s: u32, ) -> Weight;
@@ -94,7 +94,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
 	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
 	/// The range of component `s` is `[16, 65536]`.
-	fn execute(s: u32, ) -> Weight {
+	/// The range of component `o` is `[0, 256]`.
+	fn execute(s: u32, o: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `70 + s * (1 ±0)`
 		//  Estimated: `69037`
@@ -102,6 +103,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(16_348_300, 69037)
 			// Standard Error: 3
 			.saturating_add(Weight::from_parts(14_331, 0).saturating_mul(s.into()))
+			// Component `o` (declared output slots, W1-008 part 2): pre-charged
+			// and NOT refunded. Its coefficient is regenerated on the reference
+			// machine by the `benchmark-weights` job; it is zero here only until
+			// that owner-played step runs, and `weights-staleness-check` stays
+			// yellow until it does.
+			.saturating_add(Weight::from_parts(0, 0).saturating_mul(o.into()))
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 	}
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
@@ -187,7 +194,8 @@ impl WeightInfo for () {
 	/// Storage: `Xqvm::Programs` (r:1 w:0)
 	/// Proof: `Xqvm::Programs` (`max_values`: None, `max_size`: Some(65572), added: 68047, mode: `MaxEncodedLen`)
 	/// The range of component `s` is `[16, 65536]`.
-	fn execute(s: u32, ) -> Weight {
+	/// The range of component `o` is `[0, 256]`.
+	fn execute(s: u32, o: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `70 + s * (1 ±0)`
 		//  Estimated: `69037`
@@ -195,6 +203,12 @@ impl WeightInfo for () {
 		Weight::from_parts(16_348_300, 69037)
 			// Standard Error: 3
 			.saturating_add(Weight::from_parts(14_331, 0).saturating_mul(s.into()))
+			// Component `o` (declared output slots, W1-008 part 2): pre-charged
+			// and NOT refunded. Its coefficient is regenerated on the reference
+			// machine by the `benchmark-weights` job; it is zero here only until
+			// that owner-played step runs, and `weights-staleness-check` stays
+			// yellow until it does.
+			.saturating_add(Weight::from_parts(0, 0).saturating_mul(o.into()))
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 	}
 	/// Storage: `Xqvm::Programs` (r:1 w:0)

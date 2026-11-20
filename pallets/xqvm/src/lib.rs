@@ -689,11 +689,21 @@ pub mod pallet {
         /// * **Steps.** Pre-charged on the caller's `step_limit`, refunded to
         ///   the steps actually executed.
         ///
+        /// A third dimension is pre-charged but deliberately **not** refunded:
+        ///
+        /// * **Output slots (W1-008 part 2).** The caller declares
+        ///   `output_slots`, which sizes the VM's output vector up front. The
+        ///   declared count is known from the call arguments, so it is charged
+        ///   exactly — pre-charged and kept in the actual weight — rather than
+        ///   charged at `MaxOutputSlots` and refunded. Charging the declared
+        ///   count on both sides means a caller cannot declare a large output
+        ///   area, pay the base weight, and have the output cost refunded away.
+        ///
         /// The error path deliberately does not refund: over-charging a failed
         /// execution is the conservative direction.
         #[pallet::call_index(1)]
         #[pallet::weight(
-            T::WeightInfo::execute(T::MaxProgramSize::get())
+            T::WeightInfo::execute(T::MaxProgramSize::get(), *output_slots)
                 .saturating_add(
                     T::WeightPerStep::get().saturating_mul(*step_limit)
                 )
@@ -763,7 +773,10 @@ pub mod pallet {
                         outputs,
                     });
 
-                    let actual_weight = T::WeightInfo::execute(program_len)
+                    // `output_slots` is charged at the declared count, the same
+                    // value pre-charged above, so the output-slot term is kept
+                    // (not refunded). Only program size and steps are refunded.
+                    let actual_weight = T::WeightInfo::execute(program_len, output_slots)
                         .saturating_add(T::WeightPerStep::get().saturating_mul(steps_used));
                     Ok(PostDispatchInfo {
                         actual_weight: Some(actual_weight),
