@@ -844,7 +844,7 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
         return Err("unexpected baseline Xqvm error surface".into());
     }
     let candidate = xqvm_variants(after, "error")?;
-    let expected = serde_json::json!({
+    let analysis_budget = serde_json::json!({
         "name": "VerifierAnalysisBudgetExceeded",
         "index": 37,
         "docs": [
@@ -853,10 +853,25 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
             "Appended to preserve every existing pallet error index."
         ]
     });
-    if candidate.len() != 38 || candidate.last() != Some(&expected) {
-        return Err("unexpected Xqvm analysis-budget error delta".into());
+    // W1-003a: a second appended error, index preserved after the budget error.
+    let non_canonical = serde_json::json!({
+        "name": "NonCanonicalProgram",
+        "index": 38,
+        "docs": [
+            "The stored bytes are not the program's canonical encoding (W1-003a):",
+            "`Program::decode` recomputes the XQBC header's slot bytes, so bytes",
+            "that differ only in the header decode to the same program yet hash",
+            "differently. Rejected so `hash(bytecode)` is a stable identity.",
+            "Appended to preserve every existing pallet error index."
+        ]
+    });
+    if candidate.len() != 39
+        || candidate.get(37) != Some(&analysis_budget)
+        || candidate.get(38) != Some(&non_canonical)
+    {
+        return Err("unexpected Xqvm appended-error delta".into());
     }
-    candidate.pop();
+    candidate.truncate(37);
     Ok(())
 }
 

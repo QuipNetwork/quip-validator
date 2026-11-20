@@ -97,6 +97,65 @@ fn store_invalid_bytecode_fails() {
     });
 }
 
+// W1-003a: the stored bytes must be the program's own canonical encoding.
+// `Program::decode` validates the CRC and length but ignores the header's
+// slot bytes (5 = input_slots, 6 = output_slots) -- it recomputes them -- so a
+// program whose header slot bytes are tampered still decodes and verifies, and
+// on the base (no canonical check) would be stored under a different hash.
+#[test]
+fn store_rejects_non_canonical_header_slot_bytes() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let canonical = build_program(|b| {
+            b.emit_halt();
+        });
+        assert_eq!(canonical.len(), XQBC_HEADER_LEN + 1);
+        // Control: the canonical form stores.
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(canonical.clone())
+        ));
+
+        for index in [5usize, 6] {
+            let mut tampered = canonical.clone();
+            tampered[index] ^= 0xFF;
+            assert_ne!(tampered, canonical);
+            // Still decodes to the same program: it is the canonical check,
+            // not decode, that rejects it (fail-on-base + mutation control --
+            // remove the check and this store succeeds).
+            assert!(Program::decode(&tampered).is_ok());
+            assert_noop!(
+                Xqvm::store_program(RuntimeOrigin::signed(2), bounded(tampered)),
+                Error::<Test>::NonCanonicalProgram
+            );
+        }
+    });
+}
+
+// A program whose header slot bytes are the canonical (recomputed) values --
+// here non-zero, from a real INPUT/OUTPUT -- is accepted: the check admits the
+// canonical form, it does not merely reject non-zero slot bytes.
+#[test]
+fn store_accepts_canonical_non_zero_slot_bytes() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let canonical = build_program(|b| {
+            b.emit_push(0)
+                .emit_input(Register(0))
+                .emit_push(0)
+                .emit_output(Register(0))
+                .emit_halt();
+        });
+        // The canonical header carries the recomputed non-zero slot counts.
+        assert_eq!(canonical[5], 1, "input_slots");
+        assert_eq!(canonical[6], 1, "output_slots");
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(canonical)
+        ));
+    });
+}
+
 // ── execute ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -1427,4 +1486,68 @@ fn audit_signed_store_distinguishes_dead_reads_and_rejects_hidden_peak() {
             }
         }
     });
+}
+
+// W1-003a repin gate. A checked-in corpus of canonical program bytes with
+// their pinned identity hashes. The bytes are stored literally, not rebuilt
+// from the builder, so a future xqvm repin that changes the canonical encoding
+// -- the header's recomputed slot bytes, the CRC, or the layout -- breaks
+// `decode(x).encode() == x`, and any change to the hashed bytes breaks the
+// pinned hash. The gate therefore cannot be satisfied vacuously by
+// regenerating fixtures; regenerate it deliberately (the `print_canonical_corpus`
+// helper lives in this file's git history) only after reviewing the diff.
+#[test]
+fn canonical_corpus_round_trips_and_hashes_are_pinned() {
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+    // (canonical XQBC bytes, BlakeTwo256 hash) -- halt, input/output, arithmetic,
+    // a model builder, and a range loop.
+    let corpus: &[(&str, &str)] = &[
+        (
+            "5851424301000000000001ff000000ff",
+            "6868acc3b12d6fefd2cbe190b3a80f83b4501b3d83777a6089f4ae0d9f8d67cc",
+        ),
+        (
+            "585142430101010000000976532f4311000e0011000f00ff",
+            "04a2b90df7ef476042a1507c79dc70390debed539e57ccd7e7888c7ce3a6e993",
+        ),
+        (
+            "5851424301000000000008e725b11111061107220b00ff",
+            "d59b0eb6206a76cf4b603c8cf053e1d6b2d3ac877acb196374f48ee905f7db50",
+        ),
+        (
+            "585142430100000000000b9304092d11044000110011016100ff",
+            "91fe729a703e1d93cc5fc492773e00a92c1543fac076b8994372da370d223c21",
+        ),
+        (
+            "5851424301000000000008482a67471100110308f007ff",
+            "db0ca5528a09843a19b6c32ece331d577a066570995a482562060d7b3f0198c7",
+        ),
+    ];
+    for (bytes_hex, hash_hex) in corpus {
+        let bytes = unhex(bytes_hex);
+        // Canonical round-trip: decode then re-encode must reproduce the bytes.
+        let reencoded = Program::decode(&bytes)
+            .expect("corpus program decodes")
+            .encode();
+        assert_eq!(reencoded, bytes, "non-canonical corpus entry {bytes_hex}");
+        // Pinned identity hash: a silent hash move fails here.
+        assert_eq!(
+            program_hash(&bytes).as_ref(),
+            unhex(hash_hex).as_slice(),
+            "hash moved for corpus entry {bytes_hex}"
+        );
+        // The pallet admits the canonical form.
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_ok!(Xqvm::store_program(
+                RuntimeOrigin::signed(1),
+                bounded(bytes.clone())
+            ));
+        });
+    }
 }

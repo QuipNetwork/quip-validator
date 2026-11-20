@@ -329,6 +329,12 @@ pub mod pallet {
         /// Indicates an analysis defect, not a normal bytecode fault.
         /// Appended to preserve every existing pallet error index.
         VerifierAnalysisBudgetExceeded,
+        /// The stored bytes are not the program's canonical encoding (W1-003a):
+        /// `Program::decode` recomputes the XQBC header's slot bytes, so bytes
+        /// that differ only in the header decode to the same program yet hash
+        /// differently. Rejected so `hash(bytecode)` is a stable identity.
+        /// Appended to preserve every existing pallet error index.
+        NonCanonicalProgram,
     }
 
     /// Map a static-verification failure onto a dispatch error.
@@ -563,6 +569,17 @@ pub mod pallet {
             // time the bounds protect, and it spends them before it reports
             // any fault.
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
+            // W1-003a: the stored bytes must be the program's own canonical
+            // encoding. `decode` validates the CRC and length but ignores the
+            // header's slot bytes (it recomputes them), so a non-canonical
+            // header decodes cleanly yet re-encodes -- and hashes -- to
+            // something else. Reject it here so the stored byte string is the
+            // unique canonical form behind each program hash. Cheap: `encode`
+            // is one allocation already bounded by the per-byte weight term.
+            ensure!(
+                program.encode().as_slice() == bytecode.as_slice(),
+                Error::<T>::NonCanonicalProgram
+            );
             let shape = ControlFlowShape::of(program.code());
             ensure!(
                 shape.blocks <= T::MaxProgramBlocks::get(),
