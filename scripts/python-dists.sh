@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-only
 #
 # Build, smoke-test, or publish the `quip-signer` Python distribution. Single
 # source of truth for the build/smoke/upload commands so the CI jobs that touch

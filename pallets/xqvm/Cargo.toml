@@ -2,7 +2,7 @@
 name = "pallet-xqvm"
 description = "FRAME pallet for on-chain XQVM bytecode execution."
 version = { workspace = true }
-license = "Unlicense"
+license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

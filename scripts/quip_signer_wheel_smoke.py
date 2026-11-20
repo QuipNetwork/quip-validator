@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-only
 """Import + sign/verify smoke test for a built `quip-signer` wheel (QUI-793).
 
 Run by `scripts/python-dists.sh smoke` against the wheel installed into a

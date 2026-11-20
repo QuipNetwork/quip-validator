@@ -237,4 +237,5 @@ Rules:
 
 ## License
 
-Unlicense (public domain).
+GNU Affero General Public License, version 3 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+Preserve separate third-party license notices.

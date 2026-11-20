@@ -500,3 +500,9 @@ Operator validator slots are committed in
 [`runtime/src/genesis_config_presets.rs`](runtime/src/genesis_config_presets.rs).
 The [`scripts/derive-operator-keys.sh`](scripts/derive-operator-keys.sh) helper
 derives operator keys.
+
+## License
+
+Quip Validator is licensed under the GNU Affero General Public License,
+version 3 only (`AGPL-3.0-only`). See [LICENSE](LICENSE) for the full text.
+Files carrying separate third-party license notices retain those notices.

@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "quip-signer"
 description = "Quip hybrid (sr25519 + FN-DSA-512) transaction signer"
 requires-python = ">=3.9"
-license = { text = "MIT-0" }
+license = { text = "AGPL-3.0-only" }
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3 :: Only",

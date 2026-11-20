@@ -6,7 +6,7 @@
 [package]
 name = "quip-transaction-crypto-py"
 version = "0.5.1"
-license = "MIT-0"
+license = "AGPL-3.0-only"
 authors = ["Quip Network <roman@postquant.xyz>"]
 homepage = "https://www.quip.network/"
 repository = "https://gitlab.com/quip.network/quip-validator.git"

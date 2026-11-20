@@ -5,7 +5,7 @@
   ],
   "version": "0.1.0",
   "type": "module",
-  "license": "MIT-0",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "https://gitlab.com/quip.network/quip-validator.git"
