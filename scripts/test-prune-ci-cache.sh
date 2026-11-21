@@ -8,8 +8,11 @@
 #   (d) the job's own slot is swept;
 # plus abandoned/half-created slots, grandfathering, the per-slot sweep
 # interval, an own slot still locked by another holder, and a missing
-# cargo-sweep, and the capacity report (volume, mount, slot sizes within a
-# time budget). The fake volume mirrors a real host: the shared CARGO_HOME,
+# cargo-sweep, the capacity report (volume, mount, slot sizes within a time
+# budget), and rule 3, the opt-in volume budget (LRU whole-slot eviction:
+# over/under budget, locked, own, recent, df failure, device mismatch, an
+# unparseable df, an invalid or unset budget, and a realistic volume pushed
+# over budget by trees that are not our slots). The fake volume mirrors a real host: the shared CARGO_HOME,
 # a bench-style target tree, the scan's own lock and stamp, an unmarked
 # directory under a numeric id, and a stamped job tree outside the numeric
 # layout all sit beside the slots, and all must survive.
@@ -166,9 +169,11 @@ done
 check "the scan reports the shared CARGO_HOME's size" 'logged "size: $root/cargo-home "'
 check "no size is reported outside the numeric layout" \
   '! grep -qE "size: $root/(bench|target|cargo-home/)" "$tmp/prune.log"'
-check "a measured size is a size, not an error" \
-  'grep -qE "size: $root/1/own [0-9][0-9.,]*[A-Za-z]*\$" "$tmp/prune.log" \
-    && grep -qE "own slot size after sweep: [0-9][0-9.,]*[A-Za-z]*\$" "$tmp/prune.log"'
+# shellcheck disable=SC2034 # used inside check's eval'd condition
+sz='[0-9][0-9.,]*[A-Za-z]*'
+check "a measured size is a size on disk and apparent, not an error" \
+  'grep -qE "size: $root/1/own $sz on disk, $sz apparent\$" "$tmp/prune.log" \
+    && grep -qE "own slot size after sweep: $sz on disk, $sz apparent\$" "$tmp/prune.log"'
 
 # A spent budget stops the size report and says so; the scan still finishes.
 : >"$tmp/prune.log"
@@ -207,6 +212,147 @@ else
 fi
 check "a missing cargo-sweep is logged" 'grep -q "cargo-sweep is not available" "$tmp/prune.log"'
 check "nothing was swept without cargo-sweep" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
+
+# --- Rule 3: the volume budget ---------------------------------------------
+# Each scenario gets a fresh volume. A fake `df` reports a 2,000,000 KiB
+# volume whose usage is the sum of `.fake-kb` files under it, so removing a
+# slot lowers the usage the next `df` reports; a fake mount table names the
+# same device. Sizes are KiB of pretend data, not real files.
+broot="$tmp/budget/ci-cache"
+fakebin="$tmp/fakebin"
+mkdir -p "$fakebin"
+cat >"$fakebin/df" <<EOF
+#!/usr/bin/env bash
+[[ -e "$tmp/df.fail" ]] && exit 1
+if [[ -e "$tmp/df.garbage" ]]; then echo "Filesystem stuff"; echo "nonsense here"; exit 0; fi
+used=0
+while IFS= read -r f; do used=\$((used + \$(cat "\$f"))); done < <(find "$broot" -name .fake-kb)
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fakepool/srv 2000000 \$used \$((2000000 - used)) \$((used / 20000))% $broot"
+EOF
+chmod +x "$fakebin/df"
+
+# bslot ID JOB AGE_SECONDS KIB: a marked slot last used AGE_SECONDS ago.
+bslot() {
+  mkdir -p "$broot/$1/$2/target"
+  echo "$4" >"$broot/$1/$2/target/.fake-kb"
+  touch -d "@$(($(date +%s) - $3))" "$broot/$1/$2/target/.last-used"
+}
+# tree PATH KIB: anything else on the volume that takes space.
+tree() {
+  mkdir -p "$broot/$1"
+  echo "$2" >"$broot/$1/.fake-kb"
+}
+budget_volume() {
+  for pid in "${holders[@]}"; do release "$pid"; done
+  holders=()
+  rm -rf "$tmp/budget" "$tmp/df.fail" "$tmp/df.garbage"
+  mkdir -p "$broot"
+  echo "fakepool/srv $broot zfs rw,noatime 0 0" >"$tmp/mounts"
+  day=86400
+  bslot 1 own 0 300000            # the job's own slot
+  bslot 2 old $((10 * day)) 200000 # least recently used candidate
+  bslot 3 mid $((5 * day)) 200000  # next
+  bslot 4 held $((20 * day)) 200000
+  hold "$broot/4/held"             # oldest, but in use
+  bslot 5 recent 1800 200000       # used 30 minutes ago
+  tree cargo-home/registry 100000  # the shared CARGO_HOME
+  tree 6/unmarked 100000           # numeric, but not ours (no stamp)
+  mkdir -p "$broot/7/unstamped/target" && echo 50000 >"$broot/7/unstamped/target/.fake-kb"
+  # Old, so that only the marker and layout gates keep these.
+  touch -d "@$(($(date +%s) - 30 * day))" "$broot/6/unmarked" "$broot/7/unstamped" \
+    "$broot/7/unstamped/target"
+  mkdir -p "$broot/bench/weights/target" && echo 50000 >"$broot/bench/weights/target/.fake-kb"
+  touch -d "@$(($(date +%s) - 30 * day))" "$broot/bench/weights/target/.last-used"
+  # A fresh orphan-scan stamp keeps rule 2 out of these scenarios.
+  touch "$broot/.prune.lock" "$broot/.last-prune"
+  : >"$tmp/budget.log"
+}
+# Total pretend usage: 1,400,000 KiB of 2,000,000 = 70%.
+brun() {
+  PATH="$fakebin:$bin:$PATH" CI_CACHE_ROOT="$broot" CI_CACHE_PROJECT_DIR="$project" \
+    CI_CACHE_MOUNTS="$tmp/mounts" CARGO_TARGET_DIR="$broot/1/own/target" \
+    "$@" bash "$prune" >>"$tmp/budget.log" 2>&1
+}
+blogged() { grep -qF "prune-ci-cache: volume budget: $1" "$tmp/budget.log"; }
+survives() { [[ -d "$broot/$1" ]]; }
+
+# Over budget: LRU eviction stops once under it, and skips every guarded slot.
+budget_volume
+brun env CI_CACHE_VOLUME_BUDGET=55
+check "budget: the least recently used unlocked slot is removed" '! survives 2/old'
+check "budget: eviction continues in LRU order while over budget" '! survives 3/mid'
+check "budget: eviction stops once under budget" 'blogged "$broot is 50% used, budget 55%"'
+check "budget: a slot whose lock is held is kept" 'survives 4/held/target'
+check "budget: the held slot is logged and skipped" 'blogged "$broot/4/held is in use (lock held), skipping"'
+check "budget: the own slot is kept" 'survives 1/own/target'
+check "budget: a slot used within the idle window is kept" 'survives 5/recent/target'
+check "budget: an unmarked numeric directory is kept" 'survives 6/unmarked'
+check "budget: an unstamped numeric target/ is kept" 'survives 7/unstamped/target'
+check "budget: a stamped tree outside the numeric layout is kept" 'survives bench/weights/target'
+check "budget: the shared CARGO_HOME is kept" 'survives cargo-home/registry'
+
+# With no idle window every slot is old enough: the own slot is still kept.
+budget_volume
+brun env CI_CACHE_VOLUME_BUDGET=10 CI_CACHE_BUDGET_MIN_IDLE=0
+check "budget: with no idle window a recent slot may go" '! survives 5/recent'
+check "budget: with no idle window the own slot is still kept" 'survives 1/own/target'
+check "budget: with no idle window the held slot is still kept" 'survives 4/held/target'
+
+# Under budget: nothing is removed.
+budget_volume
+brun env CI_CACHE_VOLUME_BUDGET=80
+check "budget: under budget nothing is removed" 'survives 2/old && survives 3/mid'
+check "budget: under budget the usage is logged" 'blogged "$broot is 70% used, budget 80%"'
+
+# Unset (the default in this MR): the rule is inert even far over budget.
+budget_volume
+brun env -u CI_CACHE_VOLUME_BUDGET
+check "budget: unset means inert" 'survives 2/old && survives 3/mid && ! grep -q "volume budget" "$tmp/budget.log"'
+
+# An invalid budget removes nothing.
+for bad in 0 100 abc 50%; do
+  budget_volume
+  brun env CI_CACHE_VOLUME_BUDGET="$bad"
+  check "budget: invalid value '$bad' removes nothing" \
+    'survives 2/old && blogged "CI_CACHE_VOLUME_BUDGET=$bad is not a percentage 1-99; removing nothing"'
+done
+
+# Fail closed: df failing, df unparseable, df's device not the mount entry's.
+budget_volume
+touch "$tmp/df.fail"
+brun env CI_CACHE_VOLUME_BUDGET=10
+check "budget: a failing df removes nothing" 'survives 2/old && blogged "cannot read a usage"'
+budget_volume
+touch "$tmp/df.garbage"
+brun env CI_CACHE_VOLUME_BUDGET=10
+check "budget: an unparseable df removes nothing" 'survives 2/old && blogged "cannot read a usage"'
+budget_volume
+echo "otherpool/srv $broot zfs rw,noatime 0 0" >"$tmp/mounts"
+brun env CI_CACHE_VOLUME_BUDGET=10
+check "budget: a df device that is not the mount entry's removes nothing" \
+  'survives 2/old && blogged "cannot read a usage"'
+budget_volume
+echo "fakepool/srv $tmp/budget zfs rw,noatime 0 0" >"$tmp/mounts"
+brun env CI_CACHE_VOLUME_BUDGET=10
+check "budget: a df mount point that is not the mount entry's removes nothing" \
+  'survives 2/old && blogged "cannot read a usage"'
+
+# A realistic volume pushed over budget by what is not ours: every candidate
+# goes, nothing outside our slots does, and the run ends over budget, logged.
+budget_volume
+tree cargo-home/git 300000   # 1,900,000 KiB in all: 95%
+tree target/release 200000
+brun env CI_CACHE_VOLUME_BUDGET=50
+check "budget (realistic): the eligible slots are removed" '! survives 2/old && ! survives 3/mid'
+check "budget (realistic): nothing outside our slots is removed" \
+  'survives cargo-home/registry && survives cargo-home/git && survives target/release \
+    && survives 6/unmarked && survives 7/unstamped/target && survives bench/weights/target'
+check "budget (realistic): guarded slots survive" \
+  'survives 1/own/target && survives 4/held/target && survives 5/recent/target'
+check "budget (realistic): the run ends over budget and says so" \
+  'blogged "$broot/5/recent and every later candidate were used within 7200s; keeping them" \
+    && blogged "still over budget; no removable slot is left"'
 
 if ((fails)); then
   echo "--- prune log ---"

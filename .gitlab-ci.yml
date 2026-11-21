@@ -232,6 +232,11 @@ cargo-test:
   tags: [docker, amd64]
   interruptible: true
   timeout: 90m
+  variables:
+    # Own-slot ceiling in cargo-sweep's logical bytes, ~1.3x the measured
+    # working set (~88-105 GiB: fmt, clippy, tests, node, release runtimes),
+    # so the after_script sweep never evicts what the next run reuses.
+    CI_CACHE_MAX_SIZE: 140GiB
   script:
     # Self-test of the cache prune that this job's after_script runs (fake
     # cargo, temp volume; seconds).
@@ -301,6 +306,8 @@ browser-signer-test:
         - .npm/
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
+    # Own-slot ceiling, logical bytes, ~1.3x the measured ~68 GiB working set.
+    CI_CACHE_MAX_SIZE: 90GiB
   before_script:
     - !reference [.cargo-host-cache, before_script]
     # nodejs, npm, curl and git are baked into the toolchain image
@@ -371,6 +378,9 @@ benchmark-preflight:
   tags: [docker, amd64]
   interruptible: true
   timeout: 90m
+  variables:
+    # Own-slot ceiling, logical bytes, ~1.3x the measured ~76 GiB working set.
+    CI_CACHE_MAX_SIZE: 100GiB
   # Both parents define before_script and the later one would replace the
   # other; run the slot lock first, then the benchmark tooling install.
   before_script:
