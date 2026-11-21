@@ -187,6 +187,34 @@ workflow:
     # walk never crosses it. Point the builder at the checkout directly.
     WASM_BUILD_WORKSPACE_HINT: $CI_PROJECT_DIR
   cache: []
+  # Hold a SHARED lock on this job's cache slot for as long as the job shell
+  # lives, so scripts/prune-ci-cache.sh (from any job's after_script) never
+  # sweeps or removes a slot that is in use. GitLab concatenates before_script
+  # and script and runs them in one shell
+  # (https://docs.gitlab.com/ci/yaml/#before_script), so fd 9 -- and the lock --
+  # stays held until the script ends, including on failure or cancellation
+  # (the container dies and the kernel releases it); after_script runs in a
+  # new shell without it. A fixed fd rather than bash's {var}> form, so the
+  # hold also works if the runner falls back to sh. A job that defines its own
+  # before_script must start it with `!reference [.cargo-host-cache,
+  # before_script]`, or it runs unlocked.
+  before_script:
+    - |
+      slot="${CARGO_TARGET_DIR%/target}"
+      for attempt in 1 2 3; do
+        mkdir -p "$CARGO_TARGET_DIR"
+        exec 9>>"$slot/.in-use.lock"
+        flock --shared 9
+        # A prune may remove the slot between our open and our lock, leaving
+        # fd 9 locking a deleted file. Reopen until it locks the live one.
+        if [ "$(stat -L -c %d:%i /proc/self/fd/9)" = "$(stat -c %d:%i "$slot/.in-use.lock" 2>/dev/null)" ]; then
+          break
+        fi
+        exec 9>&-
+        echo "cache slot $slot was replaced while locking (attempt $attempt), retrying"
+      done
+      touch "$CARGO_TARGET_DIR/.last-used"
+      echo "cache slot $slot: holding shared in-use lock on fd 9"
   # after_script also runs when the job fails or is cancelled on timeout, which
   # is exactly when a slot is left half-written. The script exits 0 on every
   # path: a prune must never turn a green build red.
@@ -205,6 +233,9 @@ cargo-test:
   interruptible: true
   timeout: 90m
   script:
+    # Self-test of the cache prune that this job's after_script runs (fake
+    # cargo, temp volume; seconds).
+    - bash scripts/test-prune-ci-cache.sh
     - cargo fmt --all -- --check
     - cargo clippy --workspace --lib --bins --tests -- -D warnings
     - cargo test --workspace --lib --bins --tests
@@ -271,6 +302,7 @@ browser-signer-test:
   variables:
     npm_config_cache: $CI_PROJECT_DIR/.npm
   before_script:
+    - !reference [.cargo-host-cache, before_script]
     # nodejs, npm, curl and git are baked into the toolchain image
     # (.gitlab/ci-toolchain.Dockerfile) rather than fetched here.
     - rustup target add wasm32-unknown-unknown
@@ -339,6 +371,11 @@ benchmark-preflight:
   tags: [docker, amd64]
   interruptible: true
   timeout: 90m
+  # Both parents define before_script and the later one would replace the
+  # other; run the slot lock first, then the benchmark tooling install.
+  before_script:
+    - !reference [.cargo-host-cache, before_script]
+    - !reference [.revive-benchmark-tooling, before_script]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - when: never
