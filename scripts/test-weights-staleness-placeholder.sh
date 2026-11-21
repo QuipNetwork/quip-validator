@@ -40,4 +40,17 @@ out="$(run)"; code=$?
 set -e
 [ "$code" -eq 0 ] || fail "sentinel absent: expected exit 0, got $code (output: $out)"
 
-echo "OK: placeholder scan reports stale with the sentinel and clean without it."
+# The sentinel in a benchmark_weights.rs must be found too: pallets with a split
+# weight surface (the mempool, quantum-pow) keep part of it there.
+cat > "$tmp/demo/src/benchmark_weights.rs" <<'RS'
+// BENCHMARK-PLACEHOLDER(W1-008)
+pub fn y() {}
+RS
+set +e
+out="$(run)"; code=$?
+set -e
+[ "$code" -eq 1 ] || fail "sentinel in benchmark_weights.rs: expected exit 1, got $code (output: $out)"
+printf '%s\n' "$out" | grep -q 'demo' || fail "sentinel in benchmark_weights.rs: pallet 'demo' not reported"
+rm "$tmp/demo/src/benchmark_weights.rs"
+
+echo "OK: placeholder scan reports stale with the sentinel (weights.rs or benchmark_weights.rs) and clean without it."

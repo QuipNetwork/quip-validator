@@ -46,7 +46,9 @@ SENTINEL='BENCHMARK-PLACEHOLDER'
 
 scan_placeholders() {
   local found="" w
-  for w in "$PALLETS_ROOT"/*/src/weights.rs; do
+  # Both generated weight files: pallets with a split weight surface (the
+  # mempool, quantum-pow) keep part of it in benchmark_weights.rs.
+  for w in "$PALLETS_ROOT"/*/src/weights.rs "$PALLETS_ROOT"/*/src/benchmark_weights.rs; do
     [ -f "$w" ] || continue
     if grep -q "$SENTINEL" "$w"; then
       found+="$(basename "$(dirname "$(dirname "$w")")")"$'\n'
@@ -56,7 +58,9 @@ scan_placeholders() {
 }
 
 # `--placeholders-only`: scan the tree for placeholder weights and exit, without
-# needing a merge-request diff. Used by the mutation-control test.
+# needing a merge-request diff. Used by the mutation-control test and by the
+# blocking `benchmark-placeholder-gate` CI job on release tags and on merge
+# requests into the default branch.
 if [ "${1:-}" = "--placeholders-only" ]; then
   placeholder_stale="$(scan_placeholders)"
   if [ -n "$placeholder_stale" ]; then

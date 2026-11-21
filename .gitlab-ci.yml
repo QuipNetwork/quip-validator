@@ -429,6 +429,28 @@ weights-staleness-check:
   script:
     - ./scripts/check-weights-staleness.sh
 
+# Blocking release gate: no release ships a benchmark placeholder weight. A
+# placeholder (`BENCHMARK-PLACEHOLDER`) marks a weight that has not been measured
+# on the reference machine yet; the manual `benchmark-weights` job replaces it.
+# The advisory weights-staleness-check above only warns, so this is the check
+# that stops one reaching a release.
+#
+# Runs on release tags (`v*`) and on merge requests into the default branch.
+# It deliberately does not run on merge requests into other branches, such as
+# the audit integration branch, which carries placeholders until regeneration
+# by design. No allow_failure: a hit is red.
+benchmark-placeholder-gate:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 10m
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH
+  script:
+    - ./scripts/check-weights-staleness.sh --placeholders-only
+
 # The Python signer crate (crates/transaction-crypto-py) is *excluded* from the
 # workspace — its macOS `dynamic_lookup` link requirement would perturb the
 # runtime/node builds (see the exclude comment in the root Cargo.toml). A side
