@@ -8,7 +8,8 @@
 #   (d) the job's own slot is swept;
 # plus abandoned/half-created slots, grandfathering, the per-slot sweep
 # interval, an own slot still locked by another holder, and a missing
-# cargo-sweep. The fake volume mirrors a real host: the shared CARGO_HOME,
+# cargo-sweep, and the capacity report (volume, mount, slot sizes within a
+# time budget). The fake volume mirrors a real host: the shared CARGO_HOME,
 # a bench-style target tree, the scan's own lock and stamp, an unmarked
 # directory under a numeric id, and a stamped job tree outside the numeric
 # layout all sit beside the slots, and all must survive.
@@ -85,8 +86,10 @@ hold() {
 
 run() {
   PATH="$bin:$PATH" CI_CACHE_ROOT="$root" CI_CACHE_PROJECT_DIR="$project" \
+    CI_CACHE_DU_BUDGET="${du_budget:-180}" \
     CARGO_TARGET_DIR="$root/1/own/target" bash "$prune" >>"$tmp/prune.log" 2>&1
 }
+logged() { grep -qF "prune-ci-cache: $1" "$tmp/prune.log"; }
 
 fails=0
 check() {
@@ -151,6 +154,30 @@ check "a stamped job tree outside the numeric layout survives" \
 check "the scan's own lock and stamp survive" \
   '[[ -e "$root/.prune.lock" && -e "$root/.last-prune" ]]'
 check "only the own slot was swept" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
+
+# Capacity report: reading only, nothing above depends on it.
+check "the volume's df line is reported" 'logged "volume: "'
+check "the mount entry is reported" 'logged "mount: "'
+check "the own slot's size is reported before and after the sweep" \
+  'logged "own slot size before sweep: " && logged "own slot size after sweep: "'
+for s in 1/own 2/held 4/fresh 6/unstamped 7/half-new 8/unmarked; do
+  check "the scan reports the size of numeric slot $s" "logged \"size: \$root/$s \""
+done
+check "the scan reports the shared CARGO_HOME's size" 'logged "size: $root/cargo-home "'
+check "no size is reported outside the numeric layout" \
+  '! grep -qE "size: $root/(bench|target|cargo-home/)" "$tmp/prune.log"'
+check "a measured size is a size, not an error" \
+  'grep -qE "size: $root/1/own [0-9][0-9.,]*[A-Za-z]*\$" "$tmp/prune.log" \
+    && grep -qE "own slot size after sweep: [0-9][0-9.,]*[A-Za-z]*\$" "$tmp/prune.log"'
+
+# A spent budget stops the size report and says so; the scan still finishes.
+: >"$tmp/prune.log"
+touch -d "$(days_ago 2)" "$root/.last-prune"
+du_budget=0 run
+check "a spent size budget is logged" 'logged "size budget of 0s spent after 0 report(s)"'
+check "a spent size budget reports no slot size" '! logged "size: "'
+check "the scan still records its interval" \
+  '[[ "$(($(date +%s) - $(stat -c %Y "$root/.last-prune")))" -lt 60 ]]'
 
 # Inside the per-slot interval the own slot is not swept again.
 run

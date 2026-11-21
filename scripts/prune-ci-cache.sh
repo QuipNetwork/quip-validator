@@ -26,10 +26,13 @@ set -euo pipefail
 # Two rules, for two kinds of garbage:
 #
 #   1. Stale artifacts inside the job's OWN slot. `cargo sweep --maxsize`
-#      evicts oldest-first, but only while the slot is over the ceiling. An age
-#      rule does not work here: cargo never updates an artifact's modification
-#      time when it reuses it, so the oldest files in a warm slot are the stable
-#      dependencies worth keeping. Only $CARGO_TARGET_DIR is swept -- never
+#      evicts least-recently-used first, but only while the slot is over the
+#      ceiling. cargo-sweep (0.8.0) ranks artifacts by the ACCESS time (atime)
+#      of their fingerprint files, for --maxsize and --time alike, so whether an
+#      age rule is safe depends on the volume's atime mount option: with
+#      noatime the oldest atimes in a warm slot are the stable dependencies
+#      worth keeping. The mount options are logged on every run (below) to
+#      settle that. Only $CARGO_TARGET_DIR is swept -- never
 #      another job's slot, which may be mid-build or mid-test -- at most once
 #      per CI_CACHE_INTERVAL per slot, and only if the exclusive lock is free
 #      (by after_script the job shell that held the shared lock has exited).
@@ -60,11 +63,24 @@ set -euo pipefail
 #                          orphan scans on one host (default 86400)
 #   CI_CACHE_PROJECT_DIR   checkout cargo-sweep reads the manifest from
 #                          (default: the repository holding this script)
+#   CI_CACHE_DU_TIMEOUT    seconds one size measurement may take (default 60)
+#   CI_CACHE_DU_BUDGET     seconds all slot-size reports in one orphan scan may
+#                          take together, so after_script stays inside its
+#                          runner limit (default 180)
+#
+# Reporting (no effect on what is removed): every run logs the volume's `df`
+# line and its mount entry (device and options, including the atime policy);
+# the own-slot sweep logs the slot's size before and after; the orphan scan
+# logs the size of every numeric slot and of the shared CARGO_HOME, within
+# CI_CACHE_DU_BUDGET. These are the inputs for sizing the per-job ceilings
+# against the volume.
 
 cache_root="${CI_CACHE_ROOT:-/ci-cache}"
 max_size="${CI_CACHE_MAX_SIZE:-50GiB}"
 orphan_days="${CI_CACHE_ORPHAN_DAYS:-14}"
 interval="${CI_CACHE_INTERVAL:-86400}"
+du_timeout="${CI_CACHE_DU_TIMEOUT:-60}"
+du_budget="${CI_CACHE_DU_BUDGET:-180}"
 
 stamp_name=".last-used"
 lock_name=".in-use.lock"
@@ -103,6 +119,40 @@ if ((sweep)) && ! cargo sweep --version >/dev/null 2>&1; then
   sweep=0
 fi
 
+# size_of DIR [SECONDS]: DIR's size as `du -sh` prints it, or why it is not
+# known. Bounded by SECONDS (default CI_CACHE_DU_TIMEOUT); never fails.
+size_of() {
+  local limit="${2:-$du_timeout}" out size
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "unknown (timeout(1) is not available)"
+  elif out="$(timeout "$limit" du -sh "$1" 2>/dev/null)" && read -r size _ <<<"$out" \
+    && [[ -n "$size" ]]; then
+    echo "$size"
+  else
+    echo "unknown (du failed or took over ${limit}s)"
+  fi
+}
+
+# report_volume: log the volume's df line and the mount entry that holds it
+# (the longest mount point that is a prefix of the cache root). Never fails.
+report_volume() {
+  local line
+  if line="$(df -hP "$cache_root" 2>/dev/null | tail -n +2)" && [[ -n "$line" ]]; then
+    log "volume: $line"
+  else
+    log "volume: df failed for $cache_root"
+  fi
+  if [[ -r /proc/self/mounts ]]; then
+    line="$(awk -v root="$cache_root" '
+      { m = $2; if (m == "/" || index(root "/", m "/") == 1) {
+          if (length(m) >= length(best)) { best = m; entry = $0 } } }
+      END { print entry }' /proc/self/mounts 2>/dev/null || true)"
+    log "mount: ${line:-no entry holding $cache_root in /proc/self/mounts}"
+  else
+    log "mount: /proc/self/mounts is not readable"
+  fi
+}
+
 # older_than FILE SECONDS: true when FILE's mtime is at least SECONDS ago.
 older_than() {
   (($(date +%s) - $(stat -c %Y "$1") >= $2))
@@ -129,6 +179,8 @@ release() {
 failed=0
 own_slot=""
 
+report_volume
+
 # --- Rule 1: the job's own slot -------------------------------------------
 if [[ -n "${CARGO_TARGET_DIR:-}" && -d "$CARGO_TARGET_DIR" ]]; then
   own_slot="$(cd "$CARGO_TARGET_DIR/.." && pwd)"
@@ -142,6 +194,7 @@ if [[ -n "${CARGO_TARGET_DIR:-}" && -d "$CARGO_TARGET_DIR" ]]; then
       log "own slot $own_slot swept less than ${interval}s ago, skipping sweep"
     elif try_exclusive "$own_slot"; then
       log "sweeping own slot $CARGO_TARGET_DIR to $max_size"
+      log "own slot size before sweep: $(size_of "$own_slot")"
       if ((dry_run)); then
         log "(dry run) would run cargo sweep --maxsize $max_size"
       elif CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
@@ -150,6 +203,7 @@ if [[ -n "${CARGO_TARGET_DIR:-}" && -d "$CARGO_TARGET_DIR" ]]; then
       else
         failed=1
       fi
+      ((dry_run)) || log "own slot size after sweep: $(size_of "$own_slot")"
       release
     else
       log "own slot $own_slot is still locked by another holder, skipping sweep"
@@ -218,6 +272,24 @@ else
       rm -rf "$slot"
     fi
     release
+  done
+  # Size report for capacity planning: every numeric slot left after the scan,
+  # then the shared CARGO_HOME, inside one time budget. Reading only.
+  deadline=$((SECONDS + du_budget))
+  reported=0
+  for dir in "$cache_root"/*/* "$cache_root/cargo-home"; do
+    [[ -d "$dir" ]] || continue
+    if [[ "$dir" != "$cache_root/cargo-home" ]]; then
+      [[ "$(basename "$(dirname "$dir")")" =~ ^[0-9]+$ ]] || continue
+    fi
+    left=$((deadline - SECONDS))
+    if ((left <= 0)); then
+      log "size budget of ${du_budget}s spent after $reported report(s); the rest are not reported"
+      break
+    fi
+    ((left < du_timeout)) || left=$du_timeout
+    log "size: $dir $(size_of "$dir" "$left")"
+    reported=$((reported + 1))
   done
   # Record the interval only on a scan that reached the end. after_script has
   # its own runner timeout, and a scan killed part way through must be retried
