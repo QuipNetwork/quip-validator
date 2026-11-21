@@ -1283,7 +1283,8 @@ fn e_largest_legitimate_run() {
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn i_worst_case_fixed_run() {
     use quip_protocol_runtime::configs::{
-        MaxLoopDepth, MaxOutputSlots, MaxProgramBlocks, MaxProgramSize,
+        vm_transform_retained_heap, MaxLoopDepth, MaxOutputSlots, MaxProgramBlocks, MaxProgramSize,
+        VM_FIXED_RUN_ALLOWANCE, VM_FIXED_RUN_MEASURED,
     };
     let chain = Chain::new();
     let ms = max_steps();
@@ -1392,8 +1393,23 @@ fn i_worst_case_fixed_run() {
         );
     }
     println!(
-        "fixed_run worst case (max of the above): {:.3} MiB ({worst} B)",
+        "fixed_run worst case (max of the above): {:.3} MiB ({worst} B); pinned \
+         VM_FIXED_RUN_MEASURED {VM_FIXED_RUN_MEASURED} B",
         mib(worst)
+    );
+    // One-sided: a decrease passes; an increase fails until the pin is raised
+    // from a measured run (and re-budgeted if it no longer fits).
+    assert!(
+        u64::from(worst) <= VM_FIXED_RUN_MEASURED,
+        "the fixed per-run cost grew: measured {worst} B > pinned VM_FIXED_RUN_MEASURED \
+         {VM_FIXED_RUN_MEASURED} B"
+    );
+    assert!(
+        VM_FIXED_RUN_MEASURED.saturating_add(vm_transform_retained_heap())
+            <= VM_FIXED_RUN_ALLOWANCE,
+        "pinned fixed run {VM_FIXED_RUN_MEASURED} B + retained transform {} B exceeds the \
+         {VM_FIXED_RUN_ALLOWANCE} B allowance",
+        vm_transform_retained_heap()
     );
 }
 

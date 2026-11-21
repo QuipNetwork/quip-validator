@@ -887,6 +887,38 @@ impl pallet_miner_registry::Config for Runtime {
     type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;
 }
 
+/// The importer-heap budget's allowance for the L-independent fixed per-run
+/// term (see [`MaxVmMemory`]). Shared by the budget test and the census.
+#[doc(hidden)]
+pub const VM_FIXED_RUN_ALLOWANCE: u64 = 1024 * 1024;
+
+/// The measured worst case of that term: census test `i_worst_case_fixed_run`,
+/// the larger of its two programs (with and without a jump chain filling
+/// `MaxProgramBlocks`), importer heap net of an empty block. The census asserts
+/// it measures no more than this, and the budget test builds on it.
+///
+/// Raise only with a measured census `i` run; a raise above
+/// `VM_FIXED_RUN_ALLOWANCE - vm_transform_retained_heap()` requires
+/// re-budgeting.
+#[doc(hidden)]
+pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
+
+/// Heap footprint of the compute mempool's per-extrinsic retained
+/// `transformed: Vec<Vec<i8>>` (kimi W1-002 follow-up): it lives across the
+/// per-solution VMs of one `submit_solution`, so it is retained for the
+/// extrinsic, not a run, and is covered by the fixed-run allowance's slack.
+/// Counted with the census `chunk_bytes` rule (freeing-bump chunk =
+/// next_pow2(max(len, 8)) + 8): each inner `Vec<i8>` of `QuantumMaxNodes`
+/// bytes, plus the outer Vec of `QuantumMaxSolutions` 24-byte headers.
+#[doc(hidden)]
+pub fn vm_transform_retained_heap() -> u64 {
+    let chunk = |len: u64| len.max(8).next_power_of_two().saturating_add(8);
+    let solutions = u64::from(QuantumMaxSolutions::get());
+    solutions
+        .saturating_mul(chunk(u64::from(QuantumMaxNodes::get())))
+        .saturating_add(chunk(solutions.saturating_mul(24)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,28 +1059,16 @@ mod xqvm_weights {
         // meter does not charge, at its worst case -- a maximal program loaded
         // and decoded, the value stack at xqvm's STACK_LIMIT (8,192 i64
         // entries; bounded by that count, not by the meter), 32 loop frames,
-        // 256 registers and output slots. Allowance 1 MiB.
-        const FIXED_RUN: u64 = MIB;
-        // Measured worst case (census test `i_worst_case_fixed_run`, the larger
-        // of its two programs -- with and without a jump chain filling
-        // MaxProgramBlocks): importer heap net of an empty block, 474,784 B
-        // (0.453 MiB). The HALT-only baseline is ~0.025 MiB.
-        const FIXED_RUN_MEASURED: u64 = 474_784;
-        // Per-extrinsic retained term (kimi W1-002 follow-up): the mempool's
-        // `transformed: Vec<Vec<i8>>` lives across the per-solution VMs of one
-        // `submit_solution`. It is retained for the extrinsic, not a run, and is
-        // covered by the fixed-run allowance's slack rather than a separate
-        // budget line. It is counted as heap footprint, not payload, using the
-        // census `chunk_bytes` rule (freeing-bump chunk = next_pow2(max(len, 8))
-        // + 8): each inner Vec<i8> of `QuantumMaxNodes` bytes, plus the outer Vec
-        // of `QuantumMaxSolutions` 24-byte Vec headers -- 164,520 B today. The
-        // assertion keeps the slack visible: if the measured worst case plus this
-        // outgrew FIXED_RUN, it would need its own line.
-        let chunk = |len: u64| len.max(8).next_power_of_two().saturating_add(8);
-        let solutions = u64::from(QuantumMaxSolutions::get());
-        let transform_retained = solutions
-            .saturating_mul(chunk(u64::from(QuantumMaxNodes::get())))
-            .saturating_add(chunk(solutions.saturating_mul(24)));
+        // 256 registers and output slots, a jump table filling
+        // MaxProgramBlocks. The allowance, the measured worst case and the
+        // mempool's retained transform (164,520 B today) are the shared items
+        // above; census `i` asserts the measurement against the same constant.
+        // The assertion keeps the slack visible: if the measured worst case
+        // plus the retained transform outgrew the allowance, it would need its
+        // own budget line.
+        const FIXED_RUN: u64 = VM_FIXED_RUN_ALLOWANCE;
+        const FIXED_RUN_MEASURED: u64 = VM_FIXED_RUN_MEASURED;
+        let transform_retained = vm_transform_retained_heap();
         assert!(
             transform_retained.saturating_add(FIXED_RUN_MEASURED) <= FIXED_RUN,
             "mempool retained transform {transform_retained} B + measured fixed run \
