@@ -36,7 +36,9 @@ pub mod packed;
 pub mod puzzle_spec;
 pub mod validation;
 
-pub use crate::diversity::{calculate_diversity, select_diverse, symmetric_hamming};
+pub use crate::diversity::{
+    calculate_diversity, distinct_solutions, select_diverse, symmetric_hamming,
+};
 pub use crate::energy::{energy_of_solution, energy_of_solution_indexed, expected_gse};
 pub use crate::errors::ValidationError;
 pub use crate::fixed::{MilliDiversity, MilliEnergy, MilliValue, MILLI_SCALE};

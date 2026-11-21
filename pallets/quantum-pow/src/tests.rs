@@ -727,6 +727,33 @@ fn submit_proof_accepts_valid_proof() {
     });
 }
 
+/// W1-004: copies and global flips are one answer. The two-node test topology
+/// has exactly two flip classes, so five rows built from its four candidates
+/// (two distinct answers plus three copies) do not meet a five-solution gate,
+/// while the same rows meet a two-solution one.
+#[test]
+fn submit_proof_counts_distinct_answers_only() {
+    for min_solutions in [5, 2] {
+        new_test_ext().execute_with(|| {
+            assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+            let (nodes, edges, topology_hash) = registered_topology();
+            set_difficulty_default(DifficultyConfig {
+                min_solutions,
+                ..easy_difficulty()
+            });
+            let proof = proof_for(1, &nodes, &edges, topology_hash, &[0, 1, 2, 3, 0]);
+            if min_solutions == 5 {
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+                    crate::Error::<Test>::InsufficientSolutions
+                );
+            } else {
+                assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+            }
+        });
+    }
+}
+
 #[test]
 fn submit_proof_rejects_invalid_nonce() {
     new_test_ext().execute_with(|| {

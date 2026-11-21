@@ -2037,7 +2037,10 @@ fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
 
 #[test]
 fn stored_subset_always_contains_its_ranked_energy_vector() {
-    for count in [None, Some(0), Some(1), Some(2), Some(3)] {
+    // [1, -1] and [-1, 1] are global flips (energies 500 and 1500 under
+    // weighted_params), so they are one answer (W1-004) and only the
+    // lower-energy [1, -1] is kept: three rows give two distinct answers.
+    for count in [None, Some(0), Some(1), Some(2)] {
         new_test_ext().execute_with(|| {
             let spec = register_spec();
             assert_ok!(QuantumComputeMempool::register_solver(
@@ -2069,7 +2072,7 @@ fn stored_subset_always_contains_its_ranked_energy_vector() {
             ));
             let stored = OrderSolutions::<Test>::get(0, 2).unwrap();
             assert_eq!(stored.solutions[0].as_slice(), &[1, 1]);
-            assert_eq!(stored.solutions.len(), count.unwrap_or(3).max(1) as usize);
+            assert_eq!(stored.solutions.len(), count.unwrap_or(2).max(1) as usize);
             let order = JobOrders::<Test>::get(0).unwrap();
             let p = order.ising_params;
             let minimum = stored
@@ -2092,7 +2095,7 @@ fn stored_subset_always_contains_its_ranked_energy_vector() {
                 minimum,
                 OrderFrontRunner::<Test>::get(0).unwrap().energy_milli
             );
-            // Deterministic distance tie chooses the earlier input after the best.
+            // The flip class keeps its lowest-energy member, [1, -1].
             if stored.solutions.len() > 1 {
                 assert_eq!(stored.solutions[1].as_slice(), &[1, -1]);
             }
@@ -2101,14 +2104,66 @@ fn stored_subset_always_contains_its_ranked_energy_vector() {
 }
 
 #[test]
+fn copies_and_flips_do_not_count_as_distinct_answers() {
+    // W1-004. Requiring three answers from rows that hold only two distinct
+    // ones fails, and one answer submitted four times (with flips) is one.
+    for (rows, count) in [
+        (vec![vec![1, -1], vec![1, 1], vec![-1, 1]], 3),
+        (vec![vec![1, 1], vec![-1, -1], vec![1, 1], vec![-1, -1]], 2),
+    ] {
+        new_test_ext().execute_with(|| {
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
+            let mut params = weighted_params();
+            params.min_solutions = Some(count);
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                params,
+                100,
+                JobMode::Open,
+                RewardResolution::SingleBest,
+                10,
+                5,
+                ResultDelivery::OnChainOnly
+            ));
+            let rows = bounded(rows.into_iter().map(bounded).collect());
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, rows)
+                    .map_err(|error| error.error),
+                crate::Error::<Test>::InsufficientSolutions
+            );
+        });
+    }
+}
+
+#[test]
 fn best_anchoring_does_not_waive_diversity_or_count_requirements() {
-    for (count, diversity, expected) in [
+    // [1, -1] and [1, 1] are distinct answers at symmetric distance 1 of 2
+    // (diversity 500); the best, [1, 1], is not first. [-1, -1] and [1, 1] are
+    // global flips, so they are one answer and fail any count above 1 (W1-004).
+    for (rows, count, diversity, expected) in [
         (
+            vec![vec![1, -1], vec![1, 1]],
             Some(2),
-            Some(500),
+            Some(501),
             crate::Error::<Test>::InsufficientDiversity,
         ),
-        (Some(3), None, crate::Error::<Test>::InsufficientSolutions),
+        (
+            vec![vec![-1, -1], vec![1, 1]],
+            Some(2),
+            None,
+            crate::Error::<Test>::InsufficientSolutions,
+        ),
+        (
+            vec![vec![1, -1], vec![1, 1]],
+            Some(3),
+            None,
+            crate::Error::<Test>::InsufficientSolutions,
+        ),
     ] {
         new_test_ext().execute_with(|| {
             let spec = register_spec();
@@ -2130,12 +2185,11 @@ fn best_anchoring_does_not_waive_diversity_or_count_requirements() {
                 5,
                 ResultDelivery::OnChainOnly
             ));
-            // Global inverses have zero symmetric diversity; best is not first.
             assert_noop!(
                 QuantumComputeMempool::submit_solution(
                     RuntimeOrigin::signed(2),
                     0,
-                    bounded(vec![bounded(vec![-1, -1]), bounded(vec![1, 1])])
+                    bounded(rows.into_iter().map(bounded).collect())
                 )
                 .map_err(|error| error.error),
                 expected

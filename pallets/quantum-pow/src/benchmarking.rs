@@ -199,6 +199,17 @@ fn register_extra_topology_for<T: Config>(offset: u32) -> sp_core::H256 {
     topology_hash
 }
 
+/// How many distinct answers `valid_proof_for` can hold: `n - 1` free spins give
+/// at most `2^(n - 1)` flip classes.
+fn achievable_distinct(node_count: u32, solution_count: u32) -> u32 {
+    let free = node_count.saturating_sub(1);
+    if free >= 32 {
+        solution_count
+    } else {
+        solution_count.min(1u32 << free)
+    }
+}
+
 fn valid_proof_for<T: Config>(
     miner: &T::AccountId,
     topology_hash: sp_core::H256,
@@ -217,12 +228,20 @@ fn valid_proof_for<T: Config>(
     let solutions: PackedSolutionsOf<T> = bounded::<_, T::MaxSolutions>(
         (0..solution_count)
             .map(|solution_index| {
+                // Pairwise distinct answers (W1-004), the dedupe's worst case:
+                // spin 0 is +1 in every row, so no row is a global flip of
+                // another, and spin i >= 1 is negated when bit i - 1 of the
+                // row index is set. (The previous parity pattern made every
+                // row a copy or flip of the first.)
                 let spins: Vec<MilliValue> = (0..topology.nodes.len() as u32)
                     .map(|node_index| {
-                        if (node_index ^ solution_index).count_ones() % 2 == 0 {
-                            SCALE
-                        } else {
+                        let flipped = node_index >= 1
+                            && node_index <= 32
+                            && (solution_index >> (node_index - 1)) & 1 == 1;
+                        if flipped {
                             -SCALE
+                        } else {
+                            SCALE
                         }
                     })
                     .collect();
@@ -360,7 +379,8 @@ mod benchmarks {
         Difficulties::<T>::insert(
             topology_hash,
             types::DifficultyConfig {
-                min_solutions: s,
+                // Only distinct answers count (W1-004); cap at what n spins hold.
+                min_solutions: achievable_distinct(n, s),
                 ..easy_difficulty()
             },
         );

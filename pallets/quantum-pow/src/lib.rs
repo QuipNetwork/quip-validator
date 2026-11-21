@@ -136,7 +136,7 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, derive_nonce, energy_of_solution_indexed,
+        calculate_diversity, derive_nonce, distinct_solutions, energy_of_solution_indexed,
         generate_ising_model_indexed,
         packed::{packed_solution_byte_len, spin_signs, unpack_solution},
         select_diverse, validate_topology_consistency, AllowedValueSpec, MilliValue, TopologyIndex,
@@ -1369,16 +1369,30 @@ pub mod pallet {
                 !energy_valid_indices.is_empty(),
                 Error::<T>::InsufficientEnergy
             );
-            let best_energy_milli = energy_valid_indices
-                .iter()
-                .map(|&index| energies[index])
-                .min()
-                .ok_or(Error::<T>::InsufficientEnergy)?;
 
-            let energy_valid_solutions: Vec<&[i8]> = energy_valid_indices
+            // W1-004: only distinct answers count. Rows that are identical or
+            // global spin flips of each other are one answer (owner O-B3,
+            // regardless of energy); each class keeps its lowest-energy
+            // member. The best energy, the diversity target, the selection and
+            // the reported count are all taken over this distinct set.
+            let valid_rows: Vec<&[i8]> = energy_valid_indices
                 .iter()
                 .map(|&index| decoded[index].as_slice())
                 .collect();
+            let valid_energies: Vec<_> = energy_valid_indices
+                .iter()
+                .map(|&index| energies[index])
+                .collect();
+            let distinct = distinct_solutions(&valid_rows, &valid_energies)
+                .map_err(|_| DispatchError::from(Error::<T>::InvalidSpinValues))?;
+            let best_energy_milli = distinct
+                .iter()
+                .map(|&index| valid_energies[index])
+                .min()
+                .ok_or(Error::<T>::InsufficientEnergy)?;
+
+            let energy_valid_solutions: Vec<&[i8]> =
+                distinct.iter().map(|&index| valid_rows[index]).collect();
 
             let target_count = energy_valid_solutions
                 .len()

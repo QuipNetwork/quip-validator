@@ -1,10 +1,11 @@
 //! Diversity and symmetric Hamming distance helpers for Ising solution sets.
 
+use alloc::collections::btree_map::{BTreeMap, Entry};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::errors::ValidationError;
-use crate::fixed::{round_div_u64, MilliDiversity, MILLI_SCALE};
+use crate::fixed::{round_div_u64, MilliDiversity, MilliEnergy, MILLI_SCALE};
 use crate::validation::{ensure_valid_spins, validate_solution_set};
 
 /// Compute symmetric Hamming distance between two spin configurations.
@@ -40,6 +41,60 @@ fn symmetric_hamming_validated(a: &[i8], b: &[i8]) -> u32 {
     }
 
     direct.min(inverted)
+}
+
+/// Indices of one representative per class of copies (W1-004).
+///
+/// Two rows are copies when they are identical or global spin flips of each
+/// other -- symmetric Hamming distance `0` -- regardless of their energies
+/// (owner decision O-B3: with `h != 0` a flipped row is often still
+/// energy-valid, so counting it would pad every answer for free). Each class
+/// keeps its lowest-energy member; ties go to the first occurrence. The
+/// returned indices refer to `rows` and are in increasing order.
+///
+/// `energies` must be parallel to `rows`; a length mismatch is a caller bug
+/// and is reported as [`ValidationError::FieldLengthMismatch`].
+///
+/// Classes are found by flip-normalizing each row (negated when its first spin
+/// is negative) and grouping equal keys, which is exactly the relation
+/// "symmetric Hamming distance is 0", in O(S·n·log S) for S rows of n spins.
+pub fn distinct_solutions<T: AsRef<[i8]>>(
+    rows: &[T],
+    energies: &[MilliEnergy],
+) -> Result<Vec<usize>, ValidationError> {
+    if rows.len() != energies.len() {
+        return Err(ValidationError::FieldLengthMismatch {
+            expected: rows.len(),
+            actual: energies.len(),
+        });
+    }
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    ensure_valid_solution_inputs(rows)?;
+
+    let mut kept: BTreeMap<Vec<i8>, usize> = BTreeMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        let row = row.as_ref();
+        let key: Vec<i8> = if row.first().is_some_and(|&spin| spin < 0) {
+            row.iter().map(|&spin| -spin).collect()
+        } else {
+            row.to_vec()
+        };
+        match kept.entry(key) {
+            Entry::Vacant(slot) => {
+                slot.insert(index);
+            }
+            Entry::Occupied(mut slot) => {
+                if energies[index] < energies[*slot.get()] {
+                    slot.insert(index);
+                }
+            }
+        }
+    }
+    let mut indices: Vec<usize> = kept.into_values().collect();
+    indices.sort_unstable();
+    Ok(indices)
 }
 
 /// Compute average pairwise diversity in milli precision.
@@ -208,7 +263,78 @@ fn ensure_valid_solution_inputs<T: AsRef<[i8]>>(solutions: &[T]) -> Result<usize
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_diversity, select_diverse, symmetric_hamming};
+    use super::{calculate_diversity, distinct_solutions, select_diverse, symmetric_hamming};
+    use crate::errors::ValidationError;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn distinct_solutions_merges_identical_and_flipped_rows() {
+        let a = [1, -1, 1, 1];
+        let b = [1, 1, -1, -1];
+        let rows = [a, b, a, [-1, 1, -1, -1], b];
+        // Equal energies: ties go to the first occurrence.
+        assert_eq!(distinct_solutions(&rows, &[5, 5, 5, 5, 5]).unwrap(), [0, 1]);
+    }
+
+    #[test]
+    fn distinct_solutions_keeps_the_lowest_energy_member_of_a_flip_class() {
+        // With h != 0 a row and its flip have different energies; the flip of
+        // `a` is the better one here and must be the kept member.
+        let a = [1, -1, 1, 1];
+        let flipped = [-1, 1, -1, -1];
+        let other = [1, 1, 1, 1];
+        let kept = distinct_solutions(&[a, other, flipped], &[-10, -5, -30]).unwrap();
+        assert_eq!(kept, [1, 2]);
+    }
+
+    #[test]
+    fn distinct_solutions_semantics_do_not_depend_on_row_order() {
+        let rows: [[i8; 3]; 5] = [[1, 1, 1], [-1, -1, -1], [1, -1, 1], [-1, 1, -1], [1, 1, -1]];
+        let energies = [-3, -4, -1, -2, -6];
+        // The semantic result: each class's kept (row, energy), up to order.
+        let semantic = |rows: &[[i8; 3]], energies: &[i64]| {
+            let mut kept: Vec<([i8; 3], i64)> = distinct_solutions(rows, energies)
+                .unwrap()
+                .into_iter()
+                .map(|i| (rows[i], energies[i]))
+                .collect();
+            kept.sort();
+            kept
+        };
+        let forward = semantic(&rows, &energies);
+        assert_eq!(forward.len(), 3);
+        let mut rev_rows = rows;
+        rev_rows.reverse();
+        let mut rev_energies = energies;
+        rev_energies.reverse();
+        assert_eq!(semantic(&rev_rows, &rev_energies), forward);
+        let kept_rows: Vec<[i8; 3]> = forward.iter().map(|(row, _)| *row).collect();
+        assert_eq!(
+            calculate_diversity(&kept_rows).unwrap(),
+            calculate_diversity(
+                &semantic(&rev_rows, &rev_energies)
+                    .iter()
+                    .map(|(row, _)| *row)
+                    .collect::<Vec<_>>()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn distinct_solutions_rejects_mismatched_energies() {
+        assert_eq!(
+            distinct_solutions(&[[1, 1]], &[]),
+            Err(ValidationError::FieldLengthMismatch {
+                expected: 1,
+                actual: 0
+            })
+        );
+        assert_eq!(
+            distinct_solutions::<[i8; 2]>(&[], &[]).unwrap(),
+            Vec::<usize>::new()
+        );
+    }
 
     #[test]
     fn symmetric_hamming_respects_global_spin_flip() {

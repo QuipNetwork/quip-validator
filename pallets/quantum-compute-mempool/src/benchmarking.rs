@@ -105,17 +105,29 @@ fn params_with_dimensions<T: Config>(
     }
 }
 
-fn solutions_with_dimensions<T: Config>(node_count: u32, solution_count: u32) -> SolutionsOf<T> {
+/// `solution_count` rows of `node_count` spins that are pairwise distinct
+/// answers (W1-004) whenever enough spins exist: spin 0 is `first_spin` in every
+/// row, so no row is a global flip of another, and spin `i >= 1` is negated when
+/// bit `i - 1` of the row index is set. The sets for `first_spin = 1` and `-1`
+/// are exact negations of each other, row by row.
+fn distinct_rows<T: Config>(
+    node_count: u32,
+    solution_count: u32,
+    first_spin: i8,
+) -> SolutionsOf<T> {
     bounded(
         (0..solution_count)
             .map(|solution_index| {
                 bounded(
                     (0..node_count)
                         .map(|node_index| {
-                            if (node_index + solution_index) % 3 == 0 {
-                                -1
+                            let flipped = node_index >= 1
+                                && node_index <= 32
+                                && (solution_index >> (node_index - 1)) & 1 == 1;
+                            if flipped {
+                                -first_spin
                             } else {
-                                1
+                                first_spin
                             }
                         })
                         .collect(),
@@ -123,6 +135,22 @@ fn solutions_with_dimensions<T: Config>(node_count: u32, solution_count: u32) ->
             })
             .collect(),
     )
+}
+
+/// The worst case for the W1-004 dedupe: every row a distinct answer.
+fn solutions_with_dimensions<T: Config>(node_count: u32, solution_count: u32) -> SolutionsOf<T> {
+    distinct_rows::<T>(node_count, solution_count, 1)
+}
+
+/// How many distinct answers `distinct_rows` can hold: `node_count - 1` free
+/// spins give at most `2^(node_count - 1)` flip classes.
+fn achievable_distinct(node_count: u32, solution_count: u32) -> u32 {
+    let free = node_count.saturating_sub(1);
+    if free >= 32 {
+        solution_count
+    } else {
+        solution_count.min(1u32 << free)
+    }
 }
 
 fn register_spec_for<T: Config>(builder: &T::AccountId) -> T::Hash {
@@ -312,9 +340,10 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
     let proposer: T::AccountId = whitelisted_caller();
     let solver: T::AccountId = account("solver", 0, 0);
     register_solver_for::<T>(&solver);
-    let mut params = params_with_dimensions::<T>(n, e, Some(s));
-    // An isolated local field makes all-minus strictly worse than all-plus
-    // at every dimension, without relying on a fabricated stored score.
+    let mut params = params_with_dimensions::<T>(n, e, Some(achievable_distinct(n, s)));
+    // An isolated local field makes every first-spin-minus row strictly worse
+    // than its negation (the first-spin-plus row) at every dimension, without
+    // relying on a fabricated stored score.
     params.h_values[0] = -1_000;
     let order_id = propose_order_for::<T>(
         &proposer,
@@ -333,7 +362,7 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
     assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
         RawOrigin::Signed(solver.clone()).into(),
         order_id,
-        bounded(vec![bounded(vec![-1; n as usize]); s as usize]),
+        distinct_rows::<T>(n, s, -1),
         payee,
     )
     .is_ok());
@@ -460,7 +489,12 @@ mod benchmarks {
         let proposer: T::AccountId = whitelisted_caller();
         let solver: T::AccountId = account("solver", 0, 0);
         register_solver_for::<T>(&solver);
-        let min_solutions = if s > 1 { s - 1 } else { 1 };
+        // Only distinct answers count (W1-004); cap at what n spins can hold.
+        let min_solutions = s
+            .saturating_sub(1)
+            .max(1)
+            .min(achievable_distinct(n, s))
+            .max(1);
         let order_id = propose_order_for::<T>(
             &proposer,
             params_with_dimensions::<T>(n, e, Some(min_solutions)),
@@ -539,7 +573,12 @@ mod benchmarks {
         let proposer: T::AccountId = whitelisted_caller();
         let solver: T::AccountId = account("solver", 0, 0);
         register_solver_for::<T>(&solver);
-        let min_solutions = if s > 1 { s - 1 } else { 1 };
+        // Only distinct answers count (W1-004); cap at what n spins can hold.
+        let min_solutions = s
+            .saturating_sub(1)
+            .max(1)
+            .min(achievable_distinct(n, s))
+            .max(1);
         let order_id = propose_order_for::<T>(
             &proposer,
             params_with_dimensions::<T>(n, e, Some(min_solutions)),
@@ -598,7 +637,7 @@ mod benchmarks {
         QuantumComputeMempool::submit_solution_with_payee(
             RawOrigin::Signed(solver.clone()),
             order_id,
-            bounded(vec![bounded(vec![1; n as usize]); s as usize]),
+            distinct_rows::<T>(n, s, 1),
             payee,
         );
 
@@ -625,7 +664,7 @@ mod benchmarks {
         QuantumComputeMempool::submit_solution(
             RawOrigin::Signed(solver.clone()),
             order_id,
-            bounded(vec![bounded(vec![1; n as usize]); s as usize]),
+            distinct_rows::<T>(n, s, 1),
         );
 
         assert!(

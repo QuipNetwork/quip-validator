@@ -192,7 +192,8 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, energy_of_solution_indexed, TopologyIndex, ValidationError,
+        calculate_diversity, distinct_solutions, energy_of_solution_indexed, TopologyIndex,
+        ValidationError,
     };
     use sp_runtime::traits::{Hash as _, One, SaturatedConversion, Saturating, Zero};
 
@@ -1312,8 +1313,7 @@ pub mod pallet {
             );
 
             let mut valid_solutions: Vec<Vec<i8>> = Vec::new();
-            let mut best_energy = i64::MAX;
-            let mut best_index = 0;
+            let mut valid_energies: Vec<i64> = Vec::new();
 
             for solution in &transformed_solutions {
                 let energy = energy_of_solution_indexed(
@@ -1330,14 +1330,35 @@ pub mod pallet {
                     }
                 }
 
-                if energy < best_energy {
-                    best_energy = energy;
-                    best_index = valid_solutions.len();
-                }
                 valid_solutions.push(solution.as_slice().to_vec());
+                valid_energies.push(energy);
             }
 
             ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
+
+            // W1-004: only distinct answers count. Rows that are identical or
+            // global spin flips of each other are one answer (owner O-B3,
+            // regardless of energy); each class keeps its lowest-energy
+            // member. Everything below -- best answer, solution count,
+            // selection and diversity -- works on this distinct set.
+            let distinct = distinct_solutions(&valid_solutions, &valid_energies)
+                .map_err(Self::map_validation_error)?;
+            let valid_energies: Vec<i64> = distinct
+                .iter()
+                .map(|&index| valid_energies[index])
+                .collect();
+            let valid_solutions: Vec<Vec<i8>> = distinct
+                .into_iter()
+                .map(|index| core::mem::take(&mut valid_solutions[index]))
+                .collect();
+            let mut best_energy = i64::MAX;
+            let mut best_index = 0;
+            for (index, &energy) in valid_energies.iter().enumerate() {
+                if energy < best_energy {
+                    best_energy = energy;
+                    best_index = index;
+                }
+            }
 
             let previous = OrderSolutions::<T>::get(order_id, &solver);
             // solution_count increments only on the first accepted submission
