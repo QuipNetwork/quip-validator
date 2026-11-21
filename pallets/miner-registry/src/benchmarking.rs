@@ -262,7 +262,7 @@ mod benchmarks {
         };
         for i in 0..n {
             let who: T::AccountId = account("miner", i, 0);
-            ParticipantsByQBlock::<T>::insert(qblock_id, &who, record.clone());
+            ParticipantsByQBlock::<T>::insert(qblock_id, &who, record);
         }
         ParticipantCountByQBlock::<T>::insert(qblock_id, n);
         PruneCursor::<T>::put(qblock_id);
