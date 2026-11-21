@@ -97,6 +97,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `a` is `[3, 96]`.
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn register_topology(n: u32, e: u32, _a: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
@@ -116,6 +117,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::MineableTopologies` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::DefaultTopology` (r:0 w:1)
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn set_default_topology() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -129,6 +131,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::Difficulties` (r:0 w:1)
 	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn set_difficulty() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `177`
@@ -142,6 +145,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::TopologyCurveC` (r:0 w:1)
 	/// Proof: `QuantumPow::TopologyCurveC` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn set_topology_curve() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `373`
@@ -174,6 +178,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 32]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-007): predates the distinct-answer dedupe and the TopologySummary read; regenerate (benchmark-weights job).
 	fn submit_proof(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `434 + e * (8 ±0) + n * (4 ±0)`
@@ -193,6 +198,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumPow::MineableTopologies` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::DefaultTopology` (r:1 w:0)
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn add_mineable_topology() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `270`
@@ -250,6 +256,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `a` is `[3, 96]`.
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn register_topology(n: u32, e: u32, _a: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `6`
@@ -269,6 +276,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::MineableTopologies` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::DefaultTopology` (r:0 w:1)
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn set_default_topology() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -282,6 +290,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::Difficulties` (r:0 w:1)
 	/// Proof: `QuantumPow::Difficulties` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn set_difficulty() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `177`
@@ -295,6 +304,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::RegisteredTopologies` (`max_values`: None, `max_size`: Some(420448), added: 422923, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::TopologyCurveC` (r:0 w:1)
 	/// Proof: `QuantumPow::TopologyCurveC` (`max_values`: None, `max_size`: Some(60), added: 2535, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn set_topology_curve() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `373`
@@ -327,6 +337,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 32]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-007): predates the distinct-answer dedupe and the TopologySummary read; regenerate (benchmark-weights job).
 	fn submit_proof(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `434 + e * (8 ±0) + n * (4 ±0)`
@@ -346,6 +357,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumPow::MineableTopologies` (`max_values`: None, `max_size`: Some(48), added: 2523, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumPow::DefaultTopology` (r:1 w:0)
 	/// Proof: `QuantumPow::DefaultTopology` (`max_values`: Some(1), `max_size`: Some(32), added: 527, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-007): predates the TopologySummary reads/writes; regenerate (benchmark-weights job).
 	fn add_mineable_topology() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `270`

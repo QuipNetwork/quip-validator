@@ -126,6 +126,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn propose_job(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -158,6 +159,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `1962 + e * (12 ±0) + n * (8 ±0)`
@@ -189,6 +191,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn propose_job_with_payee_requirement(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -221,6 +224,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution_with_payee(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `2015 + e * (12 ±0) + n * (8 ±0)`
@@ -251,6 +255,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution_replacement(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -281,6 +286,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution_clear_payee(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -308,6 +314,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn claim_reward() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `646885`
@@ -331,6 +338,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn claim_reward_dust() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `646885`
@@ -346,6 +354,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn reclaim_order() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `640592`
@@ -379,6 +388,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:8)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
 	/// The range of component `k` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W1-012): predates clearing the OrderAnswers index; regenerate (benchmark-weights job).
 	fn finalise_expired_orders(k: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `468 + k * (641784 ±0)`
@@ -397,6 +407,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// UNMEASURED: current handwritten cleanup bound at the maximum bucket visits.
 	/// Includes all 32 solution payloads per order. Replace with reference-machine
 	/// measurements through `benchmark-weights` before release.
+	// BENCHMARK-PLACEHOLDER(W1-012): predates clearing the OrderAnswers index; regenerate (benchmark-weights job).
 	fn prune_closed_orders(k: u32) -> Weight {
 		let k = u64::from(k);
 		let buckets = u64::from(crate::types::MAX_PRUNED_ORDERS_PER_BLOCK);
@@ -461,6 +472,7 @@ impl WeightInfo for () {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn propose_job(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -493,6 +505,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `1962 + e * (12 ±0) + n * (8 ±0)`
@@ -524,6 +537,7 @@ impl WeightInfo for () {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn propose_job_with_payee_requirement(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -556,6 +570,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution_with_payee(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `2015 + e * (12 ±0) + n * (8 ±0)`
@@ -586,6 +601,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution_replacement(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -616,6 +632,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W1-004/W1-012): predates the distinct-answer dedupe and the OrderAnswers index; regenerate (benchmark-weights job).
 	fn submit_solution_clear_payee(_n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -643,6 +660,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn claim_reward() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `646885`
@@ -666,6 +684,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn claim_reward_dust() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `646885`
@@ -681,6 +700,7 @@ impl WeightInfo for () {
 	/// Proof: `QuantumComputeMempool::ProposerOrders` (`max_values`: None, `max_size`: Some(305), added: 2780, mode: `MaxEncodedLen`)
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:1)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
+	// BENCHMARK-PLACEHOLDER(W1-006): predates the per-order escrow transfer; regenerate (benchmark-weights job).
 	fn reclaim_order() -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `640592`
@@ -714,6 +734,7 @@ impl WeightInfo for () {
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:8)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
 	/// The range of component `k` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W1-012): predates clearing the OrderAnswers index; regenerate (benchmark-weights job).
 	fn finalise_expired_orders(k: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `468 + k * (641784 ±0)`
@@ -732,6 +753,7 @@ impl WeightInfo for () {
 	/// UNMEASURED: current handwritten cleanup bound at the maximum bucket visits.
 	/// Includes all 32 solution payloads per order. Replace with reference-machine
 	/// measurements through `benchmark-weights` before release.
+	// BENCHMARK-PLACEHOLDER(W1-012): predates clearing the OrderAnswers index; regenerate (benchmark-weights job).
 	fn prune_closed_orders(k: u32) -> Weight {
 		let k = u64::from(k);
 		let buckets = u64::from(crate::types::MAX_PRUNED_ORDERS_PER_BLOCK);
