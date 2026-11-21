@@ -41,6 +41,26 @@ set -euo pipefail
 # from a prune that was killed is deleted at the next scan, and only on an
 # exact name match inside a numeric-layout slot.
 #
+# Merging with main (c63fd2f): this script, scripts/ci-cache-lock.sh and the
+# .cargo-host-cache template replace main's. The lock is the same: `.in-use`,
+# shared with `--wait 1200` for jobs, exclusive without waiting for the prune.
+# The sweep is NOT a superset of main's: main sweeps every free slot to the
+# running job's ceiling, this one sweeps only the job's OWN slot (rule 1), on a
+# per-slot interval. That is deliberate -- do not restore main's all-slots
+# sweep, which would shrink cargo-test's 140 GiB slot to another job's
+# ceiling. Main's node-build and xqvm-onchain-test cache jobs need their own
+# CI_CACHE_MAX_SIZE when they come under this template.
+#
+# Physical containment: names alone prove nothing, because `mv`, `rm -rf` and
+# cargo-sweep follow symlinks in the INTERMEDIATE components of a path. Before
+# this script writes, sweeps, renames or deletes anything in a slot it checks
+# that neither the numeric directory nor the slot directory is a symlink and
+# that the slot's `realpath -e` is exactly <realpath of the cache root>/<n>/<slot>
+# (physically_contained). The check is repeated under the exclusive lock right
+# before an eviction's rename, and again before a trash delete. A slot that
+# fails it is skipped, logged and counted as a failure; nothing aborts the run.
+# If the cache root itself cannot be resolved, nothing is swept or removed.
+#
 # Three rules: two for two kinds of garbage, one for the volume as a whole.
 #
 #   1. Stale artifacts inside the job's OWN slot. `cargo sweep --maxsize`
@@ -303,12 +323,37 @@ release() {
   exec {held_fd}>&-
 }
 
+# The cache root, resolved once. Empty when it cannot be resolved: then
+# physically_contained fails for everything and nothing is swept or removed.
+root_real="$(realpath -e "$cache_root" 2>/dev/null || true)"
+if [[ -z "$root_real" ]]; then
+  log "cannot resolve $cache_root with realpath -e; nothing will be swept or removed"
+fi
+
+# physically_contained SLOT: SLOT is <cache root>/<digits>/<name>, neither the
+# numeric directory nor SLOT itself is a symlink, and SLOT's real path is
+# exactly <real cache root>/<digits>/<name>. Logs and returns 1 otherwise.
+physically_contained() {
+  local slot="$1" n_dir real
+  n_dir="$(dirname "$slot")"
+  if [[ -n "$root_real" && "$(dirname "$n_dir")" == "$cache_root" &&
+    "$(basename "$n_dir")" =~ ^[0-9]+$ && ! -L "$n_dir" && ! -L "$slot" ]] &&
+    real="$(realpath -e "$slot" 2>/dev/null)" &&
+    [[ "$real" == "$root_real/$(basename "$n_dir")/$(basename "$slot")" ]]; then
+    return 0
+  fi
+  log "$slot is not physically inside $cache_root/<n>/<slot> (symlink or unresolvable); skipping it" >&2
+  return 1
+}
+
 # evict_target SLOT: with SLOT's exclusive lock held, rename SLOT/target to
 # SLOT/.prune-trash.<pid>.<epoch> (same directory: atomic). The slot directory
-# and its .in-use are never touched. Prints the trash path; on failure logs
-# and returns 1.
+# and its .in-use are never touched. Re-checks physical containment first,
+# under the lock, so a swap between the scan and the lock is caught. Prints the
+# trash path; on failure logs and returns 1.
 evict_target() {
   local dest
+  physically_contained "$1" || return 1
   dest="$1/$trash_prefix.$$.$(date +%s)"
   if ! mv "$1/target" "$dest"; then
     log "cannot move $1/target aside; not evicting it" >&2
@@ -330,6 +375,11 @@ is_trash() {
 
 # delete_trashed PATH: delete an evicted target/ (after its lock was released).
 delete_trashed() {
+  if ! is_trash "$1" || ! physically_contained "$(dirname "$1")"; then
+    log "not deleting $1: not an evicted target/ physically inside a slot"
+    failed=1
+    return 0
+  fi
   rm -rf "$1" || {
     log "could not delete $1 (the next scan retries)"
     failed=1
@@ -344,10 +394,20 @@ report_volume
 # --- Rule 1: the job's own slot -------------------------------------------
 if [[ -n "${CARGO_TARGET_DIR:-}" && -d "$CARGO_TARGET_DIR" ]]; then
   own_slot="$(cd "$CARGO_TARGET_DIR/.." && pwd)"
+  # cargo-sweep and `touch` follow symlinks: a slot or target/ that is one is
+  # neither stamped nor swept.
+  if ! physically_contained "$own_slot" || [[ -L "$CARGO_TARGET_DIR" ]]; then
+    log "own slot $own_slot is not a physical slot; not stamping or sweeping it"
+    failed=1
+    sweep=0
+    own_slot_ok=0
+  else
+    own_slot_ok=1
+  fi
   # Mark the slot this job just used. Directory modification times cannot
   # stand in for this: creating a file under target/debug does not touch the
   # slot directory above it, so an actively built slot still looks untouched.
-  ((dry_run)) || touch "$CARGO_TARGET_DIR/$stamp_name"
+  ((dry_run || ! own_slot_ok)) || touch "$CARGO_TARGET_DIR/$stamp_name"
 
   if ((sweep)); then
     if [[ -f "$own_slot/$sweep_name" ]] && ! older_than "$own_slot/$sweep_name" "$interval"; then
@@ -384,8 +444,12 @@ if flock --nonblock "$scan_fd"; then
   # exact trash names inside numeric-layout slots only.
   if ((dry_run == 0)); then
     for leftover in "$cache_root"/*/*/"$trash_prefix".*; do
-      [[ -e "$leftover" ]] || continue
+      [[ -e "$leftover" || -L "$leftover" ]] || continue
       is_trash "$leftover" || continue
+      if ! physically_contained "$(dirname "$leftover")"; then
+        failed=1
+        continue
+      fi
       log "deleting leftover $leftover"
       delete_trashed "$leftover"
     done
@@ -409,6 +473,12 @@ else
     # and must never be swept or removed.
     [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]] || continue
     [[ "$(cd "$slot" && pwd)" == "$own_slot" ]] && continue
+    # Before any stamp, lock file or eviction: opening `.in-use` would itself
+    # create a file through a symlinked slot.
+    if ! physically_contained "$slot"; then
+      failed=1
+      continue
+    fi
     target="$slot/target"
 
     # A slot with no target/ has nothing to evict.
@@ -494,6 +564,10 @@ if ((budget_given)) && ((have_scan_lock)); then
         )
         removed=""
         for slot in "${candidates[@]}"; do
+          if ! physically_contained "$slot"; then
+            failed=1
+            continue
+          fi
           # Judge each candidate on its own stamp: the list was sorted before
           # any lock was taken, and a job may have stamped since.
           if ! older_than "$slot/target/$stamp_name" "$budget_min_idle"; then

@@ -638,6 +638,95 @@ check "main waiter (rule 3): a later prune sees the slot as held" \
   'kept 2/old && blogged "$broot/2/old is in use (lock held), skipping"'
 wait "$waiter_pid" || true
 
+# --- Physical containment (item 9) -------------------------------------------
+# `mv`, `rm -rf` and cargo-sweep follow symlinks in intermediate path
+# components, so names alone prove nothing. Slot-shaped trees OUTSIDE the
+# physical <root>/<n>/<slot> -- with a stale target/ and an exact trash name
+# -- are reached through a symlinked numeric dir, a symlinked slot, and a slot
+# symlinked into CARGO_HOME. Nothing there may be renamed, deleted or created;
+# the skip is logged; normal slots still prune.
+outside="$tmp/outside"
+outside_shapes() { # DIR: a slot-shaped tree with a stale target/ and leftover trash
+  mkdir -p "$1/target" "$1/.prune-trash.123.1700000000"
+  echo 1 >"$1/target/keep"
+  echo 1 >"$1/.prune-trash.123.1700000000/keep"
+  touch -d "@$(($(date +%s) - 30 * day))" "$1/target/.last-used"
+}
+untouched() { # DIR: the outside tree is exactly as planted, and gained no lock file
+  [[ -e "$1/target/keep" && -e "$1/.prune-trash.123.1700000000/keep" && ! -e "$1/.in-use" ]]
+}
+contained_volume() {
+  budget_volume
+  rm -rf "$outside"
+  mkdir -p "$outside"
+  bslot 8 stale $((30 * day)) 10000 # a normal stale slot, which must still be evicted
+  touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune" # rule 2 due
+}
+
+contained_volume
+outside_shapes "$outside/job"
+ln -s "$outside" "$broot/9"
+brun --volume-budget 10
+check "containment: a symlinked numeric dir is never entered" 'untouched "$outside/job"'
+check "containment: ... and the skip is logged" \
+  'grep -q "$broot/9/job is not physically inside" "$tmp/budget.log"'
+check "containment: other slots still prune" 'evicted 8/stale'
+
+contained_volume
+outside_shapes "$outside/slot"
+mkdir -p "$broot/9"
+ln -s "$outside/slot" "$broot/9/job"
+brun --volume-budget 10
+check "containment: a symlinked slot is never entered" 'untouched "$outside/slot"'
+check "containment: ... and the skip is logged" \
+  'grep -q "$broot/9/job is not physically inside" "$tmp/budget.log"'
+check "containment: other slots still prune (symlinked slot)" 'evicted 8/stale'
+
+contained_volume
+mkdir -p "$broot/cargo-home/.prune-trash.1.2" "$broot/9"
+echo 1 >"$broot/cargo-home/.prune-trash.1.2/keep"
+ln -s "$broot/cargo-home" "$broot/9/job"
+brun --volume-budget 10
+check "containment: a slot symlinked into CARGO_HOME deletes nothing there" \
+  '[[ -e "$broot/cargo-home/.prune-trash.1.2/keep" && -d "$broot/cargo-home/registry" ]]'
+check "containment: ... and creates no lock file there" '[[ ! -e "$broot/cargo-home/.in-use" ]]'
+check "containment: other slots still prune (CARGO_HOME link)" 'evicted 8/stale'
+
+# A swap between the scan and the lock: a flock wrapper replaces a real stale
+# slot with a symlink to an outside tree just before the prune locks it. The
+# pre-lock check saw a real slot; only the re-check under the lock can catch it.
+swapbin="$tmp/swapbin"
+mkdir -p "$swapbin"
+cat >"$swapbin/flock" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" --exclusive "* && -e "$tmp/swap.spec" ]]; then
+  read -r slot dest <"$tmp/swap.spec"
+  if [[ -d "\$slot" && ! -L "\$slot" ]]; then
+    "$real_mv" "\$slot" "$tmp/swapped.\$\$"
+    ln -s "\$dest" "\$slot"
+  fi
+fi
+exec "$real_flock" "\$@"
+EOF
+chmod +x "$swapbin/flock"
+contained_volume
+# Without the held slot and 8/stale (whose locks the scan would take first),
+# the swap lands on 8/swap's own lock: after its pre-lock check, before the
+# re-check under the lock.
+release "${holders[-1]}"
+rm -rf "$broot/4/held" "$broot/8/stale"
+bslot 8 swap $((30 * day)) 10000
+outside_shapes "$outside/swap"
+echo "$broot/8/swap $outside/swap" >"$tmp/swap.spec"
+bpath="$swapbin:"
+brun
+bpath=""
+rm -f "$tmp/swap.spec"
+check "containment: a slot swapped for a symlink between scan and lock is not evicted" \
+  'untouched_target() { [[ -e "$outside/swap/target/keep" ]]; }; untouched_target'
+check "containment: ... the re-check under the lock logs it" \
+  'grep -q "$broot/8/swap is not physically inside" "$tmp/budget.log"'
+
 # --- The template's lock step (scripts/ci-cache-lock.sh) ----------------------
 lroot="$tmp/lock/ci-cache"
 lockjob() { # lockjob SLOT [ENV...] -- run the lock step and a short job body
