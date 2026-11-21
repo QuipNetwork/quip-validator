@@ -103,7 +103,7 @@ pub fn generate_fixture() -> Value {
             let decoded =
                 unpack_solution(&packed, NODES.len(), &spin_stored).expect("fixture unpacks");
             let spins = spin_signs(&decoded).expect("fixture spins are nonzero");
-            let energy = energy_of_solution_indexed(&spins, &h, &EDGES, &j, &index)
+            let energy = energy_of_solution_indexed(&spins, &h, &j, &index)
                 .expect("fixture energy computes");
             json!({
                 "packed": hex(&packed),

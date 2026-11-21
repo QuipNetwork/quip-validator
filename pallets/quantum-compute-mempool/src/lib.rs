@@ -1316,14 +1316,9 @@ pub mod pallet {
             let mut valid_energies: Vec<i64> = Vec::new();
 
             for solution in &transformed_solutions {
-                let energy = energy_of_solution_indexed(
-                    solution.as_slice(),
-                    h_values,
-                    edges,
-                    j_values,
-                    &topology,
-                )
-                .map_err(Self::map_validation_error)?;
+                let energy =
+                    energy_of_solution_indexed(solution.as_slice(), h_values, j_values, &topology)
+                        .map_err(Self::map_validation_error)?;
                 if let Some(max_energy) = order.ising_params.max_energy_milli {
                     if energy > max_energy {
                         continue;

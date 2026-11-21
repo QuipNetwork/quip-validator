@@ -1375,22 +1375,17 @@ pub mod pallet {
 
             let mut energies = Vec::with_capacity(decoded.len());
             for spins in decoded.iter() {
-                let energy = energy_of_solution_indexed(
-                    spins,
-                    h,
-                    topology.edges.as_slice(),
-                    j,
-                    topology_index,
-                )
-                .map_err(|err| match err {
-                    quantum_validation::ValidationError::SolutionLengthMismatch { .. } => {
-                        DispatchError::from(Error::<T>::SolutionLengthMismatch)
-                    }
-                    quantum_validation::ValidationError::InvalidSpinValue { .. } => {
-                        DispatchError::from(Error::<T>::InvalidSpinValues)
-                    }
-                    _ => DispatchError::from(Error::<T>::InvalidTopology),
-                })?;
+                let energy = energy_of_solution_indexed(spins, h, j, topology_index).map_err(
+                    |err| match err {
+                        quantum_validation::ValidationError::SolutionLengthMismatch { .. } => {
+                            DispatchError::from(Error::<T>::SolutionLengthMismatch)
+                        }
+                        quantum_validation::ValidationError::InvalidSpinValue { .. } => {
+                            DispatchError::from(Error::<T>::InvalidSpinValues)
+                        }
+                        _ => DispatchError::from(Error::<T>::InvalidTopology),
+                    },
+                )?;
                 energies.push(energy);
             }
 

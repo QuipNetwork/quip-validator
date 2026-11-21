@@ -44,9 +44,14 @@ pub(crate) fn ensure_valid_spins(spins: &[i8]) -> Result<(), ValidationError> {
 /// Building this once turns repeated edge endpoint lookups from linear scans
 /// over `nodes` into logarithmic map lookups. Callers scoring multiple
 /// solutions should reuse the same index for the whole solution set.
+///
+/// The index also owns the topology's edges, as resolved endpoint positions
+/// (W1-010): energy is computed from these, so a caller cannot score against an
+/// edge list other than the one the index was validated with.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologyIndex {
     positions: BTreeMap<u32, usize>,
+    edge_positions: Vec<(usize, usize)>,
 }
 
 impl TopologyIndex {
@@ -59,24 +64,35 @@ impl TopologyIndex {
             }
         }
 
+        let mut edge_positions = Vec::with_capacity(edges.len());
         for &(u, v) in edges {
-            if !positions.contains_key(&u) {
-                return Err(ValidationError::UnknownNodeInEdge { node: u });
-            }
-            if !positions.contains_key(&v) {
-                return Err(ValidationError::UnknownNodeInEdge { node: v });
-            }
+            let u_pos = *positions
+                .get(&u)
+                .ok_or(ValidationError::UnknownNodeInEdge { node: u })?;
+            let v_pos = *positions
+                .get(&v)
+                .ok_or(ValidationError::UnknownNodeInEdge { node: v })?;
+            edge_positions.push((u_pos, v_pos));
         }
 
-        Ok(Self { positions })
+        Ok(Self {
+            positions,
+            edge_positions,
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
         self.positions.len()
     }
 
-    pub(crate) fn position(&self, node: u32) -> Option<usize> {
-        self.positions.get(&node).copied()
+    /// Number of edges the index was built with.
+    pub fn edge_count(&self) -> usize {
+        self.edge_positions.len()
+    }
+
+    /// Each edge's endpoint positions in solution order, in edge order.
+    pub(crate) fn edge_positions(&self) -> &[(usize, usize)] {
+        &self.edge_positions
     }
 }
 

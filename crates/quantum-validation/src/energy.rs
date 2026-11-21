@@ -36,23 +36,25 @@ pub fn energy_of_solution(
     j: &[MilliValue],
     nodes: &[u32],
 ) -> Result<MilliEnergy, ValidationError> {
-    validate_shape_lengths(solution, h, edges, j, nodes.len())?;
+    validate_shape_lengths(solution, h, edges.len(), j, nodes.len())?;
     let topology = TopologyIndex::new(nodes, edges)?;
-    energy_of_solution_indexed(solution, h, edges, j, &topology)
+    energy_of_solution_indexed(solution, h, j, &topology)
 }
 
 /// Compute Ising energy using a topology index validated once by the caller.
 ///
 /// This is equivalent to [`energy_of_solution`], but avoids rebuilding the
-/// node-id index when scoring multiple solutions for the same topology.
+/// node-id index when scoring multiple solutions for the same topology. The
+/// edges are the ones the index was built with (W1-010): `j[k]` is the
+/// coupling of the index's `k`-th edge, so there is no separate edge slice that
+/// could disagree with the index.
 pub fn energy_of_solution_indexed(
     solution: &[i8],
     h: &[MilliValue],
-    edges: &[(u32, u32)],
     j: &[MilliValue],
     topology: &TopologyIndex,
 ) -> Result<MilliEnergy, ValidationError> {
-    validate_shape_lengths(solution, h, edges, j, topology.len())?;
+    validate_shape_lengths(solution, h, topology.edge_count(), j, topology.len())?;
     ensure_valid_spins(solution)?;
 
     let mut energy = 0_i64;
@@ -63,13 +65,7 @@ pub fn energy_of_solution_indexed(
             .ok_or(ValidationError::ArithmeticOverflow)?;
     }
 
-    for (&(u, v), &coupling) in edges.iter().zip(j.iter()) {
-        let u_pos = topology
-            .position(u)
-            .ok_or(ValidationError::UnknownNodeInEdge { node: u })?;
-        let v_pos = topology
-            .position(v)
-            .ok_or(ValidationError::UnknownNodeInEdge { node: v })?;
+    for (&(u_pos, v_pos), &coupling) in topology.edge_positions().iter().zip(j.iter()) {
         energy = energy
             .checked_add(
                 i64::from(coupling) * i64::from(solution[u_pos]) * i64::from(solution[v_pos]),
@@ -179,7 +175,7 @@ fn discrete_mean_abs(min: i64, max: i64) -> Result<f64, ValidationError> {
 fn validate_shape_lengths(
     solution: &[i8],
     h: &[MilliValue],
-    edges: &[(u32, u32)],
+    edge_count: usize,
     j: &[MilliValue],
     node_count: usize,
 ) -> Result<(), ValidationError> {
@@ -201,9 +197,9 @@ fn validate_shape_lengths(
         });
     }
 
-    if edges.len() != j.len() {
+    if edge_count != j.len() {
         return Err(ValidationError::EdgeWeightLengthMismatch {
-            edges: edges.len(),
+            edges: edge_count,
             weights: j.len(),
         });
     }
@@ -246,7 +242,7 @@ mod tests {
         let topology = TopologyIndex::new(&nodes, &edges).unwrap();
 
         assert_eq!(
-            energy_of_solution_indexed(&solution, &h, &edges, &j, &topology).unwrap(),
+            energy_of_solution_indexed(&solution, &h, &j, &topology).unwrap(),
             energy_of_solution(&solution, &h, &edges, &j, &nodes).unwrap(),
         );
     }
@@ -369,5 +365,92 @@ mod tests {
         let j = set_spec(&[-1000, 1000]);
         assert_eq!(expected_gse(0, 100, 0.75, &h, &j).unwrap(), 0);
         assert_eq!(expected_gse(100, 0, 0.75, &h, &j).unwrap(), 0);
+    }
+
+    /// W1-010 property test: on random topologies with scattered, shuffled
+    /// node ids and random edges, the indexed energy equals an independent
+    /// reference that resolves every endpoint by a linear scan of `nodes`.
+    #[test]
+    fn indexed_energy_matches_a_linear_scan_reference_on_scattered_ids() {
+        use crate::validation::TopologyIndex;
+        use alloc::vec::Vec;
+
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+            fn below(&mut self, n: u64) -> u64 {
+                self.next() % n
+            }
+        }
+
+        fn reference(
+            solution: &[i8],
+            h: &[i32],
+            edges: &[(u32, u32)],
+            j: &[i32],
+            nodes: &[u32],
+        ) -> i64 {
+            let at = |node: u32| nodes.iter().position(|&n| n == node).unwrap();
+            let field: i64 = h
+                .iter()
+                .zip(solution)
+                .map(|(&f, &s)| i64::from(f) * i64::from(s))
+                .sum();
+            let coupling: i64 = edges
+                .iter()
+                .zip(j)
+                .map(|(&(u, v), &c)| {
+                    i64::from(c) * i64::from(solution[at(u)]) * i64::from(solution[at(v)])
+                })
+                .sum();
+            field + coupling
+        }
+
+        let mut rng = Rng(0x5EED_1A55_0000_0010);
+        for _ in 0..500 {
+            let n = 2 + rng.below(40) as usize;
+            // Scattered ids: strictly increasing with random gaps, then shuffled
+            // so the solution order differs from id order.
+            let mut nodes: Vec<u32> = Vec::with_capacity(n);
+            let mut id = rng.below(1_000) as u32;
+            for _ in 0..n {
+                id += 1 + rng.below(10_000) as u32;
+                nodes.push(id);
+            }
+            for i in (1..n).rev() {
+                nodes.swap(i, rng.below(i as u64 + 1) as usize);
+            }
+            let e = 1 + rng.below(3 * n as u64) as usize;
+            let edges: Vec<(u32, u32)> = (0..e)
+                .map(|_| {
+                    let u = nodes[rng.below(n as u64) as usize];
+                    let mut v = nodes[rng.below(n as u64) as usize];
+                    if v == u {
+                        v = nodes[(nodes.iter().position(|&x| x == u).unwrap() + 1) % n];
+                    }
+                    (u, v)
+                })
+                .collect();
+            let h: Vec<i32> = (0..n).map(|_| rng.below(4_001) as i32 - 2_000).collect();
+            let j: Vec<i32> = (0..e).map(|_| rng.below(4_001) as i32 - 2_000).collect();
+            let solution: Vec<i8> = (0..n)
+                .map(|_| if rng.below(2) == 0 { 1 } else { -1 })
+                .collect();
+
+            let index = TopologyIndex::new(&nodes, &edges).unwrap();
+            assert_eq!(
+                energy_of_solution_indexed(&solution, &h, &j, &index).unwrap(),
+                reference(&solution, &h, &edges, &j, &nodes)
+            );
+            assert_eq!(
+                energy_of_solution(&solution, &h, &edges, &j, &nodes).unwrap(),
+                reference(&solution, &h, &edges, &j, &nodes)
+            );
+        }
     }
 }
