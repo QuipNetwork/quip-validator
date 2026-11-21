@@ -423,10 +423,21 @@ weights-staleness-check:
   timeout: 10m
   variables:
     GIT_DEPTH: "0"
+  # Yellow must keep meaning "stale". The scanner reports stale with exit 1, so
+  # only exit 1 is an allowed failure; anything else -- including the scanner's
+  # own self-test failing, which exits 3 below -- is a broken check and goes red.
+  allow_failure:
+    exit_codes: [1]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      allow_failure: true
   script:
+    # Prove the placeholder scan can still see a placeholder before trusting
+    # its verdict; a scan that always passes would otherwise stay green.
+    - |
+      if ! bash scripts/test-weights-staleness-placeholder.sh; then
+        echo "weights-staleness-check: the placeholder-scan self-test FAILED, so the scanner is broken and its verdict below cannot be trusted" >&2
+        exit 3
+      fi
     - ./scripts/check-weights-staleness.sh
 
 # Blocking release gate: no release ships a benchmark placeholder weight. A
