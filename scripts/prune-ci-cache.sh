@@ -18,6 +18,11 @@ set -euo pipefail
 # number of holders can share it; this script only ever takes it EXCLUSIVELY
 # and without waiting, so it can never touch a slot a job is using.
 #
+# The lock protects only jobs that run this .cargo-host-cache template. Until
+# it reaches main, jobs on main and other branches share the same slots
+# without taking it; for them the 14-day stamp (refreshed at job start by the
+# template's before_script, and at job end here) is the only protection.
+#
 # Two rules, for two kinds of garbage:
 #
 #   1. Stale artifacts inside the job's OWN slot. `cargo sweep --maxsize`
@@ -29,13 +34,15 @@ set -euo pipefail
 #      per CI_CACHE_INTERVAL per slot, and only if the exclusive lock is free
 #      (by after_script the job shell that held the shared lock has exited).
 #   2. Slots nothing uses any more: left by a renamed job, a reduced
-#      concurrency limit, or a job that died before cleaning up, including
-#      half-created slots with no target/. `--maxsize` never reclaims one,
-#      because an abandoned slot sits under the ceiling forever. A slot is
-#      removed whole only when BOTH its age exceeds CI_CACHE_ORPHAN_DAYS (the
-#      target/.last-used stamp each job refreshes; the slot directory's own
-#      mtime when it has no target/) AND the exclusive lock is free. Otherwise
-#      it is skipped and logged. This scan runs once per host per
+#      concurrency limit, or a job that died before cleaning up. `--maxsize`
+#      never reclaims one, because an abandoned slot sits under the ceiling
+#      forever. A slot is removed whole only when BOTH its age exceeds
+#      CI_CACHE_ORPHAN_DAYS (the target/.last-used stamp each job refreshes)
+#      AND the exclusive lock is free. Otherwise it is skipped and logged.
+#      A directory with no target/ is removed only if it carries one of this
+#      script's own markers (`.in-use.lock` or `.last-used`), aged by its own
+#      mtime: what this cache created is allow-listed, and anything unmarked
+#      is never touched. This scan runs once per host per
 #      CI_CACHE_INTERVAL and never two at once.
 #
 # A slot that has a target/ but no stamp predates the stamp and is
@@ -87,6 +94,12 @@ project_dir="${CI_CACHE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &&
 sweep=1
 if [[ ! -f "$project_dir/Cargo.toml" ]]; then
   echo "prune-ci-cache: no manifest at $project_dir, removing unused slots only" >&2
+  sweep=0
+fi
+# cargo-sweep may be missing (for example after a wiped CARGO_HOME/bin). That
+# must cost the sweep, never the job.
+if ((sweep)) && ! cargo sweep --version >/dev/null 2>&1; then
+  echo "prune-ci-cache: cargo-sweep is not available, skipping the own-slot sweep" >&2
   sweep=0
 fi
 
@@ -174,7 +187,13 @@ else
         continue
       fi
     else
-      # Half-created or abandoned: no target/, so no stamp to read.
+      # No target/: remove it only if this cache made it. A half-created slot
+      # carries the lock file the template's before_script opens; anything
+      # without one of our markers is not ours and is left alone.
+      if [[ ! -e "$slot/$lock_name" && ! -e "$slot/$stamp_name" ]]; then
+        log "leaving unmarked directory $slot alone"
+        continue
+      fi
       age_of="$slot"
     fi
 

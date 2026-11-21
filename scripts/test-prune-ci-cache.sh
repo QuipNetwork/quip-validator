@@ -7,7 +7,11 @@
 #   (c) another job's fresh slot is not swept;
 #   (d) the job's own slot is swept;
 # plus abandoned/half-created slots, grandfathering, the per-slot sweep
-# interval, and an own slot still locked by another holder.
+# interval, an own slot still locked by another holder, and a missing
+# cargo-sweep. The fake volume mirrors a real host: the shared CARGO_HOME,
+# a bench-style target tree, the scan's own lock and stamp, an unmarked
+# directory under a numeric id, and a stamped job tree outside the numeric
+# layout all sit beside the slots, and all must survive.
 #
 # Needs Linux tools (flock, GNU stat/touch), like the script it tests. In CI
 # their absence is a failure; elsewhere the test reports SKIP.
@@ -31,8 +35,14 @@ fi
 
 tmp="$(mktemp -d)"
 holders=()
+# release PID: stop a lock holder and the command it runs (flock(1) forks its
+# command, and the child may hold the lock too).
+release() {
+  pkill -P "$1" 2>/dev/null || true
+  kill "$1" 2>/dev/null || true
+}
 cleanup() {
-  for pid in "${holders[@]}"; do kill "$pid" 2>/dev/null || true; done
+  for pid in "${holders[@]}"; do release "$pid"; done
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -45,6 +55,7 @@ mkdir -p "$root" "$project" "$bin"
 touch "$project/Cargo.toml" "$sweeps"
 cat >"$bin/cargo" <<EOF
 #!/usr/bin/env bash
+[[ " \$* " == *" --version "* ]] && exit 0
 echo "\$CARGO_TARGET_DIR" >>"$sweeps"
 EOF
 chmod +x "$bin/cargo"
@@ -59,7 +70,9 @@ slot() {
 
 # hold PATH: hold a shared lock on PATH's in-use lock until cleanup.
 hold() {
-  flock --shared "$1/.in-use.lock" sleep 600 &
+  # Detached from our stdout/stderr so a caller piping this test is not held
+  # open by the sleeping holder.
+  flock --shared "$1/.in-use.lock" sleep 600 </dev/null >/dev/null 2>&1 &
   holders+=("$!")
   # Wait until the holder really has the lock.
   for _ in $(seq 50); do
@@ -91,14 +104,29 @@ slot 2 held 30
 hold "$root/2/held"
 slot 3 stale 30
 slot 4 fresh 0
-mkdir -p "$root/5/abandoned" && touch -d "$(days_ago 30)" "$root/5/abandoned"
+# A half-created slot this cache made (it carries the lock file the
+# before_script opens), abandoned long ago.
+mkdir -p "$root/5/abandoned" && touch "$root/5/abandoned/.in-use.lock"
+touch -d "$(days_ago 30)" "$root/5/abandoned"
 mkdir -p "$root/6/unstamped/target"
-mkdir -p "$root/7/half-new"
-# The shared CARGO_HOME lives on the same volume. Its children have no target/
-# and old mtimes, so they look like abandoned slots; they must survive.
-mkdir -p "$root/cargo-home/registry" "$root/cargo-home/git" "$root/cargo-home/bin"
-touch -d "$(days_ago 30)" "$root/cargo-home/registry" "$root/cargo-home/git" \
-  "$root/cargo-home/bin" "$root/cargo-home"
+mkdir -p "$root/7/half-new" && touch "$root/7/half-new/.in-use.lock"
+# Everything else on a real host volume, all old, none of it a slot:
+# the shared CARGO_HOME ...
+for d in registry git bin binstall advisory-dbs; do
+  mkdir -p "$root/cargo-home/$d" && touch -d "$(days_ago 30)" "$root/cargo-home/$d"
+done
+touch -d "$(days_ago 30)" "$root/cargo-home"
+# ... a bench-style target tree at the top level ...
+mkdir -p "$root/target/release" "$root/target/debug"
+touch -d "$(days_ago 30)" "$root/target/release" "$root/target/debug"
+# ... an unmarked directory under a numeric id (not made by this cache) ...
+mkdir -p "$root/8/unmarked" && touch -d "$(days_ago 30)" "$root/8/unmarked"
+# ... a stale, stamped job tree outside the numeric layout ...
+mkdir -p "$root/bench/benchmark-weights/target"
+touch -d "$(days_ago 30)" "$root/bench/benchmark-weights/target/.last-used"
+# ... and the scan's own lock and interval stamp, due for a scan.
+touch "$root/.prune.lock"
+touch -d "$(days_ago 2)" "$root/.last-prune"
 
 run
 
@@ -108,12 +136,20 @@ check "(a) a slot held under a shared lock is not swept" '! swept 2/held'
 check "(b) a stale, unlocked slot is removed" '[[ ! -e "$root/3/stale" ]]'
 check "(c) another job's fresh slot is kept" '[[ -d "$root/4/fresh/target" ]]'
 check "(c) another job's fresh slot is not swept" '! swept 4/fresh'
-check "an old slot with no target/ is removed" '[[ ! -e "$root/5/abandoned" ]]'
+check "an old marked slot with no target/ is removed" '[[ ! -e "$root/5/abandoned" ]]'
 check "an unstamped slot is grandfathered (kept and stamped)" \
   '[[ -e "$root/6/unstamped/target/.last-used" ]]'
 check "a fresh half-created slot is kept" '[[ -d "$root/7/half-new" ]]'
-check "the shared CARGO_HOME is never removed" \
-  '[[ -d "$root/cargo-home/registry" && -d "$root/cargo-home/git" && -d "$root/cargo-home/bin" ]]'
+for d in registry git bin binstall advisory-dbs; do
+  check "the shared CARGO_HOME $d survives" "[[ -d \"\$root/cargo-home/$d\" ]]"
+done
+check "a bench-style target tree survives" \
+  '[[ -d "$root/target/release" && -d "$root/target/debug" ]]'
+check "an unmarked directory under a numeric id survives" '[[ -d "$root/8/unmarked" ]]'
+check "a stamped job tree outside the numeric layout survives" \
+  '[[ -d "$root/bench/benchmark-weights/target" ]]'
+check "the scan's own lock and stamp survive" \
+  '[[ -e "$root/.prune.lock" && -e "$root/.last-prune" ]]'
 check "only the own slot was swept" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
 
 # Inside the per-slot interval the own slot is not swept again.
@@ -127,6 +163,23 @@ hold "$root/1/own"
 run
 check "an own slot locked by another holder is not swept" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
 check "the skip is logged" 'grep -q "still locked by another holder" "$tmp/prune.log"'
+
+# A missing cargo-sweep (say, after CARGO_HOME/bin was wiped) costs the sweep,
+# never the job: the script still exits 0 and says why it skipped.
+cat >"$bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == "sweep" ]] && { echo "error: no such command: \`sweep\`" >&2; exit 101; }
+exit 0
+EOF
+release "${holders[-1]}"
+touch -d "$(days_ago 2)" "$root/1/own/.last-sweep"
+if run; then
+  check "a missing cargo-sweep does not fail the prune" true
+else
+  check "a missing cargo-sweep does not fail the prune" false
+fi
+check "a missing cargo-sweep is logged" 'grep -q "cargo-sweep is not available" "$tmp/prune.log"'
+check "nothing was swept without cargo-sweep" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
 
 if ((fails)); then
   echo "--- prune log ---"
