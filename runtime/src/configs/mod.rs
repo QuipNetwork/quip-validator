@@ -741,9 +741,15 @@ parameter_types! {
     // Conservative reuse of the bounded execute base for every possible VM
     // instance, including lookup/decode, setup and proof. The adapter decodes
     // once, so repeated decode/read charges overestimate that part of the batch.
+    // A transform VM gets exactly `TRANSFORM_OUTPUT_SLOTS` (1) output slots, so
+    // that is what each instance is charged for -- not `MaxOutputSlots`, whose
+    // worst case is a user `execute` and stays in the MaxStepLimit derivation.
     pub QuantumProgramLookupWeight: Weight =
-        pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get(), MaxOutputSlots::get())
-            .saturating_mul(u64::from(QuantumMaxSolutions::get()));
+        pallet_xqvm::SubstrateWeight::<Runtime>::execute(
+            MaxProgramSize::get(),
+            pallet_quantum_compute_mempool::xqvm::TRANSFORM_OUTPUT_SLOTS,
+        )
+        .saturating_mul(u64::from(QuantumMaxSolutions::get()));
     // Registration checks up to two programs; the call charges each bound.
     pub QuantumProgramValidationWeight: Weight =
         pallet_xqvm::SubstrateWeight::<Runtime>::store_program(MaxProgramSize::get(), MaxProgramBlocks::get());
@@ -1048,6 +1054,68 @@ mod xqvm_weights {
             matches!(calldata.as_slice(), [xqvm::RegVal::VecInt(spins)] if spins == &vec![1, -1, 1]),
             "transform calldata ABI changed: {calldata:?}"
         );
+    }
+
+    /// The transform VM weight and the mempool adapter must agree on the
+    /// number of output slots a transform VM gets: the weight charges
+    /// `TRANSFORM_OUTPUT_SLOTS`, and the adapter must give the VM exactly that
+    /// many. The weight half is checked arithmetically; the adapter half by
+    /// running a transform that writes the last slot (accepted) and one that
+    /// writes one past it (rejected).
+    #[test]
+    fn transform_weight_charges_the_adapters_output_slots() {
+        use pallet_quantum_compute_mempool::xqvm::{
+            QuantumVm, XqvmAdapter, TRANSFORM_OUTPUT_SLOTS,
+        };
+        use sp_runtime::traits::{BlakeTwo256, Hash, TrailingZeroInput};
+
+        assert_eq!(
+            QuantumProgramLookupWeight::get(),
+            pallet_xqvm::SubstrateWeight::<Runtime>::execute(
+                MaxProgramSize::get(),
+                TRANSFORM_OUTPUT_SLOTS
+            )
+            .saturating_mul(u64::from(QuantumMaxSolutions::get())),
+        );
+
+        sp_io::TestExternalities::default().execute_with(|| {
+            let solver = <AccountId as codec::Decode>::decode(&mut TrailingZeroInput::zeroes())
+                .expect("zero account decodes");
+            for (slot, accepted) in [
+                (TRANSFORM_OUTPUT_SLOTS - 1, true),
+                (TRANSFORM_OUTPUT_SLOTS, false),
+            ] {
+                // r0 = calldata[0] (the spin VecInt); OUTPUT it to `slot`.
+                let mut b = xqvm::InstructionBuilder::new();
+                b.emit_push(0).emit(xqvm::Instruction::Input {
+                    reg: xqvm::Register(0),
+                });
+                b.emit_push(i64::from(slot))
+                    .emit(xqvm::Instruction::Output {
+                        reg: xqvm::Register(0),
+                    });
+                b.emit_halt();
+                let bytes = b.build().expect("builds").encode();
+                let hash = BlakeTwo256::hash(&bytes);
+                pallet_xqvm::Programs::<Runtime>::insert(
+                    hash,
+                    frame_support::BoundedVec::<u8, MaxProgramSize>::try_from(bytes).expect("fits"),
+                );
+                let outcome = XqvmAdapter::<Runtime>::transform_solutions(
+                    &BlakeTwo256::hash(b"slot-spec"),
+                    None,
+                    Some(&hash),
+                    &solver,
+                    vec![vec![1, -1]],
+                );
+                assert_eq!(
+                    outcome.result.is_ok(),
+                    accepted,
+                    "output slot {slot}: {:?}",
+                    outcome.result
+                );
+            }
+        });
     }
 
     /// A single `execute` at the maximum step limit must fit inside the budget

@@ -101,6 +101,11 @@ impl<T: crate::Config> QuantumVm<T::AccountId, crate::BalanceOf<T>, T::Hash> for
     }
 }
 
+/// Output slots a transform VM gets: one, for the transformed spin `VecInt`.
+/// The runtime's transform VM weight (`VmProgramLookupWeight`) charges exactly
+/// this many slots, so the adapter and that weight must read this one constant.
+pub const TRANSFORM_OUTPUT_SLOTS: u32 = 1;
+
 /// The transform calldata ABI: exactly one `VecInt` carrying a solution's
 /// spins. It can carry no model, sample or model vector. That is load-bearing
 /// for the runtime's VM memory bound: `LVAL` clones a model without charging
@@ -146,7 +151,7 @@ impl<T: crate::Config> XqvmAdapter<T> {
             let mut vm = Vm::new();
             vm.set_memory_limit(T::MaxVmMemory::get())
                 .set_step_limit(remaining)
-                .set_output_slots(1)
+                .set_output_slots(TRANSFORM_OUTPUT_SLOTS as usize)
                 .set_calldata(transform_calldata(solution));
             let result = vm.run(&program);
             *steps_used = steps_used.saturating_add(vm.steps());
