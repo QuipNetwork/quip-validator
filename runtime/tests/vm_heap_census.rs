@@ -483,12 +483,15 @@ impl Chain {
     /// dispatch error `Ok(Err(_))` is a valid, paid extrinsic and is kept.
     ///
     /// Skip model, versus the real author: this harness counts EVERY outer
-    /// `Err` as a skip and stops at the eighth. `sc-basic-authorship` counts
-    /// only `ExhaustsResources` towards that limit, and keeps trying other
-    /// transactions until its soft deadline. A case that puts smaller calls
-    /// after larger ones (as `g` does with its fillers) can therefore end up
-    /// with a less full block than a real author would build when the early
-    /// rejections are not all `ExhaustsResources`.
+    /// `Err` as a skip and stops at the eighth. `sc-basic-authorship` (at
+    /// sdk 8fcc7e2) counts two kinds of rejection towards its limit of 8 --
+    /// a block-size-limit hit (basic_authorship.rs:426-452) and
+    /// `ExhaustsResources` (:462-481) -- and drops any other invalid
+    /// transaction without counting it (:484); past the limit it keeps trying
+    /// until its soft deadline. A case that puts smaller calls after larger
+    /// ones (as `g` does with its fillers) can therefore end up with a less
+    /// full block than a real author would build, when early rejections are
+    /// of an uncounted kind or the soft deadline would have allowed more tries.
     ///
     /// Returns the block, the included apply results in inclusion order, and
     /// the number of dropped calls (skipped plus never tried after the limit).
