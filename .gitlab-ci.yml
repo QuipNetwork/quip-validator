@@ -455,6 +455,8 @@ benchmark-placeholder-gate:
     - if: $CI_COMMIT_TAG =~ /^v\d/
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH
   script:
+    # The scanner's own self-test first: a broken scanner must not pass a tag.
+    - bash scripts/test-weights-staleness-placeholder.sh
     - ./scripts/check-weights-staleness.sh --placeholders-only
 
 # The Python signer crate (crates/transaction-crypto-py) is *excluded* from the
@@ -807,6 +809,15 @@ ci-image-pypi-publish-amd64:
 
 .node-kaniko-build:
   extends: .kaniko-build
+  # B2: on a release tag, publishing waits for the placeholder-weight gate. The
+  # gate exists only on v* tags and MRs into main; `optional` keeps other tags
+  # building. (Not on .kaniko-build itself: the CI-image builds extend it and
+  # run in an earlier stage than the gate.)
+  needs:
+    - job: dependency-gate
+      optional: true
+    - job: benchmark-placeholder-gate
+      optional: true
   variables:
     KANIKO_CONTEXT: $CI_PROJECT_DIR
     KANIKO_DOCKERFILE: $CI_PROJECT_DIR/Dockerfile
@@ -816,6 +827,15 @@ ci-image-pypi-publish-amd64:
 
 .evm-sidecar-kaniko-build:
   extends: .kaniko-build
+  # B2: on a release tag, publishing waits for the placeholder-weight gate. The
+  # gate exists only on v* tags and MRs into main; `optional` keeps other tags
+  # building. (Not on .kaniko-build itself: the CI-image builds extend it and
+  # run in an earlier stage than the gate.)
+  needs:
+    - job: dependency-gate
+      optional: true
+    - job: benchmark-placeholder-gate
+      optional: true
   variables:
     KANIKO_CONTEXT: $CI_PROJECT_DIR
     KANIKO_DOCKERFILE: $CI_PROJECT_DIR/docker/revive-eth-rpc.Dockerfile
@@ -877,7 +897,12 @@ kaniko-build-evm-sidecar-arm64:
 # shallow tip. FLOATING_TAGS is space-separated (empty when none apply).
 resolve-floating-tag:
   stage: build
-  needs: [{job: dependency-gate, optional: true}]
+  # B2: wait for the placeholder-weight gate on a release tag (see above).
+  needs:
+    - job: dependency-gate
+      optional: true
+    - job: benchmark-placeholder-gate
+      optional: true
   rules: !reference [.publish-rules, rules]
   image:
     name: alpine/git:latest
@@ -1085,6 +1110,9 @@ manifest-evm-sidecar:
   timeout: 15m
   needs:
     - job: dependency-gate
+      optional: true
+    # B2: no upload while a placeholder weight remains (gate on v* tags).
+    - job: benchmark-placeholder-gate
       optional: true
     - release:build-pypi
     - release:smoke-pypi-amd64
