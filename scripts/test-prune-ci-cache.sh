@@ -9,10 +9,15 @@
 # plus abandoned/half-created slots, grandfathering, the per-slot sweep
 # interval, an own slot still locked by another holder, and a missing
 # cargo-sweep, the capacity report (volume, mount, slot sizes within a time
-# budget), and rule 3, the opt-in volume budget (LRU whole-slot eviction:
-# over/under budget, locked, own, recent, df failure, device mismatch, an
-# unparseable df, an invalid or unset budget, and a realistic volume pushed
-# over budget by trees that are not our slots). The fake volume mirrors a real host: the shared CARGO_HOME,
+# budget), removal by rename (a job that starts mid-delete gets a fresh slot),
+# the stamp re-check under the lock (rules 2 and 3), the template's lock step
+# (scripts/ci-cache-lock.sh: wait, inode retry, fail closed), and rule 3, the
+# opt-in volume budget (one LRU whole-slot removal per run, decided from the
+# removed slot's size: over/under budget, a lagging df, locked, own, recent,
+# recently built, df failure, device mismatch, an unparseable df, strict
+# parsing of --volume-budget, the environment ignored, and a realistic volume
+# pushed over budget by trees that are not our slots). The lock is main's
+# `.in-use`, so holders that lock the way main's jobs do are honoured. The fake volume mirrors a real host: the shared CARGO_HOME,
 # a bench-style target tree, the scan's own lock and stamp, an unmarked
 # directory under a numeric id, and a stamped job tree outside the numeric
 # layout all sit beside the slots, and all must survive.
@@ -21,8 +26,9 @@
 # their absence is a failure; elsewhere the test reports SKIP.
 
 # check() takes its condition as a string and evals it later, so the single
-# quotes around those conditions defer expansion on purpose.
-# shellcheck disable=SC2016
+# quotes around those conditions defer expansion on purpose (SC2016), and
+# variables read only inside those conditions look unused (SC2034).
+# shellcheck disable=SC2016,SC2034
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,15 +78,16 @@ slot() {
   touch -d "$(days_ago "$3")" "$root/$1/$2/target/.last-used"
 }
 
-# hold PATH: hold a shared lock on PATH's in-use lock until cleanup.
+# hold PATH [MODE]: hold a lock (default shared, as a job does) on PATH's
+# `.in-use` -- main's lock file and this branch's -- until cleanup.
 hold() {
   # Detached from our stdout/stderr so a caller piping this test is not held
   # open by the sleeping holder.
-  flock --shared "$1/.in-use.lock" sleep 600 </dev/null >/dev/null 2>&1 &
+  flock "--${2:-shared}" "$1/.in-use" sleep 600 </dev/null >/dev/null 2>&1 &
   holders+=("$!")
   # Wait until the holder really has the lock.
   for _ in $(seq 50); do
-    if ! flock --nonblock --exclusive "$1/.in-use.lock" true; then return 0; fi
+    if ! flock --nonblock --exclusive "$1/.in-use" true; then return 0; fi
     sleep 0.1
   done
   echo "test-prune-ci-cache: could not establish the lock holder" >&2
@@ -112,10 +119,13 @@ slot 3 stale 30
 slot 4 fresh 0
 # A half-created slot this cache made (it carries the lock file the
 # before_script opens), abandoned long ago.
+# (The earlier lock name, still recognised as a marker.)
 mkdir -p "$root/5/abandoned" && touch "$root/5/abandoned/.in-use.lock"
 touch -d "$(days_ago 30)" "$root/5/abandoned"
+mkdir -p "$root/9/abandoned-now" && touch "$root/9/abandoned-now/.in-use"
+touch -d "$(days_ago 30)" "$root/9/abandoned-now"
 mkdir -p "$root/6/unstamped/target"
-mkdir -p "$root/7/half-new" && touch "$root/7/half-new/.in-use.lock"
+mkdir -p "$root/7/half-new" && touch "$root/7/half-new/.in-use"
 # Everything else on a real host volume, all old, none of it a slot:
 # the shared CARGO_HOME ...
 for d in registry git bin binstall advisory-dbs; do
@@ -142,7 +152,12 @@ check "(a) a slot held under a shared lock is not swept" '! swept 2/held'
 check "(b) a stale, unlocked slot is removed" '[[ ! -e "$root/3/stale" ]]'
 check "(c) another job's fresh slot is kept" '[[ -d "$root/4/fresh/target" ]]'
 check "(c) another job's fresh slot is not swept" '! swept 4/fresh'
-check "an old marked slot with no target/ is removed" '[[ ! -e "$root/5/abandoned" ]]'
+check "an old marked slot with no target/ is removed (legacy .in-use.lock marker)" \
+  '[[ ! -e "$root/5/abandoned" ]]'
+check "an old marked slot with no target/ is removed (.in-use marker)" \
+  '[[ ! -e "$root/9/abandoned-now" ]]'
+check "removal leaves nothing in the trash" \
+  '[[ -z "$(ls -A "$root/.trash" 2>/dev/null)" ]]'
 check "an unstamped slot is grandfathered (kept and stamped)" \
   '[[ -e "$root/6/unstamped/target/.last-used" ]]'
 check "a fresh half-created slot is kept" '[[ -d "$root/7/half-new" ]]'
@@ -169,7 +184,6 @@ done
 check "the scan reports the shared CARGO_HOME's size" 'logged "size: $root/cargo-home "'
 check "no size is reported outside the numeric layout" \
   '! grep -qE "size: $root/(bench|target|cargo-home/)" "$tmp/prune.log"'
-# shellcheck disable=SC2034 # used inside check's eval'd condition
 sz='[0-9][0-9.,]*[A-Za-z]*'
 check "a measured size is a size on disk and apparent, not an error" \
   'grep -qE "size: $root/1/own $sz on disk, $sz apparent\$" "$tmp/prune.log" \
@@ -213,11 +227,12 @@ fi
 check "a missing cargo-sweep is logged" 'grep -q "cargo-sweep is not available" "$tmp/prune.log"'
 check "nothing was swept without cargo-sweep" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
 
-# --- Rule 3: the volume budget ---------------------------------------------
+# --- Shared fixtures for the budget, race and lock-step scenarios -------------
 # Each scenario gets a fresh volume. A fake `df` reports a 2,000,000 KiB
-# volume whose usage is the sum of `.fake-kb` files under it, so removing a
-# slot lowers the usage the next `df` reports; a fake mount table names the
-# same device. Sizes are KiB of pretend data, not real files.
+# volume whose usage is the sum of `.fake-kb` files under it (or a frozen
+# figure, to model a df that lags the delete); a fake `du` reports the same
+# pretend sizes; a fake mount table names the same device. Sizes are KiB of
+# pretend data, not real files.
 broot="$tmp/budget/ci-cache"
 fakebin="$tmp/fakebin"
 mkdir -p "$fakebin"
@@ -225,12 +240,21 @@ cat >"$fakebin/df" <<EOF
 #!/usr/bin/env bash
 [[ -e "$tmp/df.fail" ]] && exit 1
 if [[ -e "$tmp/df.garbage" ]]; then echo "Filesystem stuff"; echo "nonsense here"; exit 0; fi
-used=0
-while IFS= read -r f; do used=\$((used + \$(cat "\$f"))); done < <(find "$broot" -name .fake-kb)
+if [[ -e "$tmp/df.frozen" ]]; then used=\$(cat "$tmp/df.frozen"); else
+  used=0
+  while IFS= read -r f; do used=\$((used + \$(cat "\$f"))); done < <(find "$broot" -name .fake-kb)
+fi
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "fakepool/srv 2000000 \$used \$((2000000 - used)) \$((used / 20000))% $broot"
 EOF
-chmod +x "$fakebin/df"
+cat >"$fakebin/du" <<'EOF'
+#!/usr/bin/env bash
+path="${*: -1}"
+kb=0
+while IFS= read -r f; do kb=$((kb + $(cat "$f"))); done < <(find "$path" -name .fake-kb 2>/dev/null)
+if [[ " $* " == *" -sk "* ]]; then printf '%s\t%s\n' "$kb" "$path"; else printf '%sK\t%s\n' "$kb" "$path"; fi
+EOF
+chmod +x "$fakebin/df" "$fakebin/du"
 
 # bslot ID JOB AGE_SECONDS KIB: a marked slot last used AGE_SECONDS ago.
 bslot() {
@@ -246,7 +270,7 @@ tree() {
 budget_volume() {
   for pid in "${holders[@]}"; do release "$pid"; done
   holders=()
-  rm -rf "$tmp/budget" "$tmp/df.fail" "$tmp/df.garbage"
+  rm -rf "$tmp/budget" "$tmp/df.fail" "$tmp/df.garbage" "$tmp/df.frozen" "$tmp/refresh.list"
   mkdir -p "$broot"
   echo "fakepool/srv $broot zfs rw,noatime 0 0" >"$tmp/mounts"
   day=86400
@@ -254,7 +278,7 @@ budget_volume() {
   bslot 2 old $((10 * day)) 200000 # least recently used candidate
   bslot 3 mid $((5 * day)) 200000  # next
   bslot 4 held $((20 * day)) 200000
-  hold "$broot/4/held"             # oldest, but in use
+  hold "$broot/4/held"             # oldest, but in use (main-style shared hold)
   bslot 5 recent 1800 200000       # used 30 minutes ago
   tree cargo-home/registry 100000  # the shared CARGO_HOME
   tree 6/unmarked 100000           # numeric, but not ours (no stamp)
@@ -264,86 +288,147 @@ budget_volume() {
     "$broot/7/unstamped/target"
   mkdir -p "$broot/bench/weights/target" && echo 50000 >"$broot/bench/weights/target/.fake-kb"
   touch -d "@$(($(date +%s) - 30 * day))" "$broot/bench/weights/target/.last-used"
-  # A fresh orphan-scan stamp keeps rule 2 out of these scenarios.
+  # A fresh orphan-scan stamp keeps rule 2 out of the budget scenarios.
   touch "$broot/.prune.lock" "$broot/.last-prune"
   : >"$tmp/budget.log"
 }
 # Total pretend usage: 1,400,000 KiB of 2,000,000 = 70%.
+benv=()
+bpath=""
+# brun [prune args...]: one prune of the fake volume; extra environment in
+# the array `benv`, extra PATH entries (wrappers) in `bpath`.
 brun() {
-  PATH="$fakebin:$bin:$PATH" CI_CACHE_ROOT="$broot" CI_CACHE_PROJECT_DIR="$project" \
-    CI_CACHE_MOUNTS="$tmp/mounts" CARGO_TARGET_DIR="$broot/1/own/target" \
-    "$@" bash "$prune" >>"$tmp/budget.log" 2>&1
+  env "${benv[@]}" PATH="$bpath$fakebin:$bin:$PATH" CI_CACHE_ROOT="$broot" \
+    CI_CACHE_PROJECT_DIR="$project" CI_CACHE_MOUNTS="$tmp/mounts" \
+    CARGO_TARGET_DIR="$broot/1/own/target" \
+    bash "$prune" "$@" >>"$tmp/budget.log" 2>&1
 }
 blogged() { grep -qF "prune-ci-cache: volume budget: $1" "$tmp/budget.log"; }
 survives() { [[ -d "$broot/$1" ]]; }
+# runs N ARGS...: N prunes in a row (rule 3 removes at most one slot per run).
+runs() {
+  local n="$1"
+  shift
+  for _ in $(seq "$n"); do brun "$@"; done
+}
 
-# Over budget: LRU eviction stops once under it, and skips every guarded slot.
+# --- Rule 3: the volume budget ---------------------------------------------
+# Over budget: one LRU removal per run, decided from the removed slot's size.
 budget_volume
-brun env CI_CACHE_VOLUME_BUDGET=55
-check "budget: the least recently used unlocked slot is removed" '! survives 2/old'
-check "budget: eviction continues in LRU order while over budget" '! survives 3/mid'
-check "budget: eviction stops once under budget" 'blogged "$broot is 50% used, budget 55%"'
-check "budget: a slot whose lock is held is kept" 'survives 4/held/target'
-check "budget: the held slot is logged and skipped" 'blogged "$broot/4/held is in use (lock held), skipping"'
+brun --volume-budget 55
+check "budget: one run removes exactly one slot, the least recently used unlocked one" \
+  '! survives 2/old && survives 3/mid'
+check "budget: the projection uses the removed slot's size" \
+  'blogged "projected 60% after removing $broot/2/old; still over budget, the next prune continues"'
+brun --volume-budget 55
+check "budget: the next run continues in LRU order" '! survives 3/mid'
+check "budget: and stops once under budget" \
+  'blogged "projected 50% after removing $broot/3/mid; under budget"'
+brun --volume-budget 55
+check "budget: under budget nothing more is removed" \
+  'survives 4/held/target && survives 5/recent/target && blogged "$broot is 50% used, budget 55%"'
+check "budget: a slot locked the way main's jobs lock (.in-use, shared) is kept" \
+  'survives 4/held/target && blogged "$broot/4/held is in use (lock held), skipping"'
 check "budget: the own slot is kept" 'survives 1/own/target'
 check "budget: a slot used within the idle window is kept" 'survives 5/recent/target'
 check "budget: an unmarked numeric directory is kept" 'survives 6/unmarked'
 check "budget: an unstamped numeric target/ is kept" 'survives 7/unstamped/target'
 check "budget: a stamped tree outside the numeric layout is kept" 'survives bench/weights/target'
 check "budget: the shared CARGO_HOME is kept" 'survives cargo-home/registry'
+check "budget: removal leaves nothing in the trash" \
+  '[[ -z "$(ls -A "$broot/.trash" 2>/dev/null)" ]]'
 
-# With no idle window every slot is old enough: the own slot is still kept.
+# A df that lags the delete (ZFS frees at txg sync): still one removal per
+# run, and the projection comes from the slot's size, not from df.
 budget_volume
-brun env CI_CACHE_VOLUME_BUDGET=10 CI_CACHE_BUDGET_MIN_IDLE=0
+echo 1400000 >"$tmp/df.frozen"
+brun --volume-budget 50
+check "budget (lagging df): one run removes one slot only" '! survives 2/old && survives 3/mid'
+check "budget (lagging df): the projection ignores the stale df" \
+  'blogged "projected 60% after removing $broot/2/old; still over budget"'
+
+# Recently built: a stale stamp but a fresh cargo fingerprint is in use.
+budget_volume
+mkdir -p "$broot/2/old/target/debug/.fingerprint/dep-0123"
+touch "$broot/2/old/target/debug/.fingerprint/dep-0123/lib-dep"
+mkdir -p "$broot/3/mid/target/debug/.fingerprint/dep-4567"
+touch -d "@$(($(date +%s) - 3 * day))" "$broot/3/mid/target/debug/.fingerprint/dep-4567"
+brun --volume-budget 50
+check "budget: a slot with fresh cargo fingerprints is kept (activity probe)" \
+  'survives 2/old/target && blogged "$broot/2/old has cargo fingerprints newer than 7200s; keeping it"'
+check "budget: old fingerprints do not protect a slot" '! survives 3/mid'
+
+# With no idle window every slot is old enough: own and held are still kept.
+budget_volume
+benv=(CI_CACHE_BUDGET_MIN_IDLE=0)
+runs 6 --volume-budget 10
+benv=()
 check "budget: with no idle window a recent slot may go" '! survives 5/recent'
 check "budget: with no idle window the own slot is still kept" 'survives 1/own/target'
 check "budget: with no idle window the held slot is still kept" 'survives 4/held/target'
 
 # Under budget: nothing is removed.
 budget_volume
-brun env CI_CACHE_VOLUME_BUDGET=80
+brun --volume-budget 80
 check "budget: under budget nothing is removed" 'survives 2/old && survives 3/mid'
 check "budget: under budget the usage is logged" 'blogged "$broot is 70% used, budget 80%"'
 
-# Unset (the default in this MR): the rule is inert even far over budget.
+# No argument (this MR's YAML): inert, and the environment cannot switch it on.
 budget_volume
-brun env -u CI_CACHE_VOLUME_BUDGET
-check "budget: unset means inert" 'survives 2/old && survives 3/mid && ! grep -q "volume budget" "$tmp/budget.log"'
+brun
+check "budget: without --volume-budget the rule is inert" \
+  'survives 2/old && ! grep -q "volume budget" "$tmp/budget.log"'
+budget_volume
+benv=(CI_CACHE_VOLUME_BUDGET=10)
+brun
+benv=()
+check "budget: CI_CACHE_VOLUME_BUDGET is ignored (a pipeline variable cannot switch it on)" \
+  'survives 2/old && grep -q "CI_CACHE_VOLUME_BUDGET is ignored" "$tmp/budget.log" \
+    && ! grep -q "volume budget: $broot" "$tmp/budget.log"'
 
-# An invalid budget removes nothing.
-for bad in 0 100 abc 50%; do
+# Strict parsing: only 1-99 written in decimal without a leading zero.
+for bad in 0 100 abc 50% 010 08 077 "" " 80" +80 1e2; do
   budget_volume
-  brun env CI_CACHE_VOLUME_BUDGET="$bad"
-  check "budget: invalid value '$bad' removes nothing" \
-    'survives 2/old && blogged "CI_CACHE_VOLUME_BUDGET=$bad is not a percentage 1-99; removing nothing"'
+  brun --volume-budget "$bad"
+  check "budget: '$bad' is not a budget; nothing is removed" \
+    'survives 2/old && blogged "'"'"'$bad'"'"' is not a percentage 1-99; removing nothing"'
 done
+budget_volume
+brun --volume-budget
+check "budget: a missing value is not a budget" \
+  'survives 2/old && blogged "'"''"' is not a percentage 1-99; removing nothing"'
+budget_volume
+brun --volume-budget=9
+check "budget: --volume-budget=9 is read as 9 percent" \
+  'blogged "$broot is 70% used, budget 9%" && ! survives 2/old'
 
 # Fail closed: df failing, df unparseable, df's device not the mount entry's.
 budget_volume
 touch "$tmp/df.fail"
-brun env CI_CACHE_VOLUME_BUDGET=10
+brun --volume-budget 10
 check "budget: a failing df removes nothing" 'survives 2/old && blogged "cannot read a usage"'
 budget_volume
 touch "$tmp/df.garbage"
-brun env CI_CACHE_VOLUME_BUDGET=10
+brun --volume-budget 10
 check "budget: an unparseable df removes nothing" 'survives 2/old && blogged "cannot read a usage"'
 budget_volume
 echo "otherpool/srv $broot zfs rw,noatime 0 0" >"$tmp/mounts"
-brun env CI_CACHE_VOLUME_BUDGET=10
+brun --volume-budget 10
 check "budget: a df device that is not the mount entry's removes nothing" \
   'survives 2/old && blogged "cannot read a usage"'
 budget_volume
 echo "fakepool/srv $tmp/budget zfs rw,noatime 0 0" >"$tmp/mounts"
-brun env CI_CACHE_VOLUME_BUDGET=10
+brun --volume-budget 10
 check "budget: a df mount point that is not the mount entry's removes nothing" \
   'survives 2/old && blogged "cannot read a usage"'
 
 # A realistic volume pushed over budget by what is not ours: every candidate
-# goes, nothing outside our slots does, and the run ends over budget, logged.
+# goes (one per run), nothing outside our slots does, and the run that finds
+# no candidate left says so.
 budget_volume
-tree cargo-home/git 300000   # 1,900,000 KiB in all: 95%
+tree cargo-home/git 300000 # 1,900,000 KiB in all: 95%
 tree target/release 200000
-brun env CI_CACHE_VOLUME_BUDGET=50
+runs 4 --volume-budget 50
 check "budget (realistic): the eligible slots are removed" '! survives 2/old && ! survives 3/mid'
 check "budget (realistic): nothing outside our slots is removed" \
   'survives cargo-home/registry && survives cargo-home/git && survives target/release \
@@ -351,8 +436,158 @@ check "budget (realistic): nothing outside our slots is removed" \
 check "budget (realistic): guarded slots survive" \
   'survives 1/own/target && survives 4/held/target && survives 5/recent/target'
 check "budget (realistic): the run ends over budget and says so" \
-  'blogged "$broot/5/recent and every later candidate were used within 7200s; keeping them" \
+  'blogged "$broot/5/recent was used within 7200s; keeping it" \
     && blogged "still over budget; no removable slot is left"'
+
+# --- The re-check under the lock (F5): a job that stamps between the scan
+# and the lock keeps its slot. A flock wrapper refreshes the listed stamps
+# just before every exclusive lock the prune takes.
+real_flock="$(command -v flock)"
+refreshbin="$tmp/refreshbin"
+mkdir -p "$refreshbin"
+cat >"$refreshbin/flock" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" --exclusive "* && -e "$tmp/refresh.list" ]]; then
+  while IFS= read -r stamp; do touch "\$stamp"; done <"$tmp/refresh.list"
+fi
+exec "$real_flock" "\$@"
+EOF
+chmod +x "$refreshbin/flock"
+
+budget_volume
+# Without the held slot (whose lock the scan would take first), the refresh
+# lands on stale's own lock: after its pre-check, before its re-check.
+release "${holders[-1]}"
+rm -rf "$broot/4/held"
+bslot 8 stale $((30 * day)) 10000
+touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune" # rule 2 due
+echo "$broot/8/stale/target/.last-used" >"$tmp/refresh.list"
+bpath="$refreshbin:"
+brun
+bpath=""
+check "rule 2: a slot stamped between the scan and the lock survives" \
+  'survives 8/stale/target && ! grep -q "removing unused slot $broot/8/stale" "$tmp/budget.log"'
+budget_volume
+bslot 8 stale $((30 * day)) 10000
+touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune"
+brun
+check "rule 2 (control): without the refresh the stale slot is removed" '! survives 8/stale'
+
+budget_volume
+# Without the held slot, old is the first candidate, so the refresh lands on
+# old's own lock: after its pre-check, before its re-check.
+release "${holders[-1]}"
+rm -rf "$broot/4/held"
+echo "$broot/2/old/target/.last-used" >"$tmp/refresh.list"
+bpath="$refreshbin:"
+brun --volume-budget 50
+bpath=""
+check "rule 3: a slot stamped between the scan and the lock survives" \
+  'survives 2/old/target && ! survives 3/mid'
+
+# --- Removal by rename (F1) ---------------------------------------------------
+# A slow `rm` that deletes a slot's lock first and the rest two seconds
+# later: the order that let a job lock a new `.in-use` inside a slot still
+# being deleted. With removal by rename the job gets a fresh slot instead.
+slowbin="$tmp/slowbin"
+mkdir -p "$slowbin"
+real_rm="$(command -v rm)"
+cat >"$slowbin/rm" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do [[ -e "\$a/.in-use" ]] && "$real_rm" -f "\$a/.in-use"; done
+touch "$tmp/rm.unlinked" # the lock is gone; the rest is still there
+sleep 2
+exec "$real_rm" "\$@"
+EOF
+chmod +x "$slowbin/rm"
+lockstep="$here/ci-cache-lock.sh"
+
+budget_volume
+bslot 8 victim $((30 * day)) 10000
+touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune"
+bpath="$slowbin:"
+brun &
+prune_pid=$!
+bpath=""
+# Start the job only once the delete has unlinked the lock file but not yet
+# the rest: the window claude's simulation found.
+rm -f "$tmp/rm.unlinked"
+for _ in $(seq 200); do
+  [[ -e "$tmp/rm.unlinked" ]] && break
+  sleep 0.05
+done
+CARGO_TARGET_DIR="$broot/8/victim/target" CI_CACHE_LOCK_WAIT=20 \
+  bash -c '. "$1"; echo built >"$CARGO_TARGET_DIR/marker"; sleep 4' _ "$lockstep" \
+  >"$tmp/job.log" 2>&1 &
+job_pid=$!
+wait "$prune_pid" || true
+job_status=0
+wait "$job_pid" || job_status=$?
+check "rename: a job that starts mid-delete locks and builds normally" \
+  '((job_status == 0)) && grep -q "holding shared in-use lock" "$tmp/job.log"'
+check "rename: ... into a fresh slot that survives the delete" \
+  '[[ -e "$broot/8/victim/target/marker" && -e "$broot/8/victim/.in-use" ]]'
+check "rename: the trash is emptied" '[[ -z "$(ls -A "$broot/.trash" 2>/dev/null)" ]]'
+budget_volume
+mkdir -p "$broot/.trash/9.leftover.1/target" && echo 5 >"$broot/.trash/9.leftover.1/target/x"
+brun
+check "rename: leftovers of a killed prune are deleted at the next scan" \
+  '[[ ! -e "$broot/.trash/9.leftover.1" ]]'
+
+# --- The template's lock step (scripts/ci-cache-lock.sh) ----------------------
+lroot="$tmp/lock/ci-cache"
+lockjob() { # lockjob SLOT [ENV...] -- run the lock step and a short job body
+  local slot="$1"
+  shift
+  env "$@" CARGO_TARGET_DIR="$lroot/$slot/target" \
+    bash -c '. "$1"; echo built >"$CARGO_TARGET_DIR/marker"; sleep 2' _ "$lockstep"
+}
+check "lock step: the template sources it" \
+  'grep -qxF "    - . ./scripts/ci-cache-lock.sh" "$here/../.gitlab-ci.yml"'
+mkdir -p "$lroot"
+lockjob 0/fresh >"$tmp/lock.log" 2>&1 || true
+check "lock step: a fresh slot is locked, stamped and built into" \
+  'grep -q "holding shared in-use lock on fd 9" "$tmp/lock.log" \
+    && [[ -e "$lroot/0/fresh/target/.last-used" && -e "$lroot/0/fresh/target/marker" ]]'
+
+# A prune renames the slot away while the job waits for it: the job retries
+# on a fresh slot rather than build into the trashed one.
+mkdir -p "$lroot/0/moved/target"
+hold "$lroot/0/moved" exclusive
+lockjob 0/moved CI_CACHE_LOCK_WAIT=20 >"$tmp/lock.log" 2>&1 &
+job_pid=$!
+sleep 0.5
+mv "$lroot/0/moved" "$lroot/trashed"
+release "${holders[-1]}"
+wait "$job_pid" || true
+check "lock step: a slot renamed while waiting is retried" \
+  'grep -q "was replaced while locking (attempt 1), retrying" "$tmp/lock.log" \
+    && grep -q "holding shared in-use lock on fd 9" "$tmp/lock.log"'
+check "lock step: the job builds into the fresh slot, not the trashed one" \
+  '[[ -e "$lroot/0/moved/target/marker" && ! -e "$lroot/trashed/target/marker" ]]'
+
+# Three failed inode checks: fail closed, never run unlocked.
+badstat="$tmp/badstat"
+mkdir -p "$badstat"
+cat >"$badstat/stat" <<'EOF'
+#!/usr/bin/env bash
+echo "$RANDOM:$RANDOM"
+EOF
+chmod +x "$badstat/stat"
+status=0
+lockjob 0/unlockable PATH="$badstat:$PATH" >"$tmp/lock.log" 2>&1 || status=$?
+check "lock step: three failed inode checks fail the job" \
+  '((status != 0)) && grep -q "could not lock cache slot .* in 3 attempts" "$tmp/lock.log"'
+check "lock step: ... and never claims the lock or builds" \
+  '! grep -q "holding shared" "$tmp/lock.log" && [[ ! -e "$lroot/0/unlockable/target/marker" ]]'
+
+# A prune that holds the slot past the wait fails the job, as main's does.
+mkdir -p "$lroot/0/busy/target"
+hold "$lroot/0/busy" exclusive
+status=0
+lockjob 0/busy CI_CACHE_LOCK_WAIT=1 >"$tmp/lock.log" 2>&1 || status=$?
+check "lock step: a slot held past the wait fails the job" \
+  '((status != 0)) && grep -q "a cache prune held .* for 1s" "$tmp/lock.log"'
 
 if ((fails)); then
   echo "--- prune log ---"
