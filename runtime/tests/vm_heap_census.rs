@@ -187,10 +187,36 @@ const VM_STACK_LIMIT: usize = 8192;
 /// - `NOP`-padded to exactly `MaxProgramSize`, so the stored bytes and the
 ///   decoded program are maximal.
 fn prog_fixed_worst() -> Vec<u8> {
+    fixed_worst_with_jumps(0)
+}
+
+/// `prog_fixed_worst` plus a chain of `TARGET; JUMP next` pairs that uses every
+/// basic block `MaxProgramBlocks` leaves over, so decode's `verifier::scan`
+/// builds its largest `targets` (the kept jump table) and `jump_refs`
+/// alongside everything else. A `JUMP` followed by a `TARGET` is ONE leader
+/// in both the pallet's `ControlFlowShape` and the verifier's dataflow, so an
+/// admitted program can carry about 2,048 targets AND 2,047 jumps together.
+fn prog_fixed_worst_jumps() -> Vec<u8> {
+    let max_blocks = <quip_protocol_runtime::configs::MaxProgramBlocks as Get<u32>>::get() as usize;
+    let max_depth = <quip_protocol_runtime::configs::MaxLoopDepth as Get<u32>>::get() as usize;
+    // The entry block, plus one block per RANGE and per NEXT of the loops,
+    // plus one per jump of the chain.
+    fixed_worst_with_jumps(max_blocks - 1 - 2 * max_depth)
+}
+
+fn fixed_worst_with_jumps(jumps: usize) -> Vec<u8> {
     let max_size = <quip_protocol_runtime::configs::MaxProgramSize as Get<u32>>::get() as usize;
     let max_depth = <quip_protocol_runtime::configs::MaxLoopDepth as Get<u32>>::get();
     let build = |pad: usize| {
         let mut b = InstructionBuilder::new();
+        if jumps > 0 {
+            let labels: Vec<_> = (0..=jumps).map(|_| b.label()).collect();
+            for i in 0..jumps {
+                b.place(labels[i]).expect("label");
+                b.emit_jump(labels[i + 1]);
+            }
+            b.place(labels[jumps]).expect("label");
+        }
         for i in 0..=255u8 {
             b.emit_push(i64::from(i)).emit(I::Input { reg: R(i) });
         }
@@ -278,6 +304,7 @@ impl Chain {
             ("quad", prog_quad()),
             ("halt", prog_halt()),
             ("fixed_worst", prog_fixed_worst()),
+            ("fixed_worst_jumps", prog_fixed_worst_jumps()),
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
@@ -1260,75 +1287,113 @@ fn i_worst_case_fixed_run() {
     };
     let chain = Chain::new();
     let ms = max_steps();
-
-    // The program passes every check `store_program` applies (it is seeded at
-    // genesis only because runtime 121 filters `store_program`).
-    let bytes = prog_fixed_worst();
-    let program = xqvm::Program::decode(&bytes).expect("worst-case program decodes");
-    assert_eq!(bytes.len(), MaxProgramSize::get() as usize, "maximal size");
-    assert_eq!(program.encode(), bytes, "canonical");
-    assert!(
-        xqvm::verifier::verify(&program).is_ok(),
-        "the verifier admits it"
-    );
-    let shape = pallet_xqvm::ControlFlowShape::of(program.code());
-    assert!(
-        shape.blocks <= MaxProgramBlocks::get(),
-        "within MaxProgramBlocks"
-    );
-    assert_eq!(
-        shape.loop_depth,
-        MaxLoopDepth::get(),
-        "maximal loop nesting"
-    );
-    // 256 OUTPUT instructions write slots 0..=255; the header's lexical count
-    // saturates at 255 by design (xqvm program.rs, "clamped to 255").
-    assert_eq!(program.output_slots(), u8::MAX, "256 OUTPUT instructions");
-
-    // The same run natively, to confirm the extremes are reached and not
-    // faulted short: it completes with every output slot written.
     let calldata: Vec<i64> = (0..256).collect();
-    let mut vm = xqvm::Vm::new();
-    vm.set_step_limit(ms);
-    vm.set_memory_limit(max_vm_memory());
-    vm.set_calldata(calldata.iter().copied().map(xqvm::RegVal::Int).collect());
-    vm.set_output_slots(MaxOutputSlots::get() as usize);
-    vm.run(&program)
-        .expect("worst-case program runs to HALT natively");
 
     let (empty, _) = chain.author(vec![]);
     let (_, empty_import) = chain.import(&empty);
     let (halt_block, halt_applied) = chain.author(vec![chain.execute("halt", &[], 10)]);
     let (_, halt_import) = chain.import(&halt_block);
-    let (block, applied) = chain.author(vec![chain.execute_with_outputs(
-        "fixed_worst",
-        &calldata,
-        ms,
-        MaxOutputSlots::get(),
-    )]);
-    assert!(
-        matches!(applied[0].0, Ok(Ok(()))),
-        "worst-case fixed run must succeed on chain: {}",
-        outcome(&applied[0].0)
-    );
-    let (imported, import) = chain.import(&block);
-    assert!(
-        imported.is_ok(),
-        "worst-case fixed-run block must import: {imported:?}"
-    );
     println!(
-        "fixed_run: HALT baseline author {:.3} MiB, import net {:.3} MiB; worst case \
-         ({} B program, stack {VM_STACK_LIMIT}, {} loops, 256 regs, {} outputs) author {:.3} MiB, \
-         import {:.3} MiB, import net {:.3} MiB ({} B)",
+        "fixed_run: HALT baseline author {:.3} MiB, import net {:.3} MiB",
         mib(halt_applied[0].1),
         mib(halt_import.saturating_sub(empty_import)),
-        bytes.len(),
-        shape.loop_depth,
-        MaxOutputSlots::get(),
-        mib(applied[0].1),
-        mib(import),
-        mib(import.saturating_sub(empty_import)),
-        import.saturating_sub(empty_import),
+    );
+
+    let mut worst = 0u32;
+    for (name, bytes) in [
+        ("fixed_worst", prog_fixed_worst()),
+        ("fixed_worst_jumps", prog_fixed_worst_jumps()),
+    ] {
+        // Each program passes every check `store_program` applies (they are
+        // seeded at genesis only because runtime 121 filters `store_program`).
+        let program = xqvm::Program::decode(&bytes).expect("worst-case program decodes");
+        assert_eq!(
+            bytes.len(),
+            MaxProgramSize::get() as usize,
+            "{name}: maximal size"
+        );
+        assert_eq!(program.encode(), bytes, "{name}: canonical");
+        assert!(
+            xqvm::verifier::verify(&program).is_ok(),
+            "{name}: the verifier admits it"
+        );
+        let shape = pallet_xqvm::ControlFlowShape::of(program.code());
+        assert!(
+            shape.blocks <= MaxProgramBlocks::get(),
+            "{name}: within MaxProgramBlocks"
+        );
+        assert_eq!(
+            shape.loop_depth,
+            MaxLoopDepth::get(),
+            "{name}: maximal loop nesting"
+        );
+        // 256 OUTPUT instructions write slots 0..=255; the header's lexical
+        // count saturates at 255 by design (xqvm program.rs, "clamped to 255").
+        assert_eq!(
+            program.output_slots(),
+            u8::MAX,
+            "{name}: 256 OUTPUT instructions"
+        );
+        let (mut targets, mut jumps) = (0u32, 0u32);
+        let mut stream = xqvm::InstructionStream::new(program.code());
+        while let Some(Ok((_, _, instr))) = stream.next_instruction() {
+            match instr {
+                I::Target {} => targets += 1,
+                I::Jump1 { .. } | I::Jump2 { .. } | I::JumpI1 { .. } | I::JumpI2 { .. } => {
+                    jumps += 1
+                }
+                _ => {}
+            }
+        }
+        if name == "fixed_worst_jumps" {
+            assert_eq!(
+                shape.blocks,
+                MaxProgramBlocks::get(),
+                "the jump chain uses every block MaxProgramBlocks allows"
+            );
+        }
+
+        // The same run natively, to confirm the extremes are reached and not
+        // faulted short: it completes with every output slot written.
+        let mut vm = xqvm::Vm::new();
+        vm.set_step_limit(ms);
+        vm.set_memory_limit(max_vm_memory());
+        vm.set_calldata(calldata.iter().copied().map(xqvm::RegVal::Int).collect());
+        vm.set_output_slots(MaxOutputSlots::get() as usize);
+        vm.run(&program)
+            .unwrap_or_else(|e| panic!("{name}: runs to HALT natively: {e:?}"));
+
+        let (block, applied) = chain.author(vec![chain.execute_with_outputs(
+            name,
+            &calldata,
+            ms,
+            MaxOutputSlots::get(),
+        )]);
+        assert!(
+            matches!(applied[0].0, Ok(Ok(()))),
+            "{name}: must succeed on chain: {}",
+            outcome(&applied[0].0)
+        );
+        let (imported, import) = chain.import(&block);
+        assert!(imported.is_ok(), "{name}: block must import: {imported:?}");
+        let net = import.saturating_sub(empty_import);
+        worst = worst.max(net);
+        println!(
+            "fixed_run {name}: {} B program, {} blocks ({targets} targets, {jumps} jumps), \
+             stack {VM_STACK_LIMIT}, {} loops, 256 regs, {} outputs: author {:.3} MiB, \
+             import {:.3} MiB, import net {:.3} MiB ({net} B)",
+            bytes.len(),
+            shape.blocks,
+            shape.loop_depth,
+            MaxOutputSlots::get(),
+            mib(applied[0].1),
+            mib(import),
+            mib(net),
+        );
+    }
+    println!(
+        "fixed_run worst case (max of the above): {:.3} MiB ({worst} B)",
+        mib(worst)
     );
 }
 

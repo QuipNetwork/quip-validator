@@ -566,11 +566,14 @@ parameter_types! {
     /// VM memory meter does not charge (census test `i_worst_case_fixed_run`):
     /// a `MaxProgramSize` (64 KiB) program, loaded and decoded, that the
     /// `store_program` checks admit; the value stack pushed to its 8,192-entry
-    /// limit; 32 nested loop frames; all 256 registers and output slots. The
-    /// value stack is bounded by xqvm's `STACK_LIMIT` (8,192 `i64` entries),
-    /// not by the memory meter, so it is accounted for here. Importer heap net
-    /// of an empty block: 0.450 MiB (471,944 B); the HALT-only baseline is
-    /// 0.025 MiB.
+    /// limit; 32 nested loop frames; all 256 registers and output slots; and,
+    /// in a second variant, a `TARGET`/`JUMP` chain filling every block
+    /// `MaxProgramBlocks` allows (1,984 targets, 1,983 jumps), so decode's
+    /// jump table and its scan temporaries are at their largest. The value
+    /// stack is bounded by xqvm's `STACK_LIMIT` (8,192 `i64` entries), not by
+    /// the memory meter, so it is accounted for here. Importer heap net of an
+    /// empty block, the larger of the two: 0.453 MiB (474,784 B; 471,944 B
+    /// without the jump chain); the HALT-only baseline is 0.025 MiB.
     ///
     /// At `L = 2 MiB`: 40 + 0.45 + 44.0 + 3.3 ≈ **87.8 MiB < 128 MiB**, i.e.
     /// 31.4 % of the heap free. 16 MiB (the old value) put the budget past
@@ -1026,10 +1029,11 @@ mod xqvm_weights {
         // entries; bounded by that count, not by the meter), 32 loop frames,
         // 256 registers and output slots. Allowance 1 MiB.
         const FIXED_RUN: u64 = MIB;
-        // Measured worst case (census test `i_worst_case_fixed_run`): importer
-        // heap net of an empty block, 471,944 B (0.450 MiB). The HALT-only
-        // baseline is ~0.025 MiB.
-        const FIXED_RUN_MEASURED: u64 = 471_944;
+        // Measured worst case (census test `i_worst_case_fixed_run`, the larger
+        // of its two programs -- with and without a jump chain filling
+        // MaxProgramBlocks): importer heap net of an empty block, 474,784 B
+        // (0.453 MiB). The HALT-only baseline is ~0.025 MiB.
+        const FIXED_RUN_MEASURED: u64 = 474_784;
         // Per-extrinsic retained term (kimi W1-002 follow-up): the mempool's
         // `transformed: Vec<Vec<i8>>` lives across the per-solution VMs of one
         // `submit_solution`. It is retained for the extrinsic, not a run, and is
