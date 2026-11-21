@@ -638,6 +638,34 @@ check "main waiter (rule 3): a later prune sees the slot as held" \
   'kept 2/old && blogged "$broot/2/old is in use (lock held), skipping"'
 wait "$waiter_pid" || true
 
+# Item 12 (F1): a job that waits on its slot's lock THROUGH a rule-3 eviction
+# wakes holding the live lock with target/ renamed away. The lock step must
+# recreate target/ after the lock, so the job stamps, builds and exits 0
+# under the template shell's `set -eo pipefail`.
+budget_volume
+rm -f "$tmp/mv.started"
+bpath="$slowmv:"
+brun --volume-budget 50 &
+prune_pid=$!
+bpath=""
+for _ in $(seq 200); do
+  [[ -e "$tmp/mv.started" ]] && break
+  sleep 0.05
+done
+CARGO_TARGET_DIR="$broot/2/old/target" CI_CACHE_LOCK_WAIT=20 \
+  bash -c 'set -eo pipefail; . "$1"; echo built >"$CARGO_TARGET_DIR/marker"' _ "$lockstep" \
+  >"$tmp/job.log" 2>&1 &
+job_pid=$!
+wait "$prune_pid" || true
+job_status=0
+wait "$job_pid" || job_status=$?
+check "lock step: the prune evicted the waiting job's target/" \
+  'blogged "evicting the target/ of least recently used slot $broot/2/old "'
+check "lock step: a job that waited through the eviction exits 0 holding the lock" \
+  '((job_status == 0)) && grep -q "holding shared in-use lock" "$tmp/job.log"'
+check "lock step: ... into a fresh, stamped target/" \
+  '[[ -e "$broot/2/old/target/.last-used" && -e "$broot/2/old/target/marker" ]]'
+
 # --- Physical containment (item 9) -------------------------------------------
 # `mv`, `rm -rf` and cargo-sweep follow symlinks in intermediate path
 # components, so names alone prove nothing. Slot-shaped trees OUTSIDE the

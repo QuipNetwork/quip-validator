@@ -19,15 +19,22 @@
 #
 # This branch's prune never removes or renames a slot directory or its
 # `.in-use` (it evicts target/ only), so the locked file is always the live
-# one. The inode check guards against anything else that replaces the file --
-# main's prune, for instance, deletes a whole slot -- by retrying on a fresh
-# slot. A job that cannot lock its live slot in three attempts fails rather
-# than build into an unprotected slot.
+# one. It may evict target/ while this job WAITS for the lock, so target/ is
+# created only after the lock is held and checked, never before. The inode
+# check guards against anything else that replaces the file by retrying on a
+# fresh slot. A job that cannot lock its live slot in three attempts fails
+# rather than build into an unprotected slot.
+#
+# Known gap, mixed rollout only: main's prune (c63fd2f) deletes a whole slot
+# with `rm -rf "$slot"`. If its readdir unlinks `.in-use` before target/, this
+# job creates and locks a NEW `.in-use` that passes the inode check, then
+# builds into a target/ that main's prune is still deleting. The inode check
+# cannot see that. The race closes once every pruning branch runs this prune.
 
 ci_cache_slot="${CARGO_TARGET_DIR%/target}"
 ci_cache_locked=0
 for ci_cache_attempt in 1 2 3; do
-  mkdir -p "$CARGO_TARGET_DIR"
+  mkdir -p "$ci_cache_slot"
   exec 9>>"$ci_cache_slot/.in-use"
   if ! flock --shared --wait "${CI_CACHE_LOCK_WAIT:-1200}" 9; then
     echo "ERROR: a cache prune held $ci_cache_slot for ${CI_CACHE_LOCK_WAIT:-1200}s" >&2
@@ -44,6 +51,8 @@ if [ "$ci_cache_locked" != 1 ]; then
   echo "ERROR: could not lock cache slot $ci_cache_slot in 3 attempts" >&2
   exit 1
 fi
+# Under the lock: a target/ evicted while this job waited is recreated empty.
+mkdir -p "$CARGO_TARGET_DIR"
 # Stamp the slot at job start: rule 2 and rule 3 of the prune read this stamp.
 # (Main's template does not stamp at start; its jobs are protected by the
 # lock alone.)
