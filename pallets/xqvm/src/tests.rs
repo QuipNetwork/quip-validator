@@ -1605,7 +1605,10 @@ fn audit_signed_store_distinguishes_dead_reads_and_rejects_hidden_peak() {
 }
 
 // W1-003a repin gate. A checked-in corpus of canonical program bytes with
-// their pinned identity hashes. The bytes are stored literally, not rebuilt
+// their pinned identity hashes. The corpus is synthetic, not historical: no
+// programs exist on chain to draw from (`store_program` is filtered on runtime
+// 121, and the testnet `Programs` map is empty), so the entries are chosen to
+// exercise the encoder's header computation rather than sampled from use. The bytes are stored literally, not rebuilt
 // from the builder, so a future xqvm repin that changes the canonical encoding
 // -- the header's recomputed slot bytes, the CRC, or the layout -- breaks
 // `decode(x).encode() == x`, and any change to the hashed bytes breaks the
@@ -1620,37 +1623,84 @@ fn canonical_corpus_round_trips_and_hashes_are_pinned() {
             .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
             .collect()
     }
-    // (canonical XQBC bytes, BlakeTwo256 hash) -- halt, input/output, arithmetic,
-    // a model builder, and a range loop.
-    let corpus: &[(&str, &str)] = &[
+    // The output-slot entry is 256 `PUSH1 0; OUTPUT r0` pairs (`11000f00`)
+    // behind its literal header: spelled as a repeat, but still literal bytes.
+    let many_outputs = format!(
+        "585142430100ff00000405e4a51ab911010b00{}ff",
+        "11000f00".repeat(256)
+    );
+    // (canonical XQBC bytes, BlakeTwo256 hash, header input slots, header
+    // output slots) -- halt, input/output, arithmetic, a model builder, a range
+    // loop, and three entries for scan's lexical slot counting: INPUT/OUTPUT in
+    // dead code after HALT (still counted), INPUT inside a RANGE...NEXT body
+    // (counted once), and 256 OUTPUTs (the output count saturates at 255).
+    let corpus: Vec<(&str, &str, u8, u8)> = vec![
         (
             "5851424301000000000001ff000000ff",
             "6868acc3b12d6fefd2cbe190b3a80f83b4501b3d83777a6089f4ae0d9f8d67cc",
+            0,
+            0,
         ),
         (
             "585142430101010000000976532f4311000e0011000f00ff",
             "04a2b90df7ef476042a1507c79dc70390debed539e57ccd7e7888c7ce3a6e993",
+            1,
+            1,
         ),
         (
             "5851424301000000000008e725b11111061107220b00ff",
             "d59b0eb6206a76cf4b603c8cf053e1d6b2d3ac877acb196374f48ee905f7db50",
+            0,
+            0,
         ),
         (
             "585142430100000000000b9304092d11044000110011016100ff",
             "91fe729a703e1d93cc5fc492773e00a92c1543fac076b8994372da370d223c21",
+            0,
+            0,
         ),
         (
             "5851424301000000000008482a67471100110308f007ff",
             "db0ca5528a09843a19b6c32ece331d577a066570995a482562060d7b3f0198c7",
+            0,
+            0,
+        ),
+        // HALT; PUSH1 0; INPUT r0; PUSH1 0; OUTPUT r0; HALT -- dead slots count.
+        (
+            "585142430101010000000a9297848fff11000e0011000f00ff",
+            "a399e3d621b2e1180d0427e50f7e81b8e6cbe60daed0cd254725d24f9c5414d5",
+            1,
+            1,
+        ),
+        // PUSH1 0; PUSH1 1; RANGE; PUSH1 0; INPUT r0; NEXT; HALT.
+        (
+            "585142430101000000000b0a176d6b110011010811000e0007ff",
+            "afe198a7fdd91d7648a80b9b97c82c851e689b07727aff7b320829b9cec57069",
+            1,
+            0,
+        ),
+        // PUSH1 1; STOW r0; 256 x (PUSH1 0; OUTPUT r0); HALT.
+        (
+            many_outputs.as_str(),
+            "1b50324f0704d06d657a4ec8e3499ebf393c5a3a82d1c875bf94e960ee2baa23",
+            0,
+            255,
         ),
     ];
-    for (bytes_hex, hash_hex) in corpus {
+    for (bytes_hex, hash_hex, input_slots, output_slots) in corpus {
         let bytes = unhex(bytes_hex);
         // Canonical round-trip: decode then re-encode must reproduce the bytes.
         let reencoded = Program::decode(&bytes)
             .expect("corpus program decodes")
             .encode();
         assert_eq!(reencoded, bytes, "non-canonical corpus entry {bytes_hex}");
+        // The header's slot bytes are what scan's lexical count computed.
+        let program = Program::decode(&bytes).expect("corpus program decodes");
+        assert_eq!(
+            (program.input_slots(), program.output_slots()),
+            (input_slots, output_slots),
+            "header slot counts moved for corpus entry {bytes_hex}"
+        );
         // Pinned identity hash: a silent hash move fails here.
         assert_eq!(
             program_hash(&bytes).as_ref(),
