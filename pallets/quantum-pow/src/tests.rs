@@ -3453,3 +3453,137 @@ fn target_proof_blocks_gates_decay() {
         );
     });
 }
+
+// --- W1-007: weights and the difficulty API never decode the full topology ---
+
+/// Register a 16-node ring (the mock's MaxNodes) and make it the mineable
+/// default. Returns its hash and the encoded node list, which appears in a
+/// storage proof only if the full `RegisteredTopologies` value was read.
+fn register_ring() -> (sp_core::H256, Vec<u8>) {
+    let nodes = bounded::<_, MaxNodes>((0..16u32).collect());
+    let edges = bounded::<_, MaxEdges>((0..16u32).map(|i| (i, (i + 1) % 16)).collect());
+    let hash = topology::hash_topology(
+        &nodes,
+        &edges,
+        &allowed_h_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
+        &allowed_spin_spec().as_slice(),
+    );
+    assert_ok!(QuantumPow::register_topology(
+        RuntimeOrigin::root(),
+        nodes.clone(),
+        edges,
+        allowed_h_spec(),
+        allowed_j_spec(),
+        allowed_spin_spec(),
+    ));
+    (hash, codec::Encode::encode(&nodes))
+}
+
+/// True when any storage-proof node contains `needle`.
+fn proof_contains<'a>(mut nodes: impl Iterator<Item = &'a Vec<u8>>, needle: &[u8]) -> bool {
+    nodes.any(|node| node.windows(needle.len()).any(|window| window == needle))
+}
+
+#[test]
+fn weight_and_difficulty_api_never_read_the_full_topology() {
+    use frame_support::{dispatch::GetDispatchInfo, traits::UnfilteredDispatchable};
+    let mut ext = new_test_ext();
+    let (hash, encoded_nodes) = ext.execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        register_ring()
+    });
+    ext.commit_all().unwrap();
+    let proof_call = |ext: &mut sp_io::TestExternalities| {
+        ext.execute_with(|| {
+            let mut proof = proof_for(1, &bounded(vec![0, 1]), &bounded(vec![(0, 1)]), hash, &[0]);
+            proof.solutions = bounded(vec![bounded(vec![0u8; 2]); 3]);
+            crate::Call::<Test>::submit_proof { proof }
+        })
+    };
+    let call = proof_call(&mut ext);
+
+    // The submit_proof weight closure.
+    let (weight, proof) = ext.execute_and_prove(|| call.get_dispatch_info().call_weight);
+    assert!(
+        !proof_contains(proof.iter_nodes(), &encoded_nodes),
+        "weight closure read the full topology"
+    );
+    assert_eq!(
+        weight,
+        <Test as crate::Config>::WeightInfo::submit_proof(16, 16, 3),
+        "the weight for a real topology is unchanged"
+    );
+
+    // The difficulty API and the curve behind on_finalize.
+    let (difficulty, proof) = ext.execute_and_prove(|| QuantumPow::difficulty_for_api(hash));
+    assert!(difficulty.is_some());
+    assert!(
+        !proof_contains(proof.iter_nodes(), &encoded_nodes),
+        "difficulty API read the full topology"
+    );
+    let (curve, proof) = ext.execute_and_prove(|| QuantumPow::energy_curve_for(hash));
+    assert!(curve.is_some());
+    assert!(
+        !proof_contains(proof.iter_nodes(), &encoded_nodes),
+        "energy curve read the full topology"
+    );
+
+    // Positive control: dispatch does read the full topology, so the detector
+    // can see a read when one happens.
+    let (_, proof) = ext.execute_and_prove(|| {
+        let _ = call
+            .clone()
+            .dispatch_bypass_filter(RuntimeOrigin::signed(1));
+    });
+    assert!(
+        proof_contains(proof.iter_nodes(), &encoded_nodes),
+        "detector missed the dispatch read"
+    );
+}
+
+#[test]
+fn unregistered_topology_is_charged_base_and_rejected_from_the_summary() {
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, hash) = registered_topology();
+        let mut proof = proof_for(1, &nodes, &edges, hash, &[0]);
+        proof.topology_hash = sp_core::H256::repeat_byte(9);
+        let call = crate::Call::<Test>::submit_proof {
+            proof: proof.clone(),
+        };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            <Test as crate::Config>::WeightInfo::submit_proof(0, 0, 1)
+        );
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+        assert_eq!(
+            QuantumPow::difficulty_for_api(sp_core::H256::repeat_byte(9)),
+            None
+        );
+    });
+}
+
+#[test]
+fn topology_summary_matches_the_meta_for_every_registered_topology() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        let _ = register_ring();
+        let _ = registered_zero_field_topology();
+        let mut checked = 0;
+        for (hash, meta) in RegisteredTopologies::<Test>::iter() {
+            let summary = crate::TopologySummary::<Test>::get(hash).expect("summary exists");
+            assert_eq!(summary.nodes, meta.nodes.len() as u32);
+            assert_eq!(summary.edges, meta.edges.len() as u32);
+            assert_eq!(summary.allowed_h_values, meta.allowed_h_values);
+            assert_eq!(summary.allowed_j_values, meta.allowed_j_values);
+            checked += 1;
+        }
+        assert_eq!(checked, 3);
+        assert_eq!(crate::TopologySummary::<Test>::iter().count(), 3);
+    });
+}

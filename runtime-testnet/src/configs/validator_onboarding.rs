@@ -1102,7 +1102,7 @@ pub(super) mod tests {
                 (StorageVersion::get::<crate::Offences>(), 1),
                 (StorageVersion::get::<crate::MinerRegistry>(), 3),
                 (StorageVersion::get::<crate::QuantumComputeMempool>(), 4),
-                (StorageVersion::get::<crate::QuantumPow>(), 6),
+                (StorageVersion::get::<crate::QuantumPow>(), 7),
                 (StorageVersion::get::<crate::EmissionController>(), 2),
                 (StorageVersion::get::<crate::FaucetOps>(), 1),
             ] {

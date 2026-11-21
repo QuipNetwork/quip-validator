@@ -720,6 +720,23 @@ fn empty_vesting_and_removed_legacy_genesis_charge_are_only_deltas() {
         .expect("baseline MinerRegistry storage version");
     assert_eq!(baseline_version.1, hex::encode(2u16.encode()));
     baseline_version.1 = hex::encode(3u16.encode());
+    // W1-007: QuantumPow's storage version moves 6 -> 7 (the new
+    // TopologySummary; no migration).
+    let pow_version = frame_support::storage::storage_prefix(
+        b"QuantumPow",
+        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
+    );
+    assert_eq!(
+        after.get(pow_version.as_slice()),
+        Some(&7u16.encode()),
+        "QuantumPow genesis storage version must be 7"
+    );
+    let baseline_pow = before
+        .iter_mut()
+        .find(|(key, _)| *key == hex::encode(pow_version))
+        .expect("baseline QuantumPow storage version");
+    assert_eq!(baseline_pow.1, hex::encode(6u16.encode()));
+    baseline_pow.1 = hex::encode(7u16.encode());
     let after: Vec<_> = after
         .iter()
         .map(|(k, v)| (hex::encode(k), hex::encode(v)))

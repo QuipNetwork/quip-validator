@@ -1216,23 +1216,47 @@ fn f_non_vm_baseline_submit_proof() {
         call.encode().len()
     );
 
-    // Seed the topology so the weight closure's RegisteredTopologies::get decodes it.
+    // Seed the topology (meta and, since W1-007, its summary) and register the
+    // signer as a miner. The weight closure now reads only the fixed-size
+    // summary, so the full meta is decoded in dispatch, after the miner,
+    // per-block and registration checks: a registered miner is what reaches
+    // that decode, the worst case this baseline measures.
     let mut g = chain.genesis.clone();
     g.top.insert(
         pallet_quantum_pow::RegisteredTopologies::<Runtime>::hashed_key_for(topology_hash),
         meta_enc,
     );
+    g.top.insert(
+        pallet_quantum_pow::TopologySummary::<Runtime>::hashed_key_for(topology_hash),
+        pallet_quantum_pow::types::TopologySummaryInfo {
+            nodes: meta.nodes.len() as u32,
+            edges: meta.edges.len() as u32,
+            allowed_h_values: meta.allowed_h_values.clone(),
+            allowed_j_values: meta.allowed_j_values.clone(),
+        }
+        .encode(),
+    );
+    let mut seeded = TestExternalities::new(g);
+    seeded.execute_with(|| {
+        pallet_quantum_pow::Pallet::<Runtime>::register_miner(
+            quip_testnet_runtime::RuntimeOrigin::signed(account_id_from_public(
+                &chain.attacker.public(),
+            )),
+        )
+        .expect("miner registers");
+    });
     let sub = Chain {
         executor: Executor::builder().build(),
-        genesis: g,
+        genesis: snapshot(&mut seeded),
         genesis_hash: chain.genesis_hash,
         attacker: HybridPair::from_seed_slice(&[0xA7; 32]).unwrap(),
         programs: vec![],
     };
     let (empty, _) = sub.author(vec![]);
     let (_, empty_import) = sub.import(&empty);
-    // submit_proof from an unregistered miner: the weight closure decodes the
-    // full meta, apply decodes the proof, then errors on the Miners check.
+    // submit_proof from a registered miner on a registered topology: apply
+    // decodes the proof, dispatch decodes the full meta, then the call fails a
+    // later check (the topology is not mineable).
     let (block, applied) = sub.author(vec![call]);
     let (_, import_heap) = sub.import(&block);
     println!(

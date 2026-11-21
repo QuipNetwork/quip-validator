@@ -38,6 +38,7 @@ type PackedSpinBytesOf<T> = frame_support::pallet_prelude::BoundedVec<u8, <T as 
 type PackedSolutionsOf<T> =
     frame_support::pallet_prelude::BoundedVec<PackedSpinBytesOf<T>, <T as Config>::MaxSolutions>;
 type QuantumProofOf<T> = types::QuantumProof<PackedSolutionsOf<T>>;
+type TopologySummaryInfoOf<T> = types::TopologySummaryInfo<AllowedValueSetOf<T>>;
 type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
@@ -144,7 +145,9 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(6);
+    // v7 (W1-007): adds `TopologySummary`, written at registration. No
+    // migration (owner O-B2: the testnet is reset and mainnet launches fresh).
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(7);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -237,6 +240,14 @@ pub mod pallet {
     #[pallet::storage]
     pub type RegisteredTopologies<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, TopologyMetaOf<T>>;
+
+    /// Dimensions and h/j value specs of each registered topology (W1-007),
+    /// written with `RegisteredTopologies` and never removed. The source of
+    /// truth for registration: weights, difficulty curves and the difficulty
+    /// API read only this, so they never decode a full topology.
+    #[pallet::storage]
+    pub type TopologySummary<T: Config> =
+        StorageMap<_, Blake2_128Concat, H256, TopologySummaryInfoOf<T>>;
 
     #[pallet::storage]
     pub type DefaultTopology<T: Config> = StorageValue<_, H256>;
@@ -703,10 +714,19 @@ pub mod pallet {
                 &allowed_spin_values.as_slice(),
             );
             ensure!(
-                !RegisteredTopologies::<T>::contains_key(topology_hash),
+                !TopologySummary::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyAlreadyRegistered
             );
 
+            TopologySummary::<T>::insert(
+                topology_hash,
+                TopologySummaryInfoOf::<T> {
+                    nodes: nodes.len() as u32,
+                    edges: edges.len() as u32,
+                    allowed_h_values: allowed_h_values.clone(),
+                    allowed_j_values: allowed_j_values.clone(),
+                },
+            );
             RegisteredTopologies::<T>::insert(
                 topology_hash,
                 TopologyMetaOf::<T> {
@@ -749,7 +769,7 @@ pub mod pallet {
         pub fn set_default_topology(origin: OriginFor<T>, topology_hash: H256) -> DispatchResult {
             ensure_root(origin)?;
             ensure!(
-                RegisteredTopologies::<T>::contains_key(topology_hash),
+                TopologySummary::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
             ensure!(
@@ -781,7 +801,7 @@ pub mod pallet {
         ) -> DispatchResult {
             ensure_root(origin)?;
             ensure!(
-                RegisteredTopologies::<T>::contains_key(topology_hash),
+                TopologySummary::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
             ensure!(
@@ -813,7 +833,7 @@ pub mod pallet {
             curve_c: crate::difficulty::CurveC,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            let topology = RegisteredTopologies::<T>::get(topology_hash)
+            let topology = TopologySummary::<T>::get(topology_hash)
                 .ok_or(Error::<T>::TopologyNotRegistered)?;
             // The `c` values must be strictly increasing easy -> knee -> hard,
             // and must yield a well-ordered energy curve for this topology.
@@ -822,8 +842,8 @@ pub mod pallet {
                 Error::<T>::InvalidCurve
             );
             let curve = crate::difficulty::EnergyCurve::new(
-                topology.nodes.len() as u32,
-                topology.edges.len() as u32,
+                topology.nodes,
+                topology.edges,
                 curve_c,
                 &topology.allowed_h_values.as_slice(),
                 &topology.allowed_j_values.as_slice(),
@@ -893,8 +913,10 @@ pub mod pallet {
             // Validation cost scales with the registered topology's dimensions and the
             // number of submitted solutions. `QuantumProof` only carries `topology_hash`
             // and `solutions`, so node/edge counts come from the same topology lookup
-            // validation performs. An unregistered hash does O(1) work before rejecting
-            // with `TopologyNotRegistered`, so it is charged the base weight (n = e = 0);
+            // validation performs, read from the fixed-size `TopologySummary` so the
+            // weight never decodes the full topology (W1-007). An unregistered hash
+            // has no summary and does O(1) work before rejecting with
+            // `TopologyNotRegistered`, so it is charged the base weight (n = e = 0);
             // every solution-scaled term multiplies by n or e, so `solutions` adds
             // nothing on that path. The base-only charge relies on all dispatch checks
             // before the topology lookup staying O(1). Conversely, a registered
@@ -907,8 +929,8 @@ pub mod pallet {
             // cost observed on node02, not a claim of literal O(n·e) complexity.
             // TopologyIndex uses BTreeMap construction and lookups, whose structural
             // behavior is closer to n·log(n) + e·log(n).
-            let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
-                .map(|topology| (topology.nodes.len() as u32, topology.edges.len() as u32))
+            let (nodes, edges) = TopologySummary::<T>::get(proof.topology_hash)
+                .map(|summary| (summary.nodes, summary.edges))
                 .unwrap_or((0, 0));
             let solutions = proof.solutions.len() as u32;
             <T as Config>::WeightInfo::submit_proof(nodes, edges, solutions)
@@ -928,10 +950,17 @@ pub mod pallet {
                 Error::<T>::NoSolutionsSubmitted
             );
 
-            // Topology lookup is the source of truth for nodes, edges, and the
-            // allowed value sets. The proof's `topology_hash` is the only
-            // identity claim; there are no `proof.nodes`/`proof.edges` to
-            // cross-check.
+            // Registration is decided by the summary, before the full topology
+            // is read (W1-007). The topology lookup is then the source of truth
+            // for nodes, edges, and the allowed value sets. The proof's
+            // `topology_hash` is the only identity claim; there are no
+            // `proof.nodes`/`proof.edges` to cross-check. This is the one
+            // dispatch path that decodes the full meta, and only after the
+            // origin, miner and per-block checks above.
+            ensure!(
+                TopologySummary::<T>::contains_key(proof.topology_hash),
+                Error::<T>::TopologyNotRegistered
+            );
             let topology = RegisteredTopologies::<T>::get(proof.topology_hash)
                 .ok_or(Error::<T>::TopologyNotRegistered)?;
             ensure!(
@@ -1033,7 +1062,7 @@ pub mod pallet {
         pub fn add_mineable_topology(origin: OriginFor<T>, topology_hash: H256) -> DispatchResult {
             ensure_root(origin)?;
             ensure!(
-                RegisteredTopologies::<T>::contains_key(topology_hash),
+                TopologySummary::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
             if !MineableTopologies::<T>::contains_key(topology_hash) {
@@ -1081,10 +1110,15 @@ pub mod pallet {
             DefaultTopology::<T>::get()
         }
 
+        /// The full registered topology. This decodes every node and edge (up
+        /// to `MaxNodes` and `MaxEdges`), by design: it backs the
+        /// `topology_meta` runtime API, which exists to return them. Anything
+        /// that needs only dimensions or value specs reads `TopologySummary`.
         pub fn topology_meta(hash: H256) -> Option<TopologyMetaOf<T>> {
             RegisteredTopologies::<T>::get(hash)
         }
 
+        /// The default topology in full; decodes it, like [`Self::topology_meta`].
         pub fn default_topology_meta() -> Option<(H256, TopologyMetaOf<T>)> {
             let topology_hash = DefaultTopology::<T>::get()?;
             let topology = RegisteredTopologies::<T>::get(topology_hash)?;
@@ -1167,7 +1201,7 @@ pub mod pallet {
         /// Per-topology live difficulty (decay applied). Returns `None` if
         /// `topology_hash` has never been registered.
         pub fn difficulty_for_api(topology_hash: H256) -> Option<types::DifficultyConfig> {
-            RegisteredTopologies::<T>::contains_key(topology_hash).then(|| {
+            TopologySummary::<T>::contains_key(topology_hash).then(|| {
                 Self::current_difficulty_for(
                     topology_hash,
                     frame_system::Pallet::<T>::block_number(),
@@ -1289,7 +1323,9 @@ pub mod pallet {
         pub(crate) fn energy_curve_for(
             topology_hash: H256,
         ) -> Option<crate::difficulty::EnergyCurve> {
-            let topology = RegisteredTopologies::<T>::get(topology_hash)?;
+            // Fixed-size summary only: on_finalize and the difficulty API run
+            // this, and must not decode the full topology (W1-007).
+            let topology = TopologySummary::<T>::get(topology_hash)?;
             // Prefer a per-topology override; fall back to the runtime
             // constants when none is set (the legacy calibration).
             let curve_c = TopologyCurveC::<T>::get(topology_hash).unwrap_or_else(|| {
@@ -1300,8 +1336,8 @@ pub mod pallet {
                 }
             });
             crate::difficulty::EnergyCurve::new(
-                topology.nodes.len() as u32,
-                topology.edges.len() as u32,
+                topology.nodes,
+                topology.edges,
                 curve_c,
                 &topology.allowed_h_values.as_slice(),
                 &topology.allowed_j_values.as_slice(),

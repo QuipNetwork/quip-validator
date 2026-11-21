@@ -1,8 +1,9 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
 //! enumerated regenerated-weight values, exact mempool changes, staking constants,
-//! appended staking commission error, exact XQVM audit changes, and the exact
-//! MinerRegistry W1-009 retention/paging changes below.
+//! appended staking commission error, exact XQVM audit changes, the exact
+//! MinerRegistry W1-009 retention/paging changes, and the exact QuantumPow
+//! W1-007 topology summary below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -1161,6 +1162,119 @@ fn normalize_miner_registry(before: &mut Value, after: &mut Value) -> Result<(),
     Ok(())
 }
 
+// W1-007 (QuantumPow topology summary). Exact delta: one new optional map,
+// `TopologySummary`, right after `RegisteredTopologies` with the same hasher and
+// key, whose value is `TopologySummaryInfo { nodes: u32, edges: u32,
+// allowed_h_values, allowed_j_values }` using the meta's own value-spec type.
+const TOPOLOGY_SUMMARY_DOCS: &[&str] = &[
+    " Dimensions and h/j value specs of each registered topology (W1-007),",
+    " written with `RegisteredTopologies` and never removed. The source of",
+    " truth for registration: weights, difficulty curves and the difficulty",
+    " API read only this, so they never decode a full topology.",
+];
+
+fn pow_storage_entries(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    metadata["pallets"]
+        .as_array_mut()
+        .and_then(|pallets| pallets.iter_mut().find(|p| p["name"] == "QuantumPow"))
+        .and_then(|pallet| pallet["storage"]["entries"].as_array_mut())
+        .ok_or_else(|| "missing QuantumPow storage".into())
+}
+
+fn registry_type(metadata: &Value, id: &Value) -> Option<Value> {
+    let id = usize::try_from(id.as_u64()?).ok()?;
+    metadata["types"]["types"]
+        .get(id)
+        .map(|ty| ty["type"].clone())
+}
+
+fn normalize_topology_summary(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    if pow_storage_entries(before)?
+        .iter()
+        .any(|entry| entry["name"] == "TopologySummary")
+    {
+        return Err("unexpected baseline QuantumPow topology summary".into());
+    }
+    let types = after.clone();
+    let entries = pow_storage_entries(after)?;
+    let meta_at = entries
+        .iter()
+        .position(|entry| entry["name"] == "RegisteredTopologies")
+        .ok_or("missing candidate RegisteredTopologies")?;
+    let found: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry["name"] == "TopologySummary")
+        .map(|(index, _)| index)
+        .collect();
+    if found != [meta_at + 1] {
+        return Err("missing or misplaced required QuantumPow topology summary".into());
+    }
+    let meta = entries[meta_at].clone();
+    let summary = entries[meta_at + 1].clone();
+    let expected = serde_json::json!({
+        "default": [0],
+        "deprecation_info": "NotDeprecated",
+        "docs": TOPOLOGY_SUMMARY_DOCS,
+        "modifier": "Optional",
+        "name": "TopologySummary",
+        "ty": {"Map": {
+            "hashers": meta["ty"]["Map"]["hashers"].clone(),
+            "key": meta["ty"]["Map"]["key"].clone(),
+            "value": summary["ty"]["Map"]["value"].clone(),
+        }},
+    });
+    if summary != expected {
+        return Err("incorrect required QuantumPow topology summary entry".into());
+    }
+    // The value type: the exact struct, its u32 dimensions, and the same
+    // value-spec type the meta uses for its allowed_h_values.
+    let value = registry_type(&types, &summary["ty"]["Map"]["value"])
+        .ok_or("missing topology summary value type")?;
+    let meta_value = registry_type(&types, &meta["ty"]["Map"]["value"])
+        .ok_or("missing topology meta value type")?;
+    let spec = meta_value
+        .pointer("/def/composite/fields")
+        .and_then(Value::as_array)
+        .and_then(|fields| fields.iter().find(|f| f["name"] == "allowed_h_values"))
+        .map(|field| field["type"].clone())
+        .ok_or("missing meta allowed_h_values type")?;
+    let fields = value
+        .pointer("/def/composite/fields")
+        .and_then(Value::as_array)
+        .ok_or("topology summary value is not a struct")?;
+    let shape: Vec<(String, Option<String>, Value)> = fields
+        .iter()
+        .map(|f| {
+            (
+                f["name"].as_str().unwrap_or_default().to_owned(),
+                registry_type(&types, &f["type"]).and_then(|ty| {
+                    ty.pointer("/def/primitive")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                }),
+                f["type"].clone(),
+            )
+        })
+        .collect();
+    let ok = value["path"]
+        == serde_json::json!(["pallet_quantum_pow", "types", "TopologySummaryInfo"])
+        && shape.len() == 4
+        && shape[0].0 == "nodes"
+        && shape[0].1.as_deref() == Some("u32")
+        && shape[1].0 == "edges"
+        && shape[1].1.as_deref() == Some("u32")
+        && shape[2].0 == "allowed_h_values"
+        && shape[2].2 == spec
+        && shape[3].0 == "allowed_j_values"
+        && shape[3].2 == spec;
+    if !ok {
+        return Err("incorrect required QuantumPow topology summary value type".into());
+    }
+    pow_storage_entries(after)?.remove(meta_at + 1);
+    Ok(())
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
@@ -1198,6 +1312,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     normalize_commission_error(&mut left, &mut right)?;
     normalize_xqvm(&mut left, &mut right)?;
     normalize_miner_registry(&mut left, &mut right)?;
+    normalize_topology_summary(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?
@@ -1641,6 +1756,66 @@ mod tests {
             .find(|entry| entry["name"] == "NextExpiryBucket")
             .unwrap()["docs"] = Value::from("mutated");
         assert!(check(&wrong_before, &after).is_err());
+    }
+
+    #[test]
+    fn requires_exact_quantum_pow_topology_summary() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for field in [
+            "name",
+            "modifier",
+            "default",
+            "docs",
+            "deprecation_info",
+            "ty",
+        ] {
+            let mut wrong = after.clone();
+            pow_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "TopologySummary")
+                .unwrap()[field] = Value::from("mutated");
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted TopologySummary.{field}"
+            );
+        }
+        let mut missing = after.clone();
+        pow_storage_entries(&mut missing)
+            .unwrap()
+            .retain(|e| e["name"] != "TopologySummary");
+        assert!(
+            check(&before, &missing).is_err(),
+            "accepted a missing summary"
+        );
+        let mut misplaced = after.clone();
+        let entries = pow_storage_entries(&mut misplaced).unwrap();
+        let at = entries
+            .iter()
+            .position(|e| e["name"] == "TopologySummary")
+            .unwrap();
+        let entry = entries.remove(at);
+        entries.push(entry);
+        assert!(
+            check(&before, &misplaced).is_err(),
+            "accepted a misplaced summary"
+        );
+        // A different value type: rename the struct's path.
+        let mut wrong_type = after.clone();
+        let value = pow_storage_entries(&mut wrong_type)
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "TopologySummary")
+            .unwrap()["ty"]["Map"]["value"]
+            .as_u64()
+            .unwrap() as usize;
+        wrong_type["types"]["types"][value]["type"]["path"] =
+            serde_json::json!(["pallet_quantum_pow", "types", "Other"]);
+        assert!(
+            check(&before, &wrong_type).is_err(),
+            "accepted a different value type"
+        );
     }
 
     #[test]

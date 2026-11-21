@@ -258,6 +258,9 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
         fn topology_meta(
             hash: sp_core::H256,
         ) -> Option<pallet_quantum_pow::types::TopologyMeta<QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues, BlockNumber>> {
+            // Returns, and so decodes, the full topology (up to MaxNodes /
+            // MaxEdges) by design. Weights and difficulty read the pallet's
+            // fixed-size TopologySummary instead (W1-007).
             RegisteredTopologies::<Runtime>::get(hash)
         }
 

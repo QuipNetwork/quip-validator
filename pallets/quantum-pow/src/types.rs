@@ -73,6 +73,22 @@ impl Default for DifficultyConfig {
 /// structure plus the allowed h, j, and spin value sets. The hash is computed
 /// by [`crate::topology::hash_topology`] over all five inputs so two
 /// topologies that differ only in their allowed value sets get distinct hashes.
+/// The parts of a registered topology that weights, difficulty curves and the
+/// difficulty API need (W1-007): its dimensions and the h/j value specs that
+/// `EnergyCurve::new` reads. It is small and fixed-size, so those paths never
+/// decode the full node and edge lists. Written together with the
+/// [`TopologyMeta`] at registration and never removed, it is the source of truth
+/// for whether a topology hash is registered.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct TopologySummaryInfo<AllowedValues> {
+    pub nodes: u32,
+    pub edges: u32,
+    pub allowed_h_values: AllowedValueSpec<AllowedValues>,
+    pub allowed_j_values: AllowedValueSpec<AllowedValues>,
+}
+
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
