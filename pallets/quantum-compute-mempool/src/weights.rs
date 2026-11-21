@@ -93,9 +93,10 @@ pub fn claim_reward_proof_envelope<T: crate::Config>() -> u64 {
             storage_key_envelope::<crate::OrderTopSolvers<T>>()
                 .max(storage_key_envelope::<crate::OrderFrontRunner<T>>()),
         )
+        // Winners, the proposer and the order's escrow account (W1-006).
         .saturating_add(
             storage_key_envelope::<frame_system::Account<T>>()
-                .saturating_mul(winners.saturating_add(1)),
+                .saturating_mul(winners.saturating_add(2)),
         )
         .saturating_add(storage_key_envelope::<crate::Solvers<T>>().saturating_mul(winners))
         // Include write-only keys conservatively, as well as whitelisted issuance.
@@ -103,11 +104,12 @@ pub fn claim_reward_proof_envelope<T: crate::Config>() -> u64 {
         .saturating_add(storage_key_envelope::<pallet_balances::TotalIssuance<T>>())
 }
 
-/// Refund touches only the order, proposer index/account, open index and issuance.
+/// Refund touches only the order, proposer index, the escrow and proposer
+/// accounts (W1-006), open index and issuance.
 pub fn reclaim_order_proof_envelope<T: crate::Config>() -> u64 {
     storage_key_envelope::<crate::JobOrders<T>>()
         .saturating_add(storage_key_envelope::<crate::ProposerOrders<T>>())
-        .saturating_add(storage_key_envelope::<frame_system::Account<T>>())
+        .saturating_add(storage_key_envelope::<frame_system::Account<T>>().saturating_mul(2))
         .saturating_add(storage_key_envelope::<crate::OpenOrders<T>>())
         .saturating_add(storage_key_envelope::<pallet_balances::TotalIssuance<T>>())
 }
@@ -117,7 +119,8 @@ pub fn propose_job_proof_envelope<T: crate::Config>() -> u64 {
     storage_key_envelope::<crate::JobOrders<T>>()
         .saturating_add(storage_key_envelope::<crate::JobSpecs<T>>())
         .saturating_add(storage_key_envelope::<crate::ProposerOrders<T>>())
-        .saturating_add(storage_key_envelope::<frame_system::Account<T>>())
+        // The proposer and the order's escrow account (W1-006).
+        .saturating_add(storage_key_envelope::<frame_system::Account<T>>().saturating_mul(2))
         .saturating_add(storage_key_envelope::<crate::NextOrderId<T>>())
         .saturating_add(storage_key_envelope::<crate::OpenOrders<T>>())
         .saturating_add(storage_key_envelope::<crate::OrdersExpiringAt<T>>())

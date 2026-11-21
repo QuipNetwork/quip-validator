@@ -727,8 +727,12 @@ mod tests {
                 <Balances as Currency<AccountId>>::make_free_balance_be(account, initial);
             }
             let spec_id = prepare_two_winner_settlement(&proposer, &winners, reward);
-            // First payout (UNIT+1) succeeds; the second (UNIT) crosses the lock.
-            Balances::set_lock(*b"settle!!", &proposer, initial - (UNIT + 1) - UNIT / 2, WithdrawReasons::TRANSFER);
+            // W1-006: settlement pays from the order's escrow account, which
+            // never carries a lock in production; one is placed only to force a
+            // later payout to fail. The first payout (UNIT+1) leaves UNIT, which
+            // covers the UNIT/2 lock; the second (UNIT) then crosses it.
+            let escrow = QuantumComputeMempool::escrow_account(0);
+            Balances::set_lock(*b"settle!!", &escrow, UNIT / 2, WithdrawReasons::TRANSFER);
             System::set_block_number(2);
             QuantumComputeMempool::on_initialize(2);
             System::reset_events();
@@ -749,7 +753,7 @@ mod tests {
             assert_eq!(Executive::apply_extrinsic(xt).unwrap(), Err(error));
 
             assert_eq!(Balances::free_balance(&proposer), initial - reward);
-            assert_eq!(Balances::reserved_balance(&proposer), reward);
+            assert_eq!(Balances::free_balance(&escrow), reward);
             for (winner, solver_before) in winners.iter().zip(&solvers_before) {
                 assert_eq!(Balances::free_balance(winner), initial - EXISTENTIAL_DEPOSIT);
                 assert_eq!(Solvers::<Runtime>::get(winner).unwrap(), *solver_before);
@@ -775,14 +779,15 @@ mod tests {
                     if who == &caller && *actual_fee == failed_fee && *tip == 0
             )));
 
-            Balances::remove_lock(*b"settle!!", &proposer);
+            Balances::remove_lock(*b"settle!!", &escrow);
             System::reset_events();
             let retry = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call.clone(), 1);
             let retry_fee = TransactionPayment::query_info(retry.clone(), retry.encode().len() as u32).partial_fee;
             assert_ok!(Executive::apply_extrinsic(retry).unwrap());
             assert_eq!(System::account_nonce(&caller), 2);
             assert_eq!(Balances::free_balance(&caller), initial - failed_fee - retry_fee);
-            assert_eq!(Balances::reserved_balance(&proposer), 0);
+            assert_eq!(Balances::free_balance(&escrow), 0);
+            assert!(!System::account_exists(&escrow));
             assert_eq!(Balances::free_balance(&proposer), initial - reward);
             for (winner, payout) in winners.iter().zip([UNIT + 1, UNIT]) {
                 assert_eq!(Balances::free_balance(winner), initial - EXISTENTIAL_DEPOSIT + payout);
@@ -806,7 +811,11 @@ mod tests {
     }
 
     #[test]
-    fn settlement_burns_dust_and_releases_proposer_balance_provider() {
+    fn settlement_pays_from_escrow_even_after_the_proposer_is_reaped() {
+        // W1-006: the reward sits in the order's escrow account, so settlement
+        // never touches the proposer's balance. A proposer who empties and
+        // reaps their own account after posting cannot block or shrink the
+        // payout, and settlement burns nothing.
         use frame_support::{
             assert_ok,
             traits::{Currency, Hooks},
@@ -821,8 +830,6 @@ mod tests {
             let winners = [AccountId::new([2; 32]), AccountId::new([3; 32])];
             let caller = AccountId::new([4; 32]);
             let reward = 2 * UNIT;
-            let dust = <Balances as Currency<AccountId>>::minimum_balance() - 1;
-            assert!(dust > 0, "production ED must exercise nonzero dust removal");
             <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 100 * UNIT);
             for winner in &winners {
                 <Balances as Currency<AccountId>>::make_free_balance_be(
@@ -831,30 +838,24 @@ mod tests {
                 );
             }
             let spec_id = prepare_two_winner_settlement(&proposer, &winners, reward);
-            // Reserving creates a consumer, which forbids losing the last
-            // provider. A legitimate independent provider permits sub-ED free
-            // balance while the reward remains reserved.
-            System::inc_providers(&proposer);
-            <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, dust);
-            assert_eq!(Balances::free_balance(&proposer), dust);
-            assert_eq!(Balances::reserved_balance(&proposer), reward);
-            assert_eq!(System::providers(&proposer), 1);
-            assert_eq!(System::consumers(&proposer), 1);
+            let escrow = QuantumComputeMempool::escrow_account(0);
+            assert_eq!(Balances::free_balance(&escrow), reward);
+            // The proposer empties its account after posting and is reaped.
+            <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 0);
+            assert!(!System::account_exists(&proposer));
             System::set_block_number(2);
             QuantumComputeMempool::on_initialize(2);
             System::reset_events();
             let issuance_before = Balances::total_issuance();
-            // Direct dispatch isolates dust burning from signed-extrinsic fee handling.
+            // Direct dispatch isolates settlement from signed-extrinsic fees.
             assert_ok!(QuantumComputeMempool::claim_reward(
                 RuntimeOrigin::signed(caller),
                 0
             ));
-            assert!(System::account_exists(&proposer));
-            assert_eq!(System::providers(&proposer), 1);
-            assert_eq!(System::consumers(&proposer), 0);
-            assert_eq!(Balances::free_balance(&proposer), 0);
-            assert_eq!(Balances::reserved_balance(&proposer), 0);
-            assert_eq!(Balances::total_issuance(), issuance_before - dust);
+            assert!(!System::account_exists(&proposer));
+            assert_eq!(Balances::total_issuance(), issuance_before);
+            assert_eq!(Balances::free_balance(&escrow), 0);
+            assert!(!System::account_exists(&escrow));
             for winner in &winners {
                 assert_eq!(Balances::free_balance(winner), EXISTENTIAL_DEPOSIT + UNIT);
                 assert_eq!(Balances::reserved_balance(winner), EXISTENTIAL_DEPOSIT);
@@ -868,15 +869,10 @@ mod tests {
                 1
             );
             assert_eq!(OrderResults::<Runtime>::get(0).unwrap().winners.len(), 2);
-            assert!(System::events().iter().any(|record| matches!(&record.event,
-                RuntimeEvent::Balances(pallet_balances::Event::DustLost { account, amount })
-                    if account == &proposer && *amount == dust
+            assert!(!System::events().iter().any(|record| matches!(
+                &record.event,
+                RuntimeEvent::Balances(pallet_balances::Event::DustLost { .. })
             )));
-            // Final System reaping happens when the independent provider is
-            // released, not inside settlement. No outstanding reserve consumer
-            // may survive successful settlement.
-            assert_ok!(System::dec_providers(&proposer));
-            assert!(!System::account_exists(&proposer));
         });
     }
 
@@ -887,17 +883,17 @@ mod tests {
             claim_reward_proof_envelope, CLAIM_REWARD_PROOF_FLOOR,
         };
         <QuantumComputeMempool as Hooks<BlockNumber>>::integrity_test();
-        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 1_002_055);
+        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 1_007_133);
         assert_eq!(
             pallet_quantum_compute_mempool::weights::reclaim_order_proof_envelope::<Runtime>(),
-            666_169
+            671_247
         );
         let submission =
             pallet_quantum_compute_mempool::weights::submit_solution_proof_envelope::<Runtime>();
         assert_eq!(submission, 792_516);
         let proposal =
             pallet_quantum_compute_mempool::weights::propose_job_proof_envelope::<Runtime>();
-        assert_eq!(proposal, 686_322);
+        assert_eq!(proposal, 691_400);
         assert!(submission <= pallet_quantum_compute_mempool::weights::SUBMIT_SOLUTION_PROOF_FLOOR);
         let call: RuntimeCall =
             pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
@@ -988,9 +984,12 @@ mod tests {
                 } else {
                     assert_ok!(result);
                     assert_eq!(NextOrderId::<Runtime>::get(), 1);
+                    // W1-006: the reward is in the order's escrow account; the
+                    // caller's reserve is only its solver deposit.
+                    assert_eq!(Balances::reserved_balance(&caller), EXISTENTIAL_DEPOSIT);
                     assert_eq!(
-                        Balances::reserved_balance(&caller),
-                        EXISTENTIAL_DEPOSIT + UNIT
+                        Balances::free_balance(QuantumComputeMempool::escrow_account(0)),
+                        UNIT
                     );
                     assert_eq!(OrderPayees::<Runtime>::get(0, &caller), Some(destination));
                     assert_eq!(OrderPayees::<Runtime>::iter_prefix(0).count(), 1);

@@ -3,7 +3,8 @@
 //! enumerated regenerated-weight values, exact mempool changes, staking constants,
 //! appended staking commission error, exact XQVM audit changes, the exact
 //! MinerRegistry W1-009 retention/paging changes, and the exact QuantumPow
-//! W1-007 topology summary below.
+//! W1-007 topology summary, and the exact compute-mempool W1-006 reward escrow
+//! changes below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -1275,6 +1276,145 @@ fn normalize_topology_summary(before: &mut Value, after: &mut Value) -> Result<(
     Ok(())
 }
 
+// W1-006 (compute-mempool reward escrow). Exact deltas: the appended
+// `RewardNotSpendable` error, the reworded `RewardReserveMissing` docs, the
+// appended `EscrowFunded` / `EscrowReleased` events (field types bound to the
+// existing `RewardReclaimed` event's), and the appended `EscrowPalletId`
+// constant (`frame_support::PalletId`, `b"qp/escrw"`).
+const BASELINE_RESERVE_MISSING_DOCS: &[&str] =
+    &["Reserved funds are insufficient; retain the order and retry after recovery."];
+const ESCROW_RESERVE_MISSING_DOCS: &[&str] = &[
+    "The order's escrow account does not hold its reward; the order is",
+    "kept and nothing is paid.",
+];
+
+fn mempool_variants<'a>(metadata: &'a mut Value, kind: &str) -> Result<&'a mut Vec<Value>, String> {
+    let id = metadata["pallets"]
+        .as_array()
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == MEMPOOL))
+        .and_then(|pallet| pallet[kind]["ty"].as_u64())
+        .ok_or_else(|| format!("missing mempool {kind} type"))?;
+    let id = usize::try_from(id).map_err(|_| "mempool type id does not fit usize")?;
+    metadata["types"]["types"]
+        .get_mut(id)
+        .and_then(|ty| ty.pointer_mut("/type/def/variant/variants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("missing mempool {kind} variants"))
+}
+
+fn normalize_reward_escrow(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    // Errors.
+    let old_errors = mempool_variants(before, "error")?.clone();
+    if old_errors.iter().any(|v| v["name"] == "RewardNotSpendable")
+        || old_errors
+            .iter()
+            .find(|v| v["name"] == "RewardReserveMissing")
+            .map(|v| v["docs"].clone())
+            != Some(serde_json::json!(BASELINE_RESERVE_MISSING_DOCS))
+    {
+        return Err("unexpected baseline mempool escrow errors".into());
+    }
+    let errors = mempool_variants(after, "error")?;
+    let expected = serde_json::json!({
+        "docs": [
+            "The reward is not spendable from the proposer's balance: it is",
+            "unavailable, frozen (for example vesting), or would leave the",
+            "proposer below the existential deposit."
+        ],
+        "index": 46,
+        "name": "RewardNotSpendable",
+    });
+    if errors.len() != 47 || errors[46] != expected {
+        return Err("missing or incorrect required RewardNotSpendable error".into());
+    }
+    errors.truncate(46);
+    let missing = errors
+        .iter_mut()
+        .find(|v| v["name"] == "RewardReserveMissing")
+        .ok_or("missing RewardReserveMissing")?;
+    if missing["docs"] != serde_json::json!(ESCROW_RESERVE_MISSING_DOCS) {
+        return Err("missing or incorrect required RewardReserveMissing docs".into());
+    }
+    missing["docs"] = serde_json::json!(BASELINE_RESERVE_MISSING_DOCS);
+
+    // Events.
+    let old_events = mempool_variants(before, "event")?.len();
+    let events = mempool_variants(after, "event")?;
+    let template = events
+        .iter()
+        .find(|v| v["name"] == "RewardReclaimed")
+        .ok_or("missing RewardReclaimed event")?
+        .clone();
+    let field = |name: &str| -> Value {
+        template["fields"]
+            .as_array()
+            .and_then(|fields| fields.iter().find(|f| f["name"] == name))
+            .map(|f| f["type"].clone())
+            .unwrap_or(Value::Null)
+    };
+    let expected_events = serde_json::json!([
+        {
+            "docs": ["The order's reward moved from the proposer into its escrow account."],
+            "fields": [
+                {"name": "order_id", "type": field("order_id"), "typeName": "u64"},
+                {"name": "escrow", "type": field("proposer"), "typeName": "T::AccountId"},
+                {"name": "amount", "type": field("amount"), "typeName": "BalanceOf<T>"}
+            ],
+            "index": old_events,
+            "name": "EscrowFunded"
+        },
+        {
+            "docs": [
+                "The order closed and its escrow account was emptied: `to_proposer`",
+                "went back to the proposer and the rest to the paid winners."
+            ],
+            "fields": [
+                {"name": "order_id", "type": field("order_id"), "typeName": "u64"},
+                {"name": "escrow", "type": field("proposer"), "typeName": "T::AccountId"},
+                {"name": "to_proposer", "type": field("amount"), "typeName": "BalanceOf<T>"}
+            ],
+            "index": old_events + 1,
+            "name": "EscrowReleased"
+        }
+    ]);
+    if events.get(old_events..) != expected_events.as_array().map(Vec::as_slice) {
+        return Err("missing or incorrect required escrow events".into());
+    }
+    events.truncate(old_events);
+
+    // Constant.
+    let types = after.clone();
+    let constants = after["pallets"]
+        .as_array_mut()
+        .and_then(|pallets| pallets.iter_mut().find(|p| p["name"] == MEMPOOL))
+        .and_then(|pallet| pallet["constants"].as_array_mut())
+        .ok_or("missing candidate mempool constants")?;
+    let last = constants
+        .last()
+        .cloned()
+        .ok_or("missing mempool constants")?;
+    let path = usize::try_from(last["ty"].as_u64().unwrap_or(u64::MAX))
+        .ok()
+        .and_then(|id| types["types"]["types"].get(id))
+        .map(|ty| ty["type"]["path"].clone());
+    let want = serde_json::json!({
+        "deprecation_info": "NotDeprecated",
+        "docs": [
+            " Root of the per-order reward escrow accounts (W1-006): order `id`'s",
+            " reward is held in `EscrowPalletId.into_sub_account_truncating(id)`",
+            " from proposal until the order closes."
+        ],
+        "name": "EscrowPalletId",
+        "ty": last["ty"].clone(),
+        "value": b"qp/escrw".to_vec(),
+    });
+    if last != want || path != Some(serde_json::json!(["frame_support", "PalletId"])) {
+        return Err("missing or incorrect required EscrowPalletId constant".into());
+    }
+    constants.pop();
+    Ok(())
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
@@ -1308,6 +1448,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     normalize_audit_retention(&mut left, &mut right)?;
     normalize_audit_expiry_storage(&mut left, &mut right)?;
+    normalize_reward_escrow(&mut left, &mut right)?;
     normalize_mempool(&mut left, &mut right)?;
     normalize_commission_error(&mut left, &mut right)?;
     normalize_xqvm(&mut left, &mut right)?;
@@ -1756,6 +1897,54 @@ mod tests {
             .find(|entry| entry["name"] == "NextExpiryBucket")
             .unwrap()["docs"] = Value::from("mutated");
         assert!(check(&wrong_before, &after).is_err());
+    }
+
+    #[test]
+    fn requires_exact_reward_escrow_delta() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(&str, Value)> = Vec::new();
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "error").unwrap().pop();
+        cases.push(("missing RewardNotSpendable", wrong));
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "error")
+            .unwrap()
+            .last_mut()
+            .unwrap()["docs"] = Value::from("mutated");
+        cases.push(("altered RewardNotSpendable", wrong));
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "error")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "RewardReserveMissing")
+            .unwrap()["docs"] = serde_json::json!(BASELINE_RESERVE_MISSING_DOCS);
+        cases.push(("stale RewardReserveMissing docs", wrong));
+        for index in [0usize, 1] {
+            let mut wrong = after.clone();
+            let events = mempool_variants(&mut wrong, "event").unwrap();
+            let at = events.len() - 2 + index;
+            events[at]["fields"][1]["type"] = Value::from(0);
+            cases.push(("altered escrow event field", wrong));
+        }
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "event").unwrap().pop();
+        cases.push(("missing EscrowReleased", wrong));
+        let mut wrong = after.clone();
+        wrong["pallets"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|p| p["name"] == MEMPOOL)
+            .unwrap()["constants"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap()["value"] = serde_json::json!(b"qp/other".to_vec());
+        cases.push(("altered EscrowPalletId", wrong));
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

@@ -25,14 +25,14 @@ std::thread_local! {
 
 pub struct TestVm;
 
-impl pallet_quantum_compute_mempool::xqvm::QuantumVm<u64, Balance, sp_core::H256> for TestVm {
+impl pallet_quantum_compute_mempool::xqvm::QuantumVm<AccountId, Balance, sp_core::H256> for TestVm {
     fn validate_programs(
         _validation_program: Option<&sp_core::H256>,
         _transform_program: Option<&sp_core::H256>,
     ) -> sp_runtime::DispatchResult {
         if mock_vm_state().use_real_vm {
             return <crate::xqvm::XqvmAdapter<Test> as crate::xqvm::QuantumVm<
-                u64,
+                AccountId,
                 Balance,
                 sp_core::H256,
             >>::validate_programs(_validation_program, _transform_program);
@@ -51,12 +51,12 @@ impl pallet_quantum_compute_mempool::xqvm::QuantumVm<u64, Balance, sp_core::H256
         _spec_id: &sp_core::H256,
         _validation_program: Option<&sp_core::H256>,
         _transform_program: Option<&sp_core::H256>,
-        _solver: &u64,
+        _solver: &AccountId,
         solutions: Vec<Vec<i8>>,
     ) -> crate::xqvm::TransformOutcome {
         if mock_vm_state().use_real_vm {
             return <crate::xqvm::XqvmAdapter<Test> as crate::xqvm::QuantumVm<
-                u64,
+                AccountId,
                 Balance,
                 sp_core::H256,
             >>::transform_solutions(
@@ -85,7 +85,7 @@ impl pallet_quantum_compute_mempool::xqvm::QuantumVm<u64, Balance, sp_core::H256
         _spec_id: &sp_core::H256,
         _validation_program: Option<&sp_core::H256>,
         _transform_program: Option<&sp_core::H256>,
-        winners: &[crate::types::WinnerSummary<u64, Balance>],
+        winners: &[crate::types::WinnerSummary<AccountId, Balance>],
     ) -> sp_runtime::DispatchResult {
         MOCK_VM_STATE.with(|state| {
             let mut state = state.borrow_mut();
@@ -150,9 +150,17 @@ mod runtime {
     pub type QuantumComputeMempool = pallet_quantum_compute_mempool::Pallet<Test>;
 }
 
+/// Wider than the default u64 so per-order escrow sub-accounts
+/// (`PalletId::into_sub_account_truncating(order_id)`) stay distinct: eight
+/// bytes would keep only the "modl" prefix and half the PalletId, making every
+/// order share one account. Sixteen keep four bytes of the order id.
+pub type AccountId = u128;
+
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
 impl frame_system::Config for Test {
     type Block = Block;
+    type AccountId = AccountId;
+    type Lookup = sp_runtime::traits::IdentityLookup<AccountId>;
     type AccountData = pallet_balances::AccountData<Balance>;
 }
 
@@ -188,6 +196,7 @@ parameter_types! {
     pub const MaxDeadlineBlocks: u64 = 100;
     pub const MaxBlockWait: u64 = 20;
     pub const MinReward: Balance = 10;
+    pub const EscrowPalletId: frame_support::PalletId = frame_support::PalletId(*b"py/qcmpe");
     pub const ResultTtlBlocks: u64 = 10;
     pub const OrderRetentionBlocks: u64 = 20;
 }
@@ -203,6 +212,7 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type MaxDeadlineBlocks = MaxDeadlineBlocks;
     type MaxBlockWait = MaxBlockWait;
     type MinReward = MinReward;
+    type EscrowPalletId = EscrowPalletId;
     type ResultTtlBlocks = ResultTtlBlocks;
     type OrderRetentionBlocks = OrderRetentionBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;

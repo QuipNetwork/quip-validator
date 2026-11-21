@@ -12,7 +12,7 @@ use frame_support::{
     BoundedVec,
 };
 use frame_system::RawOrigin;
-use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating};
+use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating, Zero};
 
 fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
 where
@@ -321,6 +321,10 @@ fn verify_claim_reward<T: Config>(order_id: u64, winners: &[T::AccountId]) {
     let winner_count = types::MAX_REWARD_WINNERS;
     let order = JobOrders::<T>::get(order_id).expect("order exists");
     assert_eq!(order.status, types::OrderStatus::Closed);
+    // W1-006: settlement empties the order's escrow account.
+    assert!(
+        T::Currency::total_balance(&QuantumComputeMempool::<T>::escrow_account(order_id)).is_zero()
+    );
     assert!(!ProposerOrders::<T>::get(&order.proposer).contains(&order_id));
     assert!(!OpenOrders::<T>::contains_key(order_id));
     for winner in winners {
@@ -478,6 +482,11 @@ mod benchmarks {
         );
 
         assert!(JobOrders::<T>::contains_key(0));
+        // W1-006: the reward moved into the order's escrow account.
+        assert_eq!(
+            T::Currency::free_balance(&QuantumComputeMempool::<T>::escrow_account(0)),
+            JobOrders::<T>::get(0).expect("order stored").reward
+        );
     }
 
     #[benchmark]
@@ -701,10 +710,11 @@ mod benchmarks {
     fn claim_reward_dust() {
         let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
         let dust = T::Currency::minimum_balance().saturating_sub(1u32.into());
-        // A reserve is a consumer: an independent provider is needed before
-        // free balance can fall below ED. Settlement burns the dust and drops
-        // the balance provider; the independent provider keeps System alive.
-        // Mock ED=1 covers provider removal; production ED>1 also burns dust.
+        // A proposer left holding only dust (an independent provider keeps the
+        // account in System). Since W1-006 the reward sits in the order's
+        // escrow account, so settlement pays from there and must not touch the
+        // proposer's own balance at all: the dust survives, nothing is burned,
+        // and the escrow ends empty.
         frame_system::Pallet::<T>::inc_providers(&proposer);
         fund_account::<T>(&proposer, dust);
         assert_eq!(T::Currency::free_balance(&proposer), dust);
@@ -714,10 +724,8 @@ mod benchmarks {
         QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
 
         verify_claim_reward::<T>(order_id, &winners);
-        assert_eq!(T::Currency::total_balance(&proposer), 0u32.into());
-        assert_eq!(frame_system::Pallet::<T>::providers(&proposer), 1);
-        assert_eq!(frame_system::Pallet::<T>::consumers(&proposer), 0);
-        assert_eq!(T::Currency::total_issuance(), issuance.saturating_sub(dust));
+        assert_eq!(T::Currency::total_balance(&proposer), dust);
+        assert_eq!(T::Currency::total_issuance(), issuance);
     }
 
     #[benchmark]
@@ -748,6 +756,11 @@ mod benchmarks {
         let order = JobOrders::<T>::get(order_id).expect("order exists");
         assert_eq!(order.status, types::OrderStatus::Closed);
         assert!(!ProposerOrders::<T>::get(&proposer).contains(&order_id));
+        // W1-006: reclaim empties the order's escrow account.
+        assert!(
+            T::Currency::total_balance(&QuantumComputeMempool::<T>::escrow_account(order_id))
+                .is_zero()
+        );
     }
 
     #[benchmark]

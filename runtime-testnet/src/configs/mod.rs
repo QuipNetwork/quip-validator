@@ -660,6 +660,8 @@ parameter_types! {
     pub const QuantumMaxDeadlineBlocks: BlockNumber = 1_000;
     pub const QuantumMaxBlockWait: BlockNumber = 100;
     pub const QuantumMinReward: Balance = UNIT;
+    /// Root of the compute-mempool's per-order reward escrow accounts (W1-006).
+    pub const QuantumEscrowPalletId: frame_support::PalletId = frame_support::PalletId(*b"qp/escrw");
     pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
     // Audit retention policy is 28 eras, independent of the unbonding period.
     pub const QuantumOrderRetentionBlocks: BlockNumber = 28 * 6 * crate::network_params::EPOCH_DURATION_SLOTS as u32;
@@ -793,6 +795,7 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type VmProgramLookupWeight = QuantumProgramLookupWeight;
     type VmProgramValidationWeight = QuantumProgramValidationWeight;
     type VM = pallet_quantum_compute_mempool::xqvm::XqvmAdapter<Runtime>;
+    type EscrowPalletId = QuantumEscrowPalletId;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
 }
 
@@ -872,6 +875,17 @@ mod tests {
         let tail = QuantumMinReward::get() / (winners * (winners + 1) / 2);
         assert_eq!(tail, 1_893_939_393);
         assert!(tail >= EXISTENTIAL_DEPOSIT);
+    }
+
+    /// W1-006: the escrow funding transfer creates the order's escrow account,
+    /// so the smallest possible reward must reach the existential deposit; and
+    /// distinct orders must get distinct escrow accounts.
+    #[test]
+    fn compute_reward_escrow_accounts_are_creatable_and_distinct() {
+        assert!(QuantumMinReward::get() >= EXISTENTIAL_DEPOSIT);
+        let escrow = pallet_quantum_compute_mempool::Pallet::<Runtime>::escrow_account;
+        assert_ne!(escrow(0), escrow(1));
+        assert_ne!(escrow(1), escrow(u64::MAX));
     }
 
     #[test]

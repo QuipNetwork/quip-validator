@@ -188,14 +188,20 @@ pub mod pallet {
     use frame_support::{
         dispatch::DispatchResultWithPostInfo,
         pallet_prelude::*,
-        traits::{ExistenceRequirement::AllowDeath, ReservableCurrency, StorageVersion},
+        traits::{
+            ExistenceRequirement::{AllowDeath, KeepAlive},
+            ReservableCurrency, StorageVersion,
+        },
+        PalletId,
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
         calculate_diversity, distinct_solutions, energy_of_solution_indexed, TopologyIndex,
         ValidationError,
     };
-    use sp_runtime::traits::{Hash as _, One, SaturatedConversion, Saturating, Zero};
+    use sp_runtime::traits::{
+        AccountIdConversion, Hash as _, One, SaturatedConversion, Saturating, Zero,
+    };
 
     /// v2 dropped all v0.2 mempool data on the network upgrade and reseeded
     /// the canonical default plain Ising spec. v3 adds the expiry index
@@ -266,6 +272,13 @@ pub mod pallet {
         type VmProgramValidationWeight: Get<Weight>;
 
         type VM: xqvm::QuantumVm<Self::AccountId, BalanceOf<Self>, Self::Hash>;
+
+        /// Root of the per-order reward escrow accounts (W1-006): order `id`'s
+        /// reward is held in `EscrowPalletId.into_sub_account_truncating(id)`
+        /// from proposal until the order closes.
+        #[pallet::constant]
+        type EscrowPalletId: Get<PalletId>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -477,6 +490,19 @@ pub mod pallet {
             solver: T::AccountId,
             payee: Option<types::WinnerPayee>,
         },
+        /// The order's reward moved from the proposer into its escrow account.
+        EscrowFunded {
+            order_id: u64,
+            escrow: T::AccountId,
+            amount: BalanceOf<T>,
+        },
+        /// The order closed and its escrow account was emptied: `to_proposer`
+        /// went back to the proposer and the rest to the paid winners.
+        EscrowReleased {
+            order_id: u64,
+            escrow: T::AccountId,
+            to_proposer: BalanceOf<T>,
+        },
     }
 
     #[pallet::error]
@@ -517,7 +543,8 @@ pub mod pallet {
         InvalidDiversityConfig,
         /// A solver may replace its accepted payload only with a lower energy.
         SolutionNotImproved,
-        /// Reserved funds are insufficient; retain the order and retry after recovery.
+        /// The order's escrow account does not hold its reward; the order is
+        /// kept and nothing is paid.
         RewardReserveMissing,
         InvalidPayeeChain,
         PayeeRequired,
@@ -543,6 +570,10 @@ pub mod pallet {
         VmMemoryLimitExceeded,
         /// An open order already holds the maximum number of distinct solvers.
         OrderSolverCapReached,
+        /// The reward is not spendable from the proposer's balance: it is
+        /// unavailable, frozen (for example vesting), or would leave the
+        /// proposer below the existential deposit.
+        RewardNotSpendable,
     }
 
     #[pallet::call]
@@ -724,18 +755,49 @@ pub mod pallet {
                 winners.as_slice(),
             )?;
 
-            let unreserved = T::Currency::unreserve(&order.proposer, order.reward);
-            ensure!(unreserved.is_zero(), Error::<T>::RewardReserveMissing);
+            let escrow = Self::escrow_account(order_id);
+            ensure!(
+                T::Currency::free_balance(&escrow) >= order.reward,
+                Error::<T>::RewardReserveMissing
+            );
+            // Do not let a reaped recipient with a sub-ED share revert every
+            // other winner's payment: sub-ED shares are skipped and return to
+            // the proposer with the rest of the remainder.
+            let minimum = T::Currency::minimum_balance();
+            let paid: Vec<(T::AccountId, BalanceOf<T>)> = payouts
+                .iter()
+                .map(|(winner, payout, _)| (winner.clone(), (*payout).saturated_into()))
+                .filter(|(_, payout): &(T::AccountId, BalanceOf<T>)| *payout >= minimum)
+                .collect();
+            let paid_total = paid
+                .iter()
+                .fold(BalanceOf::<T>::zero(), |total, (_, payout)| {
+                    total.saturating_add(*payout)
+                });
+            let remainder = order.reward.saturating_sub(paid_total);
+            // The remainder goes back first. While a winner share is still due
+            // the escrow keeps at least that share (every paid share is >= ED),
+            // so KeepAlive holds; with nothing to pay it is a full release.
+            // A proposer who reaped their own account cannot receive a sub-ED
+            // remainder; then it stays and is reaped with the escrow as dust,
+            // rather than reverting every winner's payment.
+            let mut to_proposer = BalanceOf::<T>::zero();
+            if !remainder.is_zero()
+                && (remainder >= minimum || !T::Currency::total_balance(&order.proposer).is_zero())
+            {
+                let requirement = if paid.is_empty() {
+                    AllowDeath
+                } else {
+                    KeepAlive
+                };
+                T::Currency::transfer(&escrow, &order.proposer, remainder, requirement)?;
+                to_proposer = remainder;
+            }
 
-            for (winner, payout_u128, _) in &payouts {
-                let payout: BalanceOf<T> = (*payout_u128).saturated_into();
-                // Do not let a reaped recipient with a sub-ED share revert
-                // every other winner's payment. The skipped share stays with
-                // the proposer after escrow is unreserved.
-                if payout < T::Currency::minimum_balance() {
-                    continue;
-                }
-                T::Currency::transfer(&order.proposer, winner, payout, AllowDeath)?;
+            for (winner, payout) in &paid {
+                let payout = *payout;
+                // The last payout leaves the escrow at zero and reaps it.
+                T::Currency::transfer(&escrow, winner, payout, AllowDeath)?;
                 Solvers::<T>::mutate(winner, |maybe_solver| {
                     if let Some(solver) = maybe_solver {
                         solver.rewards_earned = solver.rewards_earned.saturating_add(payout);
@@ -747,6 +809,12 @@ pub mod pallet {
                     amount: payout,
                 });
             }
+
+            Self::deposit_event(Event::EscrowReleased {
+                order_id,
+                escrow,
+                to_proposer,
+            });
 
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
@@ -783,8 +851,18 @@ pub mod pallet {
             );
             ensure!(order.solution_count == 0, Error::<T>::NoSolutionsAccepted);
 
-            let unreserved = T::Currency::unreserve(&caller, order.reward);
-            ensure!(unreserved.is_zero(), Error::<T>::RewardReserveMissing);
+            let escrow = Self::escrow_account(order_id);
+            ensure!(
+                T::Currency::free_balance(&escrow) >= order.reward,
+                Error::<T>::RewardReserveMissing
+            );
+            // The whole reward (>= MinReward >= ED) goes back and reaps the escrow.
+            T::Currency::transfer(&escrow, &caller, order.reward, AllowDeath)?;
+            Self::deposit_event(Event::EscrowReleased {
+                order_id,
+                escrow,
+                to_proposer: order.reward,
+            });
 
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
@@ -1143,9 +1221,28 @@ pub mod pallet {
                 .try_push(NextOrderId::<T>::get())
                 .map_err(|_| Error::<T>::OrderLimitReached)?;
 
-            T::Currency::reserve(&proposer, reward)?;
-
             let order_id = NextOrderId::<T>::get();
+            // W1-006: move the reward into the order's own escrow account now.
+            // The transfer enforces the SDK's spendability rule (total after
+            // the transfer must still cover any freeze) and keeps the proposer
+            // alive; afterwards nothing the proposer does can shrink or block
+            // the reward, because the escrow account has no locks or holds.
+            let escrow = Self::escrow_account(order_id);
+            T::Currency::transfer(&proposer, &escrow, reward, KeepAlive).map_err(|error| {
+                match error {
+                    DispatchError::Token(
+                        sp_runtime::TokenError::FundsUnavailable
+                        | sp_runtime::TokenError::Frozen
+                        | sp_runtime::TokenError::NotExpendable,
+                    ) => Error::<T>::RewardNotSpendable.into(),
+                    other => other,
+                }
+            })?;
+            Self::deposit_event(Event::EscrowFunded {
+                order_id,
+                escrow,
+                amount: reward,
+            });
             NextOrderId::<T>::put(order_id.saturating_add(1));
 
             let created_at = frame_system::Pallet::<T>::block_number();
@@ -1819,6 +1916,12 @@ pub mod pallet {
                 }
             }
             Ok(())
+        }
+
+        /// The account holding order `order_id`'s reward from proposal until the
+        /// order closes (W1-006). One per order, derived from `EscrowPalletId`.
+        pub fn escrow_account(order_id: u64) -> T::AccountId {
+            T::EscrowPalletId::get().into_sub_account_truncating(order_id)
         }
 
         fn compute_payouts(
