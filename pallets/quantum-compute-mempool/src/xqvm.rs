@@ -101,6 +101,18 @@ impl<T: crate::Config> QuantumVm<T::AccountId, crate::BalanceOf<T>, T::Hash> for
     }
 }
 
+/// The transform calldata ABI: exactly one `VecInt` carrying a solution's
+/// spins. It can carry no model, sample or model vector. That is load-bearing
+/// for the runtime's VM memory bound: `LVAL` clones a model without charging
+/// memory, and it is unreachable on chain only because no on-chain input can
+/// populate a `VecXqmx` (see the runtime's `MaxVmMemory`). A change that lets
+/// this ABI carry a model must fail the runtime's calldata tripwire test.
+pub fn transform_calldata(solution: Vec<i8>) -> Vec<::xqvm::RegVal> {
+    alloc::vec![::xqvm::RegVal::VecInt(
+        solution.into_iter().map(i64::from).collect()
+    )]
+}
+
 impl<T: crate::Config> XqvmAdapter<T> {
     fn transform(
         hash: Option<&T::Hash>,
@@ -135,9 +147,7 @@ impl<T: crate::Config> XqvmAdapter<T> {
             vm.set_memory_limit(T::MaxVmMemory::get())
                 .set_step_limit(remaining)
                 .set_output_slots(1)
-                .set_calldata(alloc::vec![RegVal::VecInt(
-                    solution.into_iter().map(i64::from).collect()
-                )]);
+                .set_calldata(transform_calldata(solution));
             let result = vm.run(&program);
             *steps_used = steps_used.saturating_add(vm.steps());
             result.map_err(|error| match error {

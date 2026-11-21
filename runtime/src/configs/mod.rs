@@ -513,8 +513,9 @@ parameter_types! {
 
     /// Maximum bytes a single `execute` run may allocate inside the VM
     /// (W1-002). This is a **stateless per-run cap**: there is no block-scoped
-    /// counter. The block-level bound is an arithmetic consequence of the cap
-    /// plus the Wasm allocator's behaviour, proved below, not a running total.
+    /// counter. The block-level bound follows from the cap plus the Wasm
+    /// allocator's behaviour, argued below and measured by the census; it is not
+    /// a running total.
     ///
     /// Why a per-run cap bounds the whole block. Importers run every extrinsic
     /// in one 128 MiB heap (`Core_execute_block`), and the freeing-bump
@@ -523,17 +524,29 @@ parameter_types! {
     /// per-order free lists). VM runs are sequential and each frees all of its
     /// own allocations on drop, so the heap a block's runs cause in a given
     /// order is the *maximum* over runs of that order's live bytes, not the sum.
-    /// Whole-block VM growth is therefore bounded by `Σ_orders (k · MaxVmMemory)`,
-    /// independent of the number of runs, where `k ≈ 2` covers power-of-two
-    /// rounding, the uncharged `ENERGY`/`LVAL` clones (W1-013, until the xquad
-    /// repin) and the `EQUALITY`/`ATLEASTW` input-vec clones.
+    /// Whole-block VM growth is therefore expected to stay within
+    /// `Σ_orders (k · MaxVmMemory)`, independent of the number of runs, where
+    /// `k ≈ 2` covers power-of-two rounding, the uncharged `ENERGY` clone
+    /// (W1-013, until the xquad repin) and the `EQUALITY`/`ATLEASTW` input-vec
+    /// clones. The Σ term is not proved: it is the measured maximum of the
+    /// adversarial mixed-family order sweep -- 19.34·L (at L = 256 KiB; 19.10·L
+    /// at the shipped 2 MiB) -- pinned at 20·L in the budget test below.
+    ///
+    /// `LVAL` is not a `k ≈ 2` term. It charges steps only, and it can clone a
+    /// model into up to 255 registers per `ITER` frame. It is harmless today only
+    /// because no on-chain path can put a model into a `VecXqmx`: `VECX` creates
+    /// one empty, `VECPUSH` pushes integers only, `execute` calldata is integers
+    /// only, and transform calldata is one `VecInt`. That invariant is the
+    /// reason, and the calldata tripwire test below fails CI if a future ABI lets
+    /// calldata carry a model.
     ///
     /// "Frees on drop" is the VM's own allocations. One term outlives the run
     /// but not the extrinsic: the compute-mempool accumulates a `transformed:
     /// Vec<Vec<i8>>` across the per-solution VMs of a single `submit_solution`,
-    /// so it is retained for the extrinsic and freed when the extrinsic ends. It
-    /// is bounded by `QuantumMaxSolutions` (20) × `QuantumMaxNodes` (5000) bytes
-    /// ≈ 0.1 MiB -- far inside the fixed-run term below and small beside the VM
+    /// so it is retained for the extrinsic and freed when the extrinsic ends. Its
+    /// payload is `QuantumMaxSolutions` (20) × `QuantumMaxNodes` (5000) bytes;
+    /// its heap footprint under the allocator's chunk rule is 164,520 B
+    /// (≈ 0.16 MiB) -- inside the fixed-run term below and small beside the VM
     /// caps. The `execute` path retains nothing comparable: a `ProgramExecuted`
     /// event's outputs reach state through `Events::append`, a host storage
     /// append, so they never reside in the Wasm heap this bound governs.
@@ -543,23 +556,34 @@ parameter_types! {
     /// importer heap a block can be made to hold is:
     ///
     /// ```text
-    ///   Σ_orders(k·L)   adversarial mixed-family order sweep   ~20 · L
+    ///   Σ_orders(k·L)   adversarial mixed-family order sweep   19.34·L max measured, 20·L pinned
     /// + fixed_run       regs/stack/loop/program, L-independent  0.03 MiB
     /// + block_residency encoded block + largest signed xt       44.0 MiB
     /// + non_vm_baseline maximal submit_proof meta+proof decode   3.3 MiB
     /// ```
     ///
     /// At `L = 2 MiB`: 40 + 0.03 + 44.0 + 3.3 ≈ **87.3 MiB < 128 MiB**, i.e.
-    /// 31.8 % of the heap free. Legitimate runs (conformance vectors ≤ 6 KiB of
-    /// bytecode, mempool transforms ≤ 5000 spins ≈ 40 KiB) sit far below 256 KiB,
-    /// so 2 MiB is ≥ 8× the largest legitimate run. 16 MiB (the old value) put
-    /// the budget past 128 MiB: five `execute` calls built a block only its
-    /// author could import.
+    /// 31.8 % of the heap free. 16 MiB (the old value) put the budget past
+    /// 128 MiB: five `execute` calls built a block only its author could import.
+    ///
+    /// Headroom for legitimate work, as measured rather than assumed. No
+    /// legitimate on-chain `execute` workload exists today: `store_program` is
+    /// filtered on runtime 121 and the testnet `Programs` map is empty. The
+    /// largest run the runtime performs is a maximal mempool transform (20 ×
+    /// 5,000 spins, identity program), which charges about 160 KB per VM: the
+    /// `INPUT` copy (5,000 × 16 B) plus the `OUTPUT` copy; its 40 KB calldata
+    /// `Vec<i64>` sits outside the charge. A synthetic 4,096-variable linear
+    /// model needs 0.198 MiB of author heap. So 2 MiB is about 12× the maximal
+    /// identity transform. Bytecode size does not bound allocation (`PUSH n;
+    /// BSMX` spends the full cap from a few bytes). Re-measure when a real
+    /// model-building transform is proposed.
     ///
     /// It is not derived from `MaxStepLimit`, and must not be: the step budget
     /// bounds allocation only incidentally (a sample costs one step and eight
     /// bytes per element), so it alone would permit an allocation well past the
-    /// heap. The pinned budget test below encodes the full derivation.
+    /// heap. The pinned budget test below restates each measured term; its Σ term
+    /// is the measured maximum of the adversarial mixed sweep, 19.34·L, pinned
+    /// at 20·L.
     pub const MaxVmMemory: u64 = 2 * 1024 * 1024;
 
     /// Maximum bytes a single compute-mempool transform run may allocate inside
@@ -572,8 +596,9 @@ parameter_types! {
     /// under the cap. What the per-run cap does *not* cover is the per-extrinsic
     /// retained output: `submit_solution` keeps a `transformed: Vec<Vec<i8>>`
     /// live across all of a batch's per-solution VMs, bounded by
-    /// `QuantumMaxSolutions` (20) × `QuantumMaxNodes` (5000) bytes ≈ 0.1 MiB and
-    /// freed when the extrinsic ends. See [`MaxVmMemory`]; the pinned budget
+    /// `QuantumMaxSolutions` (20) × `QuantumMaxNodes` (5000) bytes of payload,
+    /// 164,520 B of heap by the allocator's chunk rule, and freed when the
+    /// extrinsic ends. See [`MaxVmMemory`]; the pinned budget
     /// test accounts for it inside the fixed-run term.
     pub const MaxTransformVmMemory: u64 = 2 * 1024 * 1024;
 
@@ -941,23 +966,31 @@ mod xqvm_weights {
 
         // Whole-block VM growth across allocator orders, measured as a ratio of
         // the per-run cap L: the adversarial mixed-family order sweep reached
-        // ~20 x L (test `c_block_order_sweep_at_emulated_caps`). k ~ 2 (rounding
-        // + the uncharged ENERGY/LVAL/EQUALITY clones) is already folded in.
+        // 19.34 x L at most (test `c_block_order_sweep_at_emulated_caps`, at
+        // L = 256 KiB; 19.10 x L at 2 MiB in the combined test), pinned at 20.
+        // k ~ 2 (rounding + the uncharged ENERGY/EQUALITY clones)
+        // is already folded in; LVAL is excluded by the calldata invariant (see
+        // `on_chain_calldata_cannot_carry_a_model`).
         const SIGMA_ORDERS_PER_L: u64 = 20;
         // L-independent fixed per-run overhead (regs/stack/loop/program):
         // measured HALT baseline ~0.03 MiB. Rounded up.
         const FIXED_RUN: u64 = MIB; // 1 MiB, generous vs the 0.03 measured
                                     // Per-extrinsic retained term (kimi W1-002 follow-up): the mempool's
                                     // `transformed: Vec<Vec<i8>>` lives across the per-solution VMs of one
-                                    // `submit_solution`, bounded by QuantumMaxSolutions x QuantumMaxNodes
-                                    // bytes (one i8 per spin). It is retained for the extrinsic, not a run,
-                                    // and is covered by the fixed-run term's slack rather than a separate
-                                    // budget line. The assertion below keeps that slack visible: if the
-                                    // retained Vec ever outgrew the measured HALT baseline's headroom in
-                                    // FIXED_RUN, it would need its own line.
+                                    // `submit_solution`. It is retained for the extrinsic, not a run, and is
+                                    // covered by the fixed-run term's slack rather than a separate budget
+                                    // line. It is counted as heap footprint, not payload, using the census
+                                    // `chunk_bytes` rule (freeing-bump chunk = next_pow2(max(len, 8)) + 8):
+                                    // each inner Vec<i8> of `QuantumMaxNodes` bytes, plus the outer Vec of
+                                    // `QuantumMaxSolutions` 24-byte Vec headers -- 164,520 B today. The
+                                    // assertion keeps the slack visible: if this outgrew the measured HALT
+                                    // baseline's headroom in FIXED_RUN, it would need its own line.
         const FIXED_RUN_MEASURED: u64 = 32 * 1024; // ~0.03 MiB measured HALT baseline
-        let transform_retained: u64 =
-            u64::from(QuantumMaxSolutions::get()) * u64::from(QuantumMaxNodes::get()); // ~0.1 MiB
+        let chunk = |len: u64| len.max(8).next_power_of_two().saturating_add(8);
+        let solutions = u64::from(QuantumMaxSolutions::get());
+        let transform_retained = solutions
+            .saturating_mul(chunk(u64::from(QuantumMaxNodes::get())))
+            .saturating_add(chunk(solutions.saturating_mul(24)));
         assert!(
             transform_retained.saturating_add(FIXED_RUN_MEASURED) <= FIXED_RUN,
             "mempool retained transform {transform_retained} B + measured fixed run \
@@ -988,6 +1021,32 @@ mod xqvm_weights {
             "importer budget {budget} bytes + {MIN_FREE} min-free exceeds the \
              {RUNTIME_HEAP_BYTES} byte heap (VM term {vm_term}); lower MaxVmMemory/\
              MaxTransformVmMemory or re-measure the terms",
+        );
+    }
+
+    /// Tripwire for the `LVAL` exclusion above (W1-002 R8 F2): `LVAL` clones a
+    /// model without charging VM memory, and is unreachable on chain only
+    /// because no on-chain input can carry a model. If either calldata ABI ever
+    /// can, this fails -- the `execute` half at compile time, the transform half
+    /// at test time -- and `LVAL` has to be charged or re-bounded first.
+    #[test]
+    fn on_chain_calldata_cannot_carry_a_model() {
+        // `execute` calldata is integers only: a richer type does not compile.
+        fn execute_calldata(
+            call: pallet_xqvm::Call<Runtime>,
+        ) -> Option<frame_support::BoundedVec<i64, <Runtime as pallet_xqvm::Config>::MaxCallDataLen>>
+        {
+            match call {
+                pallet_xqvm::Call::execute { calldata, .. } => Some(calldata),
+                _ => None,
+            }
+        }
+        let _ = execute_calldata;
+        // Transform calldata is exactly one integer vector.
+        let calldata = pallet_quantum_compute_mempool::xqvm::transform_calldata(vec![1, -1, 1]);
+        assert!(
+            matches!(calldata.as_slice(), [xqvm::RegVal::VecInt(spins)] if spins == &vec![1, -1, 1]),
+            "transform calldata ABI changed: {calldata:?}"
         );
     }
 

@@ -20,7 +20,7 @@
 //!       -- --nocapture --test-threads 1`
 
 use codec::{Decode, Encode};
-use frame_support::{traits::Get, BoundedVec};
+use frame_support::{dispatch::DispatchClass, traits::Get, BoundedVec};
 use quip_testnet_runtime::{
     native_tx_extension, Address, Block, Header, Nonce, Runtime, RuntimeCall, RuntimeGenesisConfig,
     Signature, SignedPayload, TxExtension, UncheckedExtrinsic, SLOT_DURATION, UNIT, WASM_BINARY,
@@ -189,6 +189,9 @@ fn outcome(r: &ApplyExtrinsicResult) -> String {
 // Chain harness
 // ---------------------------------------------------------------------------
 
+/// `sc-basic-authorship`'s `MAX_SKIPPED_TRANSACTIONS`.
+const MAX_SKIPPED_TRANSACTIONS: usize = 8;
+
 struct Chain {
     executor: Executor,
     genesis: Storage,
@@ -344,16 +347,65 @@ impl Chain {
         .into()
     }
 
+    /// Apply one extrinsic the way `sc-block-builder` does
+    /// (`client/block-builder/src/lib.rs`, `push`): inside a storage
+    /// transaction that is rolled back when the result is
+    /// `Err(TransactionValidityError)` and committed otherwise. Without the
+    /// rollback, `frame-executive` has already run `note_extrinsic` for the
+    /// rejected extrinsic (`frame/executive/src/lib.rs`, before `apply`), so its
+    /// `ExtrinsicData` would leak into the authored state root and the block
+    /// could not import. Returns the apply result and, when `measure` is set,
+    /// the fresh-heap high-water of the apply.
+    fn apply_in_transaction(
+        &self,
+        state: &mut TestExternalities,
+        xt: &UncheckedExtrinsic,
+        measure: bool,
+    ) -> (ApplyExtrinsicResult, u32) {
+        state.execute_with(sp_io::storage::start_transaction);
+        let (out, heap) = if measure {
+            self.measured(state, "BlockBuilder_apply_extrinsic", &xt.encode())
+        } else {
+            (
+                Ok(self.call(state, "BlockBuilder_apply_extrinsic", &xt.encode())),
+                0,
+            )
+        };
+        let out = out.unwrap_or_else(|e| panic!("author traps on apply: {e}"));
+        let result = ApplyExtrinsicResult::decode(&mut &out[..]).expect("decodes");
+        state.execute_with(|| {
+            if result.is_err() {
+                sp_io::storage::rollback_transaction();
+            } else {
+                sp_io::storage::commit_transaction();
+            }
+        });
+        (result, heap)
+    }
+
     /// Build block 1 the way a real block builder does, then `finalize_block`
-    /// so the header carries the true state/extrinsics roots. Returns the
-    /// block and, per INCLUDED signed extrinsic, (apply result, fresh-heap
-    /// bytes). An extrinsic whose `apply_extrinsic` returns
-    /// `Err(TransactionValidityError)` (e.g. `ExhaustsResources`, or a
-    /// future-nonce left by an earlier drop) is omitted, exactly as a real
-    /// builder omits it; a dispatch error `Ok(Err(_))` is included (the
-    /// extrinsic was valid and paid). Callers that want the dropped count read
-    /// it as `signed.len() - applied.len()`.
-    fn author(&self, calls: Vec<RuntimeCall>) -> (Block, Vec<(ApplyExtrinsicResult, u32)>) {
+    /// so the header carries the true state/extrinsics roots.
+    ///
+    /// Each apply runs in a rolled-back-on-reject storage transaction (see
+    /// [`Self::apply_in_transaction`]). An extrinsic whose apply returns
+    /// `Err(TransactionValidityError)` (e.g. `ExhaustsResources`) is dropped and
+    /// the author moves on, as `sc-basic-authorship` does: it allows
+    /// `MAX_SKIPPED_TRANSACTIONS` (8) rejections in total -- the counter is not
+    /// reset by a later inclusion -- and ends the block at the next one (its
+    /// soft-deadline extension is not modelled; this author is deterministic).
+    /// Nonces are assigned at apply time from the count of included signed
+    /// extrinsics, as a pool hands the builder the next ready transaction, so a
+    /// dropped call does not turn every later call into a future nonce. A
+    /// dispatch error `Ok(Err(_))` is a valid, paid extrinsic and is kept.
+    ///
+    /// Returns the block, the included apply results in inclusion order, and
+    /// the number of dropped calls (skipped plus never tried after the limit).
+    fn author_with(
+        &self,
+        calls: Vec<RuntimeCall>,
+        measure: bool,
+    ) -> (Block, Vec<(ApplyExtrinsicResult, u32)>, usize) {
+        let supplied = calls.len();
         let mut sign_state = self.state();
         let mut state = self.state();
         self.call(
@@ -362,100 +414,56 @@ impl Chain {
             &self.header(1).encode(),
         );
         let mut xts = vec![Self::timestamp(1)];
-        let (ts_out, _) =
-            self.measured(&mut state, "BlockBuilder_apply_extrinsic", &xts[0].encode());
-        assert_eq!(
-            ApplyExtrinsicResult::decode(&mut &ts_out.expect("ts")[..]).expect("decodes"),
-            Ok(Ok(())),
-            "timestamp"
-        );
-        // Sign and apply lazily, stopping at the first builder rejection. Every
-        // call is from one account with sequential nonces, so once the builder
-        // rejects one (ExhaustsResources / block-length), every later call is a
-        // future nonce it would also reject: the included set is the prefix, and
-        // signing/applying the rest would only waste work. A dispatch error
-        // `Ok(Err(_))` is a valid, paid extrinsic and is kept.
+        let (ts, _) = self.apply_in_transaction(&mut state, &xts[0], false);
+        assert_eq!(ts, Ok(Ok(())), "timestamp");
         let mut applied = Vec::new();
-        for (n, call) in calls.into_iter().enumerate() {
-            let xt = self.sign_in(&mut sign_state, call, n as Nonce);
-            let (out, heap) =
-                self.measured(&mut state, "BlockBuilder_apply_extrinsic", &xt.encode());
-            let out = out.unwrap_or_else(|e| panic!("author traps on apply: {e}"));
-            match ApplyExtrinsicResult::decode(&mut &out[..]).expect("decodes") {
-                Err(_) => break,
-                ok => {
+        let mut skipped = 0usize;
+        for call in calls {
+            let xt = self.sign_in(&mut sign_state, call, applied.len() as Nonce);
+            match self.apply_in_transaction(&mut state, &xt, measure) {
+                (Err(_), _) => {
+                    if skipped == MAX_SKIPPED_TRANSACTIONS {
+                        break;
+                    }
+                    skipped += 1;
+                }
+                (ok, heap) => {
                     applied.push((ok, heap));
                     xts.push(xt);
                 }
             }
         }
         drop(sign_state);
-        let out = self.call(&mut state, "BlockBuilder_finalize_block", &[]);
-        let header = Header::decode(&mut &out[..]).expect("header");
+        // Finalize on a fresh instance so nothing a pooled instance retained
+        // from the applies can influence the authored header.
+        let (out, _) = self.measured(&mut state, "BlockBuilder_finalize_block", &[]);
+        let header = Header::decode(&mut &out.expect("finalize")[..]).expect("header");
+        let dropped = supplied - applied.len();
         (
             Block {
                 header,
                 extrinsics: xts,
             },
             applied,
+            dropped,
         )
     }
 
-    /// Like `author`, but applies through the cached executor path (fast: no
-    /// per-apply reinstantiation, no per-apply heap measured) and finalizes
-    /// through the uncached path (a fresh instance, so the one rejected apply
-    /// that stops the loop cannot leave the pooled instance dirty for finalize).
-    /// Returns the block and the per-included-extrinsic apply results. Used by
-    /// the combined test, which authors the full sweep plus hundreds of
-    /// extrinsics and only needs the import high-water, not per-apply heaps.
+    /// Author with a per-apply fresh-heap measurement for every included
+    /// extrinsic. Returns the block and (apply result, apply heap) per included
+    /// extrinsic; the dropped count is `calls.len() - applied.len()`.
+    fn author(&self, calls: Vec<RuntimeCall>) -> (Block, Vec<(ApplyExtrinsicResult, u32)>) {
+        let (block, applied, _) = self.author_with(calls, true);
+        (block, applied)
+    }
+
+    /// Like `author`, but applies through the cached executor path (no
+    /// per-apply reinstantiation or heap measurement). Used by the combined
+    /// test, which authors hundreds of extrinsics and only needs the import
+    /// high-water.
     fn author_fast(&self, calls: Vec<RuntimeCall>) -> (Block, Vec<ApplyExtrinsicResult>) {
-        let mut sign_state = self.state();
-        let mut state = self.state();
-        self.call(
-            &mut state,
-            "Core_initialize_block",
-            &self.header(1).encode(),
-        );
-        let mut xts = vec![Self::timestamp(1)];
-        self.call(&mut state, "BlockBuilder_apply_extrinsic", &xts[0].encode());
-        // A real node block builder reserves weight for the mandatory
-        // `on_finalize`/`on_idle` hooks and stops well before the Normal-class
-        // budget is full; `BlockBuilder_apply_extrinsic` alone only enforces the
-        // per-class budget, so an unbounded loop fills the block so full that
-        // `execute_block`'s hooks then trap at import. Model the reservation:
-        // stop once the accumulated block weight passes 75 % of `max_block` in
-        // either the ref-time or proof-size dimension.
-        let max_block =
-            state.execute_with(|| <Runtime as frame_system::Config>::BlockWeights::get().max_block);
-        let mut applied = Vec::new();
-        for (n, call) in calls.into_iter().enumerate() {
-            let xt = self.sign_in(&mut sign_state, call, n as Nonce);
-            let out = self.call(&mut state, "BlockBuilder_apply_extrinsic", &xt.encode());
-            match ApplyExtrinsicResult::decode(&mut &out[..]).expect("decodes") {
-                Err(_) => break, // builder full; later same-account nonces also rejected
-                ok => {
-                    applied.push(ok);
-                    xts.push(xt);
-                }
-            }
-            let used =
-                state.execute_with(|| frame_system::Pallet::<Runtime>::block_weight().total());
-            if used.ref_time().saturating_mul(4) > max_block.ref_time().saturating_mul(3)
-                || used.proof_size().saturating_mul(4) > max_block.proof_size().saturating_mul(3)
-            {
-                break;
-            }
-        }
-        drop(sign_state);
-        let (out, _) = self.measured(&mut state, "BlockBuilder_finalize_block", &[]);
-        let header = Header::decode(&mut &out.expect("finalize")[..]).expect("header");
-        (
-            Block {
-                header,
-                extrinsics: xts,
-            },
-            applied,
-        )
+        let (block, applied, _) = self.author_with(calls, false);
+        (block, applied.into_iter().map(|(r, _)| r).collect())
     }
 
     fn import(&self, block: &Block) -> (Result<Vec<u8>, String>, u32) {
@@ -470,6 +478,53 @@ impl Chain {
             step_limit,
         }
         .into()
+    }
+}
+
+/// Harness regression (W1-002 R8 F1): a builder-rejected extrinsic must leave
+/// no trace in the authored state. The rejected call is a remark one byte over
+/// the Normal-class block length, so `CheckWeight` rejects it with
+/// `ExhaustsResources` -- after `frame-executive` has already run
+/// `note_extrinsic` for it, writing `ExtrinsicData` at the current extrinsic
+/// index. A rejection does not advance that index, so a later included
+/// extrinsic overwrites the entry; a rejection that is the LAST apply before
+/// `finalize_block` is not overwritten, and only the per-apply rollback keeps
+/// it out of the state root. Both positions are checked.
+#[test]
+fn author_rolls_back_a_rejected_extrinsic_and_the_block_imports() {
+    let chain = Chain::new();
+    let max_len = chain.state().execute_with(|| {
+        *<Runtime as frame_system::Config>::BlockLength::get()
+            .max
+            .get(DispatchClass::Normal)
+    }) as usize;
+    let remark = |p: usize| -> RuntimeCall {
+        frame_system::Call::<Runtime>::remark {
+            remark: vec![0u8; p],
+        }
+        .into()
+    };
+    for (position, calls, included) in [
+        (
+            "middle",
+            vec![remark(16), remark(max_len + 1), remark(16)],
+            2,
+        ),
+        ("last", vec![remark(16), remark(max_len + 1)], 1),
+    ] {
+        let (block, applied, dropped) = chain.author_with(calls, false);
+        assert_eq!(
+            dropped, 1,
+            "[{position}] the oversized remark must be dropped"
+        );
+        assert_eq!(applied.len(), included, "[{position}]");
+        assert!(applied.iter().all(|(r, _)| matches!(r, Ok(Ok(())))));
+        assert_eq!(block.extrinsics.len(), 1 + included, "[{position}]");
+        let (imported, _) = chain.import(&block);
+        assert!(
+            imported.is_ok(),
+            "[{position}] a block authored past a rejected extrinsic must import: {imported:?}"
+        );
     }
 }
 
@@ -597,7 +652,7 @@ fn b_per_run_footprint_by_family() {
     );
     // importer_net is the binding figure: the whole run executes in the
     // block's single heap. O-A2 is sized against it (adjustment 3).
-    println!("family,L_MiB,params,charged_B,author_MiB,author_net_MiB,import_MiB,import_net_MiB,import_ratio_to_L,outcome");
+    println!("family,L_KiB,params,charged_B,author_MiB,author_net_MiB,import_MiB,import_net_MiB,import_ratio_to_L,outcome");
     // Emulated caps stay below the compiled 2 MiB cap with headroom for the
     // k ~ 2 clone overhead (matching `c_block_order_sweep_at_emulated_caps`).
     // The old 16 MiB row is dropped: it exceeds the current cap, so it would
@@ -658,8 +713,8 @@ fn b_per_run_footprint_by_family() {
             match expect {
                 None => assert!(
                     matches!(r, Ok(Ok(()))),
-                    "{family} ({params}) at L={} MiB: expected success, got {}",
-                    l / MIB,
+                    "{family} ({params}) at L={} KiB: expected success, got {}",
+                    l / KIB,
                     outcome(r),
                 ),
                 Some(code) => assert!(
@@ -668,8 +723,8 @@ fn b_per_run_footprint_by_family() {
                         Ok(Err(sp_runtime::DispatchError::Module(m)))
                             if m.index == XQVM_PALLET_INDEX && m.error[0] == code
                     ),
-                    "{family} ({params}) at L={} MiB: expected xqvm module error {code}, got {}",
-                    l / MIB,
+                    "{family} ({params}) at L={} KiB: expected xqvm module error {code}, got {}",
+                    l / KIB,
                     outcome(r),
                 ),
             }
@@ -680,15 +735,40 @@ fn b_per_run_footprint_by_family() {
             // floor that still excludes a rejected allocation.
             assert!(
                 u64::from(import_net) >= charged / 2,
-                "{family} ({params}) at L={} MiB: footprint {import_net} B < charged/2 \
+                "{family} ({params}) at L={} KiB: footprint {import_net} B < charged/2 \
                  ({} B) -- allocation did not reach its target (early VmMemoryLimitExceeded?)",
-                l / MIB,
+                l / KIB,
                 charged / 2,
             );
 
+            // `vec` faults with VmMemoryLimitExceeded (19) by design, but an early
+            // cap fault inside the VECPUSH loop would report the same code, and
+            // the charged/2 footprint floor is met before EQUALITY is reached.
+            // Pin the fault to EQUALITY itself: rerun the program natively at
+            // the same memory and step limits and compare the fault offset.
+            if family == "vec" {
+                let program = xqvm::Program::decode(&prog_vec()).expect("decodes");
+                let equality = xqvm::InstructionStream::new(program.code())
+                    .filter_map(Result::ok)
+                    .find(|(_, _, instr)| matches!(instr, I::Equality { .. }))
+                    .map(|(pos, _, _)| pos)
+                    .expect("prog_vec contains EQUALITY");
+                let mut vm = xqvm::Vm::new();
+                vm.set_memory_limit(max_vm_memory())
+                    .set_step_limit(ms)
+                    .set_calldata(calldata.iter().map(|&v| xqvm::RegVal::Int(v)).collect());
+                let fault = vm.run(&program).expect_err("vec run faults");
+                assert!(
+                    matches!(fault, xqvm::Error::MemoryLimitExceeded { pos, .. } if pos == equality),
+                    "{family} ({params}) at L={} KiB: expected the memory fault at EQUALITY \
+                     (offset {equality}), got {fault:?}",
+                    l / KIB,
+                );
+            }
+
             println!(
                 "{family},{},{params},{charged},{:.3},{:.3},{:.3},{:.3},{:.2},{}",
-                l / MIB,
+                l / KIB,
                 mib(*author_heap),
                 mib(author_heap.saturating_sub(base_author)),
                 mib(import_heap),
@@ -1065,15 +1145,14 @@ fn e_largest_legitimate_run() {
                 "solution {i} spins stay ±1"
             );
         }
-        // The `transformed` accumulator holds every solution's output at once
-        // (<= QuantumMaxSolutions x QuantumMaxNodes bytes ~ 0.1 MiB) -- the
-        // per-extrinsic retained term the MaxVmMemory docs and the pinned budget
-        // test account for. Per-run VM residency is capped at
-        // MaxTransformVmMemory; a single WasmExecutor address_space_used for the
-        // whole `submit_solution` would need the order seeded in genesis and is
-        // left to the submit_solution census path.
+        // The `transformed` accumulator holds every solution's output at once.
+        // The figure printed here is its PAYLOAD (QuantumMaxSolutions x
+        // QuantumMaxNodes bytes), computed, not measured. Its heap footprint is
+        // 164,520 B by the allocator's chunk rule (pinned in the budget test),
+        // and the importer high-water of a real `submit_solution` block is
+        // measured by `h_submit_solution_with_transform_imports`.
         println!(
-            "real mempool transform: {max_solutions} x {max_nodes} spins ok, {} VM steps, retained ~{} KiB",
+            "real mempool transform: {max_solutions} x {max_nodes} spins ok, {} VM steps, retained payload {} KiB (computed)",
             transform.steps_used,
             (max_solutions * max_nodes) / 1024
         );
@@ -1223,8 +1302,9 @@ fn g_combined_block_imports_at_cap() {
     let body0 = opaque_body_len(&chain.sign(remark(0), 0));
     let big_payload = (2 * MIB as usize + 1).saturating_sub(body0);
     let filler_payload = (2049usize).saturating_sub(body0);
-    // Enough fillers to reach the ~5 MiB length cap even if nothing else is
-    // dropped; the author drops the surplus.
+    // More fillers than any block can hold, so the author fills the block
+    // until the builder refuses (weight or length) and stops after its skip
+    // limit: the block is builder-full, not stopped short by the harness.
     let fillers: Vec<RuntimeCall> = (0..1200).map(|_| remark(filler_payload)).collect();
     let big = remark(big_payload);
 
@@ -1264,14 +1344,17 @@ fn g_combined_block_imports_at_cap() {
             ),
         };
         println!(
-            "COMBINED [{order}]: supplied {supplied}, included {included} (dropped {dropped} for weight/length), block xts {}, encoded {:.2} MiB; importer high-water {:.3} MiB (net {:.3}); import {import_status}",
+            "COMBINED [{order}]: supplied {supplied}, included {included} (dropped {dropped} by the builder), block xts {}, encoded {:.2} MiB; importer high-water {:.3} MiB (net {:.3}); import {import_status}",
             block.extrinsics.len(),
             block.encode().len() as f64 / MIB as f64,
             mib(heap),
             mib(net),
         );
-        // A correct importer must accept a realistically-authored block. With
-        // the on_finalize weight reserved in author_fast, this holds; a trap
+        assert!(
+            dropped > 0,
+            "[{order}] the builder never refused a filler, so the block is not full"
+        );
+        // A correct importer must accept a block the builder produced; a trap
         // here would be an author/importer divergence to stop and report.
         assert!(
             imported.is_ok(),
@@ -1289,11 +1372,9 @@ fn g_combined_block_imports_at_cap() {
             mib(heap),
             HEAP_MIB,
         );
-        // The block carries the ~2 MiB remark AND all `included - 1 - 22`
-        // surplus fillers alongside the full 22-run sweep; the dropped ones are
-        // surplus fillers beyond the builder's on_finalize weight reserve (the
-        // block is weight-bound before the 5 MiB length cap). So the remark and
-        // the full sweep DO co-occur in one importable block.
+        // The block carries the ~2 MiB remark and the full sweep alongside as
+        // many fillers as the builder accepted, so the remark and the full
+        // sweep co-occur in one builder-full, importable block.
         let vm_plus_remark = 1 + sweep.len();
         assert!(
             included >= vm_plus_remark,
@@ -1301,9 +1382,182 @@ fn g_combined_block_imports_at_cap() {
             sweep.len(),
         );
         println!(
-            "COMBINED [{order}]: remark + full {}-run sweep + {} fillers fit and import; {dropped} surplus fillers dropped (weight-bound)",
+            "COMBINED [{order}]: remark + full {}-run sweep + {} fillers fit and import; {dropped} calls dropped by the builder",
             sweep.len(),
             included - vm_plus_remark,
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// F3 (W1-002 R8): `submit_solution` with a transform program, end to end. One
+// order is seeded at genesis through the real extrinsics (job spec with an
+// identity transform, registered solver, an Open 5,000-node order); a block of
+// maximal `submit_solution`s (QuantumMaxSolutions x QuantumMaxNodes spins, so
+// every call runs QuantumMaxSolutions transform VMs and retains the
+// `transformed` accumulator) is authored builder-full and imported under
+// `WasmExecutor`. This measures the retained term in the importer's heap
+// rather than restating it as payload arithmetic.
+// ---------------------------------------------------------------------------
+
+/// Copy every top-level key/value of `ext` into a genesis `Storage`.
+fn snapshot(ext: &mut TestExternalities) -> Storage {
+    let mut storage = Storage::default();
+    ext.execute_with(|| {
+        let mut key = Vec::new();
+        while let Some(next) = sp_io::storage::next_key(&key) {
+            let value = sp_io::storage::get(&next).expect("listed key has a value");
+            storage.top.insert(next.clone(), value.to_vec());
+            key = next;
+        }
+    });
+    storage
+}
+
+#[test]
+#[ignore = "V-A census: slow, run manually"]
+fn h_submit_solution_with_transform_imports() {
+    use pallet_quantum_compute_mempool::types;
+    use quip_testnet_runtime::RuntimeOrigin;
+    type Mempool = pallet_quantum_compute_mempool::Pallet<Runtime>;
+    type Cfg = Runtime;
+    let chain = Chain::new();
+    let max_solutions = <Cfg as pallet_quantum_compute_mempool::Config>::MaxSolutions::get();
+    let max_nodes = <Cfg as pallet_quantum_compute_mempool::Config>::MaxNodes::get();
+
+    // Identity transform: echo calldata[0] (the spin VecInt) to output slot 0.
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    b.emit_push(0).emit(I::Output { reg: R(0) });
+    b.emit(I::Halt {});
+    let ident = encode(b);
+    let ident_hash = BlakeTwo256::hash(&ident);
+
+    let solver = account_id_from_public(&chain.attacker.public());
+    let proposer = account_id_from_public(
+        &HybridPair::from_seed_slice(&[0xB0; 32])
+            .expect("valid seed")
+            .public(),
+    );
+    let mut ext = TestExternalities::new(chain.genesis.clone());
+    let order_id = ext.execute_with(|| {
+        let bounded: BoundedVec<u8, <Cfg as pallet_xqvm::Config>::MaxProgramSize> =
+            ident.clone().try_into().expect("fits");
+        pallet_xqvm::Programs::<Cfg>::insert(ident_hash, bounded);
+        let reward = <Cfg as pallet_quantum_compute_mempool::Config>::MinReward::get();
+        let _ = <pallet_balances::Pallet<Cfg> as frame_support::traits::Currency<_>>::make_free_balance_be(
+            &proposer,
+            reward.saturating_mul(10),
+        );
+        let name: BoundedVec<u8, frame_support::traits::ConstU32<128>> =
+            b"census-transform".to_vec().try_into().expect("fits");
+        let spec_id = BlakeTwo256::hash_of(&(
+            name.clone(),
+            types::Formulation::Ising,
+            None::<H256>,
+            Some(ident_hash),
+        ));
+        Mempool::register_job_spec(
+            RuntimeOrigin::root(),
+            proposer.clone(),
+            name,
+            types::Formulation::Ising,
+            None,
+            Some(ident_hash),
+        )
+        .expect("job spec with transform registers");
+        Mempool::register_solver(RuntimeOrigin::signed(solver.clone()), types::MinerType::Cpu)
+            .expect("solver registers");
+        let nodes: Vec<u32> = (0..max_nodes).collect();
+        let edges: Vec<(u32, u32)> = (0..max_nodes).map(|i| (i, (i + 1) % max_nodes)).collect();
+        let order_id = pallet_quantum_compute_mempool::NextOrderId::<Cfg>::get();
+        Mempool::propose_job(
+            RuntimeOrigin::signed(proposer.clone()),
+            spec_id,
+            types::IsingParams {
+                nodes: nodes.try_into().expect("nodes fit"),
+                edges: edges.try_into().expect("edges fit"),
+                h_values: vec![0; max_nodes as usize].try_into().expect("h fit"),
+                j_values: vec![-1_000; max_nodes as usize].try_into().expect("j fit"),
+                max_energy_milli: None,
+                min_diversity_milli: None,
+                min_solutions: None,
+            },
+            reward,
+            types::JobMode::Open,
+            types::RewardResolution::TopNEqual {
+                n: types::MAX_REWARD_WINNERS,
+            },
+            10,
+            5,
+            types::ResultDelivery::OnChainOnly,
+        )
+        .expect("order proposes");
+        order_id
+    });
+    let seeded = Chain {
+        executor: Executor::builder().build(),
+        genesis: snapshot(&mut ext),
+        genesis_hash: chain.genesis_hash,
+        attacker: HybridPair::from_seed_slice(&[0xA7; 32]).expect("valid seed"),
+        programs: vec![],
+    };
+
+    // More calls than a block can hold: the builder decides how many fit.
+    let supplied = 64u32;
+    // Every call comes from the one census signer, and a repeat submission is
+    // accepted only if its best energy strictly improves (`SolutionNotImproved`
+    // otherwise). On this ferromagnetic ring (J = -1000) each domain wall costs
+    // energy, so call `v` alternates the first 2 * (supplied - v) spins and is
+    // all +1 after: later calls have strictly fewer walls, so each one improves.
+    let submit = |variant: u32| -> RuntimeCall {
+        let frustrated = 2 * (supplied - variant);
+        let solutions: Vec<BoundedVec<i8, _>> = (0..max_solutions)
+            .map(|_| {
+                (0..max_nodes)
+                    .map(|i| {
+                        if i < frustrated && i % 2 == 1 {
+                            -1i8
+                        } else {
+                            1
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .expect("spins fit")
+            })
+            .collect();
+        pallet_quantum_compute_mempool::Call::<Cfg>::submit_solution {
+            order_id,
+            solutions: solutions.try_into().expect("solutions fit"),
+        }
+        .into()
+    };
+    let (empty, _) = seeded.author(vec![]);
+    let (_, empty_import) = seeded.import(&empty);
+    let (block, applied, dropped) = seeded.author_with((0..supplied).map(submit).collect(), true);
+    for (i, (r, _)) in applied.iter().enumerate() {
+        assert!(
+            matches!(r, Ok(Ok(()))),
+            "submit_solution {i} must succeed, got {}",
+            outcome(r)
+        );
+    }
+    assert!(!applied.is_empty(), "at least one submit_solution must fit");
+    let author_max = applied.iter().map(|(_, h)| *h).max().unwrap_or_default();
+    let (imported, import_heap) = seeded.import(&block);
+    println!(
+        "F3 submit_solution x{} ({max_solutions} x {max_nodes} spins, identity transform): \
+         supplied {supplied}, dropped {dropped}, encoded {:.2} MiB; author apply max {:.3} MiB; \
+         importer high-water {:.3} MiB (net of empty block {:.3})",
+        applied.len(),
+        block.encode().len() as f64 / MIB as f64,
+        mib(author_max),
+        mib(import_heap),
+        mib(import_heap.saturating_sub(empty_import)),
+    );
+    assert!(
+        imported.is_ok(),
+        "seeded submit_solution block must import: {imported:?}"
+    );
 }
