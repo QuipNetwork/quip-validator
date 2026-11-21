@@ -11,17 +11,15 @@ set -euo pipefail
 # Layout: a slot is /ci-cache/<CI_CONCURRENT_ID>/<CI_JOB_NAME>, holding the
 # job's target/ and the lock file `.in-use`. CI_CONCURRENT_ID is numeric, and
 # only directories under a numeric first level are ever treated as slots: the
-# volume also holds the shared CARGO_HOME (/ci-cache/cargo-home) and this
-# script's own `.trash`, neither of which is a slot.
+# volume also holds the shared CARGO_HOME (/ci-cache/cargo-home), which is not
+# a slot.
 #
 # Locking. While a job's before_script and script run, the job holds a SHARED
 # flock on $slot/.in-use (scripts/ci-cache-lock.sh, sourced by the template's
 # before_script). That is the file and the semantics main has used since
 # c63fd2f, so this prune and main's see each other's holders on every slot.
 # This script only ever takes the lock EXCLUSIVELY and without waiting, so it
-# never touches a slot a job is using. `.in-use.lock`, the name an earlier
-# version of this branch used, is still recognised as a marker of a slot this
-# cache created, but nothing locks on it any more.
+# never touches a slot a job is using.
 #
 # Mixed rollout. Jobs on main and on the other branches that carry a lock take
 # `.in-use` too. Branches without any lock (and anything cut before the lock
@@ -31,14 +29,17 @@ set -euo pipefail
 # only for jobs that run THIS template; main's jobs stamp only when their own
 # prune runs at the end of the job.
 #
-# Removal is by rename: under the exclusive lock a slot is moved aside to
-# $cache_root/.trash/ (same filesystem, atomic), the lock is released, and only
-# then is the trashed copy deleted. A job that was waiting on the old lock
-# wakes up, sees that its fd no longer names the slot's lock, and retries on a
-# fresh slot; a job that starts meanwhile creates a fresh slot. Deleting in
-# place would let a job lock a new `.in-use` while `rm` was still emptying
-# target/. Leftovers in .trash (from a prune that was killed) are deleted at
-# the start of the next scan.
+# Eviction INVARIANT: this script never removes or renames a slot directory or
+# its `.in-use`. Their inodes stay stable for every waiter -- ours, which
+# re-checks the inode, and main's (c63fd2f), which does not: a job that opened
+# `.in-use` and is waiting for the prune wakes up holding the live lock.
+# What is evicted is the slot's target/ only: under the exclusive lock it is
+# renamed to `$slot/.prune-trash.<pid>.<epoch>` (same directory, so the rename
+# is atomic), the lock is released, and only then is the trash deleted. A job
+# that starts meanwhile builds into a fresh target/. An emptied slot (the
+# directory and a 0-byte `.in-use`) stays; that costs nothing. Leftover trash
+# from a prune that was killed is deleted at the next scan, and only on an
+# exact name match inside a numeric-layout slot.
 #
 # Three rules: two for two kinds of garbage, one for the volume as a whole.
 #
@@ -63,14 +64,11 @@ set -euo pipefail
 #   2. Slots nothing uses any more: left by a renamed job, a reduced
 #      concurrency limit, or a job that died before cleaning up. `--maxsize`
 #      never reclaims one, because an abandoned slot sits under the ceiling
-#      forever. A slot is removed whole only when BOTH its age exceeds
+#      forever. A slot's target/ is evicted only when BOTH its age exceeds
 #      CI_CACHE_ORPHAN_DAYS (the target/.last-used stamp each job refreshes)
 #      AND the exclusive lock is free; the age is checked again under the lock.
-#      A directory with no target/ is removed only if it carries one of this
-#      cache's markers (`.in-use`, `.in-use.lock` or `.last-used`), aged by its
-#      own mtime: what this cache created is allow-listed, and anything
-#      unmarked is never touched. This scan runs once per host per
-#      CI_CACHE_INTERVAL and never two at once.
+#      A slot with no target/ has nothing to evict and is left as it is. This
+#      scan runs once per host per CI_CACHE_INTERVAL and never two at once.
 #   3. A volume over its budget (opt-in: `--volume-budget N`, an integer
 #      percentage 1-99 of the volume's on-disk size as `df` reports it). It is
 #      a COMMAND-LINE argument written in .gitlab-ci.yml, and no environment
@@ -79,16 +77,17 @@ set -euo pipefail
 #      argument is absent in this MR; add it at the merge to main, once the
 #      branches that use these slots without a lock are gone.
 #      Ceilings bound each slot, not their number, so the volume is bounded
-#      separately: while usage is above the budget, at most ONE whole slot per
-#      run is removed, the least recently used by its target/.last-used stamp.
+#      separately: while usage is above the budget, the target/ of at most ONE
+#      slot per run is evicted, the least recently used by its
+#      target/.last-used stamp.
 #      Only marked, numeric slots are candidates (a stamped target/ under
 #      /ci-cache/<digits>/<job>); never the own slot, never a slot whose lock
 #      is held, never one used within CI_CACHE_BUDGET_MIN_IDLE -- by its stamp
 #      OR by any cargo fingerprint under target/ newer than that (cargo
 #      rewrites those throughout a build, so this probe works without any
 #      lock). Both checks are repeated under the lock. Whether the run left the
-#      volume under budget is computed as df's usage minus the removed slot's
-#      on-disk size, not by re-reading df (ZFS frees lag the delete). Every
+#      volume under budget is computed as df's usage minus the evicted
+#      target/'s on-disk size, not by re-reading df (ZFS frees lag the delete). Every
 #      failure removes nothing: df failing or printing something unparseable,
 #      or df's device and mount point not matching the mount entry for the
 #      cache root. Rule 3 runs on every cache job's prune, so the volume
@@ -135,9 +134,8 @@ mounts="${CI_CACHE_MOUNTS:-/proc/self/mounts}"
 
 stamp_name=".last-used"
 lock_name=".in-use"
-legacy_lock_name=".in-use.lock"
 sweep_name=".last-sweep"
-trash="$cache_root/.trash"
+trash_prefix=".prune-trash"
 
 log() { echo "prune-ci-cache: $*"; }
 
@@ -305,23 +303,32 @@ release() {
   exec {held_fd}>&-
 }
 
-# to_trash SLOT: with SLOT's exclusive lock held, move it aside atomically.
-# Prints the trash path; on failure logs, sets failed=1 and returns 1.
-to_trash() {
+# evict_target SLOT: with SLOT's exclusive lock held, rename SLOT/target to
+# SLOT/.prune-trash.<pid>.<epoch> (same directory: atomic). The slot directory
+# and its .in-use are never touched. Prints the trash path; on failure logs
+# and returns 1.
+evict_target() {
   local dest
-  dest="$trash/$(basename "$(dirname "$1")").$(basename "$1").$$.$RANDOM"
-  if ! mkdir -p "$trash"; then
-    log "cannot create $trash; not removing $1" >&2
-    return 1
-  fi
-  if ! mv "$1" "$dest"; then
-    log "cannot move $1 to $trash; not removing it" >&2
+  dest="$1/$trash_prefix.$$.$(date +%s)"
+  if ! mv "$1/target" "$dest"; then
+    log "cannot move $1/target aside; not evicting it" >&2
     return 1
   fi
   echo "$dest"
 }
 
-# delete_trashed PATH: delete a trashed slot (after its lock was released).
+# is_trash PATH: PATH is exactly <numeric>/<slot>/.prune-trash.<pid>.<epoch>
+# under the cache root -- the only shape this script ever deletes as trash.
+is_trash() {
+  local name slot
+  name="$(basename "$1")"
+  slot="$(dirname "$1")"
+  [[ "$name" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]] &&
+    [[ "$(dirname "$(dirname "$slot")")" == "$cache_root" ]] &&
+    [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]]
+}
+
+# delete_trashed PATH: delete an evicted target/ (after its lock was released).
 delete_trashed() {
   rm -rf "$1" || {
     log "could not delete $1 (the next scan retries)"
@@ -373,10 +380,12 @@ exec {scan_fd}>"$scan_lock"
 have_scan_lock=0
 if flock --nonblock "$scan_fd"; then
   have_scan_lock=1
-  # Leftovers of a prune that was killed between a rename and its delete.
-  if [[ -d "$trash" ]] && ((dry_run == 0)); then
-    for leftover in "$trash"/* "$trash"/.[!.]*; do
+  # Leftovers of a prune that was killed between an eviction and its delete:
+  # exact trash names inside numeric-layout slots only.
+  if ((dry_run == 0)); then
+    for leftover in "$cache_root"/*/*/"$trash_prefix".*; do
       [[ -e "$leftover" ]] || continue
+      is_trash "$leftover" || continue
       log "deleting leftover $leftover"
       delete_trashed "$leftover"
     done
@@ -402,47 +411,34 @@ else
     [[ "$(cd "$slot" && pwd)" == "$own_slot" ]] && continue
     target="$slot/target"
 
-    if [[ -d "$target" ]]; then
-      age_of="$target/$stamp_name"
-      if [[ ! -e "$age_of" ]]; then
-        ((dry_run)) || touch "$age_of"
-        log "grandfathered unstamped slot $slot"
-        continue
-      fi
-    else
-      # No target/: remove it only if this cache made it. A half-created slot
-      # carries the lock file the template's before_script opens; anything
-      # without one of our markers is not ours and is left alone.
-      if [[ ! -e "$slot/$lock_name" && ! -e "$slot/$legacy_lock_name" &&
-        ! -e "$slot/$stamp_name" ]]; then
-        log "leaving unmarked directory $slot alone"
-        continue
-      fi
-      age_of="$slot"
+    # A slot with no target/ has nothing to evict.
+    [[ -d "$target" ]] || continue
+    if [[ ! -e "$target/$stamp_name" ]]; then
+      ((dry_run)) || touch "$target/$stamp_name"
+      log "grandfathered unstamped slot $slot"
+      continue
     fi
 
-    older_than "$age_of" "$orphan_seconds" || continue
+    older_than "$target/$stamp_name" "$orphan_seconds" || continue
 
     if ! try_exclusive "$slot"; then
       log "stale slot $slot is in use (lock held), skipping"
       continue
     fi
     # Re-check under the lock: a job that started between the first check and
-    # the lock stamps target/ right after taking its shared hold. Read only
-    # that stamp here -- opening the lock may itself have created the lock
-    # file, which refreshes the slot directory's own mtime.
-    if [[ -e "$target/$stamp_name" ]] && ! older_than "$target/$stamp_name" "$orphan_seconds"; then
+    # the lock stamps target/ right after taking its shared hold.
+    if [[ ! -d "$target" ]] || ! older_than "$target/$stamp_name" "$orphan_seconds"; then
       release
       continue
     fi
-    log "removing unused slot $slot"
+    log "evicting the target/ of unused slot $slot"
     if ((dry_run)); then
-      du -sh "$slot" || true
+      du -sh "$target" || true
       release
       continue
     fi
     trashed=""
-    trashed="$(to_trash "$slot")" || failed=1
+    trashed="$(evict_target "$slot")" || failed=1
     release
     [[ -n "$trashed" ]] && delete_trashed "$trashed"
   done
@@ -517,30 +513,30 @@ if ((budget_given)) && ((have_scan_lock)); then
             release
             continue
           fi
-          if ! slot_kib="$(disk_kib "$slot")"; then
-            log "volume budget: cannot measure $slot; removing nothing"
+          if ! slot_kib="$(disk_kib "$slot/target")"; then
+            log "volume budget: cannot measure $slot/target; evicting nothing"
             release
             break
           fi
-          log "volume budget: removing least recently used slot $slot ($(size_of "$slot"))"
+          log "volume budget: evicting the target/ of least recently used slot $slot ($(size_of "$slot/target"))"
           if ((dry_run)); then
             release
             removed="$slot"
             break
           fi
           trashed=""
-          trashed="$(to_trash "$slot")" || failed=1
+          trashed="$(evict_target "$slot")" || failed=1
           release
           if [[ -n "$trashed" ]]; then
             delete_trashed "$trashed"
             removed="$slot"
-            # Decide from the removed slot's size, not a df re-read: ZFS frees
-            # lag the delete. At most one removal per run.
+            # Decide from the evicted target/'s size, not a df re-read: ZFS
+            # frees lag the delete. At most one eviction per run.
             projected="$(percent "$((used > slot_kib ? used - slot_kib : 0))" "$total")"
             if ((projected > budget)); then
-              log "volume budget: projected ${projected}% after removing $slot; still over budget, the next prune continues"
+              log "volume budget: projected ${projected}% after evicting $slot/target; still over budget, the next prune continues"
             else
-              log "volume budget: projected ${projected}% after removing $slot; under budget"
+              log "volume budget: projected ${projected}% after evicting $slot/target; under budget"
             fi
           fi
           break

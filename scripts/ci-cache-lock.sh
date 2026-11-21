@@ -17,11 +17,12 @@
 # EXCLUSIVELY and without waiting; a job that finds it held waits up to
 # CI_CACHE_LOCK_WAIT seconds (default 1200) and then fails, as main's does.
 #
-# The prune removes a slot by renaming it aside while it holds the exclusive
-# lock. A job that was waiting then wakes up holding a lock on the renamed
-# (trashed) file: the inode check sees that the path now names another file
-# (or none) and retries on a fresh slot. A job that cannot lock its live slot
-# in three attempts fails rather than build into an unprotected slot.
+# This branch's prune never removes or renames a slot directory or its
+# `.in-use` (it evicts target/ only), so the locked file is always the live
+# one. The inode check guards against anything else that replaces the file --
+# main's prune, for instance, deletes a whole slot -- by retrying on a fresh
+# slot. A job that cannot lock its live slot in three attempts fails rather
+# than build into an unprotected slot.
 
 ci_cache_slot="${CARGO_TARGET_DIR%/target}"
 ci_cache_locked=0
