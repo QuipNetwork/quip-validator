@@ -117,21 +117,23 @@ fn distinct_rows<T: Config>(
 ) -> SolutionsOf<T> {
     bounded(
         (0..solution_count)
-            .map(|solution_index| {
-                bounded(
-                    (0..node_count)
-                        .map(|node_index| {
-                            let flipped = node_index >= 1
-                                && node_index <= 32
-                                && (solution_index >> (node_index - 1)) & 1 == 1;
-                            if flipped {
-                                -first_spin
-                            } else {
-                                first_spin
-                            }
-                        })
-                        .collect(),
-                )
+            .map(|solution_index| distinct_row(node_count, solution_index, first_spin))
+            .collect(),
+    )
+}
+
+/// Row `index` of `distinct_rows`.
+fn distinct_row<S: Get<u32>>(node_count: u32, index: u32, first_spin: i8) -> BoundedVec<i8, S> {
+    bounded(
+        (0..node_count)
+            .map(|node_index| {
+                let flipped =
+                    node_index >= 1 && node_index <= 32 && (index >> (node_index - 1)) & 1 == 1;
+                if flipped {
+                    -first_spin
+                } else {
+                    first_spin
+                }
             })
             .collect(),
     )
@@ -140,6 +142,34 @@ fn distinct_rows<T: Config>(
 /// The worst case for the W1-004 dedupe: every row a distinct answer.
 fn solutions_with_dimensions<T: Config>(node_count: u32, solution_count: u32) -> SolutionsOf<T> {
     distinct_rows::<T>(node_count, solution_count, 1)
+}
+
+/// A placeholder answer for pre-seeded rankings, payloads and the answer
+/// index. It is not the hash of any row, so it cannot collide with a
+/// submitted answer.
+fn synthetic_answer(index: u32) -> sp_core::H256 {
+    let mut bytes = [0xA5u8; 32];
+    bytes[28..].copy_from_slice(&index.to_be_bytes());
+    sp_core::H256(bytes)
+}
+
+/// Fill the order's answer index (W1-012) with every other solver's entry, so
+/// the duplicate read, and on improvement the remove and insert, run against a
+/// full per-order index.
+fn seed_answer_index<T: Config>(order_id: u64) {
+    for index in 0..types::MAX_SOLVERS_PER_OPEN_ORDER.saturating_sub(1) {
+        OrderAnswers::<T>::insert(
+            order_id,
+            synthetic_answer(index),
+            account::<T::AccountId>("indexed-solver", index, 0),
+        );
+    }
+}
+
+/// One row: the `index`-th row of `distinct_rows(node_count, _, 1)`, so
+/// different indices are different answers (W1-012) on a connected topology.
+fn nth_distinct_solution<T: Config>(node_count: u32, index: u32) -> SolutionsOf<T> {
+    bounded(vec![distinct_row(node_count, index, 1)])
 }
 
 /// How many distinct answers `distinct_rows` can hold: `node_count - 1` free
@@ -283,6 +313,7 @@ fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::Accoun
             .map(|(index, winner)| types::RankedSolver {
                 solver: winner.clone(),
                 energy_milli: -i64::from(winner_count) + index as i64,
+                answer: synthetic_answer(index as u32),
             })
             .collect(),
     );
@@ -378,10 +409,12 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
             .map(|index| types::RankedSolver {
                 solver: account("ranked-solver", index, 0),
                 energy_milli: old_energy + i64::from(index),
+                answer: synthetic_answer(index),
             })
             .collect(),
     );
     OrderTopSolvers::<T>::insert(order_id, ranked);
+    seed_answer_index::<T>(order_id);
 
     (solver, order_id, old_energy)
 }
@@ -519,10 +552,12 @@ mod benchmarks {
                 .map(|index| types::RankedSolver {
                     solver: account("ranked-solver", index, 0),
                     energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
+                    answer: synthetic_answer(index),
                 })
                 .collect(),
         );
         OrderTopSolvers::<T>::insert(order_id, ranked);
+        seed_answer_index::<T>(order_id);
 
         #[extrinsic_call]
         QuantumComputeMempool::submit_solution(
@@ -603,10 +638,12 @@ mod benchmarks {
                 .map(|index| types::RankedSolver {
                     solver: account("ranked-solver", index, 0),
                     energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
+                    answer: synthetic_answer(index),
                 })
                 .collect(),
         );
         OrderTopSolvers::<T>::insert(order_id, ranked);
+        seed_answer_index::<T>(order_id);
 
         OrderPayeeRequirements::<T>::insert(order_id, 20033);
         let payee = types::WinnerPayee::V1 {
@@ -852,7 +889,7 @@ mod benchmarks {
                 },
             )
             .is_ok());
-            for winner in &winners {
+            for (winner_index, winner) in (0u32..).zip(&winners) {
                 // Rotate the fixture's bid allow-list because the mock's
                 // MaxBidMiners is smaller than the 32-winner settlement bound.
                 JobOrders::<T>::mutate(order_id, |maybe_order| {
@@ -865,7 +902,8 @@ mod benchmarks {
                 assert!(QuantumComputeMempool::<T>::submit_solution(
                     RawOrigin::Signed(winner.clone()).into(),
                     order_id,
-                    solutions_with_dimensions::<T>(T::MaxNodes::get(), 1),
+                    // One answer per winner (W1-012).
+                    nth_distinct_solution::<T>(T::MaxNodes::get(), winner_index),
                 )
                 .is_ok());
             }
@@ -897,6 +935,9 @@ mod benchmarks {
             let order = JobOrders::<T>::get(order_id).expect("order exists");
             assert_eq!(order.status, types::OrderStatus::Expired);
             assert!(OrderSolutions::<T>::iter_key_prefix(order_id)
+                .next()
+                .is_none());
+            assert!(OrderAnswers::<T>::iter_key_prefix(order_id)
                 .next()
                 .is_none());
             assert_eq!(
@@ -941,7 +982,9 @@ mod benchmarks {
             OrderPayeeRequirements::<T>::insert(id, 20033);
             OpenOrders::<T>::insert(id, ());
             OrdersPrunableAt::<T>::insert(now, id, ());
-            for winner in &winners {
+            for (winner_index, winner) in (0u32..).zip(&winners) {
+                // Defensive cleanup also covers a full answer index (W1-012).
+                OrderAnswers::<T>::insert(id, synthetic_answer(winner_index), winner);
                 OrderPayees::<T>::insert(
                     id,
                     winner,
@@ -964,6 +1007,7 @@ mod benchmarks {
                         diversity_milli: 0,
                         num_valid: T::MaxSolutions::get(),
                         submitted_at: order.created_at,
+                        answer: synthetic_answer(winner_index),
                     },
                 );
             }
@@ -982,6 +1026,7 @@ mod benchmarks {
             assert!(!OpenOrders::<T>::contains_key(id));
             assert!(OrderPayees::<T>::iter_key_prefix(id).next().is_none());
             assert!(OrderSolutions::<T>::iter_key_prefix(id).next().is_none());
+            assert!(OrderAnswers::<T>::iter_key_prefix(id).next().is_none());
         }
         assert!(!NextPruneBucket::<T>::exists());
     }

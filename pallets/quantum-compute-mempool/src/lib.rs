@@ -196,8 +196,8 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, distinct_solutions, energy_of_solution_indexed, TopologyIndex,
-        ValidationError,
+        calculate_diversity, canonical_answer_row, distinct_solutions, energy_of_solution_indexed,
+        TopologyIndex, ValidationError,
     };
     use sp_runtime::traits::{
         AccountIdConversion, Hash as _, One, SaturatedConversion, Saturating, Zero,
@@ -208,7 +208,10 @@ pub mod pallet {
     /// (`OrdersExpiringAt`, `NextExpiryBucket`) and indexes the open orders
     /// already in storage.
     // v4 adds sparse optional payee metadata; runtime119 launches at fresh genesis.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
+    // v5 (W1-012): JobSolution and RankedSolver gain `answer: H256`. No
+    // migration (owner O-B2): no in-place upgrade reaches a chain with open
+    // orders (testnet reset, fresh mainnet). See `on_runtime_upgrade`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -367,6 +370,15 @@ pub mod pallet {
         T::AccountId,
         JobSolutionOf<T>,
     >;
+
+    /// Answer index (W1-012): for each order, every solver's current canonical
+    /// answer, mapped to that solver. At most one entry per solver, so at most
+    /// `MAX_SOLVERS_PER_OPEN_ORDER` per order; cleared with the order's
+    /// solutions. Makes the duplicate-answer check a single read instead of a
+    /// scan of the (large) solution payloads.
+    #[pallet::storage]
+    pub type OrderAnswers<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, sp_core::H256, T::AccountId>;
 
     /// Immutable destination chain required by a native proposal; no payment activation.
     #[pallet::storage]
@@ -574,6 +586,9 @@ pub mod pallet {
         /// unavailable, frozen (for example vesting), or would leave the
         /// proposer below the existential deposit.
         RewardNotSpendable,
+        /// Another solver already submitted the same answer for this order
+        /// (identical, globally flipped, or differing only in isolated spins).
+        DuplicateAnswer,
     }
 
     #[pallet::call]
@@ -957,6 +972,29 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// v5 (W1-012) adds `answer` to `JobSolution` and `RankedSolver` with no
+        /// migration (owner O-B2). That is sound only on a chain without orders:
+        /// with orders, their stored solutions and rankings would stop decoding.
+        /// Such a chain is left untouched and a warning is logged.
+        fn on_runtime_upgrade() -> Weight {
+            let on_chain = StorageVersion::get::<Pallet<T>>();
+            if on_chain >= STORAGE_VERSION {
+                return T::DbWeight::get().reads(1);
+            }
+            if JobOrders::<T>::iter_keys().next().is_some() {
+                log::warn!(
+                    target: "runtime::quantum-compute-mempool",
+                    "storage version {on_chain:?} < 5 with existing orders: not upgrading; \
+                     the JobSolution/RankedSolver layout changed without a migration, and the \
+                     OrderAnswers index starts empty, so orders open before the upgrade detect \
+                     duplicates only among answers submitted after it (W1-012)"
+                );
+                return T::DbWeight::get().reads(2);
+            }
+            STORAGE_VERSION.put::<Pallet<T>>();
+            T::DbWeight::get().reads_writes(2, 1)
+        }
+
         fn integrity_test() {
             weights::check_claim_reward_weight::<T>();
             assert!(
@@ -1512,7 +1550,31 @@ pub mod pallet {
                 .try_into()
                 .expect("selected subset cannot exceed MaxSolutions");
 
+            // W1-012: one place per distinct answer. The canonical answer of
+            // the transformed, scored best row must not belong to another
+            // solver on this order -- ranked or not -- checked before anything
+            // is written, so a duplicate never takes a slot. One read of the
+            // answer index. The same solver resubmitting the same answer falls
+            // through to the must-improve rule above.
+            let canonical = canonical_answer_row(
+                valid_solutions[best_index].as_slice(),
+                h_values,
+                j_values,
+                &topology,
+            )
+            .map_err(Self::map_validation_error)?;
+            let answer = sp_core::H256(sp_core::hashing::blake2_256(&canonical.encode()));
+            ensure!(
+                OrderAnswers::<T>::get(order_id, answer).is_none_or(|owner| owner == solver),
+                Error::<T>::DuplicateAnswer
+            );
+
             let is_new_solver = previous.is_none();
+            // Keep exactly one index entry per solver: its current answer.
+            if let Some(previous) = previous.as_ref() {
+                OrderAnswers::<T>::remove(order_id, previous.answer);
+            }
+            OrderAnswers::<T>::insert(order_id, answer, &solver);
             OrderSolutions::<T>::insert(
                 order_id,
                 &solver,
@@ -1524,6 +1586,7 @@ pub mod pallet {
                     diversity_milli,
                     num_valid: selected_solutions.len() as u32,
                     submitted_at: now,
+                    answer,
                 },
             );
 
@@ -1559,7 +1622,7 @@ pub mod pallet {
                 });
             }
 
-            Self::update_ranking(order_id, &order.resolution, &solver, best_energy)?;
+            Self::update_ranking(order_id, &order.resolution, &solver, best_energy, answer)?;
             if OrderPayees::<T>::get(order_id, &solver) != payee {
                 match payee {
                     Some(destination) => OrderPayees::<T>::insert(order_id, &solver, destination),
@@ -1853,6 +1916,10 @@ pub mod pallet {
                 types::MAX_SOLVERS_PER_OPEN_ORDER,
                 None,
             );
+            // The answer index holds at most one entry per solver, so the same
+            // bound clears it in the same step (W1-012).
+            let _ =
+                OrderAnswers::<T>::clear_prefix(order_id, types::MAX_SOLVERS_PER_OPEN_ORDER, None);
         }
 
         fn update_ranking(
@@ -1860,6 +1927,7 @@ pub mod pallet {
             resolution: &types::RewardResolution,
             solver: &T::AccountId,
             best_energy: i64,
+            answer: sp_core::H256,
         ) -> Result<(), DispatchError> {
             match resolution {
                 types::RewardResolution::SingleBest => {
@@ -1893,6 +1961,7 @@ pub mod pallet {
                         types::RankedSolver {
                             solver: solver.clone(),
                             energy_milli: best_energy,
+                            answer,
                         },
                         *n as usize,
                     );

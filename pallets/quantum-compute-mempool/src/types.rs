@@ -220,6 +220,9 @@ pub struct JobSolution<AccountId, BlockNumber, Solutions> {
     pub diversity_milli: u32,
     pub num_valid: u32,
     pub submitted_at: BlockNumber,
+    /// Canonical answer of the best row (W1-012): `blake2_256` of the row
+    /// after flip normalisation and with isolated spins set to `+1`.
+    pub answer: sp_core::H256,
 }
 
 /// Registered solver metadata.
@@ -241,6 +244,8 @@ pub struct SolverInfo<AccountId, Balance, BlockNumber> {
 pub struct RankedSolver<AccountId> {
     pub solver: AccountId,
     pub energy_milli: i64,
+    /// The solver's canonical answer (W1-012); see [`JobSolution::answer`].
+    pub answer: sp_core::H256,
 }
 
 /// SingleBest frontrunner state.

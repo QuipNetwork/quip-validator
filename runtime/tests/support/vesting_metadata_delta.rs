@@ -1415,6 +1415,137 @@ fn normalize_reward_escrow(before: &mut Value, after: &mut Value) -> Result<(), 
     Ok(())
 }
 
+// W1-012 (rank distinct answers). Exact deltas: the appended `DuplicateAnswer`
+// error (after W1-006's `RewardNotSpendable`), the `answer: H256` field
+// appended to `JobSolution` and `RankedSolver`, and the `OrderAnswers` index
+// directly after `OrderSolutions`, keyed (order id, answer) -> solver with the
+// same order-id, account and hasher types as `OrderSolutions`.
+const ORDER_ANSWERS_DOCS: &[&str] = &[
+    " Answer index (W1-012): for each order, every solver's current canonical",
+    " answer, mapped to that solver. At most one entry per solver, so at most",
+    " `MAX_SOLVERS_PER_OPEN_ORDER` per order; cleared with the order's",
+    " solutions. Makes the duplicate-answer check a single read instead of a",
+    " scan of the (large) solution payloads.",
+];
+
+fn is_h256(metadata: &Value, id: &Value) -> bool {
+    registry_type(metadata, id)
+        .is_some_and(|ty| ty["path"] == serde_json::json!(["primitive_types", "H256"]))
+}
+
+fn tuple_fields(metadata: &Value, id: &Value) -> Option<Vec<Value>> {
+    registry_type(metadata, id)?
+        .pointer("/def/tuple")
+        .and_then(Value::as_array)
+        .cloned()
+}
+
+fn normalize_answer_index(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    // Error.
+    if mempool_variants(before, "error")?
+        .iter()
+        .any(|v| v["name"] == "DuplicateAnswer")
+    {
+        return Err("unexpected baseline DuplicateAnswer error".into());
+    }
+    let errors = mempool_variants(after, "error")?;
+    let expected = serde_json::json!({
+        "docs": [
+            "Another solver already submitted the same answer for this order",
+            "(identical, globally flipped, or differing only in isolated spins)."
+        ],
+        "index": 47,
+        "name": "DuplicateAnswer",
+    });
+    if errors.len() != 48 || errors[47] != expected {
+        return Err("missing or incorrect required DuplicateAnswer error".into());
+    }
+    errors.pop();
+
+    // Struct fields.
+    let types = after.clone();
+    // Field docs are not emitted in this metadata, so the field is name, type
+    // and type name only.
+    for name in ["JobSolution", "RankedSolver"] {
+        let path = serde_json::json!(["pallet_quantum_compute_mempool", "types", name]);
+        let mut found = 0;
+        for ty in after["types"]["types"]
+            .as_array_mut()
+            .ok_or("missing candidate registry")?
+            .iter_mut()
+            .filter(|ty| ty["type"]["path"] == path)
+        {
+            let fields = ty
+                .pointer_mut("/type/def/composite/fields")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| format!("{name} is not a struct"))?;
+            let last = fields.last().cloned().unwrap_or(Value::Null);
+            let want = serde_json::json!({
+                "name": "answer",
+                "type": last["type"].clone(),
+                "typeName": "sp_core::H256",
+            });
+            if last != want || !is_h256(&types, &last["type"]) {
+                return Err(format!("missing or incorrect required {name}.answer field"));
+            }
+            fields.pop();
+            found += 1;
+        }
+        if found == 0 {
+            return Err(format!("missing candidate {name} type"));
+        }
+    }
+
+    // Storage.
+    if mempool_storage_entries(before)?
+        .iter()
+        .any(|entry| entry["name"] == "OrderAnswers")
+    {
+        return Err("unexpected baseline OrderAnswers index".into());
+    }
+    let entries = mempool_storage_entries(after)?;
+    let solutions_at = entries
+        .iter()
+        .position(|entry| entry["name"] == "OrderSolutions")
+        .ok_or("missing candidate OrderSolutions")?;
+    let found: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry["name"] == "OrderAnswers")
+        .map(|(index, _)| index)
+        .collect();
+    if found != [solutions_at + 1] {
+        return Err("missing or misplaced required OrderAnswers index".into());
+    }
+    let solutions = entries[solutions_at].clone();
+    let index = entries[solutions_at + 1].clone();
+    let solutions_key = tuple_fields(&types, &solutions["ty"]["Map"]["key"])
+        .ok_or("OrderSolutions key is not a tuple")?;
+    let index_key = tuple_fields(&types, &index["ty"]["Map"]["key"])
+        .ok_or("OrderAnswers key is not a tuple")?;
+    let expected = serde_json::json!({
+        "default": [0],
+        "deprecation_info": "NotDeprecated",
+        "docs": ORDER_ANSWERS_DOCS,
+        "modifier": "Optional",
+        "name": "OrderAnswers",
+        "ty": {"Map": {
+            "hashers": solutions["ty"]["Map"]["hashers"].clone(),
+            "key": index["ty"]["Map"]["key"].clone(),
+            "value": solutions_key.get(1).cloned().unwrap_or(Value::Null),
+        }},
+    });
+    let key_ok = solutions_key.len() == 2
+        && index_key.len() == 2
+        && index_key[0] == solutions_key[0]
+        && is_h256(&types, &index_key[1]);
+    if index != expected || !key_ok {
+        return Err("incorrect required OrderAnswers index entry".into());
+    }
+    entries.remove(solutions_at + 1);
+    Ok(())
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
@@ -1448,6 +1579,8 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     normalize_audit_retention(&mut left, &mut right)?;
     normalize_audit_expiry_storage(&mut left, &mut right)?;
+    // Before normalize_reward_escrow, which expects RewardNotSpendable last.
+    normalize_answer_index(&mut left, &mut right)?;
     normalize_reward_escrow(&mut left, &mut right)?;
     normalize_mempool(&mut left, &mut right)?;
     normalize_commission_error(&mut left, &mut right)?;
@@ -1905,12 +2038,15 @@ mod tests {
         check(&before, &after).unwrap();
         let mut cases: Vec<(&str, Value)> = Vec::new();
         let mut wrong = after.clone();
-        mempool_variants(&mut wrong, "error").unwrap().pop();
+        mempool_variants(&mut wrong, "error")
+            .unwrap()
+            .retain(|v| v["name"] != "RewardNotSpendable");
         cases.push(("missing RewardNotSpendable", wrong));
         let mut wrong = after.clone();
         mempool_variants(&mut wrong, "error")
             .unwrap()
-            .last_mut()
+            .iter_mut()
+            .find(|v| v["name"] == "RewardNotSpendable")
             .unwrap()["docs"] = Value::from("mutated");
         cases.push(("altered RewardNotSpendable", wrong));
         let mut wrong = after.clone();
@@ -1942,6 +2078,112 @@ mod tests {
             .last_mut()
             .unwrap()["value"] = serde_json::json!(b"qp/other".to_vec());
         cases.push(("altered EscrowPalletId", wrong));
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
+    }
+
+    #[test]
+    fn requires_exact_answer_index_delta() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "error").unwrap().pop();
+        cases.push(("missing DuplicateAnswer".into(), wrong));
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "error")
+            .unwrap()
+            .last_mut()
+            .unwrap()["docs"] = Value::from("mutated");
+        cases.push(("altered DuplicateAnswer".into(), wrong));
+        let u64_id = mempool_storage_entries(&mut after.clone())
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "NextOrderId")
+            .unwrap()["ty"]["Plain"]
+            .clone();
+        for name in ["JobSolution", "RankedSolver"] {
+            let path = serde_json::json!(["pallet_quantum_compute_mempool", "types", name]);
+            for (what, mutate) in [
+                ("missing", 0),
+                ("renamed", 1),
+                ("retyped", 2),
+                ("type name", 3),
+            ] {
+                let mut wrong = after.clone();
+                let ty = wrong["types"]["types"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|ty| ty["type"]["path"] == path)
+                    .unwrap();
+                let fields = ty
+                    .pointer_mut("/type/def/composite/fields")
+                    .and_then(Value::as_array_mut)
+                    .unwrap();
+                match mutate {
+                    0 => {
+                        fields.pop();
+                    }
+                    1 => fields.last_mut().unwrap()["name"] = Value::from("other"),
+                    2 => fields.last_mut().unwrap()["type"] = u64_id.clone(),
+                    _ => fields.last_mut().unwrap()["typeName"] = Value::from("[u8; 32]"),
+                }
+                cases.push((format!("{what} {name}.answer"), wrong));
+            }
+        }
+        for field in [
+            "name",
+            "modifier",
+            "default",
+            "docs",
+            "deprecation_info",
+            "ty",
+        ] {
+            let mut wrong = after.clone();
+            mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "OrderAnswers")
+                .unwrap()[field] = Value::from("mutated");
+            cases.push((format!("altered OrderAnswers.{field}"), wrong));
+        }
+        let solutions = mempool_storage_entries(&mut after.clone())
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "OrderSolutions")
+            .unwrap()
+            .clone();
+        for (what, pointer, value) in [
+            ("key", "/ty/Map/key", solutions["ty"]["Map"]["key"].clone()),
+            ("value", "/ty/Map/value", u64_id.clone()),
+            ("hasher", "/ty/Map/hashers/1", Value::from("Twox64Concat")),
+        ] {
+            let mut wrong = after.clone();
+            *mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "OrderAnswers")
+                .unwrap()
+                .pointer_mut(pointer)
+                .unwrap() = value;
+            cases.push((format!("altered OrderAnswers {what}"), wrong));
+        }
+        let mut wrong = after.clone();
+        mempool_storage_entries(&mut wrong)
+            .unwrap()
+            .retain(|e| e["name"] != "OrderAnswers");
+        cases.push(("missing OrderAnswers".into(), wrong));
+        let mut wrong = after.clone();
+        let entries = mempool_storage_entries(&mut wrong).unwrap();
+        let at = entries
+            .iter()
+            .position(|e| e["name"] == "OrderAnswers")
+            .unwrap();
+        let entry = entries.remove(at);
+        entries.push(entry);
+        cases.push(("misplaced OrderAnswers".into(), wrong));
         for (name, wrong) in cases {
             assert!(check(&before, &wrong).is_err(), "accepted {name}");
         }

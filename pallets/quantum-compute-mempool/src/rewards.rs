@@ -114,6 +114,7 @@ mod tests {
             .map(|(index, energy)| RankedSolver {
                 solver: index as u64 + 1,
                 energy_milli: *energy,
+                answer: sp_core::H256::repeat_byte(index as u8),
             })
             .collect()
     }

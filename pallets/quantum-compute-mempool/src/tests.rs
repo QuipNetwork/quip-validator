@@ -57,6 +57,37 @@ fn weighted_params() -> crate::IsingParamsOf<Test> {
     }
 }
 
+/// A ferromagnetic chain of `n` nodes: every spin is coupled, so no spin is
+/// isolated and each flip class of a row is its own answer (W1-012).
+fn chain_params(n: u32) -> crate::IsingParamsOf<Test> {
+    crate::types::IsingParams {
+        nodes: bounded((0..n).collect()),
+        edges: bounded((0..n - 1).map(|i| (i, i + 1)).collect()),
+        h_values: bounded(vec![0; n as usize]),
+        j_values: bounded(vec![-1_000; (n - 1) as usize]),
+        max_energy_milli: None,
+        min_diversity_milli: None,
+        min_solutions: None,
+    }
+}
+
+/// A one-row submission on `chain_params(n)`: spin 0 is +1 and spin `i >= 1`
+/// is -1 when bit `i - 1` of `k` is set, so each `k < 2^(n-1)` is a distinct
+/// answer. `k = 0` is the unique ground state; every other `k` is worse.
+fn chain_row(n: u32, k: u32) -> crate::SolutionsOf<Test> {
+    bounded(vec![bounded(
+        (0..n)
+            .map(|i| {
+                if i >= 1 && (k >> (i - 1)) & 1 == 1 {
+                    -1
+                } else {
+                    1
+                }
+            })
+            .collect(),
+    )])
+}
+
 fn register_spec() -> <Test as frame_system::Config>::Hash {
     let (name, formulation, validation_program, transform_program) = sample_spec();
     assert_ok!(QuantumComputeMempool::register_job_spec(
@@ -2018,11 +2049,23 @@ fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
                 .map_err(|error| error.error),
                 crate::Error::<Test>::SolutionNotImproved
             );
-            // Equal energy from a different solver does not displace the incumbent.
+            // Another solver cannot take the incumbent's answer (W1-012); in
+            // this two-spin topology every other equal-energy row is that
+            // answer. Equal energy across distinct answers is covered by
+            // w1_012::equal_energy_distinct_answer_does_not_displace_the_incumbent.
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(3),
+                    0,
+                    sample_solution()
+                )
+                .map_err(|error| error.error),
+                crate::Error::<Test>::DuplicateAnswer
+            );
             assert_ok!(QuantumComputeMempool::submit_solution(
                 RuntimeOrigin::signed(3),
                 0,
-                sample_solution()
+                alternate_solution()
             ));
             match resolution {
                 RewardResolution::SingleBest => {
@@ -2036,11 +2079,13 @@ fn only_strict_improvements_replace_payloads_for_every_payout_mode() {
                     vec![2, 3]
                 ),
             }
+            // The same solver resubmitting its own answer meets the
+            // must-improve rule, not DuplicateAnswer (W1-012).
             assert_noop!(
                 QuantumComputeMempool::submit_solution(
                     RuntimeOrigin::signed(3),
                     0,
-                    sample_solution()
+                    alternate_solution()
                 )
                 .map_err(|error| error.error),
                 crate::Error::<Test>::SolutionNotImproved
@@ -2411,7 +2456,12 @@ fn required_payees_bind_each_signed_winner_and_survive_native_closure() {
                 assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
                     RuntimeOrigin::signed(solver),
                     0,
-                    sample_solution(),
+                    // One answer per solver (W1-012).
+                    if solver == 2 {
+                        sample_solution()
+                    } else {
+                        alternate_solution()
+                    },
                     payee(20033, solver as u8)
                 ));
                 // Even an existing destination does not authorize a legacy submission.
@@ -2885,10 +2935,11 @@ fn a6f_open_order_caps_solvers_and_prunes() {
             ));
         }
         let spec_id = register_spec();
+        // Seven chained spins hold 64 answers, one per solver (W1-012).
         assert_ok!(QuantumComputeMempool::propose_job(
             RuntimeOrigin::signed(1),
             spec_id,
-            sample_params(),
+            chain_params(7),
             100,
             JobMode::Open,
             RewardResolution::TopNEqual { n: 3 },
@@ -2901,7 +2952,7 @@ fn a6f_open_order_caps_solvers_and_prunes() {
             assert_ok!(QuantumComputeMempool::submit_solution(
                 RuntimeOrigin::signed(who),
                 0,
-                sample_solution()
+                chain_row(7, (who - first_solver) as u32)
             ));
         }
         assert_eq!(
@@ -2915,7 +2966,7 @@ fn a6f_open_order_caps_solvers_and_prunes() {
         let over = QuantumComputeMempool::submit_solution(
             RuntimeOrigin::signed(first_solver + cap),
             0,
-            sample_solution(),
+            chain_row(7, cap as u32),
         );
         assert!(
             over.is_err(),
@@ -2940,7 +2991,20 @@ fn a6f_open_order_caps_solvers_and_prunes() {
 fn full_solver_cap_allows_improvements_without_new_payload_slots() {
     use frame_support::traits::Currency;
     new_test_ext().execute_with(|| {
-        let id = propose_single_best(1, 2, 1);
+        let id = NextOrderId::<Test>::get();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            register_spec(),
+            chain_params(7),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        // 32 distinct non-ground answers (W1-012), then solver 10 improves to
+        // the ground state.
         for who in 10..42 {
             let _ = Balances::make_free_balance_be(&who, 1_000_000);
             assert_ok!(QuantumComputeMempool::register_solver(
@@ -2950,14 +3014,14 @@ fn full_solver_cap_allows_improvements_without_new_payload_slots() {
             assert_ok!(QuantumComputeMempool::submit_solution(
                 RuntimeOrigin::signed(who),
                 id,
-                alternate_solution()
+                chain_row(7, (who - 9) as u32)
             ));
         }
         assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
         assert_ok!(QuantumComputeMempool::submit_solution(
             RuntimeOrigin::signed(10),
             id,
-            sample_solution()
+            chain_row(7, 0)
         ));
         assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
         assert_eq!(OrderSolutions::<Test>::iter_key_prefix(id).count(), 32);
@@ -3239,7 +3303,12 @@ fn retention_sweep_preserves_poll_ttl_then_removes_all_auxiliary_records() {
             assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
                 RuntimeOrigin::signed(solver),
                 0,
-                sample_solution(),
+                // One answer per solver (W1-012).
+                if solver == 2 {
+                    sample_solution()
+                } else {
+                    alternate_solution()
+                },
                 payee(20033, solver as u8)
             ));
         }
@@ -3534,6 +3603,310 @@ mod w1_006 {
             assert_eq!(Balances::total_issuance(), issuance, "no dust was burned");
             assert_eq!(escrow_balance(0), 0);
             assert!(!escrow_exists(0));
+        });
+    }
+}
+
+/// W1-012: one place per distinct answer, enforced through the OrderAnswers
+/// index (one entry per solver: its current canonical answer).
+mod w1_012 {
+    use super::*;
+    use crate::OrderAnswers;
+    use codec::Encode;
+    use frame_support::traits::Currency;
+    use sp_runtime::DispatchResult;
+
+    fn solver(who: AccountId) {
+        let _ = Balances::make_free_balance_be(&who, 1_000_000);
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+    }
+
+    fn propose(params: crate::IsingParamsOf<Test>, resolution: RewardResolution) -> u64 {
+        let id = NextOrderId::<Test>::get();
+        let spec = match JobSpecs::<Test>::iter_keys().next() {
+            Some(spec) => spec,
+            None => register_spec(),
+        };
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec,
+            params,
+            100,
+            JobMode::Open,
+            resolution,
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        id
+    }
+
+    fn submit(who: AccountId, id: u64, rows: crate::SolutionsOf<Test>) -> DispatchResult {
+        QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(who), id, rows)
+            .map(|_| ())
+            .map_err(|error| error.error)
+    }
+
+    fn row(spins: &[i8]) -> crate::SolutionsOf<Test> {
+        bounded(vec![bounded(spins.to_vec())])
+    }
+
+    /// The index holds exactly each stored solver's answer, mapped to it.
+    fn assert_index_consistent(id: u64) {
+        let mut stored = 0;
+        for (who, entry) in OrderSolutions::<Test>::iter_prefix(id) {
+            assert_eq!(OrderAnswers::<Test>::get(id, entry.answer), Some(who));
+            stored += 1;
+        }
+        assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), stored);
+    }
+
+    /// No raw key remains under twox128(pallet) ++ twox128(OrderAnswers) ++
+    /// blake2_128_concat(order), with the prefix built from literals.
+    fn assert_no_answer_keys(id: u64) {
+        use sp_core::hashing::{blake2_128, twox_128};
+        let mut prefix = Vec::new();
+        prefix.extend(twox_128(b"QuantumComputeMempool"));
+        prefix.extend(twox_128(b"OrderAnswers"));
+        prefix.extend(blake2_128(&id.encode()));
+        prefix.extend(id.encode());
+        let next = sp_io::storage::next_key(&prefix);
+        assert!(
+            !next.is_some_and(|key| key.starts_with(&prefix)),
+            "answer index entries remain for order {id}"
+        );
+    }
+
+    #[test]
+    fn answer_index_key_layout_is_pinned() {
+        use sp_core::hashing::{blake2_128, twox_128};
+        new_test_ext().execute_with(|| {
+            let (id, answer) = (7_u64, sp_core::H256::repeat_byte(0xAB));
+            let mut expected = Vec::new();
+            expected.extend(twox_128(b"QuantumComputeMempool"));
+            expected.extend(twox_128(b"OrderAnswers"));
+            expected.extend(blake2_128(&id.encode()));
+            expected.extend(id.encode());
+            expected.extend(blake2_128(&answer.encode()));
+            expected.extend(answer.encode());
+            assert_eq!(OrderAnswers::<Test>::hashed_key_for(id, answer), expected);
+        });
+    }
+
+    #[test]
+    fn duplicate_answers_are_rejected_across_solvers_ranked_or_not() {
+        new_test_ext().execute_with(|| {
+            let id = propose(chain_params(4), RewardResolution::SingleBest);
+            for who in [2, 3, 4] {
+                solver(who);
+            }
+            // Solver 2 holds a worse answer and is not ranked once solver 3
+            // takes the front-runner slot.
+            assert_ok!(submit(2, id, chain_row(4, 3)));
+            assert_ok!(submit(3, id, chain_row(4, 0)));
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 3);
+            for taken in [3, 0] {
+                assert_noop!(
+                    submit(4, id, chain_row(4, taken)),
+                    crate::Error::<Test>::DuplicateAnswer
+                );
+            }
+            // A distinct answer is accepted.
+            assert_ok!(submit(4, id, chain_row(4, 5)));
+            assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 3);
+            assert_index_consistent(id);
+        });
+    }
+
+    #[test]
+    fn canonical_equivalents_are_one_answer() {
+        new_test_ext().execute_with(|| {
+            // Nodes 0-1-2 chained; node 3 has no field and no coupling.
+            let mut params = chain_params(4);
+            params.edges = bounded(vec![(0, 1), (1, 2)]);
+            params.j_values = bounded(vec![-1_000, -1_000]);
+            let id = propose(params, RewardResolution::TopNEqual { n: 3 });
+            for who in [2, 3] {
+                solver(who);
+            }
+            assert_ok!(submit(2, id, row(&[1, -1, 1, 1])));
+            for equivalent in [
+                [-1, 1, -1, -1], // global flip
+                [1, -1, 1, -1],  // isolated spin differs
+                [-1, 1, -1, 1],  // both
+            ] {
+                assert_noop!(
+                    submit(3, id, row(&equivalent)),
+                    crate::Error::<Test>::DuplicateAnswer
+                );
+            }
+            assert_ok!(submit(3, id, row(&[1, 1, -1, 1])));
+            assert_index_consistent(id);
+        });
+    }
+
+    #[test]
+    fn same_solver_same_answer_meets_the_improvement_rule() {
+        new_test_ext().execute_with(|| {
+            let id = propose(chain_params(4), RewardResolution::SingleBest);
+            solver(2);
+            assert_ok!(submit(2, id, chain_row(4, 3)));
+            // The flip of its own row is its own answer: not a duplicate.
+            assert_noop!(
+                submit(2, id, row(&[-1, 1, -1, -1])),
+                crate::Error::<Test>::SolutionNotImproved
+            );
+        });
+    }
+
+    #[test]
+    fn improvement_frees_the_previous_answer() {
+        new_test_ext().execute_with(|| {
+            let id = propose(chain_params(4), RewardResolution::TopNEqual { n: 3 });
+            for who in [2, 3] {
+                solver(who);
+            }
+            let old = chain_row(4, 3);
+            assert_ok!(submit(2, id, old.clone()));
+            assert_noop!(
+                submit(3, id, old.clone()),
+                crate::Error::<Test>::DuplicateAnswer
+            );
+            assert_ok!(submit(2, id, chain_row(4, 0)));
+            assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), 1);
+            assert_ok!(submit(3, id, old));
+            assert_index_consistent(id);
+        });
+    }
+
+    #[test]
+    fn equal_energy_distinct_answer_does_not_displace_the_incumbent() {
+        new_test_ext().execute_with(|| {
+            // On a 3-chain, k = 2 ([1, 1, -1]) and k = 3 ([1, -1, -1]) each have
+            // one domain wall: equal energy, different answers.
+            let id = propose(chain_params(3), RewardResolution::SingleBest);
+            for who in [2, 3] {
+                solver(who);
+            }
+            assert_ok!(submit(2, id, chain_row(3, 2)));
+            assert_ok!(submit(3, id, chain_row(3, 3)));
+            assert_eq!(
+                OrderSolutions::<Test>::get(id, 2)
+                    .unwrap()
+                    .best_energy_milli,
+                OrderSolutions::<Test>::get(id, 3)
+                    .unwrap()
+                    .best_energy_milli
+            );
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 2);
+        });
+    }
+
+    #[test]
+    fn expiry_and_retention_pruning_clear_the_answer_index() {
+        new_test_ext().execute_with(|| {
+            let id = propose(chain_params(4), RewardResolution::TopNEqual { n: 2 });
+            for who in [2, 3] {
+                solver(who);
+            }
+            assert_ok!(submit(2, id, chain_row(4, 1)));
+            assert_ok!(submit(3, id, chain_row(4, 2)));
+            assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), 2);
+            // Expiry finalises the order and prunes its solutions and answers.
+            run_to_block(2);
+            assert_eq!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Expired
+            );
+            assert_no_answer_keys(id);
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
+                id
+            ));
+            assert_no_answer_keys(id);
+            // Retention pruning of the closed order also clears the index
+            // (defensively: plant stray entries first).
+            OrderAnswers::<Test>::insert(id, sp_core::H256::repeat_byte(1), 2);
+            OrderAnswers::<Test>::insert(id, sp_core::H256::repeat_byte(2), 3);
+            run_to_block(System::block_number() + 21);
+            assert!(!JobOrders::<Test>::contains_key(id));
+            assert_no_answer_keys(id);
+        });
+    }
+
+    #[test]
+    fn answer_index_matches_solutions_after_a_random_sequence() {
+        new_test_ext().execute_with(|| {
+            let id = propose(chain_params(5), RewardResolution::TopNWeighted { n: 4 });
+            let solvers: Vec<AccountId> = (10..18).collect();
+            for &who in &solvers {
+                solver(who);
+            }
+            let mut state = 0x2545_f491_4f6c_dd1d_u64;
+            let (mut accepted, mut duplicates) = (0, 0);
+            for _ in 0..400 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let who = solvers[(state % solvers.len() as u64) as usize];
+                let k = ((state >> 8) % 16) as u32;
+                let flip = (state >> 16) & 1 == 1;
+                let mut rows = chain_row(5, k);
+                if flip {
+                    for spin in rows[0].iter_mut() {
+                        *spin = -*spin;
+                    }
+                }
+                match submit(who, id, rows) {
+                    Ok(()) => accepted += 1,
+                    Err(error) if error == crate::Error::<Test>::DuplicateAnswer.into() => {
+                        duplicates += 1
+                    }
+                    Err(error) => {
+                        assert_eq!(error, crate::Error::<Test>::SolutionNotImproved.into())
+                    }
+                }
+                assert_index_consistent(id);
+            }
+            // The sequence exercises both accept and duplicate paths.
+            assert!(accepted >= solvers.len() && duplicates > 0);
+            // Each stored answer hashes the canonical form of its best row.
+            for (_, entry) in OrderSolutions::<Test>::iter_prefix(id) {
+                let params = JobOrders::<Test>::get(id).unwrap().ising_params;
+                let topology = quantum_validation::TopologyIndex::new(
+                    params.nodes.as_slice(),
+                    params.edges.as_slice(),
+                )
+                .unwrap();
+                let best = entry
+                    .solutions
+                    .iter()
+                    .find(|row| {
+                        quantum_validation::energy_of_solution_indexed(
+                            row.as_slice(),
+                            params.h_values.as_slice(),
+                            params.j_values.as_slice(),
+                            &topology,
+                        )
+                        .unwrap()
+                            == entry.best_energy_milli
+                    })
+                    .unwrap();
+                let canonical = quantum_validation::canonical_answer_row(
+                    best.as_slice(),
+                    params.h_values.as_slice(),
+                    params.j_values.as_slice(),
+                    &topology,
+                )
+                .unwrap();
+                assert_eq!(
+                    entry.answer,
+                    sp_core::H256(sp_core::hashing::blake2_256(&canonical.encode()))
+                );
+            }
         });
     }
 }

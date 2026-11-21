@@ -18,8 +18,10 @@ use frame_support::{
 pub const SOLUTION_PRUNING_PROOF_FLOOR: u64 = 4 * 1024 * 1024;
 pub fn solution_pruning_weight<T: crate::Config>() -> Weight {
     let cap = u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER);
+    // OrderSolutions and the OrderAnswers index (W1-012), each at most `cap`
+    // entries per order and cleared in the same step.
     Weight::from_parts(100_000_000, SOLUTION_PRUNING_PROOF_FLOOR)
-        .saturating_add(T::DbWeight::get().reads_writes(cap + 1, cap))
+        .saturating_add(T::DbWeight::get().reads_writes(2 * cap + 2, 2 * cap))
 }
 
 /// Unmeasured registration reserve/refund allowance pending reference weights.
@@ -138,6 +140,9 @@ pub fn submit_solution_proof_envelope<T: crate::Config>() -> u64 {
         .saturating_add(storage_key_envelope::<crate::JobSpecs<T>>())
         .saturating_add(storage_key_envelope::<crate::Solvers<T>>())
         .saturating_add(storage_key_envelope::<crate::OrderSolutions<T>>())
+        // The answer index: the duplicate read, and on improvement the old
+        // entry removed and the new one inserted (W1-012).
+        .saturating_add(storage_key_envelope::<crate::OrderAnswers<T>>().saturating_mul(2))
         .saturating_add(
             storage_key_envelope::<crate::OrderTopSolvers<T>>()
                 .max(storage_key_envelope::<crate::OrderFrontRunner<T>>()),
@@ -160,6 +165,7 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
     );
     assert!(
         storage_key_envelope::<crate::OrderSolutions<T>>()
+            .saturating_add(storage_key_envelope::<crate::OrderAnswers<T>>())
             .saturating_mul(u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER))
             <= SOLUTION_PRUNING_PROOF_FLOOR,
         "solution pruning proof floor no longer covers the payload cap"

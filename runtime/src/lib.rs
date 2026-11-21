@@ -883,14 +883,14 @@ mod tests {
             claim_reward_proof_envelope, CLAIM_REWARD_PROOF_FLOOR,
         };
         <QuantumComputeMempool as Hooks<BlockNumber>>::integrity_test();
-        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 1_007_133);
+        assert_eq!(claim_reward_proof_envelope::<Runtime>(), 1_008_157);
         assert_eq!(
             pallet_quantum_compute_mempool::weights::reclaim_order_proof_envelope::<Runtime>(),
             671_247
         );
         let submission =
             pallet_quantum_compute_mempool::weights::submit_solution_proof_envelope::<Runtime>();
-        assert_eq!(submission, 792_516);
+        assert_eq!(submission, 803_680);
         let proposal =
             pallet_quantum_compute_mempool::weights::propose_job_proof_envelope::<Runtime>();
         assert_eq!(proposal, 691_400);

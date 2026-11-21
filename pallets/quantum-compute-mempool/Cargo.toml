@@ -19,6 +19,7 @@ workspace = true
 codec = { features = ["derive"], workspace = true }
 frame-benchmarking = { optional = true, workspace = true }
 frame-support.workspace = true
+log.workspace = true
 frame-system.workspace = true
 pallet-balances.workspace = true
 quantum-validation.workspace = true
@@ -36,6 +37,7 @@ sp-runtime = { default-features = true, workspace = true }
 [features]
 default = ["std"]
 std = [
+  "log/std",
   "codec/std",
   "frame-benchmarking?/std",
   "frame-support/std",

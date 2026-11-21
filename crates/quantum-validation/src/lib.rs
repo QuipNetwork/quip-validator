@@ -27,6 +27,7 @@
 
 extern crate alloc;
 
+pub mod answer;
 pub mod diversity;
 pub mod energy;
 pub mod errors;
@@ -36,6 +37,7 @@ pub mod packed;
 pub mod puzzle_spec;
 pub mod validation;
 
+pub use crate::answer::canonical_answer_row;
 pub use crate::diversity::{
     calculate_diversity, distinct_solutions, select_diverse, symmetric_hamming,
 };
