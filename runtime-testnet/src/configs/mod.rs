@@ -466,9 +466,9 @@ parameter_types! {
     ///
     /// 2,048 blocks is ~7 MiB native, ~17 MiB in Wasm: the same one-eighth
     /// share of the heap the VM itself gets through `MaxVmMemory`. It is
-    /// also far past any real program -- the toolchain's conformance
-    /// vectors are tens of instructions -- so the ceiling binds abuse, not
-    /// use. The bound is priced separately: `store_program` pre-charges
+    /// also far past any real program -- the 196 xquad conformance vectors
+    /// at the pinned revision have at most 8 basic blocks (median 1) -- so
+    /// the ceiling binds abuse, not use. The bound is priced separately: `store_program` pre-charges
     /// verification at this many blocks and refunds to the actual count.
     pub const MaxProgramBlocks: u32 = 2_048;
     /// Maximum static loop nesting in a stored program.
@@ -568,15 +568,24 @@ parameter_types! {
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
     /// legitimate on-chain `execute` workload exists today: `store_program` is
-    /// filtered on runtime 121 and the testnet `Programs` map is empty. The
-    /// largest run the runtime performs is a maximal mempool transform (20 ×
-    /// 5,000 spins, identity program), which charges about 160 KB per VM: the
-    /// `INPUT` copy (5,000 × 16 B) plus the `OUTPUT` copy; its 40 KB calldata
-    /// `Vec<i64>` sits outside the charge. A synthetic 4,096-variable linear
-    /// model needs 0.198 MiB of author heap. So 2 MiB is about 12× the maximal
-    /// identity transform. Bytecode size does not bound allocation (`PUSH n;
-    /// BSMX` spends the full cap from a few bytes). Re-measure when a real
-    /// model-building transform is proposed.
+    /// filtered on runtime 121 and the testnet `Programs` map is empty. Two
+    /// runs were executed and measured (census test
+    /// `e_largest_legitimate_run`):
+    /// - a representative legitimate model-building run, the seeded `linear`
+    ///   program building a 4,096-variable model: 0.198 MiB of author heap;
+    /// - the maximal mempool transform (20 × 5,000 spins through an identity
+    ///   program on the real transform path), the largest run the runtime
+    ///   performs: about 160 KB charged per VM, the `INPUT` copy (5,000 × 16 B)
+    ///   plus the `OUTPUT` copy; its 40 KB calldata `Vec<i64>` sits outside the
+    ///   charge.
+    ///
+    /// So 2 MiB is about 12× the maximal identity transform. Separately, an
+    /// observation about the corpus rather than a heap measurement: the 196
+    /// xquad conformance vectors at the pinned revision assemble to at most
+    /// 16,403 B of bytecode (one stack-overflow stress vector; every other is
+    /// at most 1,047 B, median 30 B). Bytecode size does not bound allocation
+    /// (`PUSH n; BSMX` spends the full cap from a few bytes). Re-measure when a
+    /// real model-building transform is proposed.
     ///
     /// It is not derived from `MaxStepLimit`, and must not be: the step budget
     /// bounds allocation only incidentally (a sample costs one step and eight

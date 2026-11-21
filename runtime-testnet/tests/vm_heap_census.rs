@@ -1003,8 +1003,11 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
 }
 
 // ---------------------------------------------------------------------------
-// Gap 1: largest LEGITIMATE run. The real inputs the architect named --
-// conformance vectors and mempool transforms -- not the adversarial families.
+// Gap 1: largest LEGITIMATE run, not the adversarial families. Two runs are
+// executed and measured: a representative legitimate model-building run (the
+// seeded `linear` program; it is NOT from the checked-in conformance corpus,
+// which holds no runnable program that builds a model worth measuring) and
+// the maximal mempool transform.
 // ---------------------------------------------------------------------------
 
 /// Locate the checked-in xquad conformance fixture through `cargo metadata`, so
@@ -1041,29 +1044,31 @@ fn e_largest_legitimate_run() {
     let chain = Chain::new();
     let ms = max_steps();
 
-    // --- Conformance run: a genuine, canonical program that verifies and runs ---
-    // The checked-in `kimi-spine-control.bin` is a raw control-flow STRESS stream
-    // (no XQBC header; wrapping it fails verification with StackDepthMismatch),
-    // not a runnable conformance program -- decoding it as XQBC panics on
-    // BadMagic. So the positive conformance vector is the seeded `linear`
-    // program, which builds an n-variable model and sets n linear coefficients:
-    // it verifies, is canonical, and runs to completion on chain.
-    let conformance = prog_linear();
+    // --- Representative legitimate model-building run ---
+    // This is a generated workload, not a conformance vector. The checked-in
+    // `kimi-spine-control.bin` is a raw control-flow STRESS stream (no XQBC
+    // header; wrapping it fails verification with StackDepthMismatch), not a
+    // runnable program -- decoding it as XQBC panics on BadMagic. So the
+    // representative run is the seeded `linear` program, which builds an
+    // n-variable model and sets n linear coefficients: it verifies, is
+    // canonical, and runs to completion on chain.
+    let representative = prog_linear();
     assert!(
-        xqvm::verifier::verify(&xqvm::Program::decode(&conformance).expect("linear decodes"))
+        xqvm::verifier::verify(&xqvm::Program::decode(&representative).expect("linear decodes"))
             .is_ok(),
-        "conformance program must verify"
+        "the representative program must verify"
     );
     let n: i64 = 4096;
     let (_, applied) = chain.author(vec![chain.execute("linear", &[n], ms)]);
     assert!(
         matches!(applied[0].0, Ok(Ok(()))),
-        "conformance program must run successfully on chain: {}",
+        "the representative program must run successfully on chain: {}",
         outcome(&applied[0].0)
     );
     println!(
-        "conformance (linear, n={n}): {} program bytes, author heap {:.3} MiB, ok",
-        conformance.len(),
+        "representative legitimate model-building run (linear, n={n}): {} program bytes, \
+         author heap {:.3} MiB, ok",
+        representative.len(),
         mib(applied[0].1),
     );
 
