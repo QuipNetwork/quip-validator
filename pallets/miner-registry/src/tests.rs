@@ -914,6 +914,34 @@ mod w1_009 {
         });
     }
 
+    /// `on_idle` must reserve the two gating reads (candidate id, cursor) on
+    /// top of the benchmarked clear step: with one unit less than both, in
+    /// either weight dimension, it does nothing; with both, it prunes and
+    /// returns no more than it was given.
+    #[test]
+    fn on_idle_reserves_its_gating_reads_on_top_of_the_clear_step() {
+        new_test_ext().execute_with(|| {
+            seed(1, 100, 2);
+            set_latest_qblock_id(Some(10));
+            let db = <Test as frame_system::Config>::DbWeight::get();
+            assert!(db.reads(2).ref_time() > 0, "the mock must price reads");
+            let full =
+                <() as crate::WeightInfo>::prune_participation(2).saturating_add(db.reads(2));
+            for short in [
+                full.saturating_sub(Weight::from_parts(1, 0)),
+                full.saturating_sub(Weight::from_parts(0, 1)),
+            ] {
+                assert_eq!(MinerRegistry::on_idle(1, short), Weight::zero());
+                assert_eq!(entries(1), 2, "nothing pruned with {short:?}");
+                assert_eq!(PruneCursor::<Test>::get(), 0);
+            }
+            // One pass clears one qblock: qblock 0 (empty) first.
+            let used = MinerRegistry::on_idle(1, full);
+            assert!(used.all_lte(full), "returned {used:?} > available {full:?}");
+            assert_eq!(PruneCursor::<Test>::get(), 1, "the pass ran");
+        });
+    }
+
     #[test]
     fn nothing_is_pruned_before_the_window_opens() {
         new_test_ext().execute_with(|| {

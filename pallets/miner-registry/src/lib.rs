@@ -726,9 +726,13 @@ pub mod pallet {
         fn prune_participation(remaining: Weight) -> Weight {
             let db = T::DbWeight::get();
             let limit = T::MaxParticipationPrunePerBlock::get();
-            // Pre-charge the worst case (a full qblock-clearing pass) and skip
-            // when the block cannot afford it, so `on_idle` never overruns.
-            let worst = <T as Config>::WeightInfo::prune_participation(limit);
+            // Reserve the worst case and skip when the block cannot afford it,
+            // so `on_idle` never returns more than `remaining`: a full
+            // qblock-clearing pass (the benchmarked body) PLUS the two gating
+            // reads below (candidate id and cursor), which the benchmark does
+            // not measure.
+            let worst =
+                <T as Config>::WeightInfo::prune_participation(limit).saturating_add(db.reads(2));
             if remaining.any_lt(worst) {
                 return Weight::zero();
             }
@@ -740,8 +744,8 @@ pub mod pallet {
                 // retention window. Charge the two reads taken to decide that.
                 return db.reads(2);
             }
-            // The two gating reads above are already covered by the `worst`
-            // charge below; charge the clear step itself.
+            // The two gating reads plus the clear step; both were reserved in
+            // `worst` above.
             db.reads(2).saturating_add(Self::prune_qblock_step(cursor))
         }
 

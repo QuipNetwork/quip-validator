@@ -39,6 +39,9 @@ mod runtime {
 impl frame_system::Config for Test {
     type Block = Block;
     type AccountData = pallet_balances::AccountData<Balance>;
+    // Non-zero DB weights, so a test can tell whether `on_idle` reserves the
+    // reads it takes outside the benchmarked body (the default is zero).
+    type DbWeight = frame_support::weights::constants::RocksDbWeight;
 }
 
 impl pallet_balances::Config for Test {
