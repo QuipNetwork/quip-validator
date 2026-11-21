@@ -743,25 +743,26 @@ mod benchmarks {
     }
 
     // The public claim weight takes the maximum of both measured lifecycle cases.
+    // The name is kept so the WeightInfo trait does not change; since W1-006
+    // the second case is a proposer that reaped its own account after posting.
     #[benchmark(extra)]
     fn claim_reward_dust() {
         let (caller, proposer, winners, order_id) = setup_claim_reward::<T>();
-        let dust = T::Currency::minimum_balance().saturating_sub(1u32.into());
-        // A proposer left holding only dust (an independent provider keeps the
-        // account in System). Since W1-006 the reward sits in the order's
-        // escrow account, so settlement pays from there and must not touch the
-        // proposer's own balance at all: the dust survives, nothing is burned,
-        // and the escrow ends empty.
-        frame_system::Pallet::<T>::inc_providers(&proposer);
-        fund_account::<T>(&proposer, dust);
-        assert_eq!(T::Currency::free_balance(&proposer), dust);
+        // With the reward in the order's escrow the proposer holds no reserve,
+        // so it cannot sit at dust: below ED its account is reaped. Reap it
+        // outright. Settlement must still pay every winner from the escrow,
+        // burn nothing, and leave the proposer either reaped or holding at
+        // least ED -- never dust.
+        fund_account::<T>(&proposer, Zero::zero());
+        assert!(!frame_system::Pallet::<T>::account_exists(&proposer));
         let issuance = T::Currency::total_issuance();
 
         #[extrinsic_call]
         QuantumComputeMempool::claim_reward(RawOrigin::Signed(caller), order_id);
 
         verify_claim_reward::<T>(order_id, &winners);
-        assert_eq!(T::Currency::total_balance(&proposer), dust);
+        let left = T::Currency::total_balance(&proposer);
+        assert!(left.is_zero() || left >= T::Currency::minimum_balance());
         assert_eq!(T::Currency::total_issuance(), issuance);
     }
 
@@ -1029,6 +1030,20 @@ mod benchmarks {
             assert!(OrderAnswers::<T>::iter_key_prefix(id).next().is_none());
         }
         assert!(!NextPruneBucket::<T>::exists());
+    }
+
+    /// The mock's ED of 1 makes `ED - 1` zero, so a "dust" assertion holds
+    /// vacuously there. Run the dust benchmark with an ED above one, as the
+    /// runtime has (benchmark-preflight runs it at the production ED).
+    #[cfg(test)]
+    #[test]
+    fn claim_reward_dust_runs_with_an_existential_deposit_above_one() {
+        use crate::mock::{new_test_ext, ExistentialDeposit, Test};
+        new_test_ext().execute_with(|| {
+            ExistentialDeposit::set(10);
+            assert_eq!(<Test as Config>::Currency::minimum_balance(), 10);
+            Pallet::<Test>::test_benchmark_claim_reward_dust().unwrap();
+        });
     }
 
     impl_benchmark_test_suite!(
