@@ -94,6 +94,11 @@ slot 4 fresh 0
 mkdir -p "$root/5/abandoned" && touch -d "$(days_ago 30)" "$root/5/abandoned"
 mkdir -p "$root/6/unstamped/target"
 mkdir -p "$root/7/half-new"
+# The shared CARGO_HOME lives on the same volume. Its children have no target/
+# and old mtimes, so they look like abandoned slots; they must survive.
+mkdir -p "$root/cargo-home/registry" "$root/cargo-home/git" "$root/cargo-home/bin"
+touch -d "$(days_ago 30)" "$root/cargo-home/registry" "$root/cargo-home/git" \
+  "$root/cargo-home/bin" "$root/cargo-home"
 
 run
 
@@ -107,6 +112,8 @@ check "an old slot with no target/ is removed" '[[ ! -e "$root/5/abandoned" ]]'
 check "an unstamped slot is grandfathered (kept and stamped)" \
   '[[ -e "$root/6/unstamped/target/.last-used" ]]'
 check "a fresh half-created slot is kept" '[[ -d "$root/7/half-new" ]]'
+check "the shared CARGO_HOME is never removed" \
+  '[[ -d "$root/cargo-home/registry" && -d "$root/cargo-home/git" && -d "$root/cargo-home/bin" ]]'
 check "only the own slot was swept" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
 
 # Inside the per-slot interval the own slot is not swept again.

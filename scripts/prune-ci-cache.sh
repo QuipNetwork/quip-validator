@@ -9,7 +9,10 @@ set -euo pipefail
 # fill the volume on every host in the amd64 pool.
 #
 # Layout: a slot is /ci-cache/<CI_CONCURRENT_ID>/<CI_JOB_NAME>, holding the
-# job's target/ and an `.in-use.lock` file. While a job's before_script and
+# job's target/ and an `.in-use.lock` file. CI_CONCURRENT_ID is numeric, and
+# only directories under a numeric first level are ever treated as slots: the
+# volume also holds the shared CARGO_HOME (/ci-cache/cargo-home), which this
+# script must never touch. While a job's before_script and
 # script run, the job holds a SHARED flock on its slot's lock (taken in the
 # .cargo-host-cache before_script, on a file descriptor of the job shell). Any
 # number of holders can share it; this script only ever takes it EXCLUSIVELY
@@ -155,6 +158,11 @@ else
   orphan_seconds=$((orphan_days * 86400))
   for slot in "$cache_root"/*/*; do
     [[ -d "$slot" ]] || continue
+    # Only /ci-cache/<CI_CONCURRENT_ID>/<CI_JOB_NAME> is a slot. Everything else
+    # on the volume -- above all the shared CARGO_HOME at /ci-cache/cargo-home,
+    # whose registry/git/bin children look like target-less slots -- is not,
+    # and must never be swept or removed.
+    [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]] || continue
     [[ "$(cd "$slot" && pwd)" == "$own_slot" ]] && continue
     target="$slot/target"
 
