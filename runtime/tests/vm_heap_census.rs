@@ -455,6 +455,14 @@ impl Chain {
     /// dropped call does not turn every later call into a future nonce. A
     /// dispatch error `Ok(Err(_))` is a valid, paid extrinsic and is kept.
     ///
+    /// Skip model, versus the real author: this harness counts EVERY outer
+    /// `Err` as a skip and stops at the eighth. `sc-basic-authorship` counts
+    /// only `ExhaustsResources` towards that limit, and keeps trying other
+    /// transactions until its soft deadline. A case that puts smaller calls
+    /// after larger ones (as `g` does with its fillers) can therefore end up
+    /// with a less full block than a real author would build when the early
+    /// rejections are not all `ExhaustsResources`.
+    ///
     /// Returns the block, the included apply results in inclusion order, and
     /// the number of dropped calls (skipped plus never tried after the limit).
     fn author_with(
@@ -1467,11 +1475,12 @@ fn g_combined_block_imports_at_cap() {
     );
     assert!(sweep_ok.is_ok(), "mixed Σ sweep at 2 MiB must import");
 
-    // (2) Combined block, authored the real way. `Chain::author` drops any
+    // (2) Combined block, authored the real way. `Chain::author_fast` drops any
     // extrinsic the builder cannot fit (apply returns an outer Err such as
-    // ExhaustsResources, or a future nonce left by an earlier drop) and
-    // finalizes to a true header, so whatever it admits is by definition an
-    // authorable block that a correct importer must accept. Contents: the full
+    // ExhaustsResources; nonces are assigned at apply time, so a drop leaves
+    // no future nonce behind) and finalizes to a true header, so whatever it
+    // admits is by definition an authorable block that a correct importer
+    // must accept. Contents: the full
     // 2 MiB-cap mixed-family sweep (all runs), the ~2 MiB-body signed remark
     // (2^21+1 body, fresh nonce) and 2,049-B-body fillers up to the length cap.
     // Authored in both orders so neither the remark nor the sweep is privileged.
