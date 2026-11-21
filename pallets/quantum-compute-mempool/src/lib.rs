@@ -777,9 +777,10 @@ pub mod pallet {
             );
             // Do not let a reaped recipient with a sub-ED share revert every
             // other winner's payment: sub-ED shares are skipped and return to
-            // the proposer with the rest of the remainder.
+            // the proposer with the rest of the remainder (or, when the
+            // proposer cannot receive it, go to rank 0; see below).
             let minimum = T::Currency::minimum_balance();
-            let paid: Vec<(T::AccountId, BalanceOf<T>)> = payouts
+            let mut paid: Vec<(T::AccountId, BalanceOf<T>)> = payouts
                 .iter()
                 .map(|(winner, payout, _)| (winner.clone(), (*payout).saturated_into()))
                 .filter(|(_, payout): &(T::AccountId, BalanceOf<T>)| *payout >= minimum)
@@ -794,19 +795,26 @@ pub mod pallet {
             // the escrow keeps at least that share (every paid share is >= ED),
             // so KeepAlive holds; with nothing to pay it is a full release.
             // A proposer who reaped their own account cannot receive a sub-ED
-            // remainder; then it stays and is reaped with the escrow as dust,
-            // rather than reverting every winner's payment.
+            // remainder. Then it is added to rank 0's payout instead, so nothing
+            // is burned and no winner's payment is reverted. Rank 0 holds the
+            // largest share, so it is paid (and first in `paid`) whenever any
+            // winner is; with no winner paid the remainder is the whole reward
+            // (>= MinReward >= ED), which the proposer can always receive.
             let mut to_proposer = BalanceOf::<T>::zero();
-            if !remainder.is_zero()
-                && (remainder >= minimum || !T::Currency::total_balance(&order.proposer).is_zero())
-            {
-                let requirement = if paid.is_empty() {
-                    AllowDeath
-                } else {
-                    KeepAlive
-                };
-                T::Currency::transfer(&escrow, &order.proposer, remainder, requirement)?;
-                to_proposer = remainder;
+            if !remainder.is_zero() {
+                let proposer_can_receive =
+                    remainder >= minimum || !T::Currency::total_balance(&order.proposer).is_zero();
+                if proposer_can_receive {
+                    let requirement = if paid.is_empty() {
+                        AllowDeath
+                    } else {
+                        KeepAlive
+                    };
+                    T::Currency::transfer(&escrow, &order.proposer, remainder, requirement)?;
+                    to_proposer = remainder;
+                } else if let Some((_, rank_zero)) = paid.first_mut() {
+                    *rank_zero = rank_zero.saturating_add(remainder);
+                }
             }
 
             for (winner, payout) in &paid {

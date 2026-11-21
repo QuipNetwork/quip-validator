@@ -3605,6 +3605,152 @@ mod w1_006 {
             assert!(!escrow_exists(0));
         });
     }
+
+    fn dust_lost_events() -> usize {
+        System::events()
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.event,
+                    RuntimeEvent::Balances(pallet_balances::Event::DustLost { .. })
+                )
+            })
+            .count()
+    }
+
+    fn reward_claimed(solver: AccountId) -> Option<u128> {
+        System::events()
+            .iter()
+            .find_map(|record| match &record.event {
+                RuntimeEvent::QuantumComputeMempool(crate::Event::RewardClaimed {
+                    solver: who,
+                    amount,
+                    ..
+                }) if *who == solver => Some(*amount),
+                _ => None,
+            })
+    }
+
+    /// Reap the proposer's own account (it holds no reserve since W1-006).
+    fn reap_proposer() {
+        let _ = <Balances as Currency<AccountId>>::make_free_balance_be(&1, 0);
+        assert!(!System::account_exists(&1));
+    }
+
+    #[test]
+    fn a_sub_ed_remainder_the_reaped_proposer_cannot_take_goes_to_rank_zero() {
+        new_test_ext().execute_with(|| {
+            // ED 40: a 2-winner weighted split of 100 pays 67 and 33; the 33
+            // share is skipped. The proposer reaped itself, so it cannot take a
+            // 33 remainder: rank 0 gets it, and nothing is burned.
+            ExistentialDeposit::set(40);
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                sample_params(),
+                100,
+                JobMode::Open,
+                RewardResolution::TopNWeighted { n: 2 },
+                1,
+                1,
+                ResultDelivery::OnChainOnly,
+            ));
+            for (solver, rows) in [(2, sample_solution()), (3, alternate_solution())] {
+                assert_ok!(QuantumComputeMempool::register_solver(
+                    RuntimeOrigin::signed(solver),
+                    MinerType::Cpu
+                ));
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(solver),
+                    0,
+                    rows
+                ));
+            }
+            run_to_block(2);
+            reap_proposer();
+            let (before_2, before_3) = (Balances::free_balance(2), Balances::free_balance(3));
+            let issuance = Balances::total_issuance();
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
+                0
+            ));
+            assert_eq!(
+                Balances::free_balance(2),
+                before_2 + 100,
+                "rank 0 takes 67 + 33"
+            );
+            assert_eq!(
+                Balances::free_balance(3),
+                before_3,
+                "the sub-ED share is skipped"
+            );
+            assert_eq!(Balances::total_balance(&1), 0, "the proposer stays reaped");
+            assert_eq!(Balances::total_issuance(), issuance, "no dust was burned");
+            assert_eq!(dust_lost_events(), 0);
+            assert_eq!(reward_claimed(2), Some(100));
+            assert_eq!(Solvers::<Test>::get(2).unwrap().rewards_earned, 100);
+            assert_eq!(reward_claimed(3), None);
+            assert_eq!(escrow_balance(0), 0);
+            assert!(!escrow_exists(0));
+        });
+    }
+
+    #[test]
+    fn several_skipped_shares_and_a_reaped_proposer_all_go_to_rank_zero() {
+        new_test_ext().execute_with(|| {
+            // ED 10: a 3-winner weighted split of 19 pays 10, 6 and 3. Both
+            // the 6 and the 3 are skipped; their 9 is below ED and the proposer
+            // is reaped, so rank 0 takes the whole 19.
+            ExistentialDeposit::set(10);
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                chain_params(3),
+                19,
+                JobMode::Open,
+                RewardResolution::TopNWeighted { n: 3 },
+                1,
+                1,
+                ResultDelivery::OnChainOnly,
+            ));
+            // Energies on the 3-chain: k = 0 is -2000, k = 2 is 0, k = 1 is 2000.
+            for (solver, k) in [(2, 0), (3, 2), (4, 1)] {
+                assert_ok!(QuantumComputeMempool::register_solver(
+                    RuntimeOrigin::signed(solver),
+                    MinerType::Cpu
+                ));
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(solver),
+                    0,
+                    chain_row(3, k)
+                ));
+            }
+            run_to_block(2);
+            assert_eq!(
+                crate::OrderTopSolvers::<Test>::get(0)
+                    .iter()
+                    .map(|entry| entry.solver)
+                    .collect::<Vec<_>>(),
+                vec![2, 3, 4]
+            );
+            reap_proposer();
+            let before: Vec<u128> = [2, 3, 4].map(Balances::free_balance).to_vec();
+            let issuance = Balances::total_issuance();
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
+                0
+            ));
+            let after: Vec<u128> = [2, 3, 4].map(Balances::free_balance).to_vec();
+            assert_eq!(after, vec![before[0] + 19, before[1], before[2]]);
+            assert_eq!(Balances::total_issuance(), issuance, "no dust was burned");
+            assert_eq!(dust_lost_events(), 0);
+            assert_eq!(reward_claimed(2), Some(19));
+            assert_eq!(escrow_balance(0), 0);
+            assert!(!escrow_exists(0));
+        });
+    }
 }
 
 /// W1-012: one place per distinct answer, enforced through the OrderAnswers
