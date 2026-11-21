@@ -247,6 +247,43 @@ mod benchmarks {
         assert_eq!(ParticipantCountByQBlock::<T>::get(qblock_id), 1);
     }
 
+    #[benchmark]
+    fn prune_participation(n: Linear<0, 1_000>) {
+        // A qblock of `n` participants with the prune cursor pointing at it.
+        // The candidate / retention-window gating is bypassed here: this
+        // measures the clear step `on_idle` reaches once a qblock has aged out,
+        // as a linear function of the entries removed in one bounded pass.
+        let qblock_id: u64 = 1;
+        let record = ParticipationRecord {
+            qblock_id,
+            kind: MinerKind::Metal,
+            budget_seconds: Some(u32::MAX),
+            updated_at: frame_system::Pallet::<T>::block_number(),
+        };
+        for i in 0..n {
+            let who: T::AccountId = account("miner", i, 0);
+            ParticipantsByQBlock::<T>::insert(qblock_id, &who, record.clone());
+        }
+        ParticipantCountByQBlock::<T>::insert(qblock_id, n);
+        PruneCursor::<T>::put(qblock_id);
+
+        #[block]
+        {
+            let _ = MinerRegistry::<T>::prune_qblock_step(qblock_id);
+        }
+
+        // One bounded pass removes at least `min(n, limit)` entries. Against
+        // committed state (a real benchmark run) it removes exactly that many and
+        // the rest survive for the next block. The benchmark *test* suite runs
+        // setup and this block in one uncommitted overlay, where `clear_prefix`
+        // removes every overlay key regardless of its limit, so only the bound
+        // holds there.
+        let limit = T::MaxParticipationPrunePerBlock::get();
+        let cleared = n.min(limit);
+        let remaining = ParticipantsByQBlock::<T>::iter_prefix(qblock_id).count() as u32;
+        assert!(remaining <= n - cleared);
+    }
+
     impl_benchmark_test_suite!(
         MinerRegistry,
         crate::mock::new_test_ext(),

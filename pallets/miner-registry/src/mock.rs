@@ -1,7 +1,7 @@
 use crate as pallet_miner_registry;
 use frame_support::{
     derive_impl,
-    traits::{ConstU128, ConstU32},
+    traits::{ConstU128, ConstU32, ConstU64},
 };
 use sp_runtime::BuildStorage;
 
@@ -101,6 +101,10 @@ impl pallet_miner_registry::Config for Test {
     type MaxDockerImageBytes = ConstU32<256>;
     type DescriptorDepositBase = ConstU128<10>;
     type DescriptorDepositPerByte = ConstU128<2>;
+    // Small values so pruning tests can push qblocks out of the window and
+    // observe a many-participant qblock clearing over several blocks.
+    type ParticipationRetention = ConstU64<3>;
+    type MaxParticipationPrunePerBlock = ConstU32<2>;
     type WeightInfo = ();
 }
 

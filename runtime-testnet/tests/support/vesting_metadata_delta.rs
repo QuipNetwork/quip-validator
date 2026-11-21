@@ -1,7 +1,8 @@
 //! Compare metadata graphs, not portable registry numbering. Approved deltas
 //! are Vesting at index 32 (including the three outer enums) and the explicitly
 //! enumerated regenerated-weight values, exact mempool changes, staking constants,
-//! appended staking commission error, and exact XQVM audit changes below.
+//! appended staking commission error, exact XQVM audit changes, and the exact
+//! MinerRegistry W1-009 retention/paging changes below.
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -935,6 +936,231 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+// W1-009 (MinerRegistry retention pruning and bounded paging). Exact deltas:
+// two constants appended to the pallet, a new `PruneCursor` storage value, and
+// MinerRegistryApi moving to version 2 with the storage-order paging docs.
+const MINER_REGISTRY: &str = "MinerRegistry";
+const MINER_REGISTRY_API: &str = "MinerRegistryApi";
+
+const BASELINE_PARTICIPANTS_DOCS: &[&str] = &[
+    " Participants of `qblock_id`, sorted by account id for stable",
+    " pagination. `start_after` returns only accounts strictly greater",
+    " than the cursor; `limit` is capped server-side.",
+];
+
+const CANDIDATE_PARTICIPANTS_DOCS: &[&str] = &[
+    " Participants of `qblock_id` with their records, in the double map's",
+    " storage order — the Blake2_128Concat order of the account keys, not",
+    " account-id order (the version-2 contract, O-D2). `start_after`",
+    " returns only entries strictly after that account's storage key, and",
+    " works even when the cursor account no longer has a record; `limit` is",
+    " capped server-side. The page is read directly from the second-key",
+    " iterator, so a call costs `O(limit)`, not `O(participants)` (W1-009).",
+];
+
+const PARTICIPATION_RETENTION_DOCS: &[&str] = &[
+    " Number of most-recent qblocks of participation history to retain.",
+    " `on_idle` prunes `ParticipantsByQBlock` / `ParticipantCountByQBlock`",
+    " for every qblock id older than `candidate - ParticipationRetention`.",
+    "",
+    " Testnet is 5,040 (O-D1). The subnet coordinator that consumes this",
+    " index reads only the current candidate qblock's participants, so the",
+    " on-chain record exists purely for recent-era auditing, not for the",
+    " live protocol. 5,040 = 28 x 180: 180 qblocks form per day (one every",
+    " 80 blocks x 6 s = 480 s, and 86,400 s / 480 s = 180), retained for 28",
+    " days. Beyond that window no on-chain or off-chain reader consults the",
+    " record, so it is pruned to bound unbounded growth (W1-009).",
+];
+
+const MAX_PARTICIPATION_PRUNE_DOCS: &[&str] = &[
+    " Maximum participation entries `on_idle` removes in one block — the",
+    " `clear_prefix` limit. Bounds the per-block pruning cost, so a qblock",
+    " with many participants is cleared over several blocks rather than in",
+    " a single oversized `on_idle`.",
+];
+
+const PRUNE_CURSOR_DOCS: &[&str] = &[
+    " The next qblock id `on_idle` will consider for retention pruning. Starts",
+    " at zero and only advances, so pruning never revisits a cleared qblock.",
+    " Only the qblock id is persisted: `clear_prefix` deletes keys in place, so",
+    " a qblock that is only partially cleared in one block resumes from its",
+    " surviving keys next block, with no sub-cursor to store (W1-009).",
+];
+
+fn miner_registry_section<'a>(
+    metadata: &'a mut Value,
+    section: &str,
+) -> Result<&'a mut Vec<Value>, String> {
+    let pallet = metadata["pallets"]
+        .as_array_mut()
+        .and_then(|pallets| pallets.iter_mut().find(|p| p["name"] == MINER_REGISTRY))
+        .ok_or("missing MinerRegistry pallet")?;
+    let list = if section == "storage" {
+        pallet["storage"]["entries"].as_array_mut()
+    } else {
+        pallet[section].as_array_mut()
+    };
+    list.ok_or_else(|| format!("missing MinerRegistry {section}"))
+}
+
+fn participants_api<'a>(metadata: &'a mut Value) -> Result<&'a mut Value, String> {
+    metadata["apis"]
+        .as_array_mut()
+        .and_then(|apis| {
+            apis.iter_mut()
+                .find(|api| api["name"] == MINER_REGISTRY_API)
+        })
+        .ok_or_else(|| "missing MinerRegistryApi".into())
+}
+
+/// The primitive a portable type id resolves to, if it is a primitive.
+fn primitive_of(metadata: &Value, ty: &Value) -> Option<String> {
+    let id = usize::try_from(ty.as_u64()?).ok()?;
+    metadata["types"]["types"]
+        .get(id)?
+        .pointer("/type/def/primitive")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn normalize_miner_registry(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let new_constants = ["ParticipationRetention", "MaxParticipationPrunePerBlock"];
+    if miner_registry_section(before, "constants")?
+        .iter()
+        .any(|c| new_constants.iter().any(|name| c["name"] == *name))
+    {
+        return Err("unexpected baseline MinerRegistry retention constant".into());
+    }
+    if miner_registry_section(before, "storage")?
+        .iter()
+        .any(|e| e["name"] == "PruneCursor")
+    {
+        return Err("unexpected baseline MinerRegistry prune cursor".into());
+    }
+
+    // Constants: exactly these two, appended in this order, exact values/docs.
+    let types = after.clone();
+    let constants = miner_registry_section(after, "constants")?;
+    let expected: [(&str, &str, Vec<u8>, &[&str]); 2] = [
+        (
+            "ParticipationRetention",
+            "u64",
+            5_040u64.to_le_bytes().to_vec(),
+            PARTICIPATION_RETENTION_DOCS,
+        ),
+        (
+            "MaxParticipationPrunePerBlock",
+            "u32",
+            1_000u32.to_le_bytes().to_vec(),
+            MAX_PARTICIPATION_PRUNE_DOCS,
+        ),
+    ];
+    let tail = constants
+        .len()
+        .checked_sub(2)
+        .ok_or("missing required MinerRegistry retention constants")?;
+    for (offset, (name, primitive, value, docs)) in expected.iter().enumerate() {
+        let found = &constants[tail + offset];
+        let want = serde_json::json!({
+            "deprecation_info": "NotDeprecated",
+            "docs": docs,
+            "name": name,
+            "ty": found["ty"].clone(),
+            "value": value,
+        });
+        if *found != want || primitive_of(&types, &found["ty"]).as_deref() != Some(*primitive) {
+            return Err(format!(
+                "missing or incorrect required MinerRegistry constant {name}"
+            ));
+        }
+    }
+    constants.truncate(tail);
+
+    // Storage: one new PruneCursor value, u64, default 0, exact docs.
+    let entries = miner_registry_section(after, "storage")?;
+    let found: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["name"] == "PruneCursor")
+        .collect();
+    let ok = found.len() == 1 && {
+        let cursor = found[0];
+        let want = serde_json::json!({
+            "default": [0, 0, 0, 0, 0, 0, 0, 0],
+            "deprecation_info": "NotDeprecated",
+            "docs": PRUNE_CURSOR_DOCS,
+            "modifier": "Default",
+            "name": "PruneCursor",
+            "ty": {"Plain": cursor["ty"]["Plain"].clone()},
+        });
+        *cursor == want && primitive_of(&types, &cursor["ty"]["Plain"]).as_deref() == Some("u64")
+    };
+    if !ok {
+        return Err("missing or incorrect required MinerRegistry prune cursor".into());
+    }
+    entries.retain(|e| e["name"] != "PruneCursor");
+
+    // Runtime API: version 1 -> 2, and the paging docs of participants_by_qblock.
+    let docs_of = |api: &Value| -> Option<Value> {
+        api["methods"]
+            .as_array()?
+            .iter()
+            .find(|m| m["name"] == "participants_by_qblock")
+            .map(|m| m["docs"].clone())
+    };
+    let old_api = participants_api(before)?;
+    if old_api["version"] != 1
+        || docs_of(old_api) != Some(serde_json::json!(BASELINE_PARTICIPANTS_DOCS))
+    {
+        return Err("unexpected baseline MinerRegistryApi".into());
+    }
+    let new_api = participants_api(after)?;
+    if new_api["version"] != 2 {
+        return Err("missing required MinerRegistryApi version 2".into());
+    }
+    if docs_of(new_api) != Some(serde_json::json!(CANDIDATE_PARTICIPANTS_DOCS)) {
+        return Err("missing or incorrect required MinerRegistryApi paging docs".into());
+    }
+    // System::Version encodes the runtime API list as (blake2_64(name),
+    // version) pairs, so the bump also moves exactly one u32 there.
+    let api_id = sp_core::hashing::blake2_64(MINER_REGISTRY_API.as_bytes());
+    let bytes = |value: &Value| -> Result<Vec<u8>, String> {
+        serde_json::from_value(value.clone()).map_err(|_| "invalid System::Version bytes".into())
+    };
+    let old_version = bytes(constant_value(before, "System", "Version")?)?;
+    let new_version = bytes(constant_value(after, "System", "Version")?)?;
+    let entry = |version: u32| -> Vec<u8> {
+        let mut entry = api_id.to_vec();
+        entry.extend(version.to_le_bytes());
+        entry
+    };
+    let (old_entry, new_entry) = (entry(1), entry(2));
+    let at: Vec<usize> = old_version
+        .windows(old_entry.len())
+        .enumerate()
+        .filter(|(_, w)| *w == old_entry.as_slice())
+        .map(|(i, _)| i)
+        .collect();
+    let [at] = at.as_slice() else {
+        return Err("unexpected baseline System::Version MinerRegistryApi entry".into());
+    };
+    let mut expected = old_version.clone();
+    expected[*at..*at + new_entry.len()].copy_from_slice(&new_entry);
+    if new_version != expected {
+        return Err("missing or incorrect required System::Version MinerRegistryApi entry".into());
+    }
+    *constant_value(after, "System", "Version")? = serde_json::json!(old_version);
+    let new_api = participants_api(after)?;
+    new_api["version"] = Value::from(1);
+    if let Some(method) = new_api["methods"].as_array_mut().and_then(|methods| {
+        methods
+            .iter_mut()
+            .find(|m| m["name"] == "participants_by_qblock")
+    }) {
+        method["docs"] = serde_json::json!(BASELINE_PARTICIPANTS_DOCS);
+    }
+    Ok(())
+}
+
 pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     // A stale outer clone must not satisfy the graph comparison after only
     // the pallet target was normalized (codex_rigorous_reviewer's P2 finding).
@@ -971,6 +1197,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     normalize_mempool(&mut left, &mut right)?;
     normalize_commission_error(&mut left, &mut right)?;
     normalize_xqvm(&mut left, &mut right)?;
+    normalize_miner_registry(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?
@@ -1414,6 +1641,86 @@ mod tests {
             .find(|entry| entry["name"] == "NextExpiryBucket")
             .unwrap()["docs"] = Value::from("mutated");
         assert!(check(&wrong_before, &after).is_err());
+    }
+
+    #[test]
+    fn requires_exact_miner_registry_retention_and_api_v2() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for name in ["ParticipationRetention", "MaxParticipationPrunePerBlock"] {
+            for field in ["name", "ty", "value", "docs", "deprecation_info"] {
+                let mut wrong = after.clone();
+                miner_registry_section(&mut wrong, "constants")
+                    .unwrap()
+                    .iter_mut()
+                    .find(|c| c["name"] == name)
+                    .unwrap()[field] = Value::from("mutated");
+                assert!(check(&before, &wrong).is_err(), "accepted {name}.{field}");
+            }
+            let mut missing = after.clone();
+            miner_registry_section(&mut missing, "constants")
+                .unwrap()
+                .retain(|c| c["name"] != name);
+            assert!(check(&before, &missing).is_err(), "accepted missing {name}");
+        }
+        for field in ["name", "modifier", "ty", "default", "docs"] {
+            let mut wrong = after.clone();
+            miner_registry_section(&mut wrong, "storage")
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "PruneCursor")
+                .unwrap()[field] = Value::from("mutated");
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted PruneCursor.{field}"
+            );
+        }
+        let mut missing = after.clone();
+        miner_registry_section(&mut missing, "storage")
+            .unwrap()
+            .retain(|e| e["name"] != "PruneCursor");
+        assert!(
+            check(&before, &missing).is_err(),
+            "accepted missing PruneCursor"
+        );
+
+        let mut old_version = after.clone();
+        participants_api(&mut old_version).unwrap()["version"] = Value::from(1);
+        assert_eq!(
+            check(&before, &old_version),
+            Err("missing required MinerRegistryApi version 2".into())
+        );
+        for (side, metadata) in [("candidate", after.clone()), ("baseline", before.clone())] {
+            let mut wrong = metadata;
+            participants_api(&mut wrong).unwrap()["methods"][0]["docs"] = Value::from("mutated");
+            let result = if side == "candidate" {
+                check(&before, &wrong)
+            } else {
+                check(&wrong, &after)
+            };
+            assert!(result.is_err(), "accepted mutated {side} paging docs");
+        }
+        // System::Version must carry the API bump too, and nothing else.
+        let mut stale = after.clone();
+        let old = constant_value(&mut before.clone(), "System", "Version")
+            .unwrap()
+            .clone();
+        *constant_value(&mut stale, "System", "Version").unwrap() = old;
+        assert!(
+            check(&before, &stale).is_err(),
+            "accepted a stale System::Version"
+        );
+        // An unrelated MinerRegistry change is still caught by the graph.
+        let mut unrelated = after.clone();
+        miner_registry_section(&mut unrelated, "constants")
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["name"] == "MaxGpus")
+            .unwrap()["value"] = serde_json::json!([17, 0, 0, 0]);
+        assert!(
+            check(&before, &unrelated).is_err(),
+            "accepted an unrelated change"
+        );
     }
 
     #[test]

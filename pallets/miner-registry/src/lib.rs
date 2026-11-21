@@ -354,14 +354,19 @@ pub struct ParticipationRecord<BlockNumber> {
 
 sp_api::decl_runtime_apis! {
     /// Read-only access to miner participation per qblock.
+    #[api_version(2)]
     pub trait MinerRegistryApi<AccountId, BlockNumber>
     where
         AccountId: codec::Codec + Ord,
         BlockNumber: codec::Codec,
     {
-        /// Participants of `qblock_id`, sorted by account id for stable
-        /// pagination. `start_after` returns only accounts strictly greater
-        /// than the cursor; `limit` is capped server-side.
+        /// Participants of `qblock_id` with their records, in the double map's
+        /// storage order — the Blake2_128Concat order of the account keys, not
+        /// account-id order (the version-2 contract, O-D2). `start_after`
+        /// returns only entries strictly after that account's storage key, and
+        /// works even when the cursor account no longer has a record; `limit` is
+        /// capped server-side. The page is read directly from the second-key
+        /// iterator, so a call costs `O(limit)`, not `O(participants)` (W1-009).
         fn participants_by_qblock(
             qblock_id: u64,
             start_after: Option<AccountId>,
@@ -383,7 +388,11 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::{SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+    // v3 (W1-009): adds `PruneCursor` and `on_idle` retention pruning of
+    // `ParticipantsByQBlock` / `ParticipantCountByQBlock`. No migration: the new
+    // cursor defaults to 0 (prune from the oldest qblock) and no existing item
+    // changes shape.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -437,6 +446,27 @@ pub mod pallet {
         #[pallet::constant]
         type DescriptorDepositPerByte: Get<BalanceOf<Self>>;
 
+        /// Number of most-recent qblocks of participation history to retain.
+        /// `on_idle` prunes `ParticipantsByQBlock` / `ParticipantCountByQBlock`
+        /// for every qblock id older than `candidate - ParticipationRetention`.
+        ///
+        /// Testnet is 5,040 (O-D1). The subnet coordinator that consumes this
+        /// index reads only the current candidate qblock's participants, so the
+        /// on-chain record exists purely for recent-era auditing, not for the
+        /// live protocol. 5,040 = 28 x 180: 180 qblocks form per day (one every
+        /// 80 blocks x 6 s = 480 s, and 86,400 s / 480 s = 180), retained for 28
+        /// days. Beyond that window no on-chain or off-chain reader consults the
+        /// record, so it is pruned to bound unbounded growth (W1-009).
+        #[pallet::constant]
+        type ParticipationRetention: Get<u64>;
+
+        /// Maximum participation entries `on_idle` removes in one block — the
+        /// `clear_prefix` limit. Bounds the per-block pruning cost, so a qblock
+        /// with many participants is cleared over several blocks rather than in
+        /// a single oversized `on_idle`.
+        #[pallet::constant]
+        type MaxParticipationPrunePerBlock: Get<u32>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -469,6 +499,25 @@ pub mod pallet {
     #[pallet::storage]
     pub type ParticipantCountByQBlock<T: Config> =
         StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
+
+    /// The next qblock id `on_idle` will consider for retention pruning. Starts
+    /// at zero and only advances, so pruning never revisits a cleared qblock.
+    /// Only the qblock id is persisted: `clear_prefix` deletes keys in place, so
+    /// a qblock that is only partially cleared in one block resumes from its
+    /// surviving keys next block, with no sub-cursor to store (W1-009).
+    #[pallet::storage]
+    pub type PruneCursor<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Prune one old qblock's participation per block, within the block's
+        /// leftover weight. Does nothing until the block can afford a full pass
+        /// (so a full block is never pushed over budget) and nothing once the
+        /// cursor has caught up to the retention window.
+        fn on_idle(_now: BlockNumberFor<T>, remaining: Weight) -> Weight {
+            Self::prune_participation(remaining)
+        }
+    }
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -629,9 +678,17 @@ pub mod pallet {
             ParticipantCountByQBlock::<T>::get(qblock_id)
         }
 
-        /// Participants of `qblock_id` with their records, sorted by account id
-        /// for stable pagination. `start_after` returns only accounts strictly
-        /// greater than the cursor; `limit` is capped at 1,000.
+        /// Participants of `qblock_id` with their records, in storage order
+        /// (W1-009). `start_after` returns only entries strictly after the
+        /// cursor; `limit` is capped at 1,000.
+        ///
+        /// This reads at most `limit` entries: the page is taken directly from
+        /// the double map's second-key iterator, starting strictly after the
+        /// cursor's storage key, with no full-prefix scan and no sort. The order
+        /// is the map's storage (Blake2_128Concat) order, not account-id order,
+        /// which is the `#[api_version(2)]` contract (O-D2). The cursor works
+        /// even when the cursor account no longer has a record, because the raw
+        /// key sets the iterator start position directly.
         pub fn participants_by_qblock(
             qblock_id: u64,
             start_after: Option<T::AccountId>,
@@ -643,26 +700,69 @@ pub mod pallet {
                 return Vec::new();
             }
 
-            // Enumerate/sort keys for stable pagination, then decode the page.
-            // This still scans O(N) keys and sorts O(N log N) accounts.
-            let mut accounts: Vec<T::AccountId> =
-                ParticipantsByQBlock::<T>::iter_key_prefix(qblock_id)
-                    .filter(|account| {
-                        start_after
-                            .as_ref()
-                            .map(|cursor| account > cursor)
-                            .unwrap_or(true)
-                    })
-                    .collect();
-            accounts.sort_unstable();
-            accounts
-                .into_iter()
-                .take(limit)
-                .filter_map(|account| {
-                    ParticipantsByQBlock::<T>::get(qblock_id, &account)
-                        .map(|record| (account, record))
-                })
-                .collect()
+            match start_after {
+                Some(cursor) => {
+                    // `hashed_key_for` is the full storage key of `(qblock_id,
+                    // cursor)`; `iter_prefix_from` starts strictly after it, so
+                    // the cursor itself is excluded and its presence is not
+                    // required.
+                    let from = ParticipantsByQBlock::<T>::hashed_key_for(qblock_id, &cursor);
+                    ParticipantsByQBlock::<T>::iter_prefix_from(qblock_id, from)
+                        .take(limit)
+                        .collect()
+                }
+                None => ParticipantsByQBlock::<T>::iter_prefix(qblock_id)
+                    .take(limit)
+                    .collect(),
+            }
+        }
+
+        /// One retention-pruning step, called from `on_idle`. Removes up to
+        /// `MaxParticipationPrunePerBlock` participation entries of the oldest
+        /// un-pruned qblock that has fallen outside the retention window, via a
+        /// single bounded `clear_prefix`. The cursor advances only once a qblock
+        /// is fully cleared, so a qblock with more than the per-block limit is
+        /// finished over consecutive blocks. Returns the weight consumed.
+        fn prune_participation(remaining: Weight) -> Weight {
+            let db = T::DbWeight::get();
+            let limit = T::MaxParticipationPrunePerBlock::get();
+            // Pre-charge the worst case (a full qblock-clearing pass) and skip
+            // when the block cannot afford it, so `on_idle` never overruns.
+            let worst = <T as Config>::WeightInfo::prune_participation(limit);
+            if remaining.any_lt(worst) {
+                return Weight::zero();
+            }
+            let candidate = T::QBlockIds::candidate_qblock_id();
+            let prune_before = candidate.saturating_sub(T::ParticipationRetention::get());
+            let cursor = PruneCursor::<T>::get();
+            if cursor >= prune_before {
+                // Caught up: the oldest un-pruned qblock is still inside the
+                // retention window. Charge the two reads taken to decide that.
+                return db.reads(2);
+            }
+            // The two gating reads above are already covered by the `worst`
+            // charge below; charge the clear step itself.
+            db.reads(2).saturating_add(Self::prune_qblock_step(cursor))
+        }
+
+        /// Clear up to `MaxParticipationPrunePerBlock` entries of `qblock_id`'s
+        /// participation in one bounded `clear_prefix`, advancing the cursor past
+        /// it once fully cleared. This is the measured body of the pruning step
+        /// (its `prune_participation` benchmark exercises it directly, without the
+        /// candidate/window gating). Returns the weight of the entries removed.
+        pub(crate) fn prune_qblock_step(qblock_id: u64) -> Weight {
+            let limit = T::MaxParticipationPrunePerBlock::get();
+            let result = ParticipantsByQBlock::<T>::clear_prefix(qblock_id, limit, None);
+            if result.maybe_cursor.is_none() {
+                // The qblock is fully cleared: drop its count and advance past
+                // it. A qblock that never had participants clears in one pass
+                // with `unique == 0`, so empty ids are skipped a block at a time.
+                ParticipantCountByQBlock::<T>::remove(qblock_id);
+                PruneCursor::<T>::put(qblock_id.saturating_add(1));
+            }
+            // Charge the entries actually removed; bounded above by the per-block
+            // limit, which the caller already showed the block can afford.
+            <T as Config>::WeightInfo::prune_participation(result.unique)
         }
 
         fn validate_and_store_descriptor(

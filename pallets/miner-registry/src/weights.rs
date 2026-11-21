@@ -55,6 +55,7 @@ pub trait WeightInfo {
 	fn set_descriptor() -> Weight;
 	fn clear_descriptor() -> Weight;
 	fn participate() -> Weight;
+	fn prune_participation(n: u32) -> Weight;
 }
 
 /// Weights for `pallet_miner_registry` using the Substrate node and recommended hardware.
@@ -107,6 +108,23 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(4_u64))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
+	/// Storage: `MinerRegistry::ParticipantsByQBlock` (r:n w:n)
+	/// Storage: `MinerRegistry::ParticipantCountByQBlock` (r:0 w:1)
+	/// Storage: `MinerRegistry::PruneCursor` (r:0 w:1)
+	///
+	/// The clear step only (the `candidate` and `PruneCursor` gating reads are
+	/// charged by the caller). BENCHMARK-PLACEHOLDER(W1-009): the `ref_time` parts
+	/// are conservative placeholders, not yet measured on the reference machine.
+	/// Regenerate via the `benchmark-weights` job before release. The `DbWeight`
+	/// terms are exact: `n` entry reads/writes from `clear_prefix`, plus 2 fixed
+	/// writes (count remove, cursor advance).
+	fn prune_participation(n: u32) -> Weight {
+		Weight::from_parts(20_000_000, 2565)
+			.saturating_add(Weight::from_parts(5_000_000, 0).saturating_mul(u64::from(n)))
+			.saturating_add(T::DbWeight::get().reads(u64::from(n)))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
+			.saturating_add(T::DbWeight::get().writes(u64::from(n)))
+	}
 }
 
 // For backwards compatibility and tests.
@@ -157,5 +175,19 @@ impl WeightInfo for () {
 		Weight::from_parts(26_600_000, 12415)
 			.saturating_add(RocksDbWeight::get().reads(4_u64))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// Storage: `MinerRegistry::ParticipantsByQBlock` (r:n w:n)
+	/// Storage: `MinerRegistry::ParticipantCountByQBlock` (r:0 w:1)
+	/// Storage: `MinerRegistry::PruneCursor` (r:0 w:1)
+	///
+	/// The clear step only. BENCHMARK-PLACEHOLDER(W1-009): see the `SubstrateWeight`
+	/// impl. `ref_time` parts are conservative placeholders pending
+	/// `benchmark-weights`; the `DbWeight` terms are exact.
+	fn prune_participation(n: u32) -> Weight {
+		Weight::from_parts(20_000_000, 2565)
+			.saturating_add(Weight::from_parts(5_000_000, 0).saturating_mul(u64::from(n)))
+			.saturating_add(RocksDbWeight::get().reads(u64::from(n)))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(u64::from(n)))
 	}
 }

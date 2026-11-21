@@ -726,6 +726,13 @@ parameter_types! {
     pub const MinerRegistryMaxDockerImageBytes: u32 = 256;
     pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
     pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
+    // W1-009 retention (O-D1): 5,040 qblocks = 28 days x 180 qblocks/day (one
+    // qblock per 80 blocks x 6 s = 480 s). The coordinator reads only the
+    // current candidate qblock; older history is kept for auditing only.
+    pub const MinerRegistryParticipationRetention: u64 = 5_040;
+    // Per-block `clear_prefix` limit for retention pruning; matches the
+    // upper bound of the `prune_participation` benchmark component.
+    pub const MinerRegistryMaxParticipationPrunePerBlock: u32 = 1_000;
 }
 
 /// The source owns bounded, content-addressed bytes admitted by pallet-xqvm's
@@ -850,6 +857,8 @@ impl pallet_miner_registry::Config for Runtime {
     type MaxDockerImageBytes = MinerRegistryMaxDockerImageBytes;
     type DescriptorDepositBase = MinerRegistryDescriptorDepositBase;
     type DescriptorDepositPerByte = MinerRegistryDescriptorDepositPerByte;
+    type ParticipationRetention = MinerRegistryParticipationRetention;
+    type MaxParticipationPrunePerBlock = MinerRegistryMaxParticipationPrunePerBlock;
     type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;
 }
 

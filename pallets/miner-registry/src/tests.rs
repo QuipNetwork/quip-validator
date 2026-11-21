@@ -762,3 +762,267 @@ fn set_descriptor_v2_rejects_empty_runtime_fields() {
         }
     });
 }
+
+// --- W1-009: bounded paging, retention pruning, storage-key pin ---
+mod w1_009 {
+    use super::*;
+    use crate::{ParticipantCountByQBlock, ParticipantsByQBlock, ParticipationRecord, PruneCursor};
+    use frame_support::{
+        traits::{Get, Hooks},
+        weights::Weight,
+    };
+
+    fn record(qblock_id: u64) -> crate::ParticipationRecordOf<Test> {
+        ParticipationRecord {
+            qblock_id,
+            kind: MinerKind::Cpu,
+            budget_seconds: None,
+            updated_at: 1,
+        }
+    }
+
+    /// Seed `n` participants (accounts `base..base+n`) into `qblock_id`.
+    fn seed(qblock_id: u64, base: u64, n: u64) {
+        for who in base..base + n {
+            ParticipantsByQBlock::<Test>::insert(qblock_id, who, record(qblock_id));
+        }
+        ParticipantCountByQBlock::<Test>::insert(qblock_id, u32::try_from(n).unwrap());
+    }
+
+    fn entries(qblock_id: u64) -> usize {
+        ParticipantsByQBlock::<Test>::iter_prefix(qblock_id).count()
+    }
+
+    fn idle() -> Weight {
+        MinerRegistry::on_idle(1, Weight::MAX)
+    }
+
+    #[test]
+    fn prunes_only_qblocks_outside_the_retention_window() {
+        new_test_ext().execute_with(|| {
+            for q in 1..=5 {
+                seed(q, 100, 1);
+            }
+            // candidate 6, retention 3 -> qblocks < 3 are prunable.
+            set_latest_qblock_id(Some(5));
+            for _ in 0..10 {
+                let _ = idle();
+            }
+            for q in 1..=2 {
+                assert_eq!(entries(q), 0, "qblock {q} should be pruned");
+                assert!(!ParticipantCountByQBlock::<Test>::contains_key(q));
+            }
+            for q in 3..=5 {
+                assert_eq!(entries(q), 1, "qblock {q} is inside the window");
+                assert_eq!(ParticipantCountByQBlock::<Test>::get(q), 1);
+            }
+            assert_eq!(PruneCursor::<Test>::get(), 3);
+        });
+    }
+
+    #[test]
+    fn a_large_qblock_clears_over_several_blocks() {
+        // `clear_prefix`'s limit applies to keys committed to the backend (keys
+        // still in the overlay are all removed), so commit between blocks as a
+        // real chain does; `on_idle` makes exactly one call per block.
+        let mut ext = new_test_ext();
+        ext.execute_with(|| {
+            seed(1, 100, 5); // limit is 2 per block
+            set_latest_qblock_id(Some(10));
+        });
+        ext.commit_all().unwrap();
+        let block = |ext: &mut sp_io::TestExternalities| {
+            let state = ext.execute_with(|| {
+                let _ = idle();
+                (
+                    entries(1),
+                    PruneCursor::<Test>::get(),
+                    ParticipantCountByQBlock::<Test>::get(1),
+                )
+            });
+            ext.commit_all().unwrap();
+            state
+        };
+        assert_eq!(block(&mut ext), (5, 1, 5)); // qblock 0 is empty: cursor 0 -> 1
+        assert_eq!(block(&mut ext), (3, 1, 5)); // count kept until fully cleared
+        assert_eq!(block(&mut ext), (1, 1, 5));
+        assert_eq!(block(&mut ext), (0, 2, 0)); // cleared: count removed, cursor advanced
+        assert_eq!(block(&mut ext), (0, 3, 0));
+    }
+
+    #[test]
+    fn pruning_is_idempotent_once_caught_up() {
+        new_test_ext().execute_with(|| {
+            seed(1, 100, 1);
+            seed(4, 100, 1);
+            set_latest_qblock_id(Some(5)); // prune_before = 3
+            for _ in 0..10 {
+                let _ = idle();
+            }
+            let root = sp_io::storage::root(sp_runtime::StateVersion::V1);
+            let cursor = PruneCursor::<Test>::get();
+            for _ in 0..5 {
+                let w = idle();
+                assert_eq!(
+                    w,
+                    <<Test as frame_system::Config>::DbWeight as Get<
+                        frame_support::weights::RuntimeDbWeight,
+                    >>::get()
+                    .reads(2)
+                );
+            }
+            assert_eq!(PruneCursor::<Test>::get(), cursor);
+            assert_eq!(sp_io::storage::root(sp_runtime::StateVersion::V1), root);
+            assert_eq!(entries(4), 1);
+        });
+    }
+
+    #[test]
+    fn pruning_catches_up_with_a_backlog_and_follows_the_candidate() {
+        new_test_ext().execute_with(|| {
+            for q in 1..=40 {
+                seed(q, 100, 3);
+            }
+            set_latest_qblock_id(Some(20)); // prune_before = 18
+            for _ in 0..200 {
+                let _ = idle();
+            }
+            assert!((1..18).all(|q| entries(q) == 0));
+            assert!((18..=40).all(|q| entries(q) == 3));
+            assert_eq!(PruneCursor::<Test>::get(), 18);
+            // The candidate advances: pruning resumes from where it stopped.
+            set_latest_qblock_id(Some(30)); // prune_before = 28
+            for _ in 0..200 {
+                let _ = idle();
+            }
+            assert!((1..28).all(|q| entries(q) == 0));
+            assert!((28..=40).all(|q| entries(q) == 3));
+            assert_eq!(PruneCursor::<Test>::get(), 28);
+        });
+    }
+
+    #[test]
+    fn on_idle_does_nothing_without_weight_for_a_full_pass() {
+        new_test_ext().execute_with(|| {
+            seed(1, 100, 2);
+            set_latest_qblock_id(Some(10));
+            let worst = <() as crate::WeightInfo>::prune_participation(2);
+            let short = worst.saturating_sub(Weight::from_parts(1, 0));
+            assert_eq!(MinerRegistry::on_idle(1, short), Weight::zero());
+            assert_eq!(PruneCursor::<Test>::get(), 0);
+            assert_eq!(entries(1), 2);
+        });
+    }
+
+    #[test]
+    fn nothing_is_pruned_before_the_window_opens() {
+        new_test_ext().execute_with(|| {
+            seed(1, 100, 1);
+            set_latest_qblock_id(Some(2)); // candidate 3 - 3 = 0: nothing prunable
+            for _ in 0..5 {
+                let _ = idle();
+            }
+            assert_eq!(entries(1), 1);
+            assert_eq!(PruneCursor::<Test>::get(), 0);
+        });
+    }
+
+    #[test]
+    fn paging_is_complete_and_ordered_in_storage_order() {
+        new_test_ext().execute_with(|| {
+            // Account ids inserted in a scrambled order; storage order is the
+            // Blake2_128Concat order, not numeric order.
+            for who in [9_u64, 2, 77, 5, 31, 1, 64, 13, 40, 8, 3] {
+                ParticipantsByQBlock::<Test>::insert(7, who, record(7));
+            }
+            let full: Vec<u64> = ParticipantsByQBlock::<Test>::iter_prefix(7)
+                .map(|(who, _)| who)
+                .collect();
+            let mut paged = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = MinerRegistry::participants_by_qblock(7, cursor, 3);
+                if page.is_empty() {
+                    break;
+                }
+                assert!(page.len() <= 3);
+                cursor = page.last().map(|(who, _)| *who);
+                paged.extend(page.into_iter().map(|(who, _)| who));
+            }
+            assert_eq!(
+                paged, full,
+                "pages must concatenate to the full storage order"
+            );
+            let mut sorted = full.clone();
+            sorted.sort_unstable();
+            assert_ne!(
+                full, sorted,
+                "fixture should exercise non-monotonic storage order"
+            );
+        });
+    }
+
+    #[test]
+    fn paging_cursor_survives_removal_of_the_cursor_account() {
+        new_test_ext().execute_with(|| {
+            for who in 1_u64..=10 {
+                ParticipantsByQBlock::<Test>::insert(7, who, record(7));
+            }
+            let full: Vec<u64> = ParticipantsByQBlock::<Test>::iter_prefix(7)
+                .map(|(who, _)| who)
+                .collect();
+            let cursor = full[4];
+            ParticipantsByQBlock::<Test>::remove(7, cursor);
+            let rest: Vec<u64> = MinerRegistry::participants_by_qblock(7, Some(cursor), 100)
+                .into_iter()
+                .map(|(who, _)| who)
+                .collect();
+            assert_eq!(rest, full[5..].to_vec());
+        });
+    }
+
+    #[test]
+    fn paging_reads_are_bounded_by_limit_not_participants() {
+        // Prove the page read is O(limit): the storage proof for a 10-entry page
+        // out of 10,000 participants stays small. The pre-W1-009 full-prefix
+        // scan would have to touch all 10,000 records (well over 64 KiB).
+        let mut ext = new_test_ext();
+        ext.execute_with(|| seed(7, 1_000, 10_000));
+        ext.commit_all().unwrap();
+        let (page, proof) =
+            ext.execute_and_prove(|| MinerRegistry::participants_by_qblock(7, None, 10));
+        assert_eq!(page.len(), 10);
+        let size = proof.encoded_size();
+        assert!(
+            size < 64 * 1024,
+            "page proof is {size} bytes; read is not O(limit)"
+        );
+    }
+
+    #[test]
+    fn participants_by_qblock_storage_key_layout_is_pinned() {
+        // The key layout must not change (no migration): twox128(pallet) ++
+        // twox128(item) ++ blake2_128_concat(qblock u64) ++
+        // blake2_128_concat(account). Built here from primitives and from a
+        // literal, so a hasher or prefix change is caught.
+        use sp_core::hashing::{blake2_128, twox_128};
+        new_test_ext().execute_with(|| {
+            let (qblock, who) = (7_u64, 42_u64);
+            let mut expected = Vec::new();
+            expected.extend(twox_128(b"MinerRegistry"));
+            expected.extend(twox_128(b"ParticipantsByQBlock"));
+            expected.extend(blake2_128(&qblock.encode()));
+            expected.extend(qblock.encode());
+            expected.extend(blake2_128(&who.encode()));
+            expected.extend(who.encode());
+            assert_eq!(
+                ParticipantsByQBlock::<Test>::hashed_key_for(qblock, who),
+                expected
+            );
+            let hex: String = expected.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(hex, PINNED_KEY_HEX);
+        });
+    }
+
+    const PINNED_KEY_HEX: &str = "491850926eb92ce9861fdcc5504d045eb956fe48070697cb96311d8e817d446ca5e47192376d46472707aad6430c235b07000000000000003c182333ed1800191f83a7d04a0ef58b2a00000000000000";
+}

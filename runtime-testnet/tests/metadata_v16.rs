@@ -703,6 +703,23 @@ fn empty_vesting_and_removed_legacy_genesis_charge_are_only_deltas() {
     );
     assert!(!after.contains_key(weight_key.as_slice()));
     before.retain(|(key, _)| *key != hex::encode(weight_key));
+    // W1-009: MinerRegistry's storage version moves 2 -> 3 (the new PruneCursor;
+    // no migration). Require exactly that value change at its key.
+    let miner_version = frame_support::storage::storage_prefix(
+        b"MinerRegistry",
+        frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
+    );
+    assert_eq!(
+        after.get(miner_version.as_slice()),
+        Some(&3u16.encode()),
+        "MinerRegistry genesis storage version must be 3"
+    );
+    let baseline_version = before
+        .iter_mut()
+        .find(|(key, _)| *key == hex::encode(miner_version))
+        .expect("baseline MinerRegistry storage version");
+    assert_eq!(baseline_version.1, hex::encode(2u16.encode()));
+    baseline_version.1 = hex::encode(3u16.encode());
     let after: Vec<_> = after
         .iter()
         .map(|(k, v)| (hex::encode(k), hex::encode(v)))
