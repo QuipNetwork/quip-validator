@@ -171,6 +171,62 @@ fn prog_quad() -> Vec<u8> {
     encode(b)
 }
 
+/// The VM's value-stack limit (xqvm `Vm::STACK_LIMIT`, vm.rs:895). The stack
+/// is a `Vec<i64>` bounded by this count, not by the VM memory meter.
+const VM_STACK_LIMIT: usize = 8192;
+
+/// Worst-case fixed per-run overhead (W1-002 R8 batch item 2): every
+/// L-independent allocation the memory meter does not charge, each at its
+/// static limit, in one program that `store_program`'s checks admit
+/// (asserted in `i_worst_case_fixed_run`). calldata: 256 words.
+/// - all 256 registers written (`INPUT` from 256 calldata words);
+/// - `MaxLoopDepth` (32) nested one-iteration `RANGE` loops: 32 loop frames;
+/// - inside them the value stack pushed to `VM_STACK_LIMIT` (8,192), then
+///   cleared, so the stack `Vec`'s whole doubling history is allocated;
+/// - all 256 output slots written (`execute` declares 256);
+/// - `NOP`-padded to exactly `MaxProgramSize`, so the stored bytes and the
+///   decoded program are maximal.
+fn prog_fixed_worst() -> Vec<u8> {
+    let max_size = <quip_testnet_runtime::configs::MaxProgramSize as Get<u32>>::get() as usize;
+    let max_depth = <quip_testnet_runtime::configs::MaxLoopDepth as Get<u32>>::get();
+    let build = |pad: usize| {
+        let mut b = InstructionBuilder::new();
+        for i in 0..=255u8 {
+            b.emit_push(i64::from(i)).emit(I::Input { reg: R(i) });
+        }
+        for _ in 0..max_depth {
+            b.emit_push(0).emit_push(1).emit(I::Range {});
+        }
+        for _ in 0..VM_STACK_LIMIT {
+            b.emit_push(1);
+        }
+        b.emit(I::Sclr {});
+        for _ in 0..max_depth {
+            b.emit(I::Next {});
+        }
+        for i in 0..=255u8 {
+            b.emit_push(i64::from(i)).emit(I::Output { reg: R(i) });
+        }
+        for _ in 0..pad {
+            b.emit(I::Nop {});
+        }
+        b.emit(I::Halt {});
+        encode(b)
+    };
+    let unpadded = build(0).len();
+    assert!(
+        unpadded <= max_size,
+        "worst-case program core must fit MaxProgramSize"
+    );
+    let bytes = build(max_size - unpadded);
+    assert_eq!(
+        bytes.len(),
+        max_size,
+        "NOP padding lands exactly on MaxProgramSize"
+    );
+    bytes
+}
+
 fn prog_halt() -> Vec<u8> {
     let mut b = InstructionBuilder::new();
     b.emit(I::Halt {});
@@ -221,6 +277,7 @@ impl Chain {
             ("linear", prog_linear()),
             ("quad", prog_quad()),
             ("halt", prog_halt()),
+            ("fixed_worst", prog_fixed_worst()),
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
@@ -471,10 +528,20 @@ impl Chain {
     }
 
     fn execute(&self, program: &str, calldata: &[i64], step_limit: u64) -> RuntimeCall {
+        self.execute_with_outputs(program, calldata, step_limit, 0)
+    }
+
+    fn execute_with_outputs(
+        &self,
+        program: &str,
+        calldata: &[i64],
+        step_limit: u64,
+        output_slots: u32,
+    ) -> RuntimeCall {
         pallet_xqvm::Call::<Runtime>::execute {
             program_hash: self.program(program),
             calldata: calldata.to_vec().try_into().expect("calldata bound"),
-            output_slots: 0,
+            output_slots,
             step_limit,
         }
         .into()
@@ -1171,6 +1238,92 @@ fn e_largest_legitimate_run() {
 // heap high-water is the decode baseline.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The fixed per-run term (W1-002 R8 batch item 2). The budget's `fixed_run`
+// must be the measured WORST case of every L-independent allocation the VM
+// memory meter does not charge -- not the HALT baseline.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
+fn i_worst_case_fixed_run() {
+    use quip_testnet_runtime::configs::{
+        MaxLoopDepth, MaxOutputSlots, MaxProgramBlocks, MaxProgramSize,
+    };
+    let chain = Chain::new();
+    let ms = max_steps();
+
+    // The program passes every check `store_program` applies (it is seeded at
+    // genesis only because runtime 121 filters `store_program`).
+    let bytes = prog_fixed_worst();
+    let program = xqvm::Program::decode(&bytes).expect("worst-case program decodes");
+    assert_eq!(bytes.len(), MaxProgramSize::get() as usize, "maximal size");
+    assert_eq!(program.encode(), bytes, "canonical");
+    assert!(
+        xqvm::verifier::verify(&program).is_ok(),
+        "the verifier admits it"
+    );
+    let shape = pallet_xqvm::ControlFlowShape::of(program.code());
+    assert!(
+        shape.blocks <= MaxProgramBlocks::get(),
+        "within MaxProgramBlocks"
+    );
+    assert_eq!(
+        shape.loop_depth,
+        MaxLoopDepth::get(),
+        "maximal loop nesting"
+    );
+    // 256 OUTPUT instructions write slots 0..=255; the header's lexical count
+    // saturates at 255 by design (xqvm program.rs, "clamped to 255").
+    assert_eq!(program.output_slots(), u8::MAX, "256 OUTPUT instructions");
+
+    // The same run natively, to confirm the extremes are reached and not
+    // faulted short: it completes with every output slot written.
+    let calldata: Vec<i64> = (0..256).collect();
+    let mut vm = xqvm::Vm::new();
+    vm.set_step_limit(ms);
+    vm.set_memory_limit(max_vm_memory());
+    vm.set_calldata(calldata.iter().copied().map(xqvm::RegVal::Int).collect());
+    vm.set_output_slots(MaxOutputSlots::get() as usize);
+    vm.run(&program)
+        .expect("worst-case program runs to HALT natively");
+
+    let (empty, _) = chain.author(vec![]);
+    let (_, empty_import) = chain.import(&empty);
+    let (halt_block, halt_applied) = chain.author(vec![chain.execute("halt", &[], 10)]);
+    let (_, halt_import) = chain.import(&halt_block);
+    let (block, applied) = chain.author(vec![chain.execute_with_outputs(
+        "fixed_worst",
+        &calldata,
+        ms,
+        MaxOutputSlots::get(),
+    )]);
+    assert!(
+        matches!(applied[0].0, Ok(Ok(()))),
+        "worst-case fixed run must succeed on chain: {}",
+        outcome(&applied[0].0)
+    );
+    let (imported, import) = chain.import(&block);
+    assert!(
+        imported.is_ok(),
+        "worst-case fixed-run block must import: {imported:?}"
+    );
+    println!(
+        "fixed_run: HALT baseline author {:.3} MiB, import net {:.3} MiB; worst case \
+         ({} B program, stack {VM_STACK_LIMIT}, {} loops, 256 regs, {} outputs) author {:.3} MiB, \
+         import {:.3} MiB, import net {:.3} MiB ({} B)",
+        mib(halt_applied[0].1),
+        mib(halt_import.saturating_sub(empty_import)),
+        bytes.len(),
+        shape.loop_depth,
+        MaxOutputSlots::get(),
+        mib(applied[0].1),
+        mib(import),
+        mib(import.saturating_sub(empty_import)),
+        import.saturating_sub(empty_import),
+    );
+}
+
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn f_non_vm_baseline_submit_proof() {
@@ -1282,7 +1435,7 @@ fn f_non_vm_baseline_submit_proof() {
 // sweep (samples across orders + SETLINE/SETQUAD BTreeMap-node runs +
 // vec+EQUALITY), the ~2 MiB signed remark applied under a fresh nonce, and
 // 2,049-byte-body fillers as far as weight/length allow. Asserts the block
-// imports and prints the measured high-water against the 87.3 MiB budget sum.
+// imports and prints the measured high-water against the 87.8 MiB budget sum.
 // Also measures the mixed-family Σ at L = 2 MiB directly (not extrapolated).
 // ---------------------------------------------------------------------------
 
@@ -1337,7 +1490,8 @@ fn g_combined_block_imports_at_cap() {
     let fillers: Vec<RuntimeCall> = (0..1200).map(|_| remark(filler_payload)).collect();
     let big = remark(big_payload);
 
-    const TERM_SUM_MIB: f64 = 87.3;
+    // 40 (Σ at 2 MiB) + 0.45 (worst-case fixed run) + 44.0 + 3.3.
+    const TERM_SUM_MIB: f64 = 87.8;
     const HEAP_MIB: f64 = 128.0;
 
     for (order, calls) in [

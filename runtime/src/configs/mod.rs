@@ -557,13 +557,23 @@ parameter_types! {
     ///
     /// ```text
     ///   Σ_orders(k·L)   adversarial mixed-family order sweep   19.34·L max measured, 20·L pinned
-    /// + fixed_run       regs/stack/loop/program, L-independent  0.03 MiB
+    /// + fixed_run       worst case, L-independent (below)       0.45 MiB
     /// + block_residency encoded block + largest signed xt       44.0 MiB
     /// + non_vm_baseline maximal submit_proof meta+proof decode   3.3 MiB
     /// ```
     ///
-    /// At `L = 2 MiB`: 40 + 0.03 + 44.0 + 3.3 ≈ **87.3 MiB < 128 MiB**, i.e.
-    /// 31.8 % of the heap free. 16 MiB (the old value) put the budget past
+    /// `fixed_run` is the measured worst case of every per-run allocation the
+    /// VM memory meter does not charge (census test `i_worst_case_fixed_run`):
+    /// a `MaxProgramSize` (64 KiB) program, loaded and decoded, that the
+    /// `store_program` checks admit; the value stack pushed to its 8,192-entry
+    /// limit; 32 nested loop frames; all 256 registers and output slots. The
+    /// value stack is bounded by xqvm's `STACK_LIMIT` (8,192 `i64` entries),
+    /// not by the memory meter, so it is accounted for here. Importer heap net
+    /// of an empty block: 0.450 MiB (471,944 B); the HALT-only baseline is
+    /// 0.025 MiB.
+    ///
+    /// At `L = 2 MiB`: 40 + 0.45 + 44.0 + 3.3 ≈ **87.8 MiB < 128 MiB**, i.e.
+    /// 31.4 % of the heap free. 16 MiB (the old value) put the budget past
     /// 128 MiB: five `execute` calls built a block only its author could import.
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
@@ -1010,20 +1020,26 @@ mod xqvm_weights {
         // is already folded in; LVAL is excluded by the calldata invariant (see
         // `on_chain_calldata_cannot_carry_a_model`).
         const SIGMA_ORDERS_PER_L: u64 = 20;
-        // L-independent fixed per-run overhead (regs/stack/loop/program):
-        // measured HALT baseline ~0.03 MiB. Rounded up.
-        const FIXED_RUN: u64 = MIB; // 1 MiB, generous vs the 0.03 measured
-                                    // Per-extrinsic retained term (kimi W1-002 follow-up): the mempool's
-                                    // `transformed: Vec<Vec<i8>>` lives across the per-solution VMs of one
-                                    // `submit_solution`. It is retained for the extrinsic, not a run, and is
-                                    // covered by the fixed-run term's slack rather than a separate budget
-                                    // line. It is counted as heap footprint, not payload, using the census
-                                    // `chunk_bytes` rule (freeing-bump chunk = next_pow2(max(len, 8)) + 8):
-                                    // each inner Vec<i8> of `QuantumMaxNodes` bytes, plus the outer Vec of
-                                    // `QuantumMaxSolutions` 24-byte Vec headers -- 164,520 B today. The
-                                    // assertion keeps the slack visible: if this outgrew the measured HALT
-                                    // baseline's headroom in FIXED_RUN, it would need its own line.
-        const FIXED_RUN_MEASURED: u64 = 32 * 1024; // ~0.03 MiB measured HALT baseline
+        // L-independent fixed per-run overhead: every allocation the VM memory
+        // meter does not charge, at its worst case -- a maximal program loaded
+        // and decoded, the value stack at xqvm's STACK_LIMIT (8,192 i64
+        // entries; bounded by that count, not by the meter), 32 loop frames,
+        // 256 registers and output slots. Allowance 1 MiB.
+        const FIXED_RUN: u64 = MIB;
+        // Measured worst case (census test `i_worst_case_fixed_run`): importer
+        // heap net of an empty block, 471,944 B (0.450 MiB). The HALT-only
+        // baseline is ~0.025 MiB.
+        const FIXED_RUN_MEASURED: u64 = 471_944;
+        // Per-extrinsic retained term (kimi W1-002 follow-up): the mempool's
+        // `transformed: Vec<Vec<i8>>` lives across the per-solution VMs of one
+        // `submit_solution`. It is retained for the extrinsic, not a run, and is
+        // covered by the fixed-run allowance's slack rather than a separate
+        // budget line. It is counted as heap footprint, not payload, using the
+        // census `chunk_bytes` rule (freeing-bump chunk = next_pow2(max(len, 8))
+        // + 8): each inner Vec<i8> of `QuantumMaxNodes` bytes, plus the outer Vec
+        // of `QuantumMaxSolutions` 24-byte Vec headers -- 164,520 B today. The
+        // assertion keeps the slack visible: if the measured worst case plus this
+        // outgrew FIXED_RUN, it would need its own line.
         let chunk = |len: u64| len.max(8).next_power_of_two().saturating_add(8);
         let solutions = u64::from(QuantumMaxSolutions::get());
         let transform_retained = solutions
@@ -1032,7 +1048,7 @@ mod xqvm_weights {
         assert!(
             transform_retained.saturating_add(FIXED_RUN_MEASURED) <= FIXED_RUN,
             "mempool retained transform {transform_retained} B + measured fixed run \
-             {FIXED_RUN_MEASURED} B exceeds the {FIXED_RUN} B fixed-run term; give the \
+             {FIXED_RUN_MEASURED} B (worst case) exceeds the {FIXED_RUN} B fixed-run term; give the \
              retained Vec its own budget line",
         );
         // Worst-case decoded block the importer holds in the same heap: the
