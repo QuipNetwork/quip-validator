@@ -46,7 +46,9 @@ if ! command -v flock >/dev/null || ! stat -c %Y / >/dev/null 2>&1; then
   exit 0
 fi
 
-tmp="$(mktemp -d)"
+# Physical: the prune compares slots against `pwd -P`, and a temp dir behind a
+# symlink (macOS /var -> /private/var) would read as outside the root.
+tmp="$(cd -P "$(mktemp -d)" && pwd -P)"
 holders=()
 # release PID: stop a lock holder and the command it runs (flock(1) forks its
 # command, and the child may hold the lock too).
@@ -237,6 +239,8 @@ check "nothing was swept without cargo-sweep" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]
 # pretend sizes; a fake mount table names the same device. Sizes are KiB of
 # pretend data, not real files.
 broot="$tmp/budget/ci-cache"
+real_mv_hook="$(command -v mv)"
+real_rm_hook="$(command -v rm)"
 fakebin="$tmp/fakebin"
 mkdir -p "$fakebin"
 cat >"$fakebin/df" <<EOF
@@ -254,12 +258,19 @@ cat >"$fakebin/du" <<'EOF'
 #!/usr/bin/env bash
 path="${*: -1}"
 [[ -e "@TMP@/du.fail" ]] && exit 1
+# A slot marked .du-fail cannot be measured (path relative or absolute).
+[[ "$path" == */target && -e "${path%/target}/.du-fail" ]] && exit 1
+# Trace: the physical directory every du call resolves to.
+if [[ -e "@TMP@/trace.on" ]]; then
+  echo "du $(cd -P "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")" >>"@TMP@/trace.log"
+fi
 # Lock probe: is the slot whose target/ is measured locked by the prune now?
 if [[ -e "@TMP@/du.probe" && "$path" == */target ]]; then
   exec {probe_fd}>>"${path%/target}/.in-use"
   if flock --nonblock --shared "$probe_fd"; then state=free; else state=held; fi
   exec {probe_fd}>&-
-  echo "$state $path" >>"@TMP@/du.probe.log"
+  # Log the physical path measured (the prune passes a relative one).
+  echo "$state $(cd -P "$(dirname "$path")" && pwd -P)/$(basename "$path")" >>"@TMP@/du.probe.log"
 fi
 kb=0
 while IFS= read -r f; do kb=$((kb + $(cat "$f"))); done < <(find "$path" -name .fake-kb 2>/dev/null)
@@ -283,7 +294,8 @@ budget_volume() {
   for pid in "${holders[@]}"; do release "$pid"; done
   holders=()
   rm -rf "$tmp/budget" "$tmp/df.fail" "$tmp/df.garbage" "$tmp/df.frozen" "$tmp/refresh.list" \
-    "$tmp/du.fail" "$tmp/du.probe" "$tmp/du.probe.log" "$tmp/mv.args"
+    "$tmp/du.fail" "$tmp/du.probe" "$tmp/du.probe.log" "$tmp/mv.args" "$tmp/trace.on" \
+    "$tmp/trace.log" "$tmp/postswap.spec"
   mkdir -p "$broot"
   echo "fakepool/srv $broot zfs rw,noatime 0 0" >"$tmp/mounts"
   day=86400
@@ -553,7 +565,14 @@ rm -rf "$broot/4/held"
 touch "$tmp/du.fail"
 brun --volume-budget 50
 check "budget: a failing du evicts nothing" \
-  'kept 2/old && kept 3/mid && blogged "cannot measure $broot/2/old/target; evicting nothing"'
+  'kept 2/old && kept 3/mid && blogged "cannot measure $broot/2/old/target; skipping it"'
+# Item 14: an unmeasurable candidate is skipped, not a stop: the oldest
+# eligible slot cannot be measured, so the next one is evicted instead.
+budget_volume
+touch "$broot/2/old/.du-fail"
+brun --volume-budget 55
+check "budget: an unmeasurable candidate is skipped and the next one evicted" \
+  'kept 2/old && evicted 3/mid && blogged "cannot measure $broot/2/old/target; skipping it"'
 budget_volume
 touch "$tmp/du.probe"
 brun --volume-budget 55
@@ -567,16 +586,16 @@ mvlogbin="$tmp/mvlogbin"
 mkdir -p "$mvlogbin"
 cat >"$mvlogbin/mv" <<EOF
 #!/usr/bin/env bash
-echo "\$*" >>"$tmp/mv.args"
+echo "\$(pwd -P) \$*" >>"$tmp/mv.args"
 exec "$(command -v -p mv || echo /bin/mv)" "\$@"
 EOF
 chmod +x "$mvlogbin/mv"
-trash_named_in_slot() { # SLOT: the one mv renamed SLOT/target to SLOT/.prune-trash.N.N
-  local src dest extra
+trash_named_in_slot() { # SLOT: the one mv, run in SLOT, renamed target to .prune-trash.N.N
+  local cwd dashdash src dest extra
   [[ "$(wc -l <"$tmp/mv.args")" -eq 1 ]] || return 1
-  read -r src dest extra <"$tmp/mv.args"
-  [[ -z "$extra" && "$src" == "$broot/$1/target" && "${dest%/*}" == "$broot/$1" &&
-    "${dest##*/}" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]]
+  read -r cwd dashdash src dest extra <"$tmp/mv.args"
+  [[ -z "$extra" && "$cwd" == "$broot/$1" && "$dashdash" == -- && "$src" == target &&
+    "$dest" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]]
 }
 budget_volume
 bpath="$mvlogbin:"
@@ -873,6 +892,130 @@ check "containment: a slot swapped for a symlink between scan and lock is not ev
   'untouched_target() { [[ -e "$outside/swap/target/keep" ]]; }; untouched_target'
 check "containment: ... the re-check under the lock logs it" \
   'grep -q "$broot/8/swap is not physically inside" "$tmp/budget.log"'
+
+# --- Item 14: anchored operations. A hook swaps the slot for a symlink to an
+# outside tree AFTER the prune verified it and just before one operation runs
+# (mv of target/, rm of the trash, rm of a leftover, du of target/). The
+# operation must act on the verified directory (moved within the volume), and
+# nothing outside may change. Path-based operations fail these.
+postbin="$tmp/postbin"
+mkdir -p "$postbin"
+cat >"$postbin/hook" <<EOF
+#!/usr/bin/env bash
+me="\$(basename "\$0")"
+if [[ -e "$tmp/postswap.spec" ]]; then
+  read -r want slot dest <"$tmp/postswap.spec"
+  hit=0
+  name=""
+  # The operand this op acts on, and the physical directory it resolves in:
+  # the hook fires only for an op on the spec's slot, not an earlier one.
+  arg=""
+  if [[ "\$me" == "\$want" ]]; then
+    case "\$me" in
+      mv) for a in "\$@"; do [[ "\$a" == target || "\$a" == */target ]] && arg="\$a"; done ;;
+      rm) for a in "\$@"; do [[ "\$a" == *.prune-trash.* ]] && arg="\$a"; done ;;
+      du) [[ "\${*: -1}" == *target ]] && arg="\${*: -1}" ;;
+    esac
+  fi
+  if [[ -n "\$arg" && "\$(cd -P "\$(dirname "\$arg")" 2>/dev/null && pwd -P)" == "\$slot" ]]; then
+    hit=1
+    [[ "\$me" == rm ]] && name="\${arg##*/}"
+  fi
+  if ((hit)); then
+    if [[ -n "\$name" ]]; then mkdir -p "\$dest/\$name" && echo 1 >"\$dest/\$name/keep"; fi
+    "$real_mv_hook" "\$slot" "$broot/moved.\$\$" # within the volume
+    ln -s "\$dest" "\$slot"
+    "$real_rm_hook" -f "$tmp/postswap.spec"
+  fi
+fi
+case "\$me" in
+  mv) exec "$real_mv_hook" "\$@" ;;
+  rm) exec "$real_rm_hook" "\$@" ;;
+  du) exec "$fakebin/du" "\$@" ;;
+esac
+EOF
+chmod +x "$postbin/hook"
+for t in mv rm du; do ln -sf hook "$postbin/$t"; done
+untouched_tree() { # DIR NAME...: DIR still has each NAME/keep, and no lock file
+  local d="$1"
+  shift
+  for n in "$@"; do [[ -e "$d/$n/keep" ]] || return 1; done
+  [[ ! -e "$d/.in-use" ]]
+}
+
+contained_volume
+outside_shapes "$outside/post"
+echo "mv $broot/8/stale $outside/post" >"$tmp/postswap.spec"
+bpath="$postbin:"
+brun
+bpath=""
+check "anchored: a slot swapped just before the eviction's mv leaves the outside tree untouched" \
+  '[[ ! -e "$tmp/postswap.spec" ]] && untouched_tree "$outside/post" target .prune-trash.123.1700000000'
+check "anchored: ... the verified directory's target/ was evicted instead" \
+  '! compgen -G "$broot/moved.*/target" >/dev/null && compgen -G "$broot/moved.*" >/dev/null'
+
+contained_volume
+mkdir -p "$outside/post2"
+echo "rm $broot/8/stale $outside/post2" >"$tmp/postswap.spec"
+bpath="$postbin:"
+brun
+bpath=""
+check "anchored: a slot swapped just before the trash delete deletes nothing outside" \
+  '[[ ! -e "$tmp/postswap.spec" ]] && compgen -G "$outside/post2/.prune-trash.*/keep" >/dev/null'
+check "anchored: ... the verified directory's trash was deleted instead" \
+  '! compgen -G "$broot/moved.*/.prune-trash.*" >/dev/null'
+
+budget_volume
+mkdir -p "$broot/9/x/.prune-trash.123.1700000000" "$outside/post3"
+touch "$broot/9/x/.in-use"
+echo "rm $broot/9/x $outside/post3" >"$tmp/postswap.spec"
+bpath="$postbin:"
+brun
+bpath=""
+check "anchored: a slot swapped just before a leftover delete deletes nothing outside" \
+  '[[ ! -e "$tmp/postswap.spec" && -e "$outside/post3/.prune-trash.123.1700000000/keep" ]]'
+check "anchored: ... the verified directory's leftover was deleted instead" \
+  '! compgen -G "$broot/moved.*/.prune-trash.*" >/dev/null'
+
+budget_volume
+rm -rf "$outside"
+mkdir -p "$outside/post4/target"
+echo 900000 >"$outside/post4/target/.fake-kb"
+touch "$tmp/trace.on"
+echo "du $broot/2/old $outside/post4" >"$tmp/postswap.spec"
+bpath="$postbin:"
+brun --volume-budget 55
+bpath=""
+check "anchored: a slot swapped just before its du is measured from the verified directory" \
+  '[[ ! -e "$tmp/postswap.spec" ]] && ! grep -qF "$outside" "$tmp/trace.log"'
+check "anchored: ... and the outside tree is untouched" \
+  '[[ -e "$outside/post4/target/.fake-kb" && ! -e "$outside/post4/.in-use" ]]'
+
+# Reads through a symlinked numeric parent: rule 3's candidate stamp and the
+# capacity report's du are taken from inside verified slots only, so nothing
+# outside is stat'ed or measured, and the skip is logged.
+statbin="$tmp/statbin"
+mkdir -p "$statbin"
+real_stat="$(command -v stat)"
+cat >"$statbin/stat" <<EOF
+#!/usr/bin/env bash
+f="\${*: -1}"
+echo "stat \$(cd -P "\$(dirname "\$f")" 2>/dev/null && pwd -P)/\$(basename "\$f")" >>"$tmp/trace.log"
+exec "$real_stat" "\$@"
+EOF
+chmod +x "$statbin/stat"
+contained_volume
+outside_shapes "$outside/job"
+echo 50000 >"$outside/job/target/.fake-kb"
+ln -s "$outside" "$broot/9"
+touch "$tmp/trace.on"
+bpath="$statbin:"
+brun --volume-budget 10
+bpath=""
+check "anchored: nothing outside is stat'ed or measured through a symlinked numeric dir" \
+  '[[ -s "$tmp/trace.log" ]] && ! grep -qF "$outside" "$tmp/trace.log"'
+check "anchored: ... the skip is logged and other slots still prune" \
+  'grep -q "$broot/9/job is not physically inside" "$tmp/budget.log" && evicted 8/stale'
 
 # --- The template's lock step (scripts/ci-cache-lock.sh) ----------------------
 lroot="$tmp/lock/ci-cache"

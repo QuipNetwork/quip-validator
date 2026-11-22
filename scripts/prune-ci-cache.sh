@@ -51,15 +51,22 @@ set -euo pipefail
 # ceiling. Main's node-build and xqvm-onchain-test cache jobs need their own
 # CI_CACHE_MAX_SIZE when they come under this template.
 #
-# Physical containment: names alone prove nothing, because `mv`, `rm -rf` and
-# cargo-sweep follow symlinks in the INTERMEDIATE components of a path. Before
-# this script writes, sweeps, renames or deletes anything in a slot it checks
-# that neither the numeric directory nor the slot directory is a symlink and
-# that the slot's `realpath -e` is exactly <realpath of the cache root>/<n>/<slot>
-# (physically_contained). The check is repeated under the exclusive lock right
-# before an eviction's rename, and again before a trash delete. A slot that
-# fails it is skipped, logged and counted as a failure; nothing aborts the run.
-# If the cache root itself cannot be resolved, nothing is swept or removed.
+# Physical containment: the prune must never act outside the volume. A path
+# check followed by a path-based operation is a race (a writer that ignores
+# the lock can swap a slot for a symlink in between), so every read or write
+# of a slot runs in a subshell that `cd -P`s into the slot, verifies that
+# `pwd -P` is exactly <real cache root>/<digits>/<name> and that neither
+# target/ nor its stamp is a symlink (anchor_slot), and then uses relative
+# paths only: the lock on ./.in-use, the stamp and activity re-checks, the
+# rename of ./target, the trash delete, leftover deletes, `du -P`, `find -P`
+# and `stat`. The cwd is re-verified under the exclusive lock. /ci-cache is
+# its own mount, so a verified directory renamed afterwards stays inside the
+# volume, and `mv`/`rm` never follow a symlink in their final component. A
+# slot that fails verification is skipped, logged and counted as a failure;
+# nothing aborts the run. If the cache root cannot be resolved, nothing is
+# swept or removed. The one path-based operation left is cargo-sweep (rule
+# 1), which is handed the own slot's physical path verified under its
+# exclusive lock.
 #
 # Three rules: two for two kinds of garbage, one for the volume as a whole.
 #
@@ -110,8 +117,10 @@ set -euo pipefail
 #      target/'s on-disk size, not by re-reading df (ZFS frees lag the delete). Every
 #      failure removes nothing: df failing or printing something unparseable,
 #      or df's device and mount point not matching the mount entry for the
-#      cache root. Rule 3 runs on every cache job's prune, so the volume
-#      converges across jobs.
+#      cache root. A candidate whose target/ cannot be measured is skipped
+#      (logged, counted as a failure) and the next is tried, so one
+#      unmeasurable slot cannot starve the rule. Rule 3 runs on every cache
+#      job's prune, so the volume converges across jobs.
 #
 # A slot that has a target/ but no stamp predates the stamp and is
 # grandfathered: it is stamped and kept, rather than reading the missing stamp
@@ -215,7 +224,7 @@ du_size() {
   local out size
   if ! command -v timeout >/dev/null 2>&1; then
     echo "unknown (timeout(1) is not available)"
-  elif out="$(timeout "$2" du -sh ${3:+"$3"} "$1" 2>/dev/null)" && read -r size _ <<<"$out" \
+  elif out="$(timeout "$2" du -P -sh ${3:+"$3"} "$1" 2>/dev/null)" && read -r size _ <<<"$out" \
     && [[ -n "$size" ]]; then
     echo "$size"
   else
@@ -235,7 +244,7 @@ size_of() {
 disk_kib() {
   local out kib
   command -v timeout >/dev/null 2>&1 || return 1
-  out="$(timeout "$du_timeout" du -sk "$1" 2>/dev/null)" || return 1
+  out="$(timeout "$du_timeout" du -P -sk "$1" 2>/dev/null)" || return 1
   read -r kib _ <<<"$out"
   [[ "$kib" =~ ^[0-9]+$ ]] || return 1
   echo "$kib"
@@ -291,25 +300,78 @@ percent() {
   echo $((($1 * 100 + $2 - 1) / $2))
 }
 
+# --- Slot operations: anchored on a verified cwd --------------------------
+# A path check followed by a path-based operation is a race: anything that
+# can write the volume can swap the slot for a symlink between the two. So
+# every read or write of a slot runs in a SUBSHELL that first `cd -P`s into
+# the slot and verifies the physical cwd (anchor_slot), then uses only
+# relative paths. Swapping the slot's path afterwards cannot redirect them:
+# the cwd is the verified directory's inode, and /ci-cache is its own mount,
+# so that directory can only be renamed within the volume. `mv` and `rm` do
+# not follow a symlink in the final component, and `du -P` and `find -P`
+# follow none, so a target/ swapped for a link after the check is renamed or
+# removed as a link, and never read through.
+
+# The cache root, resolved once. Empty when it cannot be resolved: then
+# anchor_slot fails for everything and nothing is swept or removed.
+root_real="$(realpath -e "$cache_root" 2>/dev/null || true)"
+if [[ -n "$root_real" ]]; then
+  root_real="$(CDPATH='' cd -P -- "$root_real" && pwd -P)"
+else
+  log "cannot resolve $cache_root with realpath -e; nothing will be swept or removed"
+fi
+
+# slot_rel SLOT: "<digits>/<name>" when SLOT is spelled
+# <cache root>/<digits>/<name>; fails otherwise.
+slot_rel() {
+  local n_dir
+  n_dir="$(dirname "$1")"
+  [[ "$(dirname "$n_dir")" == "$cache_root" && "$(basename "$n_dir")" =~ ^[0-9]+$ ]] || return 1
+  echo "$(basename "$n_dir")/$(basename "$1")"
+}
+
+# anchor_slot SLOT: call in a subshell. `cd -P` into SLOT and verify that the
+# physical cwd is exactly <real cache root>/<digits>/<name> -- no symlink in
+# any component -- and that neither ./target nor its stamp is a symlink. Sets
+# $anchored_at. Logs (to stderr, so a captured subshell's output stays clean)
+# and returns 1 otherwise.
+anchor_slot() {
+  local rel
+  if [[ -n "$root_real" ]] && rel="$(slot_rel "$1")" &&
+    CDPATH='' cd -P -- "$1" 2>/dev/null &&
+    [[ "$(pwd -P)" == "$root_real/$rel" && ! -L target && ! -L "target/$stamp_name" ]]; then
+    anchored_at="$root_real/$rel"
+    return 0
+  fi
+  log "$1 is not physically inside $cache_root/<n>/<slot> (symlink or unresolvable); skipping it" >&2
+  return 1
+}
+
+# still_anchored: (anchored) the cwd is still where anchor_slot verified it,
+# and ./target is still not a symlink. Re-checked under the exclusive lock.
+still_anchored() {
+  [[ "$(pwd -P)" == "$anchored_at" && ! -L target && ! -L "target/$stamp_name" ]]
+}
+
 # older_than FILE SECONDS: true when FILE's mtime is at least SECONDS ago.
 older_than() {
   (($(date +%s) - $(stat -c %Y "$1") >= $2))
 }
 
-# recently_built SLOT: true when any cargo fingerprint under SLOT/target is
+# recently_built: (anchored) true when any cargo fingerprint under ./target is
 # newer than CI_CACHE_BUDGET_MIN_IDLE. Cargo rewrites these throughout a
 # build, so this sees activity whatever lock (if any) the builder took.
 recently_built() {
   local ref hit
   ref="$(mktemp)" || return 0 # cannot tell: treat as in use
   touch -d "@$(($(date +%s) - budget_min_idle))" "$ref"
-  hit="$(find "$1/target" -mindepth 3 -maxdepth 5 -path '*/.fingerprint/*' -newer "$ref" \
+  hit="$(find -P ./target -mindepth 3 -maxdepth 5 -path '*/.fingerprint/*' -newer "$ref" \
     -print -quit 2>/dev/null || true)"
   rm -f "$ref"
   [[ -n "$hit" ]]
 }
 
-# try_exclusive SLOT: open SLOT's lock on a fresh fd and take it exclusively
+# try_exclusive DIR: open DIR's lock on a fresh fd and take it exclusively
 # without waiting. On success the fd number is left in $held_fd (the caller
 # closes it); on failure the fd is closed and the function returns 1.
 try_exclusive() {
@@ -327,72 +389,161 @@ release() {
   exec {held_fd}>&-
 }
 
-# The cache root, resolved once. Empty when it cannot be resolved: then
-# physically_contained fails for everything and nothing is swept or removed.
-root_real="$(realpath -e "$cache_root" 2>/dev/null || true)"
-if [[ -z "$root_real" ]]; then
-  log "cannot resolve $cache_root with realpath -e; nothing will be swept or removed"
-fi
-
-# physically_contained SLOT: SLOT is <cache root>/<digits>/<name>, neither the
-# numeric directory, nor SLOT itself, nor SLOT/target is a symlink, and SLOT's
-# real path is exactly <real cache root>/<digits>/<name>. Logs and returns 1
-# otherwise. A symlinked target/ is refused rather than measured: `du`, the
-# activity probe's `find` and cargo-sweep would read (or sweep) whatever it
-# points at, so the eviction decision would rest on data outside the volume.
-physically_contained() {
-  local slot="$1" n_dir real
-  n_dir="$(dirname "$slot")"
-  if [[ -n "$root_real" && "$(dirname "$n_dir")" == "$cache_root" &&
-    "$(basename "$n_dir")" =~ ^[0-9]+$ && ! -L "$n_dir" && ! -L "$slot" &&
-    ! -L "$slot/target" ]] &&
-    real="$(realpath -e "$slot" 2>/dev/null)" &&
-    [[ "$real" == "$root_real/$(basename "$n_dir")/$(basename "$slot")" ]]; then
-    return 0
-  fi
-  log "$slot is not physically inside $cache_root/<n>/<slot> (symlink or unresolvable); skipping it" >&2
-  return 1
-}
-
-# evict_target SLOT: with SLOT's exclusive lock held, rename SLOT/target to
-# SLOT/.prune-trash.<pid>.<epoch> (same directory: atomic). The slot directory
-# and its .in-use are never touched. Re-checks physical containment first,
-# under the lock, so a swap between the scan and the lock is caught. Prints the
-# trash path; on failure logs and returns 1.
-evict_target() {
-  local dest
-  physically_contained "$1" || return 1
-  dest="$1/$trash_prefix.$$.$(date +%s)"
-  if ! mv "$1/target" "$dest"; then
-    log "cannot move $1/target aside; not evicting it" >&2
-    return 1
-  fi
-  echo "$dest"
-}
-
-# is_trash PATH: PATH is exactly <numeric>/<slot>/.prune-trash.<pid>.<epoch>
-# under the cache root -- the only shape this script ever deletes as trash.
+# is_trash PATH: PATH is spelled <cache root>/<digits>/<slot>/.prune-trash.<pid>.<epoch>
+# -- the only shape this script ever deletes as trash.
 is_trash() {
-  local name slot
-  name="$(basename "$1")"
-  slot="$(dirname "$1")"
-  [[ "$name" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]] &&
-    [[ "$(dirname "$(dirname "$slot")")" == "$cache_root" ]] &&
-    [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]]
+  [[ "$(basename "$1")" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]] && slot_rel "$(dirname "$1")" >/dev/null
 }
 
-# delete_trashed PATH: delete an evicted target/ (after its lock was released).
-delete_trashed() {
-  if ! is_trash "$1" || ! physically_contained "$(dirname "$1")"; then
-    log "not deleting $1: not an evicted target/ physically inside a slot"
-    failed=1
-    return 0
+# slot_size SLOT [SECONDS]: (subshell) the slot's sizes, measured from inside it.
+slot_size() (
+  anchor_slot "$1" || exit 1
+  size_of . "${2:-$du_timeout}"
+)
+
+# target_kib SLOT: (subshell) SLOT/target's on-disk KiB, measured from inside.
+target_kib() (
+  anchor_slot "$1" || exit 1
+  disk_kib ./target
+)
+
+# target_size SLOT: (subshell) SLOT/target's sizes, measured from inside.
+target_size() (
+  anchor_slot "$1" || exit 1
+  size_of ./target
+)
+
+# target_stamp SLOT: (subshell) the mtime of SLOT/target/.last-used, or
+# nothing when the slot has no stamped target/.
+target_stamp() (
+  anchor_slot "$1" || exit 1
+  [[ -d target && -e "target/$stamp_name" ]] || exit 0
+  stat -c %Y "target/$stamp_name"
+)
+
+# orphan_state SLOT: (subshell) none | grandfathered | fresh | stale, for
+# rule 2's pre-check. A stamp-less target/ is stamped here (grandfathered).
+orphan_state() (
+  anchor_slot "$1" || exit 1
+  [[ -d target ]] || { echo none; exit 0; }
+  if [[ ! -e "target/$stamp_name" ]]; then
+    ((dry_run)) || touch "target/$stamp_name"
+    echo grandfathered
+  elif older_than "target/$stamp_name" "$orphan_seconds"; then
+    echo stale
+  else
+    echo fresh
   fi
-  rm -rf "$1" || {
-    log "could not delete $1 (the next scan retries)"
-    failed=1
+)
+
+# budget_idle SLOT: (subshell) rule 3's pre-check. 0 idle; 2 used within
+# CI_CACHE_BUDGET_MIN_IDLE by its stamp; 3 by a cargo fingerprint; 1 failed.
+budget_idle() (
+  anchor_slot "$1" || exit 1
+  older_than "target/$stamp_name" "$budget_min_idle" || exit 2
+  if recently_built; then exit 3; fi
+  exit 0
+)
+
+# evict_slot RULE SLOT: (subshell) anchored on SLOT: take its exclusive lock
+# on ./.in-use, re-check the cwd and (for RULE orphan or budget) the stamp and
+# the activity probe under it, rename ./target to
+# ./.prune-trash.<pid>.<epoch> (same directory: atomic), release the lock,
+# then delete the trash -- the lock, the re-checks, the rename and the delete
+# all act on the one verified directory. The slot directory and its .in-use
+# are never touched. Exit: 0 evicted (or would be, on a dry run); 5 evicted
+# but the delete failed (the next scan retries); 3 lock held; 4 kept by a
+# re-check; 1 failed (logged).
+evict_slot() (
+  rule="$1"
+  slot="$2"
+  anchor_slot "$slot" || exit 1
+  try_exclusive . || exit 3
+  if ! still_anchored; then
+    log "$slot is not physically inside $cache_root/<n>/<slot> (moved while locking); skipping it"
+    exit 1
+  fi
+  [[ -d target ]] || exit 4
+  if [[ "$rule" == orphan ]]; then
+    older_than "target/$stamp_name" "$orphan_seconds" || exit 4
+    # A job on a template without the lock step takes no lock and does not
+    # stamp, so cargo's fingerprints are the only sign it is building here.
+    if recently_built; then
+      log "stale slot $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
+      exit 4
+    fi
+    log "evicting the target/ of unused slot $slot"
+  else
+    older_than "target/$stamp_name" "$budget_min_idle" || exit 4
+    if recently_built; then exit 4; fi
+    log "volume budget: evicting the target/ of least recently used slot $slot ($evict_size)"
+  fi
+  if ((dry_run)); then
+    [[ "$rule" == orphan ]] && { du -P -sh ./target || true; }
+    exit 0
+  fi
+  trash="$trash_prefix.$$.$(date +%s)"
+  if ! mv -- target "$trash"; then
+    log "cannot move $slot/target aside; not evicting it"
+    exit 1
+  fi
+  release
+  if ! rm -rf -- "./$trash"; then
+    log "could not delete $slot/$trash (the next scan retries)"
+    exit 5
+  fi
+  exit 0
+)
+
+# delete_leftover SLOT NAME: (subshell) delete SLOT/NAME, an exact trash name
+# left by a prune that was killed between an eviction and its delete.
+delete_leftover() (
+  anchor_slot "$1" || exit 1
+  [[ "$2" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]] || exit 1
+  [[ -e "./$2" || -L "./$2" ]] || exit 0
+  log "deleting leftover $1/$2"
+  rm -rf -- "./$2" || {
+    log "could not delete $1/$2 (the next scan retries)"
+    exit 1
   }
-}
+)
+
+# own_stamp / own_sweep: rule 1, anchored on the own slot.
+own_stamp() (
+  anchor_slot "$own_slot" || exit 1
+  touch "target/$stamp_name"
+)
+# Exit: 0 swept (or skipped inside the interval, logged); 3 lock held; 1 failed.
+own_sweep() (
+  anchor_slot "$own_slot" || exit 1
+  if [[ -f "$sweep_name" ]] && ! older_than "$sweep_name" "$interval"; then
+    log "own slot $own_slot swept less than ${interval}s ago, skipping sweep"
+    exit 0
+  fi
+  try_exclusive . || exit 3
+  if ! still_anchored; then
+    log "own slot $own_slot moved while locking; not sweeping it"
+    exit 1
+  fi
+  log "sweeping own slot $CARGO_TARGET_DIR to $max_size"
+  log "own slot size before sweep: $(size_of .)"
+  if ((dry_run)); then
+    log "(dry run) would run cargo sweep --maxsize $max_size"
+    exit 0
+  fi
+  # cargo-sweep takes a path. It is the physical path verified a moment ago
+  # under the exclusive lock, so only a writer that ignores the lock could
+  # swap it before cargo-sweep resolves it.
+  status=0
+  if CARGO_TARGET_DIR="$anchored_at/target" \
+    cargo sweep --maxsize "$max_size" "${sweep_args[@]}" "$project_dir"; then
+    touch "$sweep_name"
+  else
+    status=1
+  fi
+  log "own slot size after sweep: $(size_of .)"
+  exit "$status"
+)
 
 failed=0
 own_slot=""
@@ -404,37 +555,24 @@ if [[ -n "${CARGO_TARGET_DIR:-}" && -d "$CARGO_TARGET_DIR" ]]; then
   own_slot="$(cd "$CARGO_TARGET_DIR/.." && pwd)"
   # cargo-sweep and `touch` follow symlinks: a slot or target/ that is one is
   # neither stamped nor swept.
-  if ! physically_contained "$own_slot" || [[ -L "$CARGO_TARGET_DIR" ]]; then
+  if [[ "$(basename "$CARGO_TARGET_DIR")" != target ]] || ! (anchor_slot "$own_slot"); then
     log "own slot $own_slot is not a physical slot; not stamping or sweeping it"
     failed=1
     sweep=0
-    own_slot_ok=0
   else
-    own_slot_ok=1
-  fi
-  # Mark the slot this job just used. Directory modification times cannot
-  # stand in for this: creating a file under target/debug does not touch the
-  # slot directory above it, so an actively built slot still looks untouched.
-  ((dry_run || ! own_slot_ok)) || touch "$CARGO_TARGET_DIR/$stamp_name"
-
-  if ((sweep)); then
-    if [[ -f "$own_slot/$sweep_name" ]] && ! older_than "$own_slot/$sweep_name" "$interval"; then
-      log "own slot $own_slot swept less than ${interval}s ago, skipping sweep"
-    elif try_exclusive "$own_slot"; then
-      log "sweeping own slot $CARGO_TARGET_DIR to $max_size"
-      log "own slot size before sweep: $(size_of "$own_slot")"
-      if ((dry_run)); then
-        log "(dry run) would run cargo sweep --maxsize $max_size"
-      elif CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
-        cargo sweep --maxsize "$max_size" "${sweep_args[@]}" "$project_dir"; then
-        touch "$own_slot/$sweep_name"
-      else
+    # Mark the slot this job just used. Directory modification times cannot
+    # stand in for this: creating a file under target/debug does not touch
+    # the slot directory above it, so an actively built slot still looks
+    # untouched.
+    ((dry_run)) || own_stamp || failed=1
+    if ((sweep)); then
+      status=0
+      own_sweep || status=$?
+      if ((status == 3)); then
+        log "own slot $own_slot is still locked by another holder, skipping sweep"
+      elif ((status != 0)); then
         failed=1
       fi
-      ((dry_run)) || log "own slot size after sweep: $(size_of "$own_slot")"
-      release
-    else
-      log "own slot $own_slot is still locked by another holder, skipping sweep"
     fi
   fi
 fi
@@ -454,12 +592,7 @@ if flock --nonblock "$scan_fd"; then
     for leftover in "$cache_root"/*/*/"$trash_prefix".*; do
       [[ -e "$leftover" || -L "$leftover" ]] || continue
       is_trash "$leftover" || continue
-      if ! physically_contained "$(dirname "$leftover")"; then
-        failed=1
-        continue
-      fi
-      log "deleting leftover $leftover"
-      delete_trashed "$leftover"
+      delete_leftover "$(dirname "$leftover")" "$(basename "$leftover")" || failed=1
     done
   fi
 else
@@ -467,12 +600,12 @@ else
 fi
 
 # --- Rule 2: orphaned slots, once per host per interval --------------------
+orphan_seconds=$((orphan_days * 86400))
 if ((have_scan_lock == 0)); then
   :
 elif ((dry_run == 0)) && [[ -f "$last_scan" ]] && ! older_than "$last_scan" "$interval"; then
   log "orphan scan ran less than ${interval}s ago, skipping"
 else
-  orphan_seconds=$((orphan_days * 86400))
   for slot in "$cache_root"/*/*; do
     [[ -d "$slot" ]] || continue
     # Only /ci-cache/<CI_CONCURRENT_ID>/<CI_JOB_NAME> is a slot. Everything else
@@ -481,54 +614,29 @@ else
     # and must never be swept or removed.
     [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]] || continue
     [[ "$(cd "$slot" && pwd)" == "$own_slot" ]] && continue
-    # Before any stamp, lock file or eviction: opening `.in-use` would itself
-    # create a file through a symlinked slot.
-    if ! physically_contained "$slot"; then
+    if ! state="$(orphan_state "$slot")"; then
       failed=1
       continue
     fi
-    target="$slot/target"
-
-    # A slot with no target/ has nothing to evict.
-    [[ -d "$target" ]] || continue
-    if [[ ! -e "$target/$stamp_name" ]]; then
-      ((dry_run)) || touch "$target/$stamp_name"
-      log "grandfathered unstamped slot $slot"
-      continue
-    fi
-
-    older_than "$target/$stamp_name" "$orphan_seconds" || continue
-
-    if ! try_exclusive "$slot"; then
-      log "stale slot $slot is in use (lock held), skipping"
-      continue
-    fi
-    # Re-check under the lock: a job that started between the first check and
-    # the lock stamps target/ right after taking its shared hold. A job on a
-    # template without the lock step takes no lock and does not stamp, so
-    # cargo's fingerprints are the only sign it is building here.
-    if [[ ! -d "$target" ]] || ! older_than "$target/$stamp_name" "$orphan_seconds"; then
-      release
-      continue
-    fi
-    if recently_built "$slot"; then
-      log "stale slot $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
-      release
-      continue
-    fi
-    log "evicting the target/ of unused slot $slot"
-    if ((dry_run)); then
-      du -sh "$target" || true
-      release
-      continue
-    fi
-    trashed=""
-    trashed="$(evict_target "$slot")" || failed=1
-    release
-    [[ -n "$trashed" ]] && delete_trashed "$trashed"
+    case "$state" in
+      grandfathered)
+        log "grandfathered unstamped slot $slot"
+        continue
+        ;;
+      stale) ;;
+      *) continue ;;
+    esac
+    status=0
+    evict_slot orphan "$slot" || status=$?
+    case "$status" in
+      0 | 4) ;;
+      3) log "stale slot $slot is in use (lock held), skipping" ;;
+      *) failed=1 ;;
+    esac
   done
   # Size report for capacity planning: every numeric slot left after the scan,
-  # then the shared CARGO_HOME, inside one time budget. Reading only.
+  # then the shared CARGO_HOME, inside one time budget. Reading only, and each
+  # slot is measured from inside it.
   deadline=$((SECONDS + du_budget))
   reported=0
   for dir in "$cache_root"/*/* "$cache_root/cargo-home"; do
@@ -542,7 +650,13 @@ else
       break
     fi
     ((left < du_timeout)) || left=$du_timeout
-    log "size: $dir $(size_of "$dir" "$left")"
+    if [[ "$dir" == "$cache_root/cargo-home" ]]; then
+      size="$(size_of "$dir" "$left")"
+    elif ! size="$(slot_size "$dir" "$left")"; then
+      failed=1
+      continue
+    fi
+    log "size: $dir $size"
     reported=$((reported + 1))
   done
   # Record the interval only on a scan that reached the end. after_script has
@@ -565,62 +679,74 @@ if ((budget_given)) && ((have_scan_lock)); then
       use="$(percent "$used" "$total")"
       log "volume budget: $cache_root is ${use}% used, budget ${budget}%"
       if ((use > budget)); then
-        # Candidates: marked, numeric slots only, least recently used first.
-        candidates=()
-        while IFS= read -r line; do
-          candidates+=("${line#* }")
-        done < <(
-          for slot in "$cache_root"/*/*; do
-            [[ -d "$slot/target" && -e "$slot/target/$stamp_name" ]] || continue
-            [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]] || continue
-            [[ "$(cd "$slot" && pwd)" == "$own_slot" ]] && continue
-            echo "$(stat -c %Y "$slot/target/$stamp_name") $slot"
-          done | sort -n
-        )
-        removed=""
-        for slot in "${candidates[@]}"; do
-          if ! physically_contained "$slot"; then
+        # Candidates: stamped, numeric slots only, least recently used first.
+        # Each stamp is read from inside its slot.
+        stamped=()
+        for slot in "$cache_root"/*/*; do
+          [[ -d "$slot" ]] || continue
+          [[ "$(basename "$(dirname "$slot")")" =~ ^[0-9]+$ ]] || continue
+          [[ "$(cd "$slot" && pwd)" == "$own_slot" ]] && continue
+          if ! stamp="$(target_stamp "$slot")"; then
             failed=1
             continue
           fi
+          [[ -n "$stamp" ]] && stamped+=("$stamp $slot")
+        done
+        candidates=()
+        if ((${#stamped[@]})); then
+          while IFS= read -r line; do
+            candidates+=("${line#* }")
+          done < <(printf '%s\n' "${stamped[@]}" | sort -n)
+        fi
+        removed=""
+        for slot in "${candidates[@]}"; do
           # Judge each candidate on its own stamp: the list was sorted before
           # any lock was taken, and a job may have stamped since.
-          if ! older_than "$slot/target/$stamp_name" "$budget_min_idle"; then
-            log "volume budget: $slot was used within ${budget_min_idle}s; keeping it"
-            continue
-          fi
-          if recently_built "$slot"; then
-            log "volume budget: $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
-            continue
-          fi
+          status=0
+          budget_idle "$slot" || status=$?
+          case "$status" in
+            0) ;;
+            2)
+              log "volume budget: $slot was used within ${budget_min_idle}s; keeping it"
+              continue
+              ;;
+            3)
+              log "volume budget: $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
+              continue
+              ;;
+            *)
+              failed=1
+              continue
+              ;;
+          esac
           # Measure before the lock: `du` may take CI_CACHE_DU_TIMEOUT per
-          # call, and a job waiting on this slot's lock would wait for it.
-          if ! slot_kib="$(disk_kib "$slot/target")"; then
-            log "volume budget: cannot measure $slot/target; evicting nothing"
-            break
-          fi
-          slot_size="$(size_of "$slot/target")"
-          if ! try_exclusive "$slot"; then
-            log "volume budget: $slot is in use (lock held), skipping"
+          # call, and a job waiting on this slot's lock would wait for it. A
+          # slot that cannot be measured is skipped, never evicted, and the
+          # next candidate is tried: one unmeasurable slot must not starve
+          # the rule.
+          if ! slot_kib="$(target_kib "$slot")"; then
+            log "volume budget: cannot measure $slot/target; skipping it"
+            failed=1
             continue
           fi
-          # Re-check under the lock: a job that started meanwhile stamps first.
-          if ! older_than "$slot/target/$stamp_name" "$budget_min_idle" || recently_built "$slot"; then
-            release
-            continue
-          fi
-          log "volume budget: evicting the target/ of least recently used slot $slot ($slot_size)"
-          if ((dry_run)); then
-            release
-            removed="$slot"
-            break
-          fi
-          trashed=""
-          trashed="$(evict_target "$slot")" || failed=1
-          release
-          if [[ -n "$trashed" ]]; then
-            delete_trashed "$trashed"
-            removed="$slot"
+          evict_size="$(target_size "$slot")" || evict_size="size unknown"
+          status=0
+          evict_slot budget "$slot" || status=$?
+          case "$status" in
+            0 | 5) ;;
+            3)
+              log "volume budget: $slot is in use (lock held), skipping"
+              continue
+              ;;
+            4) continue ;;
+            *)
+              failed=1
+              continue
+              ;;
+          esac
+          ((status == 5)) && failed=1
+          removed="$slot"
+          if ((dry_run == 0)); then
             # Decide from the evicted target/'s size, not a df re-read: ZFS
             # frees lag the delete. At most one eviction per run.
             projected="$(percent "$((used > slot_kib ? used - slot_kib : 0))" "$total")"
