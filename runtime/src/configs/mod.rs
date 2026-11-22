@@ -464,9 +464,13 @@ parameter_types! {
     /// figure. A failed allocation traps the runtime; it is not a dispatch
     /// error anyone can report or pay for.
     ///
-    /// 2,048 blocks is ~7 MiB native, ~17 MiB in Wasm: the same one-eighth
-    /// share of the heap the VM itself gets through `MaxVmMemory`. It is
-    /// also far past any real program -- the 196 xquad conformance vectors
+    /// 2,048 blocks is ~7 MiB native, ~17 MiB in Wasm by that 2.4x estimate.
+    /// Measured on chain against the pinned verifier, a `store_program` of a
+    /// `MaxProgramSize` program at 2,048 blocks peaks at 3.76 MiB of importer
+    /// heap whatever its shape (census `l_store_program_verify_peak`), inside
+    /// the budget's 4 MiB non-VM term; the extrapolation overstates it. (The
+    /// old "one-eighth of the heap" matched the VM's old 16 MiB cap;
+    /// `MaxVmMemory` is now 1 MiB.) It is also far past any real program -- the 196 xquad conformance vectors
     /// at the pinned revision have at most 8 basic blocks (median 1) -- so
     /// the ceiling binds abuse, not use. The bound is priced separately: `store_program` pre-charges
     /// verification at this many blocks and refunds to the actual count.
@@ -534,9 +538,14 @@ parameter_types! {
     /// `ITER` pile-up per order -- up to `LOOP_LIMIT` frames, each copying a
     /// slice of `chunk/16 + 1` elements, charged 8 B per element but held in a
     /// whole power-of-two chunk -- reaches orders the sweep's 252 sample
-    /// buffers cannot fill, and the block then reaches **28.18·L** (census `j`,
-    /// L' = 512 KiB; 28.16 and 28.13 at 256 KiB and 1 MiB). That is pinned at
-    /// **29·L** ([`VM_SIGMA_ORDERS_PER_L`]) in the budget test below.
+    /// buffers cannot fill, and the block then reaches **28.18·L** at most
+    /// (census `j`, L' = 512 KiB; 28.16 at 256 KiB; 28.13 at the shipped 1 MiB,
+    /// census `k`). That is pinned at **29·L** ([`VM_SIGMA_ORDERS_PER_L`]) in
+    /// the budget test below. The pin holds for a cap that is a POWER OF TWO
+    /// only, and the budget test requires one: at any other cap a sample of
+    /// just over half a next_pow2(L) chunk still charges <= L, and it and its
+    /// uncharged `ENERGY` clone each take a whole chunk of that order --
+    /// 29.5225·L at 1.5 MiB (census `k`, whose sweeps cover the next order).
     ///
     /// `LVAL` is not a `k ≈ 2` term. It charges steps only, and it can clone a
     /// model into up to 255 registers per `ITER` frame. It is harmless today only
@@ -565,7 +574,7 @@ parameter_types! {
     ///   Σ_orders(k·L)   mixed order sweep + ITER pile-ups      28.18·L max measured, 29·L pinned
     /// + fixed_run       worst case, L-independent (below)       0.89 MiB
     /// + block_residency encoded block + largest signed xt       44.0 MiB
-    /// + non_vm_baseline maximal submit_proof meta+proof decode   3.3 MiB
+    /// + non_vm_baseline maximal store_program verify            3.8 MiB
     /// ```
     ///
     /// `fixed_run` is the measured worst case of every per-run allocation the
@@ -591,24 +600,31 @@ parameter_types! {
     /// 802,480 B; jump chain without a pile-up 474,784 B; neither 471,944 B;
     /// the HALT-only baseline 0.025 MiB.
     ///
-    /// At `L = 1.5 MiB`, on the measured terms: 42.3 + 0.89 + 44.0 + 3.3 ≈
-    /// 90.5 MiB (29.3 % free). The budget test sums the PINNED terms, and that
-    /// sum is the gate: 29 × 1.5 + 1.25 (fixed-run allowance) + 45 + 4 =
-    /// **93.75 MiB < 128 MiB**, 26.8 % free, above the 25 % floor. 16 MiB (the
+    /// At `L = 1 MiB`, on the measured terms: 28.13 + 0.89 + 44.0 + 3.76 ≈
+    /// 76.8 MiB (40.0 % free). The budget test sums the PINNED terms, and that
+    /// sum is the gate: 29 × 1 + 1.25 (fixed-run allowance) + 45 + 4 =
+    /// **79.25 MiB < 128 MiB**, 38.1 % free, above the 25 % floor. 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
     /// a block only its author could import.
     ///
-    /// Why 1.5 MiB rather than 2 MiB (owner decision, 2026-11-22). At 2 MiB the
-    /// pinned sum is 108.25 MiB, 15.4 % free, below the floor, once the `ITER`
-    /// pile-ups raised Σ from 20·L to 29·L. A real builder-full block at 2 MiB
-    /// measured less (92.0 MiB, 28.1 % free; census `k` at that cap), because
-    /// the terms do not peak together; but the summed upper bound is the gate,
-    /// and the measured block is only a second check. At 1.5 MiB that second
-    /// check reads: census `k`, the mixed sweep plus `ITER` pile-ups plus the
-    /// ~2 MiB remark and fillers, 80.30 MiB high-water (37.3 % free); census
-    /// `g`, without the pile-ups, 69.23 MiB. The cap can return to 2 MiB once
-    /// xqvm charges what the allocator holds (the `LoopFrame`, and slice copies
-    /// at chunk size): that is on the xquad repin checklist.
+    /// | cap     | Σ measured → pin | pinned sum  | free   | 25 % floor |
+    /// |---------|------------------|-------------|--------|------------|
+    /// | 1 MiB   | 28.13 → 29       | 79.25 MiB   | 38.1 % | passes     |
+    /// | 1.5 MiB | 29.52 → 30       | 95.25 MiB   | 25.6 % | passes, 0.6 % to spare |
+    /// | 2 MiB   | ~28.2 → 29       | 108.25 MiB  | 15.4 % | fails      |
+    ///
+    /// Why 1 MiB (owner decisions of 2026-11-22). The cap went 2 MiB → 1.5 MiB
+    /// when `ITER` pile-ups raised Σ from 20·L to 29·L (2 MiB then fails the
+    /// floor), then 1.5 MiB → 1 MiB when 1.5 MiB, not a power of two, was found
+    /// to reach the next allocator order (29.5225·L): a pin of 30 would pass
+    /// with 0.6 % to spare and 0.48·L over the measurement, where 1 MiB leaves
+    /// 0.87·L over it and has no next-order effect. The summed upper bound is
+    /// the gate; a real block is only a second check. At 1 MiB that check
+    /// reads: census `k`, the mixed sweep plus `ITER` pile-ups plus the ~2 MiB
+    /// remark and fillers, 69.05 MiB high-water (46.1 % free); census `g`,
+    /// without the pile-ups, 61.98 MiB. The cap can return to 2 MiB once xqvm
+    /// charges what the allocator holds -- the `ENERGY` clone, the `LoopFrame`,
+    /// and slice copies at chunk size -- which is on the xquad repin checklist.
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
     /// legitimate on-chain `execute` workload exists today: the live testnet's
@@ -623,7 +639,7 @@ parameter_types! {
     ///   plus the `OUTPUT` copy; its 40 KB calldata `Vec<i64>` sits outside the
     ///   charge.
     ///
-    /// So 1.5 MiB is about 9.8× the maximal identity transform. Separately, an
+    /// So 1 MiB is about 6.5× the maximal identity transform. Separately, an
     /// observation about the corpus rather than a heap measurement: the 196
     /// xquad conformance vectors at the pinned revision assemble to at most
     /// 16,403 B of bytecode (one stack-overflow stress vector; every other is
@@ -635,13 +651,13 @@ parameter_types! {
     /// bounds allocation only incidentally (a sample costs one step and eight
     /// bytes per element), so it alone would permit an allocation well past the
     /// heap. The pinned budget test below restates each measured term; its Σ term
-    /// is the measured maximum of the mixed sweep with `ITER` pile-ups, 28.18·L,
-    /// pinned at 29·L.
-    pub const MaxVmMemory: u64 = 1_572_864;
+    /// is the measured maximum of the mixed sweep with `ITER` pile-ups at a
+    /// power-of-two cap, 28.18·L, pinned at 29·L.
+    pub const MaxVmMemory: u64 = 1_048_576;
 
     /// Maximum bytes a single compute-mempool transform run may allocate inside
     /// the VM. A distinct constant from [`MaxVmMemory`] so the `execute` and
-    /// transform caps can diverge, but set to the same 1.5 MiB today (the
+    /// transform caps can diverge, but set to the same 1 MiB today (the
     /// budget uses the larger of the two, so both must move together): the mempool
     /// builds a fresh `Vm` with the full cap per solution
     /// (`quantum-compute-mempool/src/xqvm.rs`), one instance at a time, so the
@@ -654,7 +670,7 @@ parameter_types! {
     /// 164,520 B of heap by the allocator's chunk rule, and freed when the
     /// extrinsic ends. See [`MaxVmMemory`]; the pinned budget
     /// test accounts for it inside the fixed-run term.
-    pub const MaxTransformVmMemory: u64 = 1_572_864;
+    pub const MaxTransformVmMemory: u64 = 1_048_576;
 
     /// Derived from block weight budget so a single execute call always
     /// fits in one block.  Uses 50 % of the normal dispatch budget to
@@ -942,8 +958,10 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 933_504;
 /// cap L. The mixed-family order sweep alone measured 19.34·L at most (census
 /// `c_block_order_sweep_at_emulated_caps`, L' = 256 KiB); with one `ITER`
 /// small-slice pile-up per order added it measured 28.18·L (census
-/// `j_iter_slice_overhead_at_cap`, L' = 512 KiB), pinned at 29 (owner
-/// decision 2026-11-22, W1-002 R8 item 10).
+/// `j_iter_slice_overhead_at_cap`, L' = 512 KiB; 28.13 at the shipped 1 MiB),
+/// pinned at 29 (owner decisions 2026-11-22, W1-002 R8 items 10 and 15). Valid
+/// for power-of-two caps only: 1.5 MiB measured 29.5225·L, because a
+/// non-power-of-two cap reaches the next allocator order (census `k`).
 #[doc(hidden)]
 pub const VM_SIGMA_ORDERS_PER_L: u64 = 29;
 
@@ -953,9 +971,12 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 29;
 #[doc(hidden)]
 pub const VM_BLOCK_RESIDENCY: u64 = 45 * 1024 * 1024;
 
-/// Maximal non-VM dispatch (a `submit_proof` decoding the full topology meta
-/// plus the packed proof), measured 3.27 MiB (census
-/// `f_non_vm_baseline_submit_proof`), pinned at 4.
+/// Maximal non-VM dispatch, pinned at 4 MiB. The two largest measured: a
+/// `submit_proof` decoding the full topology meta plus the packed proof,
+/// 3.27 MiB (census `f_non_vm_baseline_submit_proof`); and a `store_program`
+/// decoding and verifying a `MaxProgramSize` program at `MaxProgramBlocks`,
+/// 3.76 MiB (census `l_store_program_verify_peak`, the same for nested,
+/// flat, jump-chain and loop-pile-up shapes).
 #[doc(hidden)]
 pub const VM_NON_VM_BASELINE: u64 = 4 * 1024 * 1024;
 
@@ -1118,7 +1139,7 @@ mod xqvm_weights {
         // the per-run cap L: the mixed-family order sweep plus one ITER
         // small-slice pile-up per order reached 28.18 x L at most (census
         // `j_iter_slice_overhead_at_cap`, L' = 512 KiB; the sweep alone 19.34),
-        // pinned at 29. Rounding, the uncharged ENERGY/EQUALITY clones and the
+        // pinned at 29 -- for power-of-two caps, asserted below. Rounding, the uncharged ENERGY/EQUALITY clones and the
         // uncharged LoopFrame are folded in; LVAL is excluded by the calldata
         // invariant (see `on_chain_calldata_cannot_carry_a_model`).
         const SIGMA_ORDERS_PER_L: u64 = VM_SIGMA_ORDERS_PER_L;
@@ -1149,9 +1170,11 @@ mod xqvm_weights {
         // verification copies -- measured 44.0 MiB (test
         // `d_encoded_block_residency_and_largest_extrinsic`, case (b)).
         const BLOCK_RESIDENCY: u64 = VM_BLOCK_RESIDENCY;
-        // Maximal non-VM dispatch: a `submit_proof` whose weight closure decodes
-        // the full 5000-node/50000-edge topology meta plus the packed proof --
-        // measured 3.27 MiB (test `f_non_vm_baseline_submit_proof`).
+        // Maximal non-VM dispatch: `store_program` verifying a 64 KiB,
+        // 2,048-block program, measured 3.76 MiB (census
+        // `l_store_program_verify_peak`); a `submit_proof` decoding the full
+        // topology meta plus the packed proof, 3.27 MiB (census
+        // `f_non_vm_baseline_submit_proof`).
         const NON_VM_BASELINE: u64 = VM_NON_VM_BASELINE;
         // Keep at least a quarter of the heap free (owner/architect gate).
         const MIN_FREE: u64 = RUNTIME_HEAP_BYTES / 4; // 32 MiB
@@ -1167,6 +1190,23 @@ mod xqvm_weights {
             vm_importer_budget(),
             "the shared budget function sums the same terms"
         );
+        // The Σ pin holds for power-of-two caps only. At a cap L that is not a
+        // power of two, a sample of just over half a next_pow2(L) chunk still
+        // charges <= L, and it and its uncharged ENERGY clone each take a
+        // whole chunk of that order: 29.5225·L measured at 1.5 MiB (census k,
+        // W1-002 R8 item 15), over the pin of 29.
+        for (name, cap) in [
+            ("MaxVmMemory", MaxVmMemory::get()),
+            ("MaxTransformVmMemory", MaxTransformVmMemory::get()),
+        ] {
+            assert!(
+                cap.is_power_of_two(),
+                "{name} = {cap} B is not a power of two: such a cap reaches the next_pow2(L) \
+                 allocator order through the uncharged ENERGY clone, which the Σ pin does not \
+                 cover. Re-run census k (whose sweeps cover the next order) and re-derive \
+                 VM_SIGMA_ORDERS_PER_L before changing the cap"
+            );
+        }
 
         assert!(
             budget.saturating_add(MIN_FREE) <= RUNTIME_HEAP_BYTES,

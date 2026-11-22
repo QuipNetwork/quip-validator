@@ -11,9 +11,9 @@
 //! that map.
 //!
 //! A candidate cap L' is emulated by inputs whose total charge stays <= L': the
-//! compiled cap is now `MaxVmMemory` = 1.5 MiB (W1-002), so a run that charges
-//! <= L' <= 1.5 MiB never reaches the compiled check and allocates exactly what
-//! it would under a cap of L'. Emulated L' values therefore stay below 1.5 MiB
+//! compiled cap is now `MaxVmMemory` = 1 MiB (W1-002), so a run that charges
+//! <= L' <= 1 MiB never reaches the compiled check and allocates exactly what
+//! it would under a cap of L'. Emulated L' values therefore stay at or below 1 MiB
 //! with headroom for the k ~ 2 clone overhead; a larger L' would just hit the
 //! real cap with `VmMemoryLimitExceeded` and is not a valid per-run measurement.
 //!
@@ -49,8 +49,9 @@ type Executor = WasmExecutor<SubstrateHostFunctions>;
 
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * 1024;
-/// The shipped per-run VM cap (`MaxVmMemory`, owner decision 2026-11-22).
-const SHIPPED_CAP: u64 = 1_572_864;
+/// The shipped per-run VM cap (`MaxVmMemory`, owner's second decision of
+/// 2026-11-22: 1 MiB, a power of two).
+const SHIPPED_CAP: u64 = 1_048_576;
 
 fn mib(bytes: u32) -> f64 {
     f64::from(bytes) / MIB as f64
@@ -351,10 +352,13 @@ fn prog_iter_slices() -> Vec<u8> {
 
 /// One `ITER`-slice run per allocator order at emulated cap `l`: e = chunk/16 +
 /// 1 elements, frames filling `l` (one frame short, for the run's own charges).
+/// Swept to every order a charge of <= `l` can reach (next_pow2(l), see
+/// `order_sweep`); an order whose source vec and two frames do not fit is
+/// skipped.
 fn iter_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<RuntimeCall> {
     let mut out = Vec::new();
     let mut chunk = 16u64;
-    while chunk <= l {
+    while chunk <= 2 * l {
         let e = chunk / 16 + 1;
         let f = iter_frames(e, l);
         if f >= 2 {
@@ -833,7 +837,7 @@ fn a_poc_direct_faulting_and_batch_wrappers() {
     }
     println!("SUMMARY poc: direct5_imports={ok5} direct4_imports={ok4} wrapped={wrapped:?}");
     // W1-002 regression + mutation control. At the shipped per-run cap
-    // (MaxVmMemory = 1.5 MiB) the whole-block VM growth stays under the 128 MiB
+    // (MaxVmMemory = 1 MiB) the whole-block VM growth stays under the 128 MiB
     // heap, so the auditor's attack block -- which trapped every importer at the
     // old 16 MiB cap -- now imports, directly and under every batch wrapper.
     // Reverting MaxVmMemory to 16 MiB fails this test: the block traps on import.
@@ -883,7 +887,7 @@ fn b_per_run_footprint_by_family() {
     // importer_net is the binding figure: the whole run executes in the
     // block's single heap. O-A2 is sized against it (adjustment 3).
     println!("family,L_KiB,params,charged_B,author_MiB,author_net_MiB,import_MiB,import_net_MiB,import_ratio_to_L,outcome");
-    // Emulated caps stay below the compiled 1.5 MiB cap with headroom for the
+    // Emulated caps stay at or below the compiled 1 MiB cap, with headroom for the
     // k ~ 2 clone overhead (matching `c_block_order_sweep_at_emulated_caps`).
     // The old 16 MiB row is dropped: it exceeds the current cap, so it would
     // fault at `VmMemoryLimitExceeded` before reaching its intended allocation
@@ -893,7 +897,17 @@ fn b_per_run_footprint_by_family() {
         // = the exact post-allocation xqvm fault). energy=0 samples, `linear`
         // and `quad` complete; energy=1 samples and `vec` fault after allocating.
         let mut cases: Vec<(String, &str, Vec<i64>, u64, Option<u8>)> = Vec::new();
-        for &(n, energy) in &[(l / 8, 0i64), (l / 8, 1), (l / 16 + 1, 1), (l / 32 + 1, 1)] {
+        // The full-L cases leave room for the program's own `INPUT` register
+        // charges (8 B each), so a case at the compiled cap (L' = 1 MiB) still
+        // fits it. The allocation stays in the same allocator order.
+        const RUN_OVERHEAD: u64 = 64;
+        let fit = l - RUN_OVERHEAD;
+        for &(n, energy) in &[
+            (fit / 8, 0i64),
+            (fit / 8, 1),
+            (l / 16 + 1, 1),
+            (l / 32 + 1, 1),
+        ] {
             let count = (l / (8 * n)).clamp(1, 252);
             cases.push((
                 format!("n={n};count={count};energy={energy}"),
@@ -907,7 +921,7 @@ fn b_per_run_footprint_by_family() {
                 },
             ));
         }
-        for &n in &[l / 32 + 1, l / 16] {
+        for &n in &[l / 32 + 1, fit / 16] {
             cases.push((
                 format!("n={n};equality=1"),
                 "vec",
@@ -1021,13 +1035,25 @@ fn b_per_run_footprint_by_family() {
 ///   - `quad`:    BTreeMap<(usize,usize),i64> node chunks,
 ///   - `vec`:     the vec<int> buffer order + the EQUALITY double-clone.
 /// Each run charges <= `l`, so under a real cap L'=l none reaches the compiled
-/// 1.5 MiB cap.
+/// 1 MiB cap.
+///
+/// Every order a charge of <= `l` can reach is swept, which is NOT `chunk <= l`:
+/// the top reachable order is next_pow2(l). At a non-power-of-two `l` (the
+/// 1.5 MiB that was shipped before) a sample of chunk/16 + 1 elements -- just over half of the
+/// next_pow2(l) chunk -- still charges <= `l`, and it and its uncharged ENERGY
+/// clone both occupy a whole chunk of that order (kimi's R8 on dc3aa33; Σ
+/// 29.5225·L at 1.5 MiB). The shipped cap is a power of two for that reason. The
+/// loop runs while that smallest occupant fits; at a power-of-two `l` it stops
+/// at `l`, as before.
 fn order_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, u64)> {
     let mut out = Vec::new();
     let mut chunk = 8u64;
     let mut order = 0u32;
-    while chunk <= l {
+    loop {
         let n = if chunk == 8 { 1 } else { chunk / 16 + 1 };
+        if 8 * n > l {
+            break;
+        }
         let count = (l / (8 * n)).clamp(1, 252);
         let charged = 8 * n * count;
         assert!(charged <= l);
@@ -1542,41 +1568,26 @@ fn i_worst_case_fixed_run() {
     );
 }
 
-/// Σ_orders evidence (W1-002 R8 item 10, (i)): census g's combined block at the
-/// shipped cap, with one ITER-slice run per allocator order added to the mixed
-/// sweep. Reports the importer high-water and asserts that it imports and
-/// leaves at least a quarter of the heap free.
+/// Σ_orders evidence (W1-002 R8 items 10 and 15): census g's combined block,
+/// with one ITER-slice run per allocator order added to the mixed sweep, both
+/// swept to every reachable order (next_pow2(L)). At the shipped cap (1 MiB,
+/// a power of two) and, for comparison, at an emulated 768 KiB: a
+/// non-power-of-two cap of the same shape as the 1.5 MiB that was dropped
+/// (3·2^18 against 3·2^19; a cap above the compiled 1 MiB cannot be emulated),
+/// so the next-order case stays exercised. Asserts the shipped cap's Σ ratio
+/// against `VM_SIGMA_ORDERS_PER_L` -- the comparison cap is expected to exceed
+/// it, which is why the budget test requires power-of-two caps -- and that
+/// every block imports and leaves at least a quarter of the heap free, after
+/// printing every number.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn k_combined_block_with_iter_slices_at_cap() {
     let chain = Chain::new();
     let ms = max_steps();
-    let l = max_vm_memory();
-    assert_eq!(l, SHIPPED_CAP, "pins the shipped 1.5 MiB cap");
-    let mut vm_calls: Vec<RuntimeCall> = order_sweep(&chain, l, ms)
-        .into_iter()
-        .map(|(_, c, _)| c)
-        .collect();
-    let n_sweep = vm_calls.len();
-    let iters = iter_sweep(&chain, l, ms);
-    let n_iter = iters.len();
-    vm_calls.extend(iters);
+    assert_eq!(max_vm_memory(), SHIPPED_CAP, "pins the shipped 1 MiB cap");
+    let k = quip_testnet_runtime::configs::VM_SIGMA_ORDERS_PER_L as f64;
     let (empty, _) = chain.author(vec![]);
     let (_, empty_import) = chain.import(&empty);
-
-    let (vm_block, vm_applied) = chain.author_fast(vm_calls.clone());
-    assert_eq!(vm_applied.len(), vm_calls.len(), "every VM run is included");
-    let (vm_ok, vm_heap) = chain.import(&vm_block);
-    let vm_net = vm_heap.saturating_sub(empty_import);
-    println!(
-        "Σ+ITER@L={}KiB: {n_sweep} sweep + {n_iter} iter runs, importer net {:.3} MiB = {:.2}·L, import {}",
-        l / KIB,
-        mib(vm_net),
-        f64::from(vm_net) / l as f64,
-        if vm_ok.is_ok() { "ok" } else { "TRAP" }
-    );
-    assert!(vm_ok.is_ok(), "sweep + iter at the shipped cap must import");
-
     let remark = |p: usize| -> RuntimeCall {
         frame_system::Call::<Runtime>::remark {
             remark: vec![0u8; p],
@@ -1588,38 +1599,157 @@ fn k_combined_block_with_iter_slices_at_cap() {
     let fillers: Vec<RuntimeCall> = (0..1200)
         .map(|_| remark(2049usize.saturating_sub(body0)))
         .collect();
-    for (order, calls) in [
-        ("remark-first", {
-            let mut v = vec![big.clone()];
-            v.extend(vm_calls.clone());
-            v.extend(fillers.clone());
-            v
-        }),
-        ("vm-first", {
-            let mut v = vm_calls.clone();
-            v.push(big.clone());
-            v.extend(fillers.clone());
-            v
-        }),
-    ] {
-        let supplied = calls.len();
-        let (block, applied) = chain.author_fast(calls);
-        let (imported, heap) = chain.import(&block);
-        println!(
-            "COMBINED+ITER [{order}]: supplied {supplied}, included {}, encoded {:.2} MiB; \
-             importer high-water {:.3} MiB (net {:.3}), {:.1} % of 128 MiB free; import {}",
-            applied.len(),
-            block.encode().len() as f64 / MIB as f64,
-            mib(heap),
-            mib(heap.saturating_sub(empty_import)),
-            (128.0 - mib(heap)) / 128.0 * 100.0,
-            if imported.is_ok() { "IMPORTED" } else { "TRAP" }
-        );
-        assert!(imported.is_ok(), "[{order}] authored block must import");
+    // The shipped cap, and 768 KiB (not a power of two, emulated under the
+    // compiled cap) for comparison only. Σ is asserted after both are
+    // measured, so one run reports every number.
+    let mut sigma = Vec::new();
+    let mut low_free = Vec::new();
+    for l in [SHIPPED_CAP, 3 * MIB / 4] {
+        let mut vm_calls: Vec<RuntimeCall> = order_sweep(&chain, l, ms)
+            .into_iter()
+            .map(|(_, c, _)| c)
+            .collect();
+        let n_sweep = vm_calls.len();
+        let iters = iter_sweep(&chain, l, ms);
+        let n_iter = iters.len();
+        vm_calls.extend(iters);
+        let (vm_block, vm_applied) = chain.author_fast(vm_calls.clone());
+        assert_eq!(vm_applied.len(), vm_calls.len(), "every VM run is included");
+        let (vm_ok, vm_heap) = chain.import(&vm_block);
         assert!(
-            mib(heap) <= 128.0 * 0.75,
-            "[{order}] high-water {:.3} MiB leaves under 25% of the 128 MiB heap free",
-            mib(heap)
+            vm_ok.is_ok(),
+            "sweep + iter at L={} KiB must import",
+            l / KIB
+        );
+        let vm_net = vm_heap.saturating_sub(empty_import);
+        let ratio = f64::from(vm_net) / l as f64;
+        println!(
+            "Σ+ITER@L={}KiB: {n_sweep} sweep + {n_iter} iter runs, importer net {:.3} MiB = {ratio:.4}·L (pinned {k}), import ok",
+            l / KIB,
+            mib(vm_net),
+        );
+        if l == SHIPPED_CAP {
+            sigma.push((l, ratio));
+        }
+        for (order, calls) in [
+            ("remark-first", {
+                let mut v = vec![big.clone()];
+                v.extend(vm_calls.clone());
+                v.extend(fillers.clone());
+                v
+            }),
+            ("vm-first", {
+                let mut v = vm_calls.clone();
+                v.push(big.clone());
+                v.extend(fillers.clone());
+                v
+            }),
+        ] {
+            let supplied = calls.len();
+            let (block, applied) = chain.author_fast(calls);
+            let (imported, heap) = chain.import(&block);
+            println!(
+                "COMBINED+ITER@L={}KiB [{order}]: supplied {supplied}, included {}, encoded {:.2} MiB; \
+                 importer high-water {:.3} MiB (net {:.3}), {:.1} % of 128 MiB free; import {}",
+                l / KIB,
+                applied.len(),
+                block.encode().len() as f64 / MIB as f64,
+                mib(heap),
+                mib(heap.saturating_sub(empty_import)),
+                (128.0 - mib(heap)) / 128.0 * 100.0,
+                if imported.is_ok() { "IMPORTED" } else { "TRAP" }
+            );
+            assert!(
+                imported.is_ok(),
+                "[{order}] L={} KiB block must import",
+                l / KIB
+            );
+            if mib(heap) > 128.0 * 0.75 {
+                low_free.push((l, order, mib(heap)));
+            }
+        }
+    }
+    for (l, ratio) in &sigma {
+        assert!(
+            *ratio <= k,
+            "Σ at L={} KiB is {ratio:.4}·L, over the pinned {k} -- STOP and report",
+            l / KIB
+        );
+    }
+    assert!(
+        low_free.is_empty(),
+        "blocks leave under 25% of the 128 MiB heap free: {low_free:?}"
+    );
+}
+
+/// The benchmark's verify-worst `store_program` shape (pallet-xqvm
+/// `build_blocks_program`): `nesting` RANGE levels around unreferenced
+/// TARGETs, NOP-padded to `len` encoded bytes, `blocks` basic blocks.
+fn prog_verify_worst(len: usize, blocks: usize, nesting: usize) -> Vec<u8> {
+    const XQBC_HEADER_LEN: usize = 15;
+    let body = len - XQBC_HEADER_LEN - 1;
+    let targets = blocks - 2 * nesting;
+    let mut code = Vec::with_capacity(body + 1);
+    for _ in 0..nesting {
+        code.extend_from_slice(&[0x11, 0, 0x11, 1, 0x08]); // PUSH1 0, PUSH1 1, RANGE
+    }
+    code.extend(core::iter::repeat_n(0x00u8, targets)); // TARGET
+    code.extend(core::iter::repeat_n(0x07u8, nesting)); // NEXT
+    code.resize(body, 0xF0); // NOP
+    code.push(0xFF); // HALT
+    let bytes = xqvm::Program::new(code).encode();
+    assert_eq!(bytes.len(), len);
+    bytes
+}
+
+/// Non-VM term check (W1-002 R8 item 15): `store_program` decodes AND
+/// verifies, and the verifier's memory grows with basic blocks (the
+/// `MaxProgramBlocks` docs estimate ~17 MiB in Wasm at 2,048). The budget's
+/// non-VM term is sized on `submit_proof` (3.27 MiB, census f). Measures
+/// author and importer heap of one `store_program` at `MaxProgramSize` and
+/// `MaxProgramBlocks`, for the benchmark's nested shape and census i's
+/// programs. Verification runs before the duplicate check, so a program
+/// already seeded at genesis still spends the full verify.
+#[test]
+#[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
+fn l_store_program_verify_peak() {
+    use quip_testnet_runtime::configs::{MaxLoopDepth, MaxProgramBlocks, MaxProgramSize};
+    let chain = Chain::new();
+    let len = <MaxProgramSize as Get<u32>>::get() as usize;
+    let blocks = <MaxProgramBlocks as Get<u32>>::get() as usize;
+    let depth = <MaxLoopDepth as Get<u32>>::get() as usize;
+    let (empty, _) = chain.author(vec![]);
+    let (_, empty_import) = chain.import(&empty);
+    for (name, bytes) in [
+        (
+            "bench nested",
+            prog_verify_worst(len, blocks, depth.min((blocks - 1) / 2)),
+        ),
+        ("bench flat", prog_verify_worst(len, blocks, 0)),
+        ("fixed_worst_jumps", prog_fixed_worst_jumps()),
+        ("fixed_worst_pile_iter", prog_fixed_worst_pile(Pile::Iter)),
+    ] {
+        let call: RuntimeCall = pallet_xqvm::Call::<Runtime>::store_program {
+            bytecode: bytes.clone().try_into().expect("fits MaxProgramSize"),
+        }
+        .into();
+        let (block, applied) = chain.author(vec![call]);
+        let (imported, import) = chain.import(&block);
+        println!(
+            "store_program [{name}]: {} B, outcome {}, author apply {:.3} MiB, import net {:.3} MiB, import {}",
+            bytes.len(),
+            outcome(&applied[0].0),
+            mib(applied[0].1),
+            mib(import.saturating_sub(empty_import)),
+            if imported.is_ok() { "ok" } else { "TRAP" }
+        );
+        assert!(imported.is_ok(), "[{name}] block must import");
+        let net = u64::from(import.saturating_sub(empty_import));
+        assert!(
+            net <= quip_testnet_runtime::configs::VM_NON_VM_BASELINE,
+            "[{name}] store_program import net {net} B exceeds the pinned non-VM term \
+             VM_NON_VM_BASELINE ({} B)",
+            quip_testnet_runtime::configs::VM_NON_VM_BASELINE
         );
     }
 }
@@ -1859,12 +1989,12 @@ fn f_non_vm_baseline_submit_proof() {
 
 // ---------------------------------------------------------------------------
 // Combined end-to-end regression (owner/architect required). ONE importer
-// block at the shipped 1.5 MiB cap carrying, together: the mixed-family order
+// block at the shipped 1 MiB cap carrying, together: the mixed-family order
 // sweep (samples across orders + SETLINE/SETQUAD BTreeMap-node runs +
 // vec+EQUALITY), the ~2 MiB signed remark applied under a fresh nonce, and
 // 2,049-byte-body fillers as far as weight/length allow. Asserts the block
 // imports and prints the measured high-water against the pinned budget sum
-// (`vm_importer_budget()`, 93.75 MiB at the shipped 1.5 MiB cap).
+// (`vm_importer_budget()`, 79.25 MiB at the shipped 1 MiB cap).
 // Also measures the mixed-family Σ at the shipped L directly (not extrapolated).
 // ---------------------------------------------------------------------------
 
@@ -1876,7 +2006,7 @@ fn g_combined_block_imports_at_cap() {
     assert_eq!(
         max_vm_memory(),
         SHIPPED_CAP,
-        "combined test pins the shipped 1.5 MiB cap"
+        "combined test pins the shipped 1 MiB cap"
     );
     let l = SHIPPED_CAP;
 
