@@ -3667,6 +3667,67 @@ mod w1_006 {
         });
     }
 
+    #[test]
+    fn with_every_share_below_ed_the_whole_reward_returns_and_the_escrow_is_reaped() {
+        new_test_ext().execute_with(|| {
+            // ED 60: a 2-winner equal split of 100 is 50 and 50, both below
+            // ED, so no winner is paid (`paid` is empty). The whole reward goes
+            // back to the proposer in one transfer that must be AllowDeath:
+            // KeepAlive would refuse to empty the escrow.
+            ExistentialDeposit::set(60);
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                sample_params(),
+                100,
+                JobMode::Open,
+                RewardResolution::TopNEqual { n: 2 },
+                1,
+                1,
+                ResultDelivery::OnChainOnly,
+            ));
+            for (solver, rows) in [(2, sample_solution()), (3, alternate_solution())] {
+                assert_ok!(QuantumComputeMempool::register_solver(
+                    RuntimeOrigin::signed(solver),
+                    MinerType::Cpu
+                ));
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(solver),
+                    0,
+                    rows
+                ));
+            }
+            run_to_block(2);
+            let proposer_before = Balances::free_balance(1);
+            let solvers_before = Balances::free_balance(2) + Balances::free_balance(3);
+            let issuance = Balances::total_issuance();
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
+                0
+            ));
+            assert_eq!(Balances::free_balance(1), proposer_before + 100);
+            assert_eq!(
+                Balances::free_balance(2) + Balances::free_balance(3),
+                solvers_before,
+                "no winner share is paid"
+            );
+            assert_eq!(Balances::total_issuance(), issuance, "nothing was burned");
+            assert_eq!(escrow_balance(0), 0);
+            assert!(!escrow_exists(0), "the escrow is reaped");
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "MinReward must be at least the existential deposit")]
+    fn integrity_test_requires_min_reward_at_least_ed() {
+        new_test_ext().execute_with(|| {
+            // The mock's MinReward is 10; an ED above it must fail the check.
+            ExistentialDeposit::set(11);
+            <QuantumComputeMempool as Hooks<u64>>::integrity_test();
+        });
+    }
+
     fn dust_lost_events() -> usize {
         System::events()
             .iter()

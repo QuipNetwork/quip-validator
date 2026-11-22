@@ -995,7 +995,10 @@ pub mod pallet {
                     "storage version {on_chain:?} < 5 with existing orders: not upgrading; \
                      the JobSolution/RankedSolver layout changed without a migration, and the \
                      OrderAnswers index starts empty, so orders open before the upgrade detect \
-                     duplicates only among answers submitted after it (W1-012)"
+                     duplicates only among answers submitted after it (W1-012); and orders \
+                     open before the per-order escrow hold their reward as a reserve on the \
+                     proposer, which nothing releases: claim_reward finds no escrow \
+                     (RewardReserveMissing) and the reserve stays stranded (W1-006)"
                 );
                 return T::DbWeight::get().reads(2);
             }
@@ -1012,6 +1015,13 @@ pub mod pallet {
             assert!(
                 !T::OrderRetentionBlocks::get().is_zero(),
                 "order retention must be positive"
+            );
+            // W1-006: propose_job's KeepAlive transfer of `reward >= MinReward`
+            // is what creates the order's escrow account, and settlement relies
+            // on a full-reward release to the proposer being receivable.
+            assert!(
+                T::MinReward::get() >= T::Currency::minimum_balance(),
+                "MinReward must be at least the existential deposit"
             );
         }
 

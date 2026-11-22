@@ -762,6 +762,13 @@ mod benchmarks {
         // outright. Settlement must still pay every winner from the escrow,
         // burn nothing, and leave the proposer either reaped or holding at
         // least ED -- never dust.
+        //
+        // What this case does NOT bound: a remainder transfer. The weighted
+        // split adds its rounding to rank 0, so the shares sum to the whole
+        // reward, and with the runtime's constants every share is >= ED (the
+        // smallest is reward / 528 = 1024 / 528 MinReward, MinReward >= ED).
+        // So the remainder is 0 here and neither the transfer back to the
+        // proposer nor the rank-0 fallback runs.
         fund_account::<T>(&proposer, Zero::zero());
         assert!(!frame_system::Pallet::<T>::account_exists(&proposer));
         let issuance = T::Currency::total_issuance();
