@@ -109,8 +109,9 @@ hold() {
 # Every CI_CACHE_* setting the checks depend on is set here, not inherited: the
 # CI job running this test exports its own (cargo-test's CI_CACHE_MAX_SIZE is
 # 140GiB), which a check on the sweep arguments would otherwise see.
+rpath="" # extra PATH entries (hooks) for run()
 run() {
-  PATH="$bin:$PATH" CI_CACHE_ROOT="$root" CI_CACHE_PROJECT_DIR="$project" \
+  PATH="$rpath$bin:$PATH" CI_CACHE_ROOT="$root" CI_CACHE_PROJECT_DIR="$project" \
     CI_CACHE_MAX_SIZE=50GiB \
     CI_CACHE_DU_BUDGET="${du_budget:-180}" \
     CARGO_TARGET_DIR="$root/1/own/target" bash "$prune" >>"$tmp/prune.log" 2>&1
@@ -236,6 +237,35 @@ hold "$root/1/own"
 run
 check "an own slot locked by another holder is not swept" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
 check "the skip is logged" 'grep -q "still locked by another holder" "$tmp/prune.log"'
+
+# Item 17: the own slot renamed away within the volume, with a fresh directory
+# put at its path, while the sweep takes its exclusive lock. The re-check under
+# the lock reads the cwd with getcwd (/bin/pwd -P) and refuses to sweep; the
+# builtin `pwd -P` would re-resolve the path to the fresh directory and pass.
+release "${holders[-1]}"
+touch -d "$(days_ago 2)" "$root/1/own/.last-sweep"
+ownmovebin="$tmp/ownmovebin"
+mkdir -p "$ownmovebin"
+cat >"$ownmovebin/flock" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" --exclusive "* && -e "$tmp/ownmove.spec" ]]; then
+  rm -f "$tmp/ownmove.spec"
+  mv "$root/1/own" "$root/1/.moved-own"
+  mkdir -p "$root/1/own/target"
+fi
+exec "$(command -v flock)" "\$@"
+EOF
+chmod +x "$ownmovebin/flock"
+touch "$tmp/ownmove.spec"
+sweeps_before="$(wc -l <"$sweeps")"
+rpath="$ownmovebin:"
+run
+rpath=""
+check "an own slot moved while the sweep locks it is not swept" \
+  '[[ ! -e "$tmp/ownmove.spec" && "$(wc -l <"$sweeps")" -eq "$sweeps_before" ]] \
+    && logged "own slot $root/1/own moved while locking; not sweeping it"'
+rm -rf "$root/1/own"
+mv "$root/1/.moved-own" "$root/1/own"
 
 # A missing cargo-sweep (say, after CARGO_HOME/bin was wiped) costs the sweep,
 # never the job: the script still exits 0 and says why it skipped.
@@ -609,14 +639,14 @@ mkdir -p "$mvlogbin"
 cat >"$mvlogbin/mv" <<EOF
 #!/usr/bin/env bash
 echo "\$(pwd -P) \$*" >>"$tmp/mv.args"
-exec "$(command -v -p mv || echo /bin/mv)" "\$@"
+exec "$real_mv_hook" "\$@"
 EOF
 chmod +x "$mvlogbin/mv"
 trash_named_in_slot() { # SLOT: the one mv, run in SLOT, renamed target to .prune-trash.N.N
-  local cwd dashdash src dest extra
+  local cwd tflag dashdash src dest extra
   [[ "$(wc -l <"$tmp/mv.args")" -eq 1 ]] || return 1
-  read -r cwd dashdash src dest extra <"$tmp/mv.args"
-  [[ -z "$extra" && "$cwd" == "$broot/$1" && "$dashdash" == -- && "$src" == target &&
+  read -r cwd tflag dashdash src dest extra <"$tmp/mv.args"
+  [[ -z "$extra" && "$cwd" == "$broot/$1" && "$tflag" == -T && "$dashdash" == -- && "$src" == target &&
     "$dest" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]]
 }
 budget_volume
@@ -1009,7 +1039,77 @@ rm -f "$tmp/swap.spec"
 check "containment: a slot swapped for a symlink between scan and lock is not evicted" \
   'untouched_target() { [[ -e "$outside/swap/target/keep" ]]; }; untouched_target'
 check "containment: ... the re-check under the lock logs it" \
-  'grep -q "$broot/8/swap is not physically inside" "$tmp/budget.log"'
+  'grep -qF "$broot/8/swap is not physically inside $broot/<n>/<slot> (moved while locking)" "$tmp/budget.log"'
+
+# Item 17a: the verified slot renamed away WITHIN the volume, with a fresh real
+# directory put at its path, while the prune takes the slot's lock (claude's
+# recheck_moved). Only getcwd (/bin/pwd -P) sees the move; the builtin
+# `pwd -P` re-resolves the path string to the fresh directory and passes.
+movebin="$tmp/movebin"
+mkdir -p "$movebin"
+cat >"$movebin/flock" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" --exclusive "* && -e "$tmp/move.spec" ]]; then
+  read -r slot dest <"$tmp/move.spec"
+  rm -f "$tmp/move.spec"
+  "$real_mv" "\$slot" "\$dest"
+  mkdir -p "\$slot/target"
+  echo 1 >"\$slot/target/fresh"
+fi
+exec "$real_flock" "\$@"
+EOF
+chmod +x "$movebin/flock"
+contained_volume
+release "${holders[-1]}"
+rm -rf "$broot/4/held"
+touch "$broot/1/own/.last-sweep"
+echo "$broot/8/stale $broot/8/.moved-stale" >"$tmp/move.spec"
+bpath="$movebin:"
+brun
+bpath=""
+check "anchored: a slot moved within the volume while locking is refused" \
+  '[[ ! -e "$tmp/move.spec" ]] \
+    && grep -qF "$broot/8/stale is not physically inside $broot/<n>/<slot> (moved while locking)" "$tmp/budget.log"'
+check "anchored: ... neither the moved slot nor the fresh one is evicted" \
+  '[[ -d "$broot/8/.moved-stale/target" && -e "$broot/8/stale/target/fresh" ]]'
+
+# Item 17c: a symlinked target/ with NO stamp outside. anchor_slot's `! -L
+# target` is what stops rule 2 from grandfathering it -- a `touch` that would
+# create target/.last-used outside the volume.
+contained_volume
+mkdir -p "$outside/nostamp" "$broot/9/nostamp"
+ln -s "$outside/nostamp" "$broot/9/nostamp/target"
+brun
+check "anchored: a symlinked target/ with no stamp gets none created outside" \
+  '[[ ! -e "$outside/nostamp/.last-used" ]] \
+    && grep -q "$broot/9/nostamp has a symlinked target/" "$tmp/budget.log"'
+
+# Item 17b: a symlink to an outside directory planted at the trash name, just
+# before the eviction's rename (claude's trash_dest). `mv -T` refuses a
+# directory onto it; a plain `mv` would move target/ INTO the outside dir.
+plantbin="$tmp/plantbin"
+mkdir -p "$plantbin"
+cat >"$plantbin/mv" <<EOF
+#!/usr/bin/env bash
+dest="\${*: -1}"
+if [[ -e "$tmp/plant.spec" && "\$(basename "\$dest")" == .prune-trash.* ]]; then
+  rm -f "$tmp/plant.spec"
+  ln -s "$outside/planted" "\$dest"
+fi
+exec "$real_mv" "\$@"
+EOF
+chmod +x "$plantbin/mv"
+contained_volume
+mkdir -p "$outside/planted"
+echo 1 >"$broot/8/stale/target/artifact"
+touch "$tmp/plant.spec"
+bpath="$plantbin:"
+brun
+bpath=""
+check "anchored: a planted trash-name link fails the eviction closed" \
+  '[[ ! -e "$tmp/plant.spec" && -e "$broot/8/stale/target/artifact" ]] \
+    && [[ -z "$(ls -A "$outside/planted")" ]] \
+    && grep -q "cannot move $broot/8/stale/target aside; not evicting it" "$tmp/budget.log"'
 
 # --- Item 14: anchored operations. A hook swaps the slot for a symlink to an
 # outside tree AFTER the prune verified it and just before one operation runs

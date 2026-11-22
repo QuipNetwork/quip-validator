@@ -54,15 +54,21 @@ set -euo pipefail
 # Physical containment: the prune must never act outside the volume. A path
 # check followed by a path-based operation is a race (a writer that ignores
 # the lock can swap a slot for a symlink in between), so every read or write
-# of a slot runs in a subshell that `cd -P`s into the slot, verifies that
-# `pwd -P` is exactly <real cache root>/<digits>/<name> (anchor_slot), and
+# of a slot runs in a subshell that `cd -P`s into the slot, verifies that the
+# cwd's physical path -- from getcwd(3), via /bin/pwd -P; bash's builtin
+# re-resolves its stored path string instead -- is exactly
+# <real cache root>/<digits>/<name> (anchor_slot), and
 # then uses relative paths only: the lock on ./.in-use, the stamp and
 # activity re-checks, the rename of ./target, the trash delete, leftover
 # deletes, `du -P`, `find -P`, `stat`, and cargo-sweep (run with a relative
 # CARGO_TARGET_DIR, which cargo resolves against this cwd). The cwd is
-# re-verified under the exclusive lock. /ci-cache is its own mount, so a
-# verified directory renamed afterwards stays inside the volume, and `mv`/`rm`
-# never follow a symlink in their final component. A slot that fails
+# re-verified under the exclusive lock, so a slot renamed away within the
+# volume (with a fresh directory put at its path) is refused. /ci-cache is
+# its own mount, so a verified directory renamed afterwards stays inside the
+# volume, and `mv`/`rm` never follow a symlink in their final component. The
+# eviction's rename is `mv -T` (GNU), so a symlink or directory planted at the
+# trash name fails the rename instead of receiving target/. /bin/pwd missing
+# means nothing can be verified, so nothing is swept or removed. A slot that fails
 # verification is skipped, logged and counted as a failure; nothing aborts
 # the run. If the cache root cannot be resolved, nothing is swept or removed.
 #
@@ -80,9 +86,12 @@ set -euo pipefail
 #   - Lock files are opened read-only, never truncated; an absent one is
 #     created with noclobber (O_EXCL), which refuses any existing name.
 #   - ACCEPTED RESIDUAL: a concurrent writer that ignores the lock could swap
-#     a leaf (./.in-use, target/, the stamp, the root control files) for a
-#     symlink between its check and its use, or swap a parent between cargo's
-#     getcwd and cargo-sweep's deletes. That writer must already be able to
+#     a leaf for a symlink between its check and its use: ./.in-use and the
+#     root .prune.lock before they are opened (read-only), target/.last-used
+#     before it is stat'ed or touched, .last-prune before its touch; or swap
+#     a parent between cargo's getcwd and cargo-sweep's deletes. A swapped
+#     target/ is harmless: `mv -T` and `rm` act on the link itself, and `du
+#     -P`/`find -P` never follow it. That writer must already be able to
 #     write /ci-cache, which lets it delete or poison anything there
 #     directly; redirecting this prune reaches nothing beyond that volume and
 #     this job's own ephemeral container. Closing it would need no-follow
@@ -335,9 +344,21 @@ percent() {
 
 # The cache root, resolved once. Empty when it cannot be resolved: then
 # anchor_slot fails for everything and nothing is swept or removed.
+# phys_cwd: the cwd's physical path as getcwd(3) reports it, via /bin/pwd.
+# Bash's builtin `pwd -P` re-resolves its stored $PWD string instead, so a
+# verified slot renamed away, with a fresh directory put at its path, would
+# still read as verified.
+phys_cwd() {
+  /bin/pwd -P 2>/dev/null
+}
+
 root_real="$(realpath -e "$cache_root" 2>/dev/null || true)"
-if [[ -n "$root_real" ]]; then
-  root_real="$(CDPATH='' cd -P -- "$root_real" && pwd -P)"
+if [[ ! -x /bin/pwd ]]; then
+  # Fail closed: without getcwd(3) no slot can be verified.
+  log "/bin/pwd is not available, so no slot can be verified; nothing will be swept or removed"
+  root_real=""
+elif [[ -n "$root_real" ]]; then
+  root_real="$(CDPATH='' cd -P -- "$root_real" && phys_cwd)"
 else
   log "cannot resolve $cache_root with realpath -e; nothing will be swept or removed"
 fi
@@ -372,7 +393,7 @@ leaves_ok() {
 anchor_slot() {
   local rel
   if [[ -z "$root_real" ]] || ! rel="$(slot_rel "$1")" ||
-    ! CDPATH='' cd -P -- "$1" 2>/dev/null || [[ "$(pwd -P)" != "$root_real/$rel" ]]; then
+    ! CDPATH='' cd -P -- "$1" 2>/dev/null || [[ "$(phys_cwd)" != "$root_real/$rel" ]]; then
     log "$1 is not physically inside $cache_root/<n>/<slot> (symlink or unresolvable); skipping it" >&2
     return 1
   fi
@@ -386,7 +407,7 @@ anchor_slot() {
 # still_anchored: (anchored) the cwd is still where anchor_slot verified it,
 # and the leaves are still sound. Re-checked under the exclusive lock.
 still_anchored() {
-  [[ "$(pwd -P)" == "$anchored_at" ]] && leaves_ok
+  [[ "$(phys_cwd)" == "$anchored_at" ]] && leaves_ok
 }
 
 # older_than FILE SECONDS: true when FILE's mtime is at least SECONDS ago.
@@ -534,7 +555,9 @@ evict_slot() (
     exit 0
   fi
   trash="$trash_prefix.$$.$(date +%s)"
-  if ! mv -- target "$trash"; then
+  # -T (GNU): the destination is a plain name. A planted symlink or
+  # directory at the trash name fails the rename instead of receiving target/.
+  if ! mv -T -- target "$trash"; then
     log "cannot move $slot/target aside; not evicting it"
     exit 1
   fi
