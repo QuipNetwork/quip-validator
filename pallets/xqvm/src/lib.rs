@@ -335,6 +335,11 @@ pub mod pallet {
         /// differently. Rejected so `hash(bytecode)` is a stable identity.
         /// Appended to preserve every existing pallet error index.
         NonCanonicalProgram,
+        /// A jump's target lies in a different loop body from the jump
+        /// (W1-011, xqvm 0.6.0): a back-edge that re-enters a loop opener
+        /// without its `NEXT`, or a jump into or out of a loop body.
+        /// Appended to preserve every existing pallet error index.
+        VerifierJumpAcrossLoopBoundary,
     }
 
     /// Map a static-verification failure onto a dispatch error.
@@ -351,9 +356,7 @@ pub mod pallet {
             }
             V::UndefinedJumpTarget { .. } => Error::<T>::VerifierUndefinedJumpTarget,
             V::NoActiveLoop { .. } | V::UnmatchedLoop { .. } => Error::<T>::VerifierLoopImbalance,
-            // xqvm 0.6.0 (W1-011). Mapped onto the loop-structure error until
-            // it gets its own dispatch error in the next commit.
-            V::JumpAcrossLoopBoundary { .. } => Error::<T>::VerifierLoopImbalance,
+            V::JumpAcrossLoopBoundary { .. } => Error::<T>::VerifierJumpAcrossLoopBoundary,
             V::ReadUnsetRegister { .. } => Error::<T>::VerifierReadUnsetRegister,
             V::RegisterTypeMismatch { .. } => Error::<T>::VerifierRegisterTypeMismatch,
             V::StackUnderflow { .. }

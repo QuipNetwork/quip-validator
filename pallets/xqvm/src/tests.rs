@@ -453,6 +453,27 @@ fn store_rejects_a_jump_to_a_missing_target() {
 }
 
 #[test]
+fn store_rejects_a_jump_across_a_loop_boundary() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // W1-011: a back-edge from inside a RANGE body to a TARGET before the
+        // opener -- the shape that re-entered a loop without its NEXT and
+        // piled up a loop frame per pass. Stack-neutral, so only the
+        // jump-span phase of xqvm 0.6.0 rejects it.
+        //   TARGET; PUSH1 0; PUSH1 1; RANGE; PUSH1 1; JUMPI1 0; NEXT; HALT
+        let bytecode = raw_program(vec![
+            0x00, 0x11, 0x00, 0x11, 0x01, 0x08, 0x11, 0x01, 0x02, 0x00, 0x07, HALT,
+        ]);
+
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierJumpAcrossLoopBoundary
+        );
+    });
+}
+
+#[test]
 fn store_rejects_an_unclosed_loop() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);

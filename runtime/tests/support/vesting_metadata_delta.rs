@@ -931,9 +931,21 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
             "Appended to preserve every existing pallet error index."
         ]
     });
-    if candidate.len() != 39
+    // W1-011 (xqvm 0.6.0): a third appended error for the jump-span phase.
+    let jump_across_loop = serde_json::json!({
+        "name": "VerifierJumpAcrossLoopBoundary",
+        "index": 39,
+        "docs": [
+            "A jump's target lies in a different loop body from the jump",
+            "(W1-011, xqvm 0.6.0): a back-edge that re-enters a loop opener",
+            "without its `NEXT`, or a jump into or out of a loop body.",
+            "Appended to preserve every existing pallet error index."
+        ]
+    });
+    if candidate.len() != 40
         || candidate.get(37) != Some(&analysis_budget)
         || candidate.get(38) != Some(&non_canonical)
+        || candidate.get(39) != Some(&jump_across_loop)
     {
         return Err("unexpected Xqvm appended-error delta".into());
     }
