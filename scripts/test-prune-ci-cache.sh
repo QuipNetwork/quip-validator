@@ -106,8 +106,12 @@ hold() {
   exit 1
 }
 
+# Every CI_CACHE_* setting the checks depend on is set here, not inherited: the
+# CI job running this test exports its own (cargo-test's CI_CACHE_MAX_SIZE is
+# 140GiB), which a check on the sweep arguments would otherwise see.
 run() {
   PATH="$bin:$PATH" CI_CACHE_ROOT="$root" CI_CACHE_PROJECT_DIR="$project" \
+    CI_CACHE_MAX_SIZE=50GiB \
     CI_CACHE_DU_BUDGET="${du_budget:-180}" \
     CARGO_TARGET_DIR="$root/1/own/target" bash "$prune" >>"$tmp/prune.log" 2>&1
 }
