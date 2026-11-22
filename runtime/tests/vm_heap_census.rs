@@ -357,7 +357,8 @@ fn prog_iter_slices() -> Vec<u8> {
 /// skipped.
 fn iter_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<RuntimeCall> {
     let mut out = Vec::new();
-    let mut chunk = 16u64;
+    // From the 8-byte order: e = 1 there (claude's R8 on a34b96c).
+    let mut chunk = 8u64;
     while chunk <= 2 * l {
         let e = chunk / 16 + 1;
         let f = iter_frames(e, l);
@@ -369,6 +370,128 @@ fn iter_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<RuntimeCall> {
             out.push(chain.execute("iter_slices", &[e as i64, (f - 1) as i64], steps));
         }
         chunk <<= 1;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Holder classes (W1-002 R8 item 19, from claude's probe on a34b96c). Besides
+// loop frames, a run can keep small buffers alive in its 252 free registers
+// and in up to 256 OUTPUT clones; in the orders where LOOP_LIMIT caps the
+// frames, those holders fill an order further.
+// ---------------------------------------------------------------------------
+
+/// The ITER pile-up tail the holder programs share: r1 = source vec, r2 =
+/// frames counter, r3 = e. The same shape as `prog_iter_slices`.
+fn holders_pile(b: &mut InstructionBuilder) {
+    let again = b.label();
+    b.place(again).expect("label");
+    b.emit_push(0)
+        .emit(I::Load { reg: R(3) })
+        .emit(I::Iter { reg: R(1) });
+    b.emit(I::Load { reg: R(2) })
+        .emit(I::Dec {})
+        .emit(I::Stow { reg: R(2) });
+    b.emit_push(0)
+        .emit(I::Load { reg: R(2) })
+        .emit(I::Lt {})
+        .emit_jump_if(again);
+    b.emit(I::Next {});
+    b.emit(I::Halt {});
+}
+
+/// calldata `[e, frames]`: r3 = e, r2 = frames, r1 = an e-element source vec.
+fn holders_head(b: &mut InstructionBuilder) {
+    b.emit_push(0).emit(I::Input { reg: R(3) });
+    b.emit_push(1).emit(I::Input { reg: R(2) });
+    b.emit(I::VecI { reg: R(1) });
+    b.emit_push(0).emit(I::Load { reg: R(3) }).emit(I::Range {});
+    b.emit_push(0).emit(I::VecPush { reg: R(1) });
+    b.emit(I::Next {});
+}
+
+/// calldata `[e, frames]`: r4..r255 each an e-element sample, 256 OUTPUT
+/// clones of r4, then an ITER pile-up of e-element slices -- every holder in
+/// the same allocator order.
+fn prog_holders_samples() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    holders_head(&mut b);
+    for i in 4..=255u8 {
+        b.emit(I::Load { reg: R(3) }).emit(I::Bsmx { reg: R(i) });
+    }
+    for s in 0..256u16 {
+        b.emit_push(i64::from(s)).emit(I::Output { reg: R(4) });
+    }
+    holders_pile(&mut b);
+    encode(b)
+}
+
+/// calldata `[e, frames]`: r4..r255 each a size-2 model with one linear and
+/// one quadratic coefficient -- two BTreeMap root leaves (144 B and 184 B on
+/// wasm32), so two 256-B-order chunks for 96 B of charge -- 256 OUTPUT clones
+/// of them, then an ITER pile-up of e-element slices.
+fn prog_holders_models() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    holders_head(&mut b);
+    for i in 4..=255u8 {
+        b.emit_push(2).emit(I::Bqmx { reg: R(i) });
+        b.emit_push(0).emit_push(1).emit(I::SetLine { reg: R(i) });
+        b.emit_push(0)
+            .emit_push(1)
+            .emit_push(1)
+            .emit(I::SetQuad { reg: R(i) });
+    }
+    for s in 0..256u16 {
+        let r = 4 + u8::try_from(s % 252).expect("fits");
+        b.emit_push(i64::from(s)).emit(I::Output { reg: R(r) });
+    }
+    holders_pile(&mut b);
+    encode(b)
+}
+
+/// Charges the holder programs make before their pile-up: 252 registers and
+/// 256 OUTPUT clones of `per` bytes each, the 16 B/element source vec, and a
+/// margin for the INPUT registers.
+fn holders_charge(per: u64, e: u64) -> u64 {
+    (252 + 256) * per + 16 * e + 64
+}
+
+/// The holder runs at emulated cap `l`, each run with 256 output slots:
+/// - `holders_samples` in every order where LOOP_LIMIT caps the frames (the
+///   registers and outputs then add to what frames alone can hold), with
+///   e = chunk/16 + 1 as in `iter_sweep`;
+/// - `holders_models` in the 256-B order, with e = 17 slices on top.
+fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<RuntimeCall> {
+    let mut out = Vec::new();
+    let max_frames = VM_LOOP_LIMIT as u64 - 1;
+    let mut chunk = 8u64;
+    loop {
+        let e = chunk / 16 + 1;
+        // Frames capped: all LOOP_LIMIT frames plus every holder fit L.
+        if 8 * e * max_frames + holders_charge(8 * e, e) > l {
+            break;
+        }
+        let steps = (((12 + e) * max_frames + 8 * e + 20_000) * 5 / 4).min(ms);
+        out.push(chain.execute_with_outputs(
+            "holders_samples",
+            &[e as i64, max_frames as i64],
+            steps,
+            256,
+        ));
+        chunk <<= 1;
+    }
+    let e = 17u64;
+    if let Some(budget) = l.checked_sub(holders_charge(96, e)) {
+        let f = (budget / (8 * e)).min(max_frames);
+        if f >= 1 {
+            let steps = (((12 + e) * f + 8 * e + 20_000) * 5 / 4).min(ms);
+            out.push(chain.execute_with_outputs(
+                "holders_models",
+                &[e as i64, f as i64],
+                steps,
+                256,
+            ));
+        }
     }
     out
 }
@@ -434,6 +557,8 @@ impl Chain {
             ("fixed_worst_pile_range", prog_fixed_worst_pile(Pile::Range)),
             ("fixed_worst_pile_iter", prog_fixed_worst_pile(Pile::Iter)),
             ("iter_slices", prog_iter_slices()),
+            ("holders_samples", prog_holders_samples()),
+            ("holders_models", prog_holders_models()),
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
@@ -1039,12 +1164,12 @@ fn b_per_run_footprint_by_family() {
 ///
 /// Every order a charge of <= `l` can reach is swept, which is NOT `chunk <= l`:
 /// the top reachable order is next_pow2(l). At a non-power-of-two `l` (the
-/// 1.5 MiB that was shipped before) a sample of chunk/16 + 1 elements -- just over half of the
-/// next_pow2(l) chunk -- still charges <= `l`, and it and its uncharged ENERGY
-/// clone both occupy a whole chunk of that order (kimi's R8 on dc3aa33; Σ
-/// 29.5225·L at 1.5 MiB). The shipped cap is a power of two for that reason. The
-/// loop runs while that smallest occupant fits; at a power-of-two `l` it stops
-/// at `l`, as before.
+/// 1.5 MiB tried in dc3aa33) the charged sample itself -- chunk/16 + 1
+/// elements, just over half of the next_pow2(l) chunk, still <= `l` -- lands in
+/// the order above `l`'s, and its uncharged ENERGY clone doubles it there
+/// (kimi's R8 on dc3aa33; Σ 29.5225·L at 1.5 MiB before the holder classes).
+/// The shipped cap is a power of two for that reason. The loop runs while that
+/// smallest occupant fits; at a power-of-two `l` it stops at `l`, as before.
 fn order_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, u64)> {
     let mut out = Vec::new();
     let mut chunk = 8u64;
@@ -1613,6 +1738,40 @@ fn k_combined_block_with_iter_slices_at_cap() {
         let iters = iter_sweep(&chain, l, ms);
         let n_iter = iters.len();
         vm_calls.extend(iters);
+        // Holder classes (item 19): registers and OUTPUT clones on top of
+        // frames, in every frame-capped order and the 256-B model order; and
+        // the value stack plus the loop stack at their limits (census i's
+        // ITER pile-up program, which charges far below any cap here).
+        let holders = holder_sweep(&chain, l, ms);
+        let n_holders = holders.len();
+        vm_calls.extend(holders);
+        let stack_calldata: Vec<i64> = (0..256).collect();
+        // Its exact step count, natively, with a margin: a max-step limit
+        // would crowd the other runs out of the block by weight.
+        let stack_steps = {
+            let program =
+                xqvm::Program::decode(&prog_fixed_worst_pile(Pile::Iter)).expect("decodes");
+            let mut vm = xqvm::Vm::new();
+            vm.set_step_limit(ms);
+            vm.set_memory_limit(max_vm_memory());
+            vm.set_calldata(
+                stack_calldata
+                    .iter()
+                    .copied()
+                    .map(xqvm::RegVal::Int)
+                    .collect(),
+            );
+            vm.set_output_slots(256);
+            vm.run(&program)
+                .expect("the stack-holder run completes natively");
+            (vm.steps() * 5 / 4).min(ms)
+        };
+        vm_calls.push(chain.execute_with_outputs(
+            "fixed_worst_pile_iter",
+            &stack_calldata,
+            stack_steps,
+            256,
+        ));
         let (vm_block, vm_applied) = chain.author_fast(vm_calls.clone());
         assert_eq!(vm_applied.len(), vm_calls.len(), "every VM run is included");
         let (vm_ok, vm_heap) = chain.import(&vm_block);
@@ -1624,13 +1783,11 @@ fn k_combined_block_with_iter_slices_at_cap() {
         let vm_net = vm_heap.saturating_sub(empty_import);
         let ratio = f64::from(vm_net) / l as f64;
         println!(
-            "Σ+ITER@L={}KiB: {n_sweep} sweep + {n_iter} iter runs, importer net {:.3} MiB = {ratio:.4}·L (pinned {k}), import ok",
+            "Σ+ITER+holders@L={}KiB: {n_sweep} sweep + {n_iter} iter + {n_holders} holder + 1 stack runs, importer net {:.3} MiB = {ratio:.4}·L (pinned {k}), import ok",
             l / KIB,
             mib(vm_net),
         );
-        if l == SHIPPED_CAP {
-            sigma.push((l, ratio));
-        }
+        sigma.push((l, ratio));
         for (order, calls) in [
             ("remark-first", {
                 let mut v = vec![big.clone()];
@@ -1669,13 +1826,26 @@ fn k_combined_block_with_iter_slices_at_cap() {
             }
         }
     }
-    for (l, ratio) in &sigma {
-        assert!(
-            *ratio <= k,
-            "Σ at L={} KiB is {ratio:.4}·L, over the pinned {k} -- STOP and report",
-            l / KIB
-        );
-    }
+    let ratio_of = |cap: u64| {
+        sigma
+            .iter()
+            .find(|(l, _)| *l == cap)
+            .map(|(_, ratio)| *ratio)
+            .expect("measured")
+    };
+    let (shipped, comparison) = (ratio_of(SHIPPED_CAP), ratio_of(3 * MIB / 4));
+    assert!(
+        shipped <= k,
+        "Σ at the shipped L={} KiB is {shipped:.4}·L, over the pinned {k} -- STOP and report",
+        SHIPPED_CAP / KIB
+    );
+    // The non-power-of-two cap reaches the next allocator order, so it must
+    // measure higher; if it does not, the sweeps stopped covering that order.
+    assert!(
+        comparison > shipped,
+        "768 KiB measured {comparison:.4}·L, not above the shipped {shipped:.4}·L: \
+         the next-order coverage of the sweeps has rotted"
+    );
     assert!(
         low_free.is_empty(),
         "blocks leave under 25% of the 128 MiB heap free: {low_free:?}"
@@ -1760,7 +1930,9 @@ fn l_store_program_verify_peak() {
 /// `ITER` slice copies, (2) per-frame bytes against the charge by slice
 /// length, and (3) census c's mixed order sweep plus one `ITER` pile-up per
 /// order, which must stay within the pinned Σ multiple (`VM_SIGMA_ORDERS_PER_L`
-/// = 29; measured 28.18·L' at most, which is what raised it from 20).
+/// = 29, which these sweeps raised from 20; census k adds the register,
+/// output and stack holders at the shipped cap). The frame-capped orders do
+/// not scale with L', so smaller L' measure higher ratios.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn j_iter_slice_overhead_at_cap() {
