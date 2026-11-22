@@ -253,10 +253,19 @@ EOF
 cat >"$fakebin/du" <<'EOF'
 #!/usr/bin/env bash
 path="${*: -1}"
+[[ -e "@TMP@/du.fail" ]] && exit 1
+# Lock probe: is the slot whose target/ is measured locked by the prune now?
+if [[ -e "@TMP@/du.probe" && "$path" == */target ]]; then
+  exec {probe_fd}>>"${path%/target}/.in-use"
+  if flock --nonblock --shared "$probe_fd"; then state=free; else state=held; fi
+  exec {probe_fd}>&-
+  echo "$state $path" >>"@TMP@/du.probe.log"
+fi
 kb=0
 while IFS= read -r f; do kb=$((kb + $(cat "$f"))); done < <(find "$path" -name .fake-kb 2>/dev/null)
 if [[ " $* " == *" -sk "* ]]; then printf '%s\t%s\n' "$kb" "$path"; else printf '%sK\t%s\n' "$kb" "$path"; fi
 EOF
+sed -i.bak "s|@TMP@|$tmp|g" "$fakebin/du" && rm -f "$fakebin/du.bak"
 chmod +x "$fakebin/df" "$fakebin/du"
 
 # bslot ID JOB AGE_SECONDS KIB: a marked slot last used AGE_SECONDS ago.
@@ -273,7 +282,8 @@ tree() {
 budget_volume() {
   for pid in "${holders[@]}"; do release "$pid"; done
   holders=()
-  rm -rf "$tmp/budget" "$tmp/df.fail" "$tmp/df.garbage" "$tmp/df.frozen" "$tmp/refresh.list"
+  rm -rf "$tmp/budget" "$tmp/df.fail" "$tmp/df.garbage" "$tmp/df.frozen" "$tmp/refresh.list" \
+    "$tmp/du.fail" "$tmp/du.probe" "$tmp/du.probe.log" "$tmp/mv.args"
   mkdir -p "$broot"
   echo "fakepool/srv $broot zfs rw,noatime 0 0" >"$tmp/mounts"
   day=86400
@@ -298,10 +308,11 @@ budget_volume() {
 # Total pretend usage: 1,400,000 KiB of 2,000,000 = 70%.
 benv=()
 bpath=""
+broot_arg="" # CI_CACHE_ROOT as given, when it should differ from $broot
 # brun [prune args...]: one prune of the fake volume; extra environment in
 # the array `benv`, extra PATH entries (wrappers) in `bpath`.
 brun() {
-  env "${benv[@]}" PATH="$bpath$fakebin:$bin:$PATH" CI_CACHE_ROOT="$broot" \
+  env "${benv[@]}" PATH="$bpath$fakebin:$bin:$PATH" CI_CACHE_ROOT="${broot_arg:-$broot}" \
     CI_CACHE_PROJECT_DIR="$project" CI_CACHE_MOUNTS="$tmp/mounts" \
     CARGO_TARGET_DIR="$broot/1/own/target" \
     bash "$prune" "$@" >>"$tmp/budget.log" 2>&1
@@ -485,12 +496,104 @@ budget_volume
 # old's own lock: after its pre-check, before its re-check.
 release "${holders[-1]}"
 rm -rf "$broot/4/held"
+# A fresh .last-sweep keeps rule 1 from sweeping, so its exclusive lock on the
+# own slot does not fire the wrapper before rule 3 has looked at anything.
+touch "$broot/1/own/.last-sweep"
 echo "$broot/2/old/target/.last-used" >"$tmp/refresh.list"
 bpath="$refreshbin:"
 brun --volume-budget 50
 bpath=""
 check "rule 3: a slot stamped between the scan and the lock survives" \
   'survives 2/old/target && evicted 3/mid'
+check "rule 3: ... caught by the re-check under the lock, not the pre-check" \
+  '! blogged "$broot/2/old was used within"'
+
+# Item 13 (a): the same for the activity probe. A fingerprint that is old at
+# the pre-check is refreshed just before the lock; only the re-check sees it.
+budget_volume
+release "${holders[-1]}"
+rm -rf "$broot/4/held"
+touch "$broot/1/own/.last-sweep"
+mkdir -p "$broot/2/old/target/debug/.fingerprint/dep-0123"
+touch -d "@$(($(date +%s) - 3 * day))" "$broot/2/old/target/debug/.fingerprint/dep-0123/lib-dep" \
+  "$broot/2/old/target/debug/.fingerprint/dep-0123"
+echo "$broot/2/old/target/debug/.fingerprint/dep-0123/lib-dep" >"$tmp/refresh.list"
+bpath="$refreshbin:"
+brun --volume-budget 50
+bpath=""
+check "rule 3: a slot built between the scan and the lock survives (activity re-check)" \
+  'survives 2/old/target && evicted 3/mid && ! blogged "$broot/2/old has cargo fingerprints"'
+
+# Item 13 (F3): rule 2 runs the activity probe under the lock. A job on a
+# template without the lock step builds in a slot idle for 30 days: it takes
+# no lock and stamps nothing, so only cargo's fingerprints show it.
+budget_volume
+release "${holders[-1]}"
+rm -rf "$broot/4/held"
+touch "$broot/1/own/.last-sweep"
+bslot 8 stale $((30 * day)) 10000
+mkdir -p "$broot/8/stale/target/debug/.fingerprint/dep-89ab"
+touch -d "@$(($(date +%s) - 3 * day))" "$broot/8/stale/target/debug/.fingerprint/dep-89ab/lib-dep" \
+  "$broot/8/stale/target/debug/.fingerprint/dep-89ab"
+echo "$broot/8/stale/target/debug/.fingerprint/dep-89ab/lib-dep" >"$tmp/refresh.list"
+touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune" # rule 2 due
+bpath="$refreshbin:"
+brun
+bpath=""
+check "rule 2: a stale slot with fresh cargo fingerprints survives (activity probe)" \
+  'survives 8/stale/target && grep -q "stale slot $broot/8/stale has cargo fingerprints newer than 7200s; keeping it" "$tmp/budget.log"'
+
+# Item 13 (b): rule 3 measures the candidate before locking it, and a
+# measurement that fails evicts nothing. (Measuring first means a held slot is
+# measured too, before its lock is tried; the held slot is removed here so the
+# failure lands on 2/old.)
+budget_volume
+release "${holders[-1]}"
+rm -rf "$broot/4/held"
+touch "$tmp/du.fail"
+brun --volume-budget 50
+check "budget: a failing du evicts nothing" \
+  'kept 2/old && kept 3/mid && blogged "cannot measure $broot/2/old/target; evicting nothing"'
+budget_volume
+touch "$tmp/du.probe"
+brun --volume-budget 55
+check "budget: the candidate is measured before its lock is taken" \
+  'evicted 2/old && grep -qxF "free $broot/2/old/target" "$tmp/du.probe.log" \
+    && ! grep -q "^held " "$tmp/du.probe.log"'
+
+# Item 13 (c): the eviction is a rename to $slot/.prune-trash.<pid>.<epoch>,
+# inside the slot, exactly.
+mvlogbin="$tmp/mvlogbin"
+mkdir -p "$mvlogbin"
+cat >"$mvlogbin/mv" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$tmp/mv.args"
+exec "$(command -v -p mv || echo /bin/mv)" "\$@"
+EOF
+chmod +x "$mvlogbin/mv"
+trash_named_in_slot() { # SLOT: the one mv renamed SLOT/target to SLOT/.prune-trash.N.N
+  local src dest extra
+  [[ "$(wc -l <"$tmp/mv.args")" -eq 1 ]] || return 1
+  read -r src dest extra <"$tmp/mv.args"
+  [[ -z "$extra" && "$src" == "$broot/$1/target" && "${dest%/*}" == "$broot/$1" &&
+    "${dest##*/}" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]]
+}
+budget_volume
+bpath="$mvlogbin:"
+brun --volume-budget 55
+bpath=""
+check "budget: the evicted target/ is renamed inside its slot, to the exact trash name" \
+  'evicted 2/old && trash_named_in_slot 2/old'
+
+# Item 13: a trailing slash on CI_CACHE_ROOT is normalised, so slots match and
+# the evicted target/ is recognised as trash and deleted.
+budget_volume
+broot_arg="$broot/"
+brun --volume-budget 55
+broot_arg=""
+check "budget: CI_CACHE_ROOT with a trailing slash prunes normally and leaks no trash" \
+  'evicted 2/old && ! compgen -G "$broot/*/*/.prune-trash.*" >/dev/null \
+    && ! grep -q "not physically inside" "$tmp/budget.log"'
 
 # --- Eviction never touches the slot directory or .in-use (F1, item 7) ------
 # A slow `rm` that deletes a directory's `.in-use` first (if it has one) and
@@ -719,6 +822,22 @@ check "containment: a slot symlinked into CARGO_HOME deletes nothing there" \
   '[[ -e "$broot/cargo-home/.prune-trash.1.2/keep" && -d "$broot/cargo-home/registry" ]]'
 check "containment: ... and creates no lock file there" '[[ ! -e "$broot/cargo-home/.in-use" ]]'
 check "containment: other slots still prune (CARGO_HOME link)" 'evicted 8/stale'
+
+# A slot whose target/ is a symlink out of the volume: skipped, not measured.
+# (`mv` of the link would rename only the link, but `du` and the activity
+# probe's `find` would read through it, so the decision would rest on data
+# outside the volume.) Nothing outside is renamed or deleted, and the link
+# itself stays.
+contained_volume
+outside_shapes "$outside/tgt"
+mkdir -p "$broot/9/linked"
+ln -s "$outside/tgt/target" "$broot/9/linked/target"
+brun --volume-budget 10
+check "containment: a symlinked target/ leaves the outside tree untouched" \
+  'untouched "$outside/tgt" && [[ -e "$outside/tgt/target/.last-used" ]]'
+check "containment: ... the slot is skipped, its link kept, and the skip logged" \
+  '[[ -L "$broot/9/linked/target" ]] && grep -q "$broot/9/linked is not physically inside" "$tmp/budget.log"'
+check "containment: other slots still prune (symlinked target/)" 'evicted 8/stale'
 
 # A swap between the scan and the lock: a flock wrapper replaces a real stale
 # slot with a symlink to an outside tree just before the prune locks it. The

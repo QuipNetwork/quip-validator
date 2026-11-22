@@ -144,6 +144,10 @@ set -euo pipefail
 # CI_CACHE_DU_BUDGET.
 
 cache_root="${CI_CACHE_ROOT:-/ci-cache}"
+# Without trailing slashes: every slot path below is built as
+# "$cache_root/<n>/<slot>" and compared against it, so `/ci-cache/` would
+# match nothing (and an evicted target/ would never be recognised as trash).
+while [[ "$cache_root" == */ && "$cache_root" != / ]]; do cache_root="${cache_root%/}"; done
 max_size="${CI_CACHE_MAX_SIZE:-50GiB}"
 orphan_days="${CI_CACHE_ORPHAN_DAYS:-14}"
 interval="${CI_CACHE_INTERVAL:-86400}"
@@ -331,13 +335,17 @@ if [[ -z "$root_real" ]]; then
 fi
 
 # physically_contained SLOT: SLOT is <cache root>/<digits>/<name>, neither the
-# numeric directory nor SLOT itself is a symlink, and SLOT's real path is
-# exactly <real cache root>/<digits>/<name>. Logs and returns 1 otherwise.
+# numeric directory, nor SLOT itself, nor SLOT/target is a symlink, and SLOT's
+# real path is exactly <real cache root>/<digits>/<name>. Logs and returns 1
+# otherwise. A symlinked target/ is refused rather than measured: `du`, the
+# activity probe's `find` and cargo-sweep would read (or sweep) whatever it
+# points at, so the eviction decision would rest on data outside the volume.
 physically_contained() {
   local slot="$1" n_dir real
   n_dir="$(dirname "$slot")"
   if [[ -n "$root_real" && "$(dirname "$n_dir")" == "$cache_root" &&
-    "$(basename "$n_dir")" =~ ^[0-9]+$ && ! -L "$n_dir" && ! -L "$slot" ]] &&
+    "$(basename "$n_dir")" =~ ^[0-9]+$ && ! -L "$n_dir" && ! -L "$slot" &&
+    ! -L "$slot/target" ]] &&
     real="$(realpath -e "$slot" 2>/dev/null)" &&
     [[ "$real" == "$root_real/$(basename "$n_dir")/$(basename "$slot")" ]]; then
     return 0
@@ -496,8 +504,15 @@ else
       continue
     fi
     # Re-check under the lock: a job that started between the first check and
-    # the lock stamps target/ right after taking its shared hold.
+    # the lock stamps target/ right after taking its shared hold. A job on a
+    # template without the lock step takes no lock and does not stamp, so
+    # cargo's fingerprints are the only sign it is building here.
     if [[ ! -d "$target" ]] || ! older_than "$target/$stamp_name" "$orphan_seconds"; then
+      release
+      continue
+    fi
+    if recently_built "$slot"; then
+      log "stale slot $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
       release
       continue
     fi
@@ -578,6 +593,13 @@ if ((budget_given)) && ((have_scan_lock)); then
             log "volume budget: $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
             continue
           fi
+          # Measure before the lock: `du` may take CI_CACHE_DU_TIMEOUT per
+          # call, and a job waiting on this slot's lock would wait for it.
+          if ! slot_kib="$(disk_kib "$slot/target")"; then
+            log "volume budget: cannot measure $slot/target; evicting nothing"
+            break
+          fi
+          slot_size="$(size_of "$slot/target")"
           if ! try_exclusive "$slot"; then
             log "volume budget: $slot is in use (lock held), skipping"
             continue
@@ -587,12 +609,7 @@ if ((budget_given)) && ((have_scan_lock)); then
             release
             continue
           fi
-          if ! slot_kib="$(disk_kib "$slot/target")"; then
-            log "volume budget: cannot measure $slot/target; evicting nothing"
-            release
-            break
-          fi
-          log "volume budget: evicting the target/ of least recently used slot $slot ($(size_of "$slot/target"))"
+          log "volume budget: evicting the target/ of least recently used slot $slot ($slot_size)"
           if ((dry_run)); then
             release
             removed="$slot"
