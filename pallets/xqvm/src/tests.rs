@@ -365,13 +365,13 @@ fn execute_too_many_output_slots() {
             bounded(bytecode),
         ));
 
-        // MaxOutputSlots in mock is 32
+        // One past the mock's MaxOutputSlots.
         assert_noop!(
             Xqvm::execute(
                 RuntimeOrigin::signed(1),
                 hash,
                 BoundedVec::default(),
-                33,
+                MaxOutputSlots::get() + 1,
                 1_000,
             ),
             Error::<Test>::TooManyOutputSlots

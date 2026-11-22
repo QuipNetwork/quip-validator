@@ -50,7 +50,9 @@ parameter_types! {
     pub const MaxProgramBlocks: u32 = 2_048;
     pub const MaxLoopDepth: u32 = 32;
     pub const MaxCallDataLen: u32 = 32;
-    pub const MaxOutputSlots: u32 = 32;
+    // The runtime's value: the weights are generated against 256, and the
+    // execute benchmark's output-slot range (0..=256) must fit (W1-008 R4).
+    pub const MaxOutputSlots: u32 = 256;
     pub const MaxStepLimit: u64 = 100_000;
     pub const MaxVmMemory: u64 = 1_024;
     pub const TestWeightPerStep: Weight = Weight::from_parts(1_000, 0);
