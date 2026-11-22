@@ -4075,7 +4075,11 @@ mod w1_012 {
 
     #[test]
     fn expiry_and_retention_pruning_clear_the_answer_index() {
-        new_test_ext().execute_with(|| {
+        // The answers are COMMITTED before each clear: `clear_prefix`'s limit
+        // applies to backend keys only and removes overlay keys regardless, so
+        // without the commits a limit of 1 would pass this test.
+        let mut ext = new_test_ext();
+        let id = ext.execute_with(|| {
             let id = propose(chain_params(4), RewardResolution::TopNEqual { n: 2 });
             for who in [2, 3] {
                 solver(who);
@@ -4083,6 +4087,10 @@ mod w1_012 {
             assert_ok!(submit(2, id, chain_row(4, 1)));
             assert_ok!(submit(3, id, chain_row(4, 2)));
             assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), 2);
+            id
+        });
+        ext.commit_all().expect("commit");
+        ext.execute_with(|| {
             // Expiry finalises the order and prunes its solutions and answers.
             run_to_block(2);
             assert_eq!(
@@ -4099,6 +4107,9 @@ mod w1_012 {
             // (defensively: plant stray entries first).
             OrderAnswers::<Test>::insert(id, sp_core::H256::repeat_byte(1), 2);
             OrderAnswers::<Test>::insert(id, sp_core::H256::repeat_byte(2), 3);
+        });
+        ext.commit_all().expect("commit");
+        ext.execute_with(|| {
             run_to_block(System::block_number() + 21);
             assert!(!JobOrders::<Test>::contains_key(id));
             assert_no_answer_keys(id);
