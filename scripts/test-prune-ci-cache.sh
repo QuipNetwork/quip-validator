@@ -113,7 +113,7 @@ rpath="" # extra PATH entries (hooks) for run()
 run() {
   PATH="$rpath$bin:$PATH" CI_CACHE_ROOT="$root" CI_CACHE_PROJECT_DIR="$project" \
     CI_CACHE_MAX_SIZE=50GiB \
-    CI_CACHE_DU_BUDGET="${du_budget:-180}" \
+    CI_CACHE_DU_BUDGET="${du_budget:-180}" CI_CACHE_DU_TIMEOUT="${du_timeout:-60}" \
     CARGO_TARGET_DIR="$root/1/own/target" bash "$prune" >>"$tmp/prune.log" 2>&1
 }
 logged() { grep -qF "prune-ci-cache: $1" "$tmp/prune.log"; }
@@ -283,6 +283,61 @@ else
 fi
 check "a missing cargo-sweep is logged" 'grep -q "cargo-sweep is not available" "$tmp/prune.log"'
 check "nothing was swept without cargo-sweep" '[[ "$(wc -l <"$sweeps")" -eq 1 ]]'
+
+# Item 18: one size budget for every measurement in a run. A du that fails, or
+# hangs past CI_CACHE_DU_TIMEOUT, costs only the size report: the prune exits
+# 0, logs "unknown", skips the own slot's second measurement, and stops
+# measuring once CI_CACHE_DU_BUDGET is spent.
+dubin="$tmp/dubin"
+mkdir -p "$dubin"
+cat >"$dubin/du" <<EOF
+#!/usr/bin/env bash
+# exec, so timeout(1) kills the sleeper itself, as it would a real du.
+[[ -e "$tmp/du.hang" ]] && exec sleep 30
+exit 1
+EOF
+chmod +x "$dubin/du"
+# The recording cargo again (the section above replaced it with one that
+# lacks the sweep subcommand), so rule 1 sweeps and measures its slot.
+cat >"$bin/cargo" <<EOF
+#!/usr/bin/env bash
+[[ " \$* " == *" --version "* ]] && exit 0
+echo "\$(pwd -P)/\$CARGO_TARGET_DIR" >>"$sweeps"
+EOF
+touch -d "$(days_ago 2)" "$root/1/own/.last-sweep" "$root/.last-prune"
+: >"$tmp/prune.log"
+status=0
+rpath="$dubin:"
+run || status=$?
+rpath=""
+check "du budget: a failing du does not fail the prune" '((status == 0))'
+check "du budget: ... the own slot's size is unknown, and not measured twice" \
+  'logged "own slot size before sweep: unknown (du failed" \
+    && logged "own slot size after sweep: not measured (the size before was unknown)"'
+check "du budget: ... the scan reports unknown sizes and still finishes" \
+  'logged "size: $root/2/held unknown (du failed" \
+    && [[ "$(($(date +%s) - $(stat -c %Y "$root/.last-prune")))" -lt 60 ]]'
+
+touch -d "$(days_ago 2)" "$root/1/own/.last-sweep" "$root/.last-prune"
+touch "$tmp/du.hang"
+: >"$tmp/prune.log"
+status=0
+started=$SECONDS
+rpath="$dubin:"
+du_budget=3 du_timeout=1 run || status=$?
+rpath=""
+elapsed=$((SECONDS - started))
+rm -f "$tmp/du.hang"
+check "du budget: a hanging du is cut off and the whole run stays inside the budget" \
+  '((status == 0 && elapsed < 15)) && logged "own slot size before sweep: unknown (du failed or took over 1s)" \
+    && logged "size budget of 3s spent after"'
+# Back to the cargo without a sweep subcommand that the sections below were
+# written against (with it, rule 1 takes no exclusive lock first).
+cat >"$bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == "sweep" ]] && { echo "error: no such command: \`sweep\`" >&2; exit 101; }
+exit 0
+EOF
 
 # --- Shared fixtures for the budget, race and lock-step scenarios -------------
 # Each scenario gets a fresh volume. A fake `df` reports a 2,000,000 KiB
@@ -625,6 +680,14 @@ touch "$broot/2/old/.du-fail"
 brun --volume-budget 55
 check "budget: an unmeasurable candidate is skipped and the next one evicted" \
   'kept 2/old && evicted 3/mid && blogged "cannot measure $broot/2/old/target; skipping it"'
+# Item 18: rule 3 measures inside the same budget; once it is spent nothing
+# more is measured or evicted, and the run says so.
+budget_volume
+benv=(CI_CACHE_DU_BUDGET=0)
+brun --volume-budget 55
+benv=()
+check "budget: with the size budget spent, rule 3 measures and evicts nothing" \
+  'kept 2/old && kept 3/mid && blogged "the size budget of 0s is spent; evicting nothing more this run"'
 budget_volume
 touch "$tmp/du.probe"
 brun --volume-budget 55

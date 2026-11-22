@@ -248,33 +248,56 @@ if ((sweep)) && ! cargo sweep --version >/dev/null 2>&1; then
   sweep=0
 fi
 
-# du_size DIR SECONDS [DU-FLAG]: DIR's size as `du -sh` prints it, or why it
-# is not known. Bounded by SECONDS; never fails.
+# Every size measurement in this run -- the own slot's before and after, the
+# scan's capacity report, rule 3's candidates -- shares ONE time budget,
+# CI_CACHE_DU_BUDGET seconds from the start, and each `du` call is further
+# capped at CI_CACHE_DU_TIMEOUT. So all of them together take at most the
+# budget (180 s by default), well inside GitLab's 5-minute after_script
+# timeout; a measurement the budget no longer covers is reported unknown,
+# never waited for.
+du_deadline=$((SECONDS + du_budget))
+
+# du_left: seconds a `du` may still take: what is left of the budget, capped
+# at CI_CACHE_DU_TIMEOUT; 0 once the budget is spent.
+du_left() {
+  local left=$((du_deadline - SECONDS))
+  ((left > 0)) || left=0
+  ((left < du_timeout)) || left=$du_timeout
+  echo "$left"
+}
+
+# du_size DIR [DU-FLAG]: DIR's size as `du -sh` prints it, or why it is not
+# known. Bounded by du_left; never fails.
 du_size() {
-  local out size
+  local out size limit
+  limit="$(du_left)"
   if ! command -v timeout >/dev/null 2>&1; then
     echo "unknown (timeout(1) is not available)"
-  elif out="$(timeout "$2" du -P -sh ${3:+"$3"} "$1" 2>/dev/null)" && read -r size _ <<<"$out" \
+  elif ((limit == 0)); then
+    echo "unknown (size budget spent)"
+  elif out="$(timeout "$limit" du -P -sh ${2:+"$2"} "$1" 2>/dev/null)" && read -r size _ <<<"$out" \
     && [[ -n "$size" ]]; then
     echo "$size"
   else
-    echo "unknown (du failed or took over ${2}s)"
+    echo "unknown (du failed or took over ${limit}s)"
   fi
 }
 
-# size_of DIR [SECONDS]: DIR's on-disk and apparent (logical) sizes. ZFS
-# compresses, so the two differ; cargo-sweep's ceiling is in logical bytes.
-# Each measurement is bounded by SECONDS (default CI_CACHE_DU_TIMEOUT).
+# size_of DIR: DIR's on-disk and apparent (logical) sizes. ZFS compresses, so
+# the two differ; cargo-sweep's ceiling is in logical bytes. Two `du` calls,
+# each bounded by du_left.
 size_of() {
-  local limit="${2:-$du_timeout}"
-  echo "$(du_size "$1" "$limit") on disk, $(du_size "$1" "$limit" --apparent-size) apparent"
+  echo "$(du_size "$1") on disk, $(du_size "$1" --apparent-size) apparent"
 }
 
-# disk_kib DIR: DIR's on-disk size in KiB (df's unit), or fail.
+# disk_kib DIR: DIR's on-disk size in KiB (df's unit), or fail (also when the
+# size budget is spent).
 disk_kib() {
-  local out kib
+  local out kib limit
   command -v timeout >/dev/null 2>&1 || return 1
-  out="$(timeout "$du_timeout" du -P -sk "$1" 2>/dev/null)" || return 1
+  limit="$(du_left)"
+  ((limit > 0)) || return 1
+  out="$(timeout "$limit" du -P -sk "$1" 2>/dev/null)" || return 1
   read -r kib _ <<<"$out"
   [[ "$kib" =~ ^[0-9]+$ ]] || return 1
   echo "$kib"
@@ -467,10 +490,10 @@ is_trash() {
   [[ "$(basename "$1")" =~ ^\.prune-trash\.[0-9]+\.[0-9]+$ ]] && slot_rel "$(dirname "$1")" >/dev/null
 }
 
-# slot_size SLOT [SECONDS]: (subshell) the slot's sizes, measured from inside it.
+# slot_size SLOT: (subshell) the slot's sizes, measured from inside it.
 slot_size() (
   anchor_slot "$1" || exit 1
-  size_of . "${2:-$du_timeout}"
+  size_of .
 )
 
 # target_kib SLOT: (subshell) SLOT/target's on-disk KiB, measured from inside.
@@ -600,7 +623,8 @@ own_sweep() (
     exit 1
   fi
   log "sweeping own slot $CARGO_TARGET_DIR to $max_size"
-  log "own slot size before sweep: $(size_of .)"
+  size_before="$(size_of .)"
+  log "own slot size before sweep: $size_before"
   if ((dry_run)); then
     log "(dry run) would run cargo sweep --maxsize $max_size"
     exit 0
@@ -618,7 +642,13 @@ own_sweep() (
   else
     status=1
   fi
-  log "own slot size after sweep: $(size_of .)"
+  # No second measurement once the first could not finish: it would only
+  # spend the budget the scan's report needs, on the same answer.
+  if [[ "$size_before" == *unknown* ]]; then
+    log "own slot size after sweep: not measured (the size before was unknown)"
+  else
+    log "own slot size after sweep: $(size_of .)"
+  fi
   exit "$status"
 )
 
@@ -722,22 +752,19 @@ else
   # Size report for capacity planning: every numeric slot left after the scan,
   # then the shared CARGO_HOME, inside one time budget. Reading only, and each
   # slot is measured from inside it.
-  deadline=$((SECONDS + du_budget))
   reported=0
   for dir in "$cache_root"/*/* "$cache_root/cargo-home"; do
     [[ -d "$dir" ]] || continue
     if [[ "$dir" != "$cache_root/cargo-home" ]]; then
       [[ "$(basename "$(dirname "$dir")")" =~ ^[0-9]+$ ]] || continue
     fi
-    left=$((deadline - SECONDS))
-    if ((left <= 0)); then
+    if (($(du_left) == 0)); then
       log "size budget of ${du_budget}s spent after $reported report(s); the rest are not reported"
       break
     fi
-    ((left < du_timeout)) || left=$du_timeout
     if [[ "$dir" == "$cache_root/cargo-home" ]]; then
-      size="$(size_of "$dir" "$left")"
-    elif ! size="$(slot_size "$dir" "$left")"; then
+      size="$(size_of "$dir")"
+    elif ! size="$(slot_size "$dir")"; then
       failed=1
       continue
     fi
@@ -816,7 +843,12 @@ if ((budget_given)) && ((have_scan_lock)); then
           # call, and a job waiting on this slot's lock would wait for it. A
           # slot that cannot be measured is skipped, never evicted, and the
           # next candidate is tried: one unmeasurable slot must not starve
-          # the rule.
+          # the rule. Once the run's size budget is spent nothing more can be
+          # measured, so nothing more is evicted.
+          if (($(du_left) == 0)); then
+            log "volume budget: the size budget of ${du_budget}s is spent; evicting nothing more this run"
+            break
+          fi
           if ! slot_kib="$(target_kib "$slot")"; then
             log "volume budget: cannot measure $slot/target; skipping it"
             failed=1
