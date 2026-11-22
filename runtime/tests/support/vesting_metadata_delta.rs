@@ -80,14 +80,15 @@ pub const APPROVED_CONSTANT_DELTAS: &[ApprovedConstantDelta] = &[
         baseline: &[168, 0, 0, 0, 0, 0, 0, 0],
         candidate: &[181, 0, 0, 0, 0, 0, 0, 0],
     },
-    // W1-002: the per-run VM allocation cap drops from 16 MiB to 2 MiB.
-    // u64 little-endian: 16 MiB = 0x0100_0000, 2 MiB = 0x0020_0000.
+    // W1-002: the per-run VM allocation cap drops from 16 MiB to 1.5 MiB
+    // (owner decision 2026-11-22; 2 MiB before the ITER small-slice Σ finding).
+    // u64 little-endian: 16 MiB = 0x0100_0000, 1.5 MiB = 0x0018_0000.
     ApprovedConstantDelta {
         pallet: "Xqvm",
         name: "MaxVmMemory",
         location: ConstantLocation::PalletConstant,
         baseline: &[0, 0, 0, 1, 0, 0, 0, 0],
-        candidate: &[0, 0, 32, 0, 0, 0, 0, 0],
+        candidate: &[0, 0, 24, 0, 0, 0, 0, 0],
     },
     ApprovedConstantDelta {
         pallet: "SlashPolicy",
@@ -512,12 +513,13 @@ fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String
         .clone();
     let mut constant = serde_json::json!({
         "name": "MaxVmMemory",
-        // 2 MiB (2_097_152 = 0x20_0000), little-endian u64. Lowered from 16 MiB
-        // by W1-002; the mempool transform cap is MaxTransformVmMemory.
+        // 1.5 MiB (1_572_864 = 0x18_0000), little-endian u64. Lowered from
+        // 16 MiB by W1-002 (2 MiB, then 1.5 MiB by owner decision 2026-11-22);
+        // the mempool transform cap is MaxTransformVmMemory.
         "value": [
             0,
             0,
-            32,
+            24,
             0,
             0,
             0,
