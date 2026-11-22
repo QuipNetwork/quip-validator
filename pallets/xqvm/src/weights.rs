@@ -79,6 +79,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `s` is `[16, 65536]`.
 	/// The range of component `b` is `[1, 2048]`.
 	fn store_program(s: u32, b: u32, ) -> Weight {
+		// BENCHMARK-PLACEHOLDER(W1-011): xqvm 0.6.0's verifier gained a phase
+		// (JumpSpanPhase, a jump may not cross a loop-body boundary) after
+		// these coefficients were measured. Regenerate on the reference
+		// machine; the regeneration overwrites this file and removes the
+		// sentinel.
 		// Proof Size summary in bytes:
 		//  Measured:  `59`
 		//  Estimated: `69037`
@@ -183,6 +188,11 @@ impl WeightInfo for () {
 	/// The range of component `s` is `[16, 65536]`.
 	/// The range of component `b` is `[1, 2048]`.
 	fn store_program(s: u32, b: u32, ) -> Weight {
+		// BENCHMARK-PLACEHOLDER(W1-011): xqvm 0.6.0's verifier gained a phase
+		// (JumpSpanPhase, a jump may not cross a loop-body boundary) after
+		// these coefficients were measured. Regenerate on the reference
+		// machine; the regeneration overwrites this file and removes the
+		// sentinel.
 		// Proof Size summary in bytes:
 		//  Measured:  `59`
 		//  Estimated: `69037`
