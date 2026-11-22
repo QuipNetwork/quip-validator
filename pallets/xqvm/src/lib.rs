@@ -351,6 +351,9 @@ pub mod pallet {
             }
             V::UndefinedJumpTarget { .. } => Error::<T>::VerifierUndefinedJumpTarget,
             V::NoActiveLoop { .. } | V::UnmatchedLoop { .. } => Error::<T>::VerifierLoopImbalance,
+            // xqvm 0.6.0 (W1-011). Mapped onto the loop-structure error until
+            // it gets its own dispatch error in the next commit.
+            V::JumpAcrossLoopBoundary { .. } => Error::<T>::VerifierLoopImbalance,
             V::ReadUnsetRegister { .. } => Error::<T>::VerifierReadUnsetRegister,
             V::RegisterTypeMismatch { .. } => Error::<T>::VerifierRegisterTypeMismatch,
             V::StackUnderflow { .. }

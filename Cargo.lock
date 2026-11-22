@@ -15838,8 +15838,8 @@ dependencies = [
 
 [[package]]
 name = "xqvm"
-version = "0.5.0"
-source = "git+https://gitlab.com/quip.network/xquad.git?rev=4a31c966fb46a4ae6588d5f39ca60b162059d004#4a31c966fb46a4ae6588d5f39ca60b162059d004"
+version = "0.6.0"
+source = "git+https://gitlab.com/quip.network/xquad.git?rev=ade13e6e6876ee49e9a6159ef6493842c78bc22d#ade13e6e6876ee49e9a6159ef6493842c78bc22d"
 dependencies = [
  "crc32fast",
  "hashbrown 0.15.5",
