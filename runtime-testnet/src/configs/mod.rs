@@ -615,22 +615,25 @@ parameter_types! {
     /// original value) put the budget past 128 MiB: five `execute` calls built
     /// a block only its author could import.
     ///
-    /// | cap   | Σ pin | pinned sum | free   | 25 % floor |
-    /// |-------|-------|------------|--------|------------|
-    /// | 1 MiB | 20    | 70 MiB     | 45.3 % | passes     |
-    /// | 2 MiB | 20    | 90 MiB     | 29.7 % | passes     |
-    /// | 4 MiB | 20    | 130 MiB    | -      | fails      |
+    /// | cap   | Σ measured | Σ pin | pinned sum | free   | 25 % floor | worst real block   |
+    /// |-------|------------|-------|------------|--------|------------|--------------------|
+    /// | 1 MiB | 19.12·L    | 20    | 70 MiB     | 45.3 % | passes     | 61.73 MiB, 51.8 %  |
+    /// | 2 MiB | 19.09·L    | 20    | 90 MiB     | 29.7 % | passes     | 76.94 MiB, 39.9 %  |
+    /// | 4 MiB | -          | 20    | 130 MiB    | -      | fails      | -                  |
     ///
-    /// (Under xqvm 0.6.0, with the Σ ratio measured at 1 MiB; a different cap
-    /// needs Σ re-measured there before it is pinned.)
+    /// (Under xqvm 0.6.0. The 2 MiB row was MEASURED on a throwaway build with
+    /// both caps at 2 MiB, census `k` and `j` at that cap, not extrapolated:
+    /// Σ 19.0940·L, the budget test passing with Σ 20, and the combined block
+    /// importing at 76.944 MiB high-water. It is kept as evidence for any later
+    /// raise; a different cap needs Σ re-measured there before it is pinned.)
     ///
     /// Why 1 MiB (owner decisions of 2026-11-22). Under xqvm 0.5.0 the cap went
     /// 2 MiB → 1.5 MiB when `ITER` pile-ups raised Σ from 20·L to 29·L, then
     /// 1.5 MiB → 1 MiB when 1.5 MiB, not a power of two, reached the next
     /// allocator order (29.52·L, 30.24·L with every holder class). xqvm 0.6.0
     /// (W1-011, W1-013) removes both effects, and on the table above 2 MiB
-    /// would pass the floor again; raising the cap is the owner's decision and
-    /// is not made here. The summed upper bound is the gate; a real block is
+    /// would pass the floor again. The owner kept 1 MiB in favour of margin
+    /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed upper bound is the gate; a real block is
     /// only a second check. At 1 MiB that check reads: census `k`, the mixed
     /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
     /// 61.73 MiB high-water (51.8 % free); census `g`, without the holders,
