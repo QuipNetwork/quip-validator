@@ -71,7 +71,14 @@ touch "$project/Cargo.toml" "$sweeps"
 cat >"$bin/cargo" <<EOF
 #!/usr/bin/env bash
 [[ " \$* " == *" --version "* ]] && exit 0
-echo "\$CARGO_TARGET_DIR" >>"$sweeps"
+# The target cargo would sweep: a relative CARGO_TARGET_DIR is resolved
+# against cargo's own working directory, as cargo metadata does.
+case "\$CARGO_TARGET_DIR" in
+  /*) echo "\$CARGO_TARGET_DIR" >>"$sweeps" ;;
+  *) echo "\$(pwd -P)/\$CARGO_TARGET_DIR" >>"$sweeps" ;;
+esac
+# How it was invoked: cwd, the raw variable, and the arguments.
+echo "cwd=\$(pwd -P) CARGO_TARGET_DIR=\$CARGO_TARGET_DIR args=\$*" >>"$tmp/cargo.calls"
 EOF
 chmod +x "$bin/cargo"
 
@@ -115,6 +122,15 @@ check() {
     fails=$((fails + 1))
   fi
 }
+# lcheck: a check that needs Linux semantics a macOS shim does not give: the
+# device/inode `stat -L` reports for /dev/fd/N (the lock step's inode check,
+# main's waiter) and flock persistence across short-lived helpers. Tagged so
+# local and CI counts explain themselves; CI (Linux) runs them for real.
+linux_checks=0
+lcheck() {
+  linux_checks=$((linux_checks + 1))
+  check "[linux] $1" "$2"
+}
 swept() { grep -qxF "$root/$1/target" "$sweeps"; }
 
 slot 1 own 0
@@ -152,6 +168,8 @@ touch -d "$(days_ago 2)" "$root/.last-prune"
 run
 
 check "(d) the job's own slot is swept" 'swept 1/own'
+check "(d) ... by cargo-sweep run from the verified slot, with a relative target" \
+  'grep -qxF "cwd=$root/1/own CARGO_TARGET_DIR=target args=sweep --maxsize 50GiB $project" "$tmp/cargo.calls"'
 check "(a) a stale slot held under a shared lock is not evicted" '[[ -d "$root/2/held/target" ]]'
 check "(a) a slot held under a shared lock is not swept" '! swept 2/held'
 check "(b) a stale, unlocked slot has its target/ evicted" '[[ ! -e "$root/3/stale/target" ]]'
@@ -658,9 +676,9 @@ job_pid=$!
 wait "$prune_pid" || true
 job_status=0
 wait "$job_pid" || job_status=$?
-check "evict: a job that starts mid-delete locks and builds normally" \
+lcheck "evict: a job that starts mid-delete locks and builds normally" \
   '((job_status == 0)) && grep -q "holding shared in-use lock" "$tmp/job.log"'
-check "evict: ... into a fresh target/ that survives the delete" \
+lcheck "evict: ... into a fresh target/ that survives the delete" \
   '[[ -e "$broot/8/victim/target/marker" ]]'
 check "evict: the slot's .in-use is the same file throughout" \
   '[[ "$(inode "$broot/8/victim/.in-use")" == "$victim_lock" ]]'
@@ -740,7 +758,7 @@ bslot 8 victim $((30 * day)) 10000
 touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune" # rule 2 due
 main_waiter_race 8/victim
 check "main waiter (rule 2): the prune evicted the stale target/" 'evicted 8/victim'
-check "main waiter (rule 2): the waiter holds the slot's live .in-use" \
+lcheck "main waiter (rule 2): the waiter holds the slot's live .in-use" \
   '[[ "$(cat "$tmp/waiter.inode")" == "$(inode "$broot/8/victim/.in-use")" ]]'
 bslot 8 victim $((30 * day)) 10000 # its build, stamped long ago
 touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune"
@@ -752,7 +770,7 @@ wait "$waiter_pid" || true
 budget_volume
 main_waiter_race 2/old --volume-budget 50
 check "main waiter (rule 3): the prune evicted the LRU target/" 'evicted 2/old'
-check "main waiter (rule 3): the waiter holds the slot's live .in-use" \
+lcheck "main waiter (rule 3): the waiter holds the slot's live .in-use" \
   '[[ "$(cat "$tmp/waiter.inode")" == "$(inode "$broot/2/old/.in-use")" ]]'
 bslot 2 old $((10 * day)) 200000
 brun --volume-budget 50
@@ -783,9 +801,9 @@ job_status=0
 wait "$job_pid" || job_status=$?
 check "lock step: the prune evicted the waiting job's target/" \
   'blogged "evicting the target/ of least recently used slot $broot/2/old "'
-check "lock step: a job that waited through the eviction exits 0 holding the lock" \
+lcheck "lock step: a job that waited through the eviction exits 0 holding the lock" \
   '((job_status == 0)) && grep -q "holding shared in-use lock" "$tmp/job.log"'
-check "lock step: ... into a fresh, stamped target/" \
+lcheck "lock step: ... into a fresh, stamped target/" \
   '[[ -e "$broot/2/old/target/.last-used" && -e "$broot/2/old/target/marker" ]]'
 
 # --- Physical containment (item 9) -------------------------------------------
@@ -855,8 +873,104 @@ brun --volume-budget 10
 check "containment: a symlinked target/ leaves the outside tree untouched" \
   'untouched "$outside/tgt" && [[ -e "$outside/tgt/target/.last-used" ]]'
 check "containment: ... the slot is skipped, its link kept, and the skip logged" \
-  '[[ -L "$broot/9/linked/target" ]] && grep -q "$broot/9/linked is not physically inside" "$tmp/budget.log"'
+  '[[ -L "$broot/9/linked/target" ]] && grep -q "$broot/9/linked has a symlinked target/" "$tmp/budget.log"'
 check "containment: other slots still prune (symlinked target/)" 'evicted 8/stale'
+
+# Item 16: STATIC leaf refusals. A symlinked or non-regular ./.in-use or
+# target/.last-used is refused by anchor_slot (with its own log line), so
+# nothing is opened, created or touched through it, and the slot is skipped.
+mtime() { stat -c %Y "$1"; }
+contained_volume
+mkdir -p "$outside"
+ln -s "$outside/absent-lock" "$broot/8/stale/.in-use" # dangling: >> would create it
+brun --volume-budget 10
+check "leaves: a symlinked .in-use is refused and nothing is created through it" \
+  '[[ ! -e "$outside/absent-lock" ]] && kept 8/stale \
+    && grep -q "$broot/8/stale has a symlinked target/, or a symlinked or non-regular .in-use" "$tmp/budget.log"'
+
+contained_volume
+mkdir -p "$broot/8/stale/.in-use" # a directory, not a regular file
+brun --volume-budget 10
+check "leaves: a non-regular .in-use is refused" \
+  'kept 8/stale && grep -q "$broot/8/stale has a symlinked target/, or a symlinked or non-regular" "$tmp/budget.log"'
+
+contained_volume
+mkdir -p "$outside"
+echo keep >"$outside/stamp"
+touch -d "@$(($(date +%s) - 30 * day))" "$outside/stamp"
+stamp_before="$(mtime "$outside/stamp")"
+rm -f "$broot/8/stale/target/.last-used"
+ln -s "$outside/stamp" "$broot/8/stale/target/.last-used"
+brun --volume-budget 10
+check "leaves: a symlinked stamp is refused and the outside file is not touched" \
+  '[[ "$(mtime "$outside/stamp")" == "$stamp_before" && "$(cat "$outside/stamp")" == keep ]] && kept 8/stale \
+    && grep -q "$broot/8/stale has a symlinked target/, or a symlinked or non-regular" "$tmp/budget.log"'
+
+contained_volume
+rm -f "$broot/8/stale/target/.last-used"
+mkdir -p "$broot/8/stale/target/.last-used" # a directory, not a regular file
+brun --volume-budget 10
+check "leaves: a non-regular stamp is refused" \
+  'kept 8/stale && grep -q "$broot/8/stale has a symlinked target/, or a symlinked or non-regular" "$tmp/budget.log"'
+
+# The root control files: a symlinked .prune.lock or .last-prune refuses the
+# whole scan (rules 2 and 3); the outside file is neither truncated, created
+# nor touched. An existing regular .prune.lock is opened read-only: never
+# truncated.
+contained_volume
+mkdir -p "$outside"
+echo keep >"$outside/scanlock"
+rm -f "$broot/.prune.lock"
+ln -s "$outside/scanlock" "$broot/.prune.lock"
+brun --volume-budget 10
+check "leaves: a symlinked .prune.lock refuses the scan and is not truncated" \
+  '[[ "$(cat "$outside/scanlock")" == keep ]] && kept 8/stale \
+    && grep -q "is a symlink or not a regular file; skipping the orphan scan and the volume budget" "$tmp/budget.log"'
+
+contained_volume
+mkdir -p "$outside"
+echo keep >"$outside/lastprune"
+touch -d "@$(($(date +%s) - 30 * day))" "$outside/lastprune"
+lp_before="$(mtime "$outside/lastprune")"
+rm -f "$broot/.last-prune"
+ln -s "$outside/lastprune" "$broot/.last-prune"
+brun --volume-budget 10
+check "leaves: a symlinked .last-prune refuses the scan and is not touched" \
+  '[[ "$(mtime "$outside/lastprune")" == "$lp_before" ]] && kept 8/stale \
+    && grep -q "is a symlink or not a regular file; skipping the orphan scan and the volume budget" "$tmp/budget.log"'
+
+contained_volume
+echo keep >"$broot/.prune.lock"
+brun
+check "leaves: an existing .prune.lock is opened without truncation" \
+  '[[ "$(cat "$broot/.prune.lock")" == keep ]] && evicted 8/stale'
+
+# .last-prune turned into a symlink DURING the scan (a flock wrapper swaps it
+# when rule 2 locks a slot): the re-check right before the touch refuses it.
+lpbin="$tmp/lpbin"
+mkdir -p "$lpbin"
+cat >"$lpbin/flock" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" --exclusive "* && -e "$tmp/lp.spec" ]]; then
+  rm -f "$broot/.last-prune" "$tmp/lp.spec"
+  ln -s "$outside/lastprune2" "$broot/.last-prune"
+fi
+exec "$real_flock" "\$@"
+EOF
+chmod +x "$lpbin/flock"
+contained_volume
+mkdir -p "$outside"
+echo keep >"$outside/lastprune2"
+touch -d "@$(($(date +%s) - 30 * day))" "$outside/lastprune2"
+lp2_before="$(mtime "$outside/lastprune2")"
+touch "$broot/1/own/.last-sweep" # rule 1 takes no exclusive lock first
+touch "$tmp/lp.spec"
+bpath="$lpbin:"
+brun
+bpath=""
+check "leaves: a .last-prune swapped for a symlink mid-scan is not touched" \
+  '[[ ! -e "$tmp/lp.spec" && "$(mtime "$outside/lastprune2")" == "$lp2_before" ]] \
+    && grep -q "became a symlink or not a regular file; not recording the scan" "$tmp/budget.log"'
 
 # A swap between the scan and the lock: a flock wrapper replaces a real stale
 # slot with a symlink to an outside tree just before the prune locks it. The
@@ -1029,7 +1143,7 @@ check "lock step: the template sources it" \
   'grep -qxF "    - . ./scripts/ci-cache-lock.sh" "$here/../.gitlab-ci.yml"'
 mkdir -p "$lroot"
 lockjob 0/fresh >"$tmp/lock.log" 2>&1 || true
-check "lock step: a fresh slot is locked, stamped and built into" \
+lcheck "lock step: a fresh slot is locked, stamped and built into" \
   'grep -q "holding shared in-use lock on fd 9" "$tmp/lock.log" \
     && [[ -e "$lroot/0/fresh/target/.last-used" && -e "$lroot/0/fresh/target/marker" ]]'
 
@@ -1043,10 +1157,10 @@ sleep 0.5
 mv "$lroot/0/moved" "$lroot/trashed"
 release "${holders[-1]}"
 wait "$job_pid" || true
-check "lock step: a slot renamed while waiting is retried" \
+lcheck "lock step: a slot renamed while waiting is retried" \
   'grep -q "was replaced while locking (attempt 1), retrying" "$tmp/lock.log" \
     && grep -q "holding shared in-use lock on fd 9" "$tmp/lock.log"'
-check "lock step: the job builds into the fresh slot, not the trashed one" \
+lcheck "lock step: the job builds into the fresh slot, not the trashed one" \
   '[[ -e "$lroot/0/moved/target/marker" && ! -e "$lroot/trashed/target/marker" ]]'
 
 # Three failed inode checks: fail closed, never run unlocked.
@@ -1075,7 +1189,7 @@ check "lock step: a slot held past the wait fails the job" \
 if ((fails)); then
   echo "--- prune log ---"
   cat "$tmp/prune.log"
-  echo "test-prune-ci-cache: $fails check(s) failed" >&2
+  echo "test-prune-ci-cache: $fails check(s) failed ($linux_checks tagged [linux]: on a non-Linux host, shim limits can fail those)" >&2
   exit 1
 fi
-echo "test-prune-ci-cache: all checks passed"
+echo "test-prune-ci-cache: all checks passed ($linux_checks tagged [linux]: they need Linux /dev/fd and flock semantics)"

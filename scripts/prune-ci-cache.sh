@@ -55,18 +55,39 @@ set -euo pipefail
 # check followed by a path-based operation is a race (a writer that ignores
 # the lock can swap a slot for a symlink in between), so every read or write
 # of a slot runs in a subshell that `cd -P`s into the slot, verifies that
-# `pwd -P` is exactly <real cache root>/<digits>/<name> and that neither
-# target/ nor its stamp is a symlink (anchor_slot), and then uses relative
-# paths only: the lock on ./.in-use, the stamp and activity re-checks, the
-# rename of ./target, the trash delete, leftover deletes, `du -P`, `find -P`
-# and `stat`. The cwd is re-verified under the exclusive lock. /ci-cache is
-# its own mount, so a verified directory renamed afterwards stays inside the
-# volume, and `mv`/`rm` never follow a symlink in their final component. A
-# slot that fails verification is skipped, logged and counted as a failure;
-# nothing aborts the run. If the cache root cannot be resolved, nothing is
-# swept or removed. The one path-based operation left is cargo-sweep (rule
-# 1), which is handed the own slot's physical path verified under its
-# exclusive lock.
+# `pwd -P` is exactly <real cache root>/<digits>/<name> (anchor_slot), and
+# then uses relative paths only: the lock on ./.in-use, the stamp and
+# activity re-checks, the rename of ./target, the trash delete, leftover
+# deletes, `du -P`, `find -P`, `stat`, and cargo-sweep (run with a relative
+# CARGO_TARGET_DIR, which cargo resolves against this cwd). The cwd is
+# re-verified under the exclusive lock. /ci-cache is its own mount, so a
+# verified directory renamed afterwards stays inside the volume, and `mv`/`rm`
+# never follow a symlink in their final component. A slot that fails
+# verification is skipped, logged and counted as a failure; nothing aborts
+# the run. If the cache root cannot be resolved, nothing is swept or removed.
+#
+# Threat model. The jobs use the docker executor: the runner mounts
+# /ci-cache into every job container (runner-level `volumes`), and this prune
+# runs in after_script as an unprivileged job container with exactly the
+# mounts every other job on that runner has. ASSUMED: every job on a runner
+# gets the same volume set. What is defended, and how:
+#   - STATIC or accidental symlinks and special files are refused, never
+#     followed: a symlinked numeric dir, slot or target/ (anchor_slot); a
+#     symlinked or non-regular ./.in-use or target/.last-used (anchor_slot,
+#     and again under the lock); a symlinked or non-regular root .prune.lock
+#     or .last-prune (the whole scan is skipped). A refusal skips and logs;
+#     nothing is deleted on refusal.
+#   - Lock files are opened read-only, never truncated; an absent one is
+#     created with noclobber (O_EXCL), which refuses any existing name.
+#   - ACCEPTED RESIDUAL: a concurrent writer that ignores the lock could swap
+#     a leaf (./.in-use, target/, the stamp, the root control files) for a
+#     symlink between its check and its use, or swap a parent between cargo's
+#     getcwd and cargo-sweep's deletes. That writer must already be able to
+#     write /ci-cache, which lets it delete or poison anything there
+#     directly; redirecting this prune reaches nothing beyond that volume and
+#     this job's own ephemeral container. Closing it would need no-follow
+#     openat(2) handling, which shell cannot do cleanly, so race-hardening
+#     deliberately stops at this line.
 #
 # Three rules: two for two kinds of garbage, one for the volume as a whole.
 #
@@ -330,27 +351,42 @@ slot_rel() {
   echo "$(basename "$n_dir")/$(basename "$1")"
 }
 
+# plain_or_absent PATH: PATH is absent, or a regular file that is not a
+# symlink. The leaves this script opens, touches or stats must be one or the
+# other: a STATIC symlinked or special leaf is refused, never followed.
+plain_or_absent() {
+  [[ ! -L "$1" ]] && { [[ ! -e "$1" ]] || [[ -f "$1" ]]; }
+}
+
+# leaves_ok: (anchored) ./target is not a symlink, and ./.in-use and
+# ./target/.last-used are each absent or a regular, non-symlink file.
+leaves_ok() {
+  [[ ! -L target ]] && plain_or_absent "$lock_name" && plain_or_absent "target/$stamp_name"
+}
+
 # anchor_slot SLOT: call in a subshell. `cd -P` into SLOT and verify that the
 # physical cwd is exactly <real cache root>/<digits>/<name> -- no symlink in
-# any component -- and that neither ./target nor its stamp is a symlink. Sets
+# any component -- and that the leaves are sound (leaves_ok). Sets
 # $anchored_at. Logs (to stderr, so a captured subshell's output stays clean)
 # and returns 1 otherwise.
 anchor_slot() {
   local rel
-  if [[ -n "$root_real" ]] && rel="$(slot_rel "$1")" &&
-    CDPATH='' cd -P -- "$1" 2>/dev/null &&
-    [[ "$(pwd -P)" == "$root_real/$rel" && ! -L target && ! -L "target/$stamp_name" ]]; then
-    anchored_at="$root_real/$rel"
-    return 0
+  if [[ -z "$root_real" ]] || ! rel="$(slot_rel "$1")" ||
+    ! CDPATH='' cd -P -- "$1" 2>/dev/null || [[ "$(pwd -P)" != "$root_real/$rel" ]]; then
+    log "$1 is not physically inside $cache_root/<n>/<slot> (symlink or unresolvable); skipping it" >&2
+    return 1
   fi
-  log "$1 is not physically inside $cache_root/<n>/<slot> (symlink or unresolvable); skipping it" >&2
-  return 1
+  if ! leaves_ok; then
+    log "$1 has a symlinked target/, or a symlinked or non-regular $lock_name or target/$stamp_name; skipping it" >&2
+    return 1
+  fi
+  anchored_at="$root_real/$rel"
 }
 
 # still_anchored: (anchored) the cwd is still where anchor_slot verified it,
-# and ./target is still not a symlink. Re-checked under the exclusive lock.
+# and the leaves are still sound. Re-checked under the exclusive lock.
 still_anchored() {
-  [[ "$(pwd -P)" == "$anchored_at" && ! -L target && ! -L "target/$stamp_name" ]]
+  [[ "$(pwd -P)" == "$anchored_at" ]] && leaves_ok
 }
 
 # older_than FILE SECONDS: true when FILE's mtime is at least SECONDS ago.
@@ -371,12 +407,27 @@ recently_built() {
   [[ -n "$hit" ]]
 }
 
+# open_lock PATH: open PATH read-only on a fresh fd, left in $lock_fd. An
+# absent PATH is created first with `noclobber` (O_EXCL, which refuses any
+# existing name, a dangling symlink included); an existing one is opened
+# without O_CREAT or truncation. PATH must be a regular, non-symlink file
+# immediately before the open (checked; a swap between the check and the open
+# is the accepted residual, see the header). flock needs no write access.
+open_lock() {
+  [[ -e "$1" || -L "$1" ]] || (set -o noclobber && : >"$1") 2>/dev/null || true
+  if [[ -L "$1" || ! -f "$1" ]]; then
+    return 1
+  fi
+  exec {lock_fd}<"$1"
+}
+
 # try_exclusive DIR: open DIR's lock on a fresh fd and take it exclusively
 # without waiting. On success the fd number is left in $held_fd (the caller
 # closes it); on failure the fd is closed and the function returns 1.
 try_exclusive() {
   local fd
-  exec {fd}>>"$1/$lock_name"
+  open_lock "$1/$lock_name" || return 1
+  fd=$lock_fd
   if flock --nonblock --exclusive "$fd"; then
     held_fd=$fd
     return 0
@@ -531,11 +582,14 @@ own_sweep() (
     log "(dry run) would run cargo sweep --maxsize $max_size"
     exit 0
   fi
-  # cargo-sweep takes a path. It is the physical path verified a moment ago
-  # under the exclusive lock, so only a writer that ignores the lock could
-  # swap it before cargo-sweep resolves it.
+  # cargo-sweep's path argument is the PROJECT (it runs `cargo metadata` on
+  # its manifest and sweeps the reported target directory). Run from this
+  # verified cwd with a RELATIVE CARGO_TARGET_DIR, cargo resolves the target
+  # against its own working directory -- this one, by inode -- rather than a
+  # path string computed earlier (checked against cargo-sweep 0.8.0's source
+  # and `cargo metadata`; the self-test records the cwd and the variable).
   status=0
-  if CARGO_TARGET_DIR="$anchored_at/target" \
+  if CARGO_TARGET_DIR=target \
     cargo sweep --maxsize "$max_size" "${sweep_args[@]}" "$project_dir"; then
     touch "$sweep_name"
   else
@@ -578,13 +632,21 @@ if [[ -n "${CARGO_TARGET_DIR:-}" && -d "$CARGO_TARGET_DIR" ]]; then
 fi
 
 # --- Rules 2 and 3 run under the per-host scan lock -----------------------
-# The scan lock and interval are separate files: opening the lock truncates
-# it, which would reset a modification time read back from the lock itself.
+# The scan lock and interval are separate files: other prunes (main's) open
+# the lock with `>`, which truncates it, so its modification time cannot carry
+# the interval. This one opens it read-only (open_lock).
 scan_lock="$cache_root/.prune.lock"
 last_scan="$cache_root/.last-prune"
-exec {scan_fd}>"$scan_lock"
 have_scan_lock=0
-if flock --nonblock "$scan_fd"; then
+# Both control files are leaves at the root: a symlinked or non-regular one
+# refuses the whole scan rather than be opened or touched through.
+if ! plain_or_absent "$scan_lock" || ! plain_or_absent "$last_scan"; then
+  log "$scan_lock or $last_scan is a symlink or not a regular file; skipping the orphan scan and the volume budget"
+  failed=1
+elif ! open_lock "$scan_lock"; then
+  log "cannot open $scan_lock as a regular file; skipping the orphan scan and the volume budget"
+  failed=1
+elif scan_fd=$lock_fd && flock --nonblock "$scan_fd"; then
   have_scan_lock=1
   # Leftovers of a prune that was killed between an eviction and its delete:
   # exact trash names inside numeric-layout slots only.
@@ -661,8 +723,16 @@ else
   done
   # Record the interval only on a scan that reached the end. after_script has
   # its own runner timeout, and a scan killed part way through must be retried
-  # by the next job rather than counted as done.
-  ((dry_run)) || touch "$last_scan"
+  # by the next job rather than counted as done. Re-checked right before the
+  # touch, which would follow a symlink.
+  if ((dry_run == 0)); then
+    if plain_or_absent "$last_scan"; then
+      touch "$last_scan"
+    else
+      log "$last_scan became a symlink or not a regular file; not recording the scan"
+      failed=1
+    fi
+  fi
 fi
 
 # --- Rule 3: the volume budget (opt-in, --volume-budget N) ----------------
