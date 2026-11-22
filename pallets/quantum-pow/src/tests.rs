@@ -754,6 +754,76 @@ fn submit_proof_counts_distinct_answers_only() {
     }
 }
 
+/// W1-004 with isolated spins (claude's R8 repro; owner decision 2026-11-22):
+/// on a chain 0-1-2 plus nodes 3 and 4 with no field and no coupling, the four
+/// (s3, s4) variants of one chain assignment are ONE answer. They used to count
+/// as four, so one solver met a four-solution gate alone.
+#[test]
+fn submit_proof_counts_isolated_spin_variants_as_one_answer() {
+    for min_solutions in [4, 1] {
+        new_test_ext().execute_with(|| {
+            assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+            let nodes = bounded::<_, MaxNodes>(vec![0, 1, 2, 3, 4]);
+            let edges = bounded::<_, MaxEdges>(vec![(0, 1), (1, 2)]);
+            // Every field is 0, so nodes 3 and 4 (in no edge) are isolated.
+            let h_spec = AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
+            let topology_hash = topology::hash_topology(
+                &nodes,
+                &edges,
+                &h_spec.as_slice(),
+                &allowed_j_spec().as_slice(),
+                &allowed_spin_spec().as_slice(),
+            );
+            assert_ok!(QuantumPow::register_topology(
+                RuntimeOrigin::root(),
+                nodes.clone(),
+                edges.clone(),
+                h_spec,
+                allowed_j_spec(),
+                allowed_spin_spec(),
+            ));
+            MineableTopologies::<Test>::insert(topology_hash, ());
+            set_difficulty_default(DifficultyConfig {
+                min_solutions,
+                ..easy_difficulty()
+            });
+            // The nonce exactly as `proof_for` derives it; the rows are given.
+            let mut salt = [0u8; 32];
+            salt[..4].copy_from_slice(b"salt");
+            let nonce = derive_nonce(
+                &LastProofBlockHash::<Test>::get().0,
+                &crate::Pallet::<Test>::account_to_bytes(&1),
+                &salt,
+            );
+            let proof = QuantumProof {
+                topology_hash,
+                nonce,
+                salt,
+                solutions: bounded::<_, MaxSolutions>(
+                    [
+                        [1i8, -1, 1, 1, 1],
+                        [1, -1, 1, 1, -1],
+                        [1, -1, 1, -1, 1],
+                        [1, -1, 1, -1, -1],
+                    ]
+                    .iter()
+                    .map(|row| pack_spins(row))
+                    .collect::<Vec<_>>(),
+                ),
+                device_access_time_us: 0,
+            };
+            if min_solutions == 4 {
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+                    crate::Error::<Test>::InsufficientSolutions
+                );
+            } else {
+                assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+            }
+        });
+    }
+}
+
 #[test]
 fn submit_proof_rejects_invalid_nonce() {
     new_test_ext().execute_with(|| {

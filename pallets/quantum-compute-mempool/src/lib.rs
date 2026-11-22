@@ -197,7 +197,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
         calculate_diversity, canonical_answer_row, distinct_solutions, energy_of_solution_indexed,
-        TopologyIndex, ValidationError,
+        AnswerCanonicalizer, TopologyIndex, ValidationError,
     };
     use sp_runtime::traits::{
         AccountIdConversion, Hash as _, One, SaturatedConversion, Saturating, Zero,
@@ -1474,12 +1474,16 @@ pub mod pallet {
 
             ensure!(!valid_solutions.is_empty(), Error::<T>::InsufficientEnergy);
 
-            // W1-004: only distinct answers count. Rows that are identical or
-            // global spin flips of each other are one answer (owner O-B3,
-            // regardless of energy); each class keeps its lowest-energy
+            // W1-004: only distinct answers count. Rows with the same canonical
+            // form (W1-012) are one answer: identical, global spin flips (owner
+            // O-B3, regardless of energy), or differing only in isolated spins
+            // -- no field and no non-zero coupling, so no effect on the energy
+            // (owner decision 2026-11-22). Each class keeps its lowest-energy
             // member. Everything below -- best answer, solution count,
             // selection and diversity -- works on this distinct set.
-            let distinct = distinct_solutions(&valid_solutions, &valid_energies)
+            let canonicalizer = AnswerCanonicalizer::new(h_values, j_values, &topology)
+                .map_err(Self::map_validation_error)?;
+            let distinct = distinct_solutions(&valid_solutions, &valid_energies, &canonicalizer)
                 .map_err(Self::map_validation_error)?;
             let valid_energies: Vec<i64> = distinct
                 .iter()

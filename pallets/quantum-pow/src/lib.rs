@@ -140,7 +140,8 @@ pub mod pallet {
         calculate_diversity, derive_nonce, distinct_solutions, energy_of_solution_indexed,
         generate_ising_model_indexed,
         packed::{packed_solution_byte_len, spin_signs, unpack_solution},
-        select_diverse, validate_topology_consistency, AllowedValueSpec, MilliValue, TopologyIndex,
+        select_diverse, validate_topology_consistency, AllowedValueSpec, AnswerCanonicalizer,
+        MilliValue, TopologyIndex,
     };
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
@@ -1401,11 +1402,15 @@ pub mod pallet {
                 Error::<T>::InsufficientEnergy
             );
 
-            // W1-004: only distinct answers count. Rows that are identical or
-            // global spin flips of each other are one answer (owner O-B3,
-            // regardless of energy); each class keeps its lowest-energy
+            // W1-004: only distinct answers count. Rows with the same canonical
+            // form (W1-012) are one answer: identical, global spin flips (owner
+            // O-B3, regardless of energy), or differing only in isolated spins
+            // -- no field and no non-zero coupling, so no effect on the energy
+            // (owner decision 2026-11-22). Each class keeps its lowest-energy
             // member. The best energy, the diversity target, the selection and
             // the reported count are all taken over this distinct set.
+            let canonicalizer = AnswerCanonicalizer::new(h, j, topology_index)
+                .map_err(|_| DispatchError::from(Error::<T>::InvalidTopology))?;
             let valid_rows: Vec<&[i8]> = energy_valid_indices
                 .iter()
                 .map(|&index| decoded[index].as_slice())
@@ -1414,7 +1419,7 @@ pub mod pallet {
                 .iter()
                 .map(|&index| energies[index])
                 .collect();
-            let distinct = distinct_solutions(&valid_rows, &valid_energies)
+            let distinct = distinct_solutions(&valid_rows, &valid_energies, &canonicalizer)
                 .map_err(|_| DispatchError::from(Error::<T>::InvalidSpinValues))?;
             let best_energy_milli = distinct
                 .iter()

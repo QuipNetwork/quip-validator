@@ -48,8 +48,13 @@ fn allowed_spin_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
     AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, SCALE]))
 }
 
+/// No 0: with fewer edges than nodes (`submit_proof`'s `e` below `n`), a node
+/// outside every edge that drew a 0 field would be isolated, and rows differing
+/// only there are one answer (W1-004 keys by the W1-012 canonical form).
+/// Non-zero fields keep `valid_proof_for`'s rows pairwise distinct answers, the
+/// dedupe's worst case, for every `e`.
 fn allowed_h_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
-    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, 0, SCALE]))
+    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, SCALE]))
 }
 
 fn allowed_j_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {

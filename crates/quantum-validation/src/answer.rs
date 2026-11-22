@@ -12,8 +12,10 @@ use crate::errors::ValidationError;
 use crate::fixed::MilliValue;
 use crate::validation::{ensure_valid_spins, TopologyIndex};
 
-/// The canonical form of `row` for the topology `topology` with fields `h`
-/// and couplings `j` (`j[k]` belongs to the index's `k`-th edge):
+/// The canonical form of answer rows for one topology, with its fields `h`
+/// and couplings `j` (`j[k]` belongs to the index's `k`-th edge). The
+/// isolation mask is computed once, so canonicalising each further row is
+/// O(n) -- the form W1-004 needs to dedupe a whole proof.
 ///
 /// 1. a spin is *isolated* when its field is 0 and every coupling it takes part
 ///    in is 0;
@@ -23,6 +25,77 @@ use crate::validation::{ensure_valid_spins, TopologyIndex};
 ///
 /// Flip-equivalent rows and rows differing only in isolated spins therefore
 /// have the same canonical form.
+pub struct AnswerCanonicalizer {
+    isolated: Vec<bool>,
+    /// The first non-isolated position, whose sign decides the flip.
+    first_coupled: Option<usize>,
+}
+
+impl AnswerCanonicalizer {
+    /// Build the isolation mask for `topology`, `h` and `j`.
+    pub fn new(
+        h: &[MilliValue],
+        j: &[MilliValue],
+        topology: &TopologyIndex,
+    ) -> Result<Self, ValidationError> {
+        let n = topology.len();
+        if h.len() != n {
+            return Err(ValidationError::FieldLengthMismatch {
+                expected: n,
+                actual: h.len(),
+            });
+        }
+        if j.len() != topology.edge_count() {
+            return Err(ValidationError::EdgeWeightLengthMismatch {
+                edges: topology.edge_count(),
+                weights: j.len(),
+            });
+        }
+        let mut coupled = vec![false; n];
+        for (&(u, v), &coupling) in topology.edge_positions().iter().zip(j.iter()) {
+            if coupling != 0 {
+                coupled[u] = true;
+                coupled[v] = true;
+            }
+        }
+        let isolated: Vec<bool> = (0..n)
+            .map(|position| h[position] == 0 && !coupled[position])
+            .collect();
+        let first_coupled = isolated.iter().position(|&is_isolated| !is_isolated);
+        Ok(Self {
+            isolated,
+            first_coupled,
+        })
+    }
+
+    /// The canonical form of `row`.
+    pub fn canonical(&self, row: &[i8]) -> Result<Vec<i8>, ValidationError> {
+        if row.len() != self.isolated.len() {
+            return Err(ValidationError::SolutionLengthMismatch {
+                expected: self.isolated.len(),
+                actual: row.len(),
+            });
+        }
+        ensure_valid_spins(row)?;
+        let negate = self.first_coupled.is_some_and(|position| row[position] < 0);
+        Ok(row
+            .iter()
+            .zip(self.isolated.iter())
+            .map(|(&spin, &is_isolated)| {
+                if is_isolated {
+                    1
+                } else if negate {
+                    -spin
+                } else {
+                    spin
+                }
+            })
+            .collect())
+    }
+}
+
+/// The canonical form of one `row`; see [`AnswerCanonicalizer`]. Checks the
+/// row length first, then `h` and `j`, then the spins.
 pub fn canonical_answer_row(
     row: &[i8],
     h: &[MilliValue],
@@ -36,44 +109,7 @@ pub fn canonical_answer_row(
             actual: row.len(),
         });
     }
-    if h.len() != n {
-        return Err(ValidationError::FieldLengthMismatch {
-            expected: n,
-            actual: h.len(),
-        });
-    }
-    if j.len() != topology.edge_count() {
-        return Err(ValidationError::EdgeWeightLengthMismatch {
-            edges: topology.edge_count(),
-            weights: j.len(),
-        });
-    }
-    ensure_valid_spins(row)?;
-
-    let mut coupled = vec![false; n];
-    for (&(u, v), &coupling) in topology.edge_positions().iter().zip(j.iter()) {
-        if coupling != 0 {
-            coupled[u] = true;
-            coupled[v] = true;
-        }
-    }
-    let isolated = |position: usize| h[position] == 0 && !coupled[position];
-    let negate = (0..n)
-        .find(|&position| !isolated(position))
-        .is_some_and(|position| row[position] < 0);
-    Ok(row
-        .iter()
-        .enumerate()
-        .map(|(position, &spin)| {
-            if isolated(position) {
-                1
-            } else if negate {
-                -spin
-            } else {
-                spin
-            }
-        })
-        .collect())
+    AnswerCanonicalizer::new(h, j, topology)?.canonical(row)
 }
 
 #[cfg(test)]

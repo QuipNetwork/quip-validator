@@ -97,7 +97,14 @@ fn params_with_dimensions<T: Config>(
     types::IsingParams {
         nodes: bounded(nodes),
         edges: bounded(edges),
-        h_values: bounded(vec![0; node_count as usize]),
+        // A small non-zero field on every node: with fewer edges than nodes, a
+        // node outside every edge and with no field would be isolated, and
+        // rows differing only there are one answer (W1-004 keys by the W1-012
+        // canonical form). Non-zero fields keep `distinct_rows` pairwise
+        // distinct answers, the dedupe's worst case, for every `e`. 1 milli,
+        // so a single field placed on spin 0 can still dominate the energy
+        // (`setup_solution_replacement`).
+        h_values: bounded(vec![1; node_count as usize]),
         j_values: bounded(vec![-1_000; edge_count as usize]),
         max_energy_milli: None,
         min_diversity_milli: None,
@@ -376,10 +383,12 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
     let solver: T::AccountId = account("solver", 0, 0);
     register_solver_for::<T>(&solver);
     let mut params = params_with_dimensions::<T>(n, e, Some(achievable_distinct(n, s)));
-    // An isolated local field makes every first-spin-minus row strictly worse
-    // than its negation (the first-spin-plus row) at every dimension, without
-    // relying on a fabricated stored score.
-    params.h_values[0] = -1_000;
+    // A dominant field on spin 0 makes every first-spin-minus row strictly
+    // worse than its negation (the first-spin-plus row) at every dimension,
+    // without relying on a fabricated stored score. A row's negation changes
+    // its energy by twice the sum of h_i * s_i; the other n - 1 fields are 1
+    // milli each, so |h_0| > 2n outweighs them for every row.
+    params.h_values[0] = -(2 * i32::try_from(n).expect("n fits i32") + 1_000);
     let order_id = propose_order_for::<T>(
         &proposer,
         params,

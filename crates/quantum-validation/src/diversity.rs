@@ -4,6 +4,7 @@ use alloc::collections::btree_map::{BTreeMap, Entry};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::answer::AnswerCanonicalizer;
 use crate::errors::ValidationError;
 use crate::fixed::{round_div_u64, MilliDiversity, MilliEnergy, MILLI_SCALE};
 use crate::validation::{ensure_valid_spins, validate_solution_set};
@@ -45,22 +46,24 @@ fn symmetric_hamming_validated(a: &[i8], b: &[i8]) -> u32 {
 
 /// Indices of one representative per class of copies (W1-004).
 ///
-/// Two rows are copies when they are identical or global spin flips of each
-/// other -- symmetric Hamming distance `0` -- regardless of their energies
-/// (owner decision O-B3: with `h != 0` a flipped row is often still
-/// energy-valid, so counting it would pad every answer for free). Each class
-/// keeps its lowest-energy member; ties go to the first occurrence. The
-/// returned indices refer to `rows` and are in increasing order.
+/// Two rows are copies when they are the same ANSWER: equal in canonical form
+/// ([`AnswerCanonicalizer`], W1-012) -- identical, global spin flips of each
+/// other (owner decision O-B3: with `h != 0` a flipped row is often still
+/// energy-valid, so counting it would pad every answer for free), or differing
+/// only in isolated spins, which cannot change the energy (owner decision
+/// 2026-11-22). Energies play no part in the relation. Each class keeps its
+/// lowest-energy member; ties go to the first occurrence. The returned indices
+/// refer to `rows` and are in increasing order.
 ///
 /// `energies` must be parallel to `rows`; a length mismatch is a caller bug
 /// and is reported as [`ValidationError::FieldLengthMismatch`].
 ///
-/// Classes are found by flip-normalizing each row (negated when its first spin
-/// is negative) and grouping equal keys, which is exactly the relation
-/// "symmetric Hamming distance is 0", in O(S·n·log S) for S rows of n spins.
+/// O(S·n·log S) for S rows of n spins, after the canonicaliser's one O(n + E)
+/// pass.
 pub fn distinct_solutions<T: AsRef<[i8]>>(
     rows: &[T],
     energies: &[MilliEnergy],
+    canonicalizer: &AnswerCanonicalizer,
 ) -> Result<Vec<usize>, ValidationError> {
     if rows.len() != energies.len() {
         return Err(ValidationError::FieldLengthMismatch {
@@ -75,12 +78,7 @@ pub fn distinct_solutions<T: AsRef<[i8]>>(
 
     let mut kept: BTreeMap<Vec<i8>, usize> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
-        let row = row.as_ref();
-        let key: Vec<i8> = if row.first().is_some_and(|&spin| spin < 0) {
-            row.iter().map(|&spin| -spin).collect()
-        } else {
-            row.to_vec()
-        };
+        let key = canonicalizer.canonical(row.as_ref())?;
         match kept.entry(key) {
             Entry::Vacant(slot) => {
                 slot.insert(index);
@@ -264,8 +262,37 @@ fn ensure_valid_solution_inputs<T: AsRef<[i8]>>(solutions: &[T]) -> Result<usize
 #[cfg(test)]
 mod tests {
     use super::{calculate_diversity, distinct_solutions, select_diverse, symmetric_hamming};
+    use crate::answer::AnswerCanonicalizer;
     use crate::errors::ValidationError;
+    use crate::validation::TopologyIndex;
     use alloc::vec::Vec;
+
+    /// A canonicaliser for `n` spins on a coupled chain: no spin is isolated,
+    /// so the classes are exactly copies and global flips.
+    fn chain(n: u32) -> AnswerCanonicalizer {
+        let nodes: Vec<u32> = (0..n).collect();
+        let edges: Vec<(u32, u32)> = (1..n).map(|v| (v - 1, v)).collect();
+        let index = TopologyIndex::new(&nodes, &edges).unwrap();
+        let j: Vec<i32> = alloc::vec![1_000; edges.len()];
+        AnswerCanonicalizer::new(&alloc::vec![0; n as usize], &j, &index).unwrap()
+    }
+
+    #[test]
+    fn distinct_solutions_merges_isolated_spin_variants() {
+        // Chain 0-1-2 plus isolated nodes 3 and 4 (no field, no coupling): the
+        // four (s3, s4) variants of one chain assignment are ONE answer (owner
+        // decision 2026-11-22); a different chain assignment is another.
+        let index = TopologyIndex::new(&[0, 1, 2, 3, 4], &[(0, 1), (1, 2)]).unwrap();
+        let canon = AnswerCanonicalizer::new(&[0; 5], &[1_000, 1_000], &index).unwrap();
+        let rows = [
+            [1, -1, 1, 1, 1],
+            [1, -1, 1, 1, -1],
+            [1, -1, 1, -1, 1],
+            [1, -1, 1, -1, -1],
+            [1, 1, 1, 1, 1],
+        ];
+        assert_eq!(distinct_solutions(&rows, &[0; 5], &canon).unwrap(), [0, 4]);
+    }
 
     #[test]
     fn distinct_solutions_merges_identical_and_flipped_rows() {
@@ -273,7 +300,10 @@ mod tests {
         let b = [1, 1, -1, -1];
         let rows = [a, b, a, [-1, 1, -1, -1], b];
         // Equal energies: ties go to the first occurrence.
-        assert_eq!(distinct_solutions(&rows, &[5, 5, 5, 5, 5]).unwrap(), [0, 1]);
+        assert_eq!(
+            distinct_solutions(&rows, &[5, 5, 5, 5, 5], &chain(4)).unwrap(),
+            [0, 1]
+        );
     }
 
     #[test]
@@ -283,7 +313,7 @@ mod tests {
         let a = [1, -1, 1, 1];
         let flipped = [-1, 1, -1, -1];
         let other = [1, 1, 1, 1];
-        let kept = distinct_solutions(&[a, other, flipped], &[-10, -5, -30]).unwrap();
+        let kept = distinct_solutions(&[a, other, flipped], &[-10, -5, -30], &chain(4)).unwrap();
         assert_eq!(kept, [1, 2]);
     }
 
@@ -293,7 +323,7 @@ mod tests {
         let energies = [-3, -4, -1, -2, -6];
         // The semantic result: each class's kept (row, energy), up to order.
         let semantic = |rows: &[[i8; 3]], energies: &[i64]| {
-            let mut kept: Vec<([i8; 3], i64)> = distinct_solutions(rows, energies)
+            let mut kept: Vec<([i8; 3], i64)> = distinct_solutions(rows, energies, &chain(3))
                 .unwrap()
                 .into_iter()
                 .map(|i| (rows[i], energies[i]))
@@ -324,14 +354,14 @@ mod tests {
     #[test]
     fn distinct_solutions_rejects_mismatched_energies() {
         assert_eq!(
-            distinct_solutions(&[[1, 1]], &[]),
+            distinct_solutions(&[[1, 1]], &[], &chain(2)),
             Err(ValidationError::FieldLengthMismatch {
                 expected: 1,
                 actual: 0
             })
         );
         assert_eq!(
-            distinct_solutions::<[i8; 2]>(&[], &[]).unwrap(),
+            distinct_solutions::<[i8; 2]>(&[], &[], &chain(2)).unwrap(),
             Vec::<usize>::new()
         );
     }

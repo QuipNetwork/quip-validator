@@ -2200,6 +2200,67 @@ fn copies_and_flips_do_not_count_as_distinct_answers() {
 }
 
 #[test]
+fn isolated_spin_variants_count_as_one_answer() {
+    // W1-004 with isolated spins (claude's R8 repro; owner decision
+    // 2026-11-22): on a chain 0-1-2 plus nodes 3 and 4 with no field and no
+    // coupling, the four (s3, s4) variants of one chain assignment are ONE
+    // answer. They used to count as four, meeting a four-solution gate alone.
+    for (count, accepted) in [(4, false), (1, true)] {
+        new_test_ext().execute_with(|| {
+            let spec = register_spec();
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
+            let params = crate::types::IsingParams {
+                nodes: bounded(vec![0, 1, 2, 3, 4]),
+                edges: bounded(vec![(0, 1), (1, 2)]),
+                h_values: bounded(vec![0; 5]),
+                j_values: bounded(vec![-1_000, -1_000]),
+                max_energy_milli: None,
+                min_diversity_milli: None,
+                min_solutions: Some(count),
+            };
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec,
+                params,
+                100,
+                JobMode::Open,
+                RewardResolution::SingleBest,
+                10,
+                5,
+                ResultDelivery::OnChainOnly
+            ));
+            let rows = bounded(
+                [
+                    [1i8, 1, 1, 1, 1],
+                    [1, 1, 1, 1, -1],
+                    [1, 1, 1, -1, 1],
+                    [1, 1, 1, -1, -1],
+                ]
+                .iter()
+                .map(|row| bounded(row.to_vec()))
+                .collect(),
+            );
+            if accepted {
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    0,
+                    rows
+                ));
+            } else {
+                assert_noop!(
+                    QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, rows)
+                        .map_err(|error| error.error),
+                    crate::Error::<Test>::InsufficientSolutions
+                );
+            }
+        });
+    }
+}
+
+#[test]
 fn best_anchoring_does_not_waive_diversity_or_count_requirements() {
     // [1, -1] and [1, 1] are distinct answers at symmetric distance 1 of 2
     // (diversity 500); the best, [1, 1], is not first. [-1, -1] and [1, 1] are
