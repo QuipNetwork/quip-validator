@@ -165,9 +165,11 @@ JUMP .0
 PROGRAM
 "$xquad_bin" assemble "$work_dir/runaway.xqasm" "$vectors_out/runaway.xqb" >/dev/null
 
-# One variable past the runtime's 16 MiB MaxVmMemory, at ~2.1M steps — an
-# order of magnitude inside MaxStepLimit, so the allocation budget is what
-# has to refuse it.
+# A 2,097,153-variable sample: a 16 MiB + 8 B charge, above any
+# MaxVmMemory up to 16 MiB (the runtime's is 1 MiB today; the smoke test
+# reads the live value from metadata, xqvm-onchain-smoke.mjs). At ~2.1M steps
+# it is an order of magnitude inside MaxStepLimit, so the allocation budget
+# is what has to refuse it.
 cat >"$work_dir/alloc.xqasm" <<'PROGRAM'
 PUSH 2097153
 BSMX r0
