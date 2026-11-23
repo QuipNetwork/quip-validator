@@ -88,23 +88,25 @@ set -euo pipefail
 #   - ACCEPTED RESIDUAL: a concurrent writer that ignores the lock could swap
 #     a leaf for a symlink between its check and its use: ./.in-use and the
 #     root .prune.lock before they are opened (read-only), target/.last-used
-#     before it is stat'ed or touched, .last-prune before its touch; or swap
-#     a parent between cargo's getcwd and cargo-sweep's deletes. A swapped
-#     target/ is harmless: `mv -T` and `rm` act on the link itself, and `du
-#     -P`/`find -P` never follow it. That writer must already be able to
-#     write /ci-cache, which lets it delete or poison anything there
-#     directly; redirecting this prune reaches nothing beyond that volume and
-#     this job's own ephemeral container. Closing it would need no-follow
-#     openat(2) handling, which shell cannot do cleanly, so race-hardening
-#     deliberately stops at this line.
+#     before it is stat'ed or touched, .last-prune before its touch,
+#     ./.last-sweep between its stat and its touch (spans the cargo sweep
+#     run); or swap a parent between cargo's getcwd and cargo-sweep's
+#     deletes. A swapped target/ is harmless: `mv -T` and `rm` act on the
+#     link itself, and `du -P`/`find -P` never follow it. That writer must
+#     already be able to write /ci-cache, which lets it delete or poison
+#     anything there directly; redirecting this prune reaches nothing beyond
+#     that volume and this job's own ephemeral container. Closing it would
+#     need no-follow openat(2) handling, which shell cannot do cleanly, so
+#     race-hardening deliberately stops at this line.
 #   - ACCEPTED: on a scan run, the capacity report (every slot's size) can
 #     spend the du budget before rule 3 measures a candidate. Rule 3 then
 #     evicts nothing that run and logs why; it converges on a later interval.
 #   - ACCEPTED: CI_CACHE_DU_BUDGET bounds `du` only -- not cargo-sweep's own
 #     size walk, the trash `rm -rf`, or the activity probe's `find`.
 #   - DEFERRED (job side, not this script): scripts/ci-cache-lock.sh follows
-#     a STATIC symlinked .in-use or target/, and a FIFO .in-use blocks the
-#     job that opens it. The job's cargo follows a symlinked target/ anyway.
+#     a STATIC symlinked .in-use, target/ or target/.last-used, and a FIFO
+#     .in-use blocks the job that opens it. The job's cargo follows a
+#     symlinked target/ anyway.
 #
 # Three rules: two for two kinds of garbage, one for the volume as a whole.
 #
@@ -552,7 +554,8 @@ orphan_state() (
 )
 
 # budget_idle SLOT: (subshell) rule 3's pre-check. 0 idle; 2 used within
-# CI_CACHE_BUDGET_MIN_IDLE by its stamp; 3 by a cargo fingerprint; 1 failed.
+# CI_CACHE_BUDGET_MIN_IDLE by its stamp; 3 by a cargo fingerprint (or the
+# activity probe could not run); 1 failed.
 budget_idle() (
   anchor_slot "$1" || exit 1
   older_than "target/$stamp_name" "$budget_min_idle" || exit 2
@@ -584,7 +587,7 @@ evict_slot() (
     # A job on a template without the lock step takes no lock and does not
     # stamp, so cargo's fingerprints are the only sign it is building here.
     if recently_built; then
-      log "stale slot $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
+      log "stale slot $slot has cargo fingerprints newer than ${budget_min_idle}s or could not be probed; keeping it"
       exit 4
     fi
     log "evicting the target/ of unused slot $slot"
@@ -852,7 +855,7 @@ if ((budget_given)) && ((have_scan_lock)); then
               continue
               ;;
             3)
-              log "volume budget: $slot has cargo fingerprints newer than ${budget_min_idle}s; keeping it"
+              log "volume budget: $slot has cargo fingerprints newer than ${budget_min_idle}s or could not be probed; keeping it"
               continue
               ;;
             *)

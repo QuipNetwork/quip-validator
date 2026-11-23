@@ -519,7 +519,7 @@ mkdir -p "$broot/3/mid/target/debug/.fingerprint/dep-4567"
 touch -d "@$(($(date +%s) - 3 * day))" "$broot/3/mid/target/debug/.fingerprint/dep-4567"
 brun --volume-budget 50
 check "budget: a slot with fresh cargo fingerprints is kept (activity probe)" \
-  'survives 2/old/target && blogged "$broot/2/old has cargo fingerprints newer than 7200s; keeping it"'
+  'survives 2/old/target && blogged "$broot/2/old has cargo fingerprints newer than 7200s or could not be probed; keeping it"'
 check "budget: old fingerprints do not protect a slot" 'evicted 3/mid'
 
 # With no idle window every slot is old enough: own and held are still kept.
@@ -687,7 +687,7 @@ bpath="$refreshbin:"
 brun
 bpath=""
 check "rule 2: a stale slot with fresh cargo fingerprints survives (activity probe)" \
-  'survives 8/stale/target && grep -q "stale slot $broot/8/stale has cargo fingerprints newer than 7200s; keeping it" "$tmp/budget.log"'
+  'survives 8/stale/target && grep -q "stale slot $broot/8/stale has cargo fingerprints newer than 7200s or could not be probed; keeping it" "$tmp/budget.log"'
 
 # Item 13 (b): rule 3 measures the candidate before locking it, and a
 # measurement that fails evicts nothing. (Measuring first means a held slot is
