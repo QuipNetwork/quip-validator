@@ -162,6 +162,25 @@ mod tests {
     }
 
     #[test]
+    fn the_flip_is_decided_by_the_first_non_isolated_spin() {
+        // Node 10 (position 0) is isolated: no field, no non-zero coupling.
+        // The flip must follow position 1, the first non-isolated spin, never
+        // raw position 0 -- whose value says nothing about the answer.
+        let index = TopologyIndex::new(&[10, 20, 30], &[(10, 20), (20, 30)]).unwrap();
+        let (h, j) = ([0, 0, 0], [0, -1_000]);
+        // The coupled part flipped, the isolated spin not: the same answer.
+        let a = canonical_answer_row(&[1, -1, 1], &h, &j, &index).unwrap();
+        let b = canonical_answer_row(&[1, 1, -1], &h, &j, &index).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, [1, 1, -1]);
+        // And with the isolated spin negative as well.
+        assert_eq!(
+            canonical_answer_row(&[-1, -1, 1], &h, &j, &index).unwrap(),
+            a
+        );
+    }
+
+    #[test]
     fn rejects_malformed_rows() {
         let (index, h, j) = topology();
         assert!(canonical_answer_row(&[1, 1, 1], &h, &j, &index).is_err());
