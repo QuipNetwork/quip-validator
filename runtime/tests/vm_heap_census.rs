@@ -1256,6 +1256,14 @@ fn c_block_order_sweep_at_emulated_caps() {
         let sweep = order_sweep(&chain, l, ms);
         let calls: Vec<RuntimeCall> = sweep.iter().map(|(_, c, _)| c.clone()).collect();
         let (block, applied) = chain.author(calls);
+        assert_eq!(applied.len(), sweep.len(), "every sweep run is included");
+        for ((name, _, _), (r, _)) in sweep.iter().zip(&applied) {
+            assert_designed_outcome(
+                r,
+                sweep_designed_outcome(name),
+                &format!("census c {name} at L'={} KiB", l / KIB),
+            );
+        }
         let author_max = applied.iter().map(|(_, h)| *h).max().unwrap_or_default();
         let n_faults = applied
             .iter()
@@ -1996,13 +2004,19 @@ fn j_sigma_at_emulated_caps() {
     let k = quip_protocol_runtime::configs::VM_SIGMA_ORDERS_PER_L as f64;
     let mut worst = 0f64;
     for lp in [256 * KIB, 512 * KIB, MIB] {
-        let mut calls: Vec<RuntimeCall> = order_sweep(&chain, lp, ms)
-            .into_iter()
-            .map(|(_, c, _)| c)
+        let sweep = order_sweep(&chain, lp, ms);
+        // Each run's label and designed outcome, as in census k: a run that
+        // faults early builds nothing, and Σ would silently lose it. This is
+        // the only coverage at L' = 256 and 512 KiB.
+        let mut expected: Vec<(String, Option<u8>)> = sweep
+            .iter()
+            .map(|(name, _, _)| (name.clone(), sweep_designed_outcome(name)))
             .collect();
+        let mut calls: Vec<RuntimeCall> = sweep.into_iter().map(|(_, c, _)| c).collect();
         let holders = holder_sweep(&chain, lp, ms);
         let n_holders = holders.len();
         calls.extend(holders);
+        expected.extend((0..n_holders).map(|i| (format!("holder run {i}"), None)));
         let supplied = calls.len();
         let (block, applied) = chain.author(calls);
         assert_eq!(
@@ -2010,6 +2024,13 @@ fn j_sigma_at_emulated_caps() {
             supplied,
             "the builder must include every run"
         );
+        for ((r, _), (name, expect)) in applied.iter().zip(&expected) {
+            assert_designed_outcome(
+                r,
+                *expect,
+                &format!("census j {name} at L'={} KiB", lp / KIB),
+            );
+        }
         let (imported, heap) = chain.import(&block);
         assert!(
             imported.is_ok(),
@@ -2165,7 +2186,19 @@ fn g_combined_block_imports_at_cap() {
     let sweep_calls: Vec<RuntimeCall> = sweep.iter().map(|(_, c, _)| c.clone()).collect();
     let (empty, _) = chain.author(vec![]);
     let (_, empty_import) = chain.import(&empty);
-    let (sweep_block, _) = chain.author_fast(sweep_calls.clone());
+    let (sweep_block, sweep_applied) = chain.author_fast(sweep_calls.clone());
+    assert_eq!(
+        sweep_applied.len(),
+        sweep.len(),
+        "every sweep run is included"
+    );
+    for ((name, _, _), r) in sweep.iter().zip(&sweep_applied) {
+        assert_designed_outcome(
+            r,
+            sweep_designed_outcome(name),
+            &format!("census g {name} at L={} KiB", l / KIB),
+        );
+    }
     let (sweep_ok, sweep_heap) = chain.import(&sweep_block);
     let sweep_net = sweep_heap.saturating_sub(empty_import);
     println!(
