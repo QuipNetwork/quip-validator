@@ -85,8 +85,10 @@ fn prog_auditor() -> Vec<u8> {
 }
 
 /// calldata `[n, count, energy]`: allocate up to `count` samples of `n`
-/// elements; if `energy != 0`, `ENERGY` against a size-1 model, cloning r1's
-/// sample buffer (uncharged) before the size-mismatch fault.
+/// elements; if `energy != 0`, `ENERGY` against a size-1 model, which faults
+/// VmSizeMismatch for n > 1 (n = 1 matches and succeeds). Before xqvm 0.6.0
+/// ENERGY first cloned r1's sample buffer (uncharged); W1-013 removed the
+/// clone, and the fault is unchanged.
 fn prog_samples() -> Vec<u8> {
     let mut b = InstructionBuilder::new();
     let done = b.label();
@@ -445,6 +447,67 @@ fn outcome(r: &ApplyExtrinsicResult) -> String {
         Ok(Err(e)) => format!("{e:?}").chars().take(80).collect(),
         Err(e) => format!("INVALID {e:?}"),
     }
+}
+
+/// The xqvm pallet's index in the runtime, and the designed post-allocation
+/// faults (pallet error indices; `designed_fault_codes_are_the_pallet_errors`
+/// pins them to the enum). A `samples` run with energy=1 and n > 1 computes
+/// ENERGY of a size-1 model against an n-variable sample and faults on the
+/// size mismatch; a `vec` run faults in EQUALITY over the built vectors.
+const XQVM_PALLET_INDEX: u8 = 8;
+const SAMPLES_ENERGY_FAULT: u8 = 30;
+const VEC_EQUALITY_FAULT: u8 = 19;
+
+/// `r` is the designed outcome: success (`None`) or exactly the xqvm module
+/// error `Some(code)`. Any other result -- an early fault that never built
+/// what the run is there to measure -- panics, naming `what`.
+fn assert_designed_outcome(r: &ApplyExtrinsicResult, expect: Option<u8>, what: &str) {
+    match expect {
+        None => assert!(
+            matches!(r, Ok(Ok(()))),
+            "{what}: expected success, got {}",
+            outcome(r)
+        ),
+        Some(code) => assert!(
+            matches!(
+                r,
+                Ok(Err(sp_runtime::DispatchError::Module(m)))
+                    if m.index == XQVM_PALLET_INDEX && m.error[0] == code
+            ),
+            "{what}: expected xqvm module error {code}, got {}",
+            outcome(r)
+        ),
+    }
+}
+
+/// The designed outcome of an `order_sweep` run, by its label: `samples/o0`
+/// (n = 1, the size-1 model matches) succeeds; every other `samples/o*` faults
+/// on the size mismatch; `vec+equality` faults in EQUALITY by design; the rest
+/// succeed.
+fn sweep_designed_outcome(name: &str) -> Option<u8> {
+    match name {
+        "samples/o0" => None,
+        n if n.starts_with("samples/") => Some(SAMPLES_ENERGY_FAULT),
+        "vec+equality" => Some(VEC_EQUALITY_FAULT),
+        _ => None,
+    }
+}
+
+#[test]
+fn designed_fault_codes_are_the_pallet_errors() {
+    use frame_support::traits::PalletInfoAccess;
+    assert_eq!(
+        pallet_xqvm::Pallet::<Runtime>::index(),
+        usize::from(XQVM_PALLET_INDEX)
+    );
+    assert_eq!(
+        pallet_xqvm::Error::<Runtime>::VmSizeMismatch.encode(),
+        [SAMPLES_ENERGY_FAULT]
+    );
+    assert_eq!(
+        pallet_xqvm::Error::<Runtime>::VmMemoryLimitExceeded.encode(),
+        [VEC_EQUALITY_FAULT]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -921,14 +984,8 @@ fn a_poc_direct_faulting_and_batch_wrappers() {
 fn b_per_run_footprint_by_family() {
     let chain = Chain::new();
     let ms = max_steps();
-    // xqvm pallet index in the runtime, and the two designed post-allocation
-    // fault codes seen in the measured table (stable pallet error indices). A
-    // `samples` run with energy=1 computes ENERGY of a 1-variable model against
-    // an n-variable sample and faults on the size mismatch; a `vec` run faults
-    // in EQUALITY over the built index/coeff vectors.
-    const XQVM_PALLET_INDEX: u8 = 8;
-    const SAMPLES_ENERGY_FAULT: u8 = 30;
-    const VEC_EQUALITY_FAULT: u8 = 19;
+    // The designed post-allocation faults: SAMPLES_ENERGY_FAULT and
+    // VEC_EQUALITY_FAULT (module level, pinned to the pallet's enum).
     let (halt_block, halt_applied) = chain.author(vec![chain.execute("halt", &[], 10)]);
     let base_author = halt_applied[0].1;
     let (_, base_import) = chain.import(&halt_block);
@@ -1675,10 +1732,14 @@ fn k_combined_block_with_holders_at_cap() {
     let mut sigma = Vec::new();
     let mut low_free = Vec::new();
     for l in [SHIPPED_CAP, 3 * MIB / 4] {
-        let mut vm_calls: Vec<RuntimeCall> = order_sweep(&chain, l, ms)
-            .into_iter()
-            .map(|(_, c, _)| c)
+        let sweep = order_sweep(&chain, l, ms);
+        // Each run's label and designed outcome, asserted once authored: a run
+        // that faults early builds nothing, and Σ would silently lose it.
+        let mut expected: Vec<(String, Option<u8>)> = sweep
+            .iter()
+            .map(|(name, _, _)| (name.clone(), sweep_designed_outcome(name)))
             .collect();
+        let mut vm_calls: Vec<RuntimeCall> = sweep.into_iter().map(|(_, c, _)| c).collect();
         let n_sweep = vm_calls.len();
         // Holder classes (item 19): registers and OUTPUT clones in every order
         // they fit and the 256-B model order; and the value stack plus the
@@ -1688,6 +1749,7 @@ fn k_combined_block_with_holders_at_cap() {
         let holders = holder_sweep(&chain, l, ms);
         let n_holders = holders.len();
         vm_calls.extend(holders);
+        expected.extend((0..n_holders).map(|i| (format!("holder run {i}"), None)));
         let stack_calldata: Vec<i64> = (0..256).collect();
         // Its exact step count, natively, with a margin: a max-step limit
         // would crowd the other runs out of the block by weight.
@@ -1714,8 +1776,12 @@ fn k_combined_block_with_holders_at_cap() {
             stack_steps,
             256,
         ));
+        expected.push(("stack run (fixed_worst_jumps)".into(), None));
         let (vm_block, vm_applied) = chain.author_fast(vm_calls.clone());
         assert_eq!(vm_applied.len(), vm_calls.len(), "every VM run is included");
+        for (r, (name, expect)) in vm_applied.iter().zip(&expected) {
+            assert_designed_outcome(r, *expect, &format!("census k {name} at L={} KiB", l / KIB));
+        }
         let (vm_ok, vm_heap) = chain.import(&vm_block);
         assert!(
             vm_ok.is_ok(),
