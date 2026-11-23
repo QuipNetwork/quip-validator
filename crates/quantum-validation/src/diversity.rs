@@ -56,9 +56,9 @@ fn symmetric_hamming_validated(a: &[i8], b: &[i8]) -> u32 {
 /// refer to `rows` and are in increasing order.
 ///
 /// The relation is the canonicaliser's, so its syntactic isolation applies:
-/// a spin on a self-loop, or on duplicate edges whose couplings cancel, is not
-/// isolated, and rows differing in it are separate answers (accepted by the
-/// owner on 2026-11-23, dec_20261123_074855_b6618ed7).
+/// a spin with no field whose only couplings are a self-loop or duplicate
+/// edges that cancel is not isolated, and rows differing in it are separate
+/// answers (accepted by the owner on 2026-11-23, dec_20261123_074855_b6618ed7).
 ///
 /// `energies` must be parallel to `rows`; a length mismatch is a caller bug
 /// and is reported as [`ValidationError::FieldLengthMismatch`].
@@ -107,9 +107,9 @@ pub fn distinct_solutions<T: AsRef<[i8]>>(
 ///
 /// It is measured on the rows as given, not on their canonical form
 /// ([`AnswerCanonicalizer`]): spins that cannot change the energy -- isolated
-/// spins, and spins on self-loops or on cancelling duplicate edges -- still
-/// count towards the distance, so a solver can raise diversity by varying
-/// them. Accepted by the owner on 2026-11-23 (dec_20261123_074855_b6618ed7).
+/// spins, and spins with no field whose only couplings are a self-loop or
+/// duplicate edges that cancel -- still count towards the distance, so a
+/// solver can raise diversity by varying them. Accepted by the owner on 2026-11-23 (dec_20261123_074855_b6618ed7).
 ///
 /// Examples:
 ///

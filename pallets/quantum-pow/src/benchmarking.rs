@@ -432,12 +432,15 @@ mod benchmarks {
     impl_benchmark_test_suite!(QuantumPow, crate::mock::new_test_ext(), crate::mock::Test);
 }
 
-/// The `submit_proof` benchmark's generator at INTERIOR points (e < n, s > 1),
-/// where benchmark-preflight samples it but `impl_benchmark_test_suite!` (the
-/// component extremes) does not. Every generated row must be its own answer
-/// under the W1-012 canonical form W1-004 dedupes by, or the benchmark's
-/// `min_solutions` is unreachable. With a 0 in `allowed_h_set`, a node outside
-/// every edge can draw a 0 field, become isolated, and fold rows together.
+/// The `submit_proof` benchmark's generator at points with e < n and s > 1.
+/// Every generated row must be its own answer under the W1-012 canonical form
+/// W1-004 dedupes by, or the benchmark's `min_solutions` is unreachable. With a
+/// 0 in `allowed_h_set`, a node outside every edge can draw a 0 field, become
+/// isolated, and fold rows together. `impl_benchmark_test_suite!` runs the
+/// component extremes with one nonce; at its only folding point, (16, 1, 8) at
+/// the mock's maxima, that nonce draws non-zero fields on the uncovered spins,
+/// so putting 0 back (mutation M3b) failed no test before this one.
+/// Benchmark-preflight samples the other points, on the runtime.
 #[cfg(test)]
 mod generator_tests {
     use super::*;

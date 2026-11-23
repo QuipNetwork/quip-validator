@@ -1409,8 +1409,9 @@ pub mod pallet {
             // (owner decision 2026-11-22). Each class keeps its lowest-energy
             // member. The best energy, the diversity target, the selection and
             // the reported count are all taken over this distinct set.
-            // Isolation is syntactic: a self-loop or cancelling duplicate edges
-            // keep a spin non-isolated (owner, 2026-11-23).
+            // Isolation is syntactic: a spin with no field whose only couplings
+            // are a self-loop or duplicate edges that cancel stays non-isolated
+            // (owner, 2026-11-23).
             let canonicalizer = AnswerCanonicalizer::new(h, j, topology_index)
                 .map_err(|_| DispatchError::from(Error::<T>::InvalidTopology))?;
             let valid_rows: Vec<&[i8]> = energy_valid_indices
@@ -1443,9 +1444,10 @@ pub mod pallet {
                 .collect();
 
             // Diversity is measured on the raw selected rows, so spins that
-            // cannot change the energy (isolated ones, and those on self-loops
-            // or cancelling duplicate edges, which the canonicaliser does not
-            // treat as isolated) still count. Both accepted by the owner on
+            // cannot change the energy (isolated ones, and those with no field
+            // whose only couplings are a self-loop or duplicate edges that
+            // cancel, which the canonicaliser does not treat as isolated) still
+            // count. Both accepted by the owner on
             // 2026-11-23 (dec_20261123_074855_b6618ed7).
             let diversity_milli = calculate_diversity(&selected_solutions)
                 .map_err(|_| DispatchError::from(Error::<T>::InvalidSpinValues))?;

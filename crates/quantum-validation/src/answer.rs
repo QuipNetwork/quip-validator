@@ -27,13 +27,13 @@ use crate::validation::{ensure_valid_spins, TopologyIndex};
 /// have the same canonical form.
 ///
 /// Isolation is syntactic: a spin is coupled when any edge it is listed on
-/// carries a non-zero coupling. A self-loop (an edge `(u, u)`, whose energy
-/// term is a constant) or duplicate edges on one pair whose couplings cancel
-/// leave the energy independent of a spin that this mask still counts as
-/// non-isolated, so rows differing in it are different answers here. The topology is not
-/// rejected for either shape: accepted by the owner on 2026-11-23
-/// (dec_20261123_074855_b6618ed7), together with diversity being measured on
-/// raw rows (see `calculate_diversity`).
+/// carries a non-zero coupling. A spin with no field whose only couplings are
+/// a self-loop (an edge `(u, u)`, whose energy term is a constant) or
+/// duplicate edges on one pair that cancel cannot change the energy, yet this
+/// mask counts it as non-isolated, so rows differing in it are different
+/// answers here. The topology is not rejected for either shape: accepted by
+/// the owner on 2026-11-23 (dec_20261123_074855_b6618ed7), together with
+/// diversity being measured on raw rows (see `calculate_diversity`).
 pub struct AnswerCanonicalizer {
     isolated: Vec<bool>,
     /// The first non-isolated position, whose sign decides the flip.
