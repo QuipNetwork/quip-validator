@@ -473,6 +473,55 @@ fn store_rejects_a_jump_across_a_loop_boundary() {
     });
 }
 
+/// `execute` does not re-verify: it decodes whatever `Programs` holds and
+/// runs it. The jump-span check (W1-011) is enforced only at `store_program`,
+/// so a program stored before the xqvm 0.6.0 verifier -- simulated here by
+/// writing `Programs` directly -- still piles up loop frames past
+/// `MaxLoopDepth`. The runtime's VM memory pins (`VM_FIXED_RUN_MEASURED`,
+/// `VM_SIGMA_ORDERS_PER_L`) and its "at most `MaxLoopDepth` frames" claims
+/// hold only on a chain whose every stored program passes the 0.6.0
+/// verifier; this test is what those docs point to. If `execute` ever
+/// re-verifies, this test fails and the precondition can be dropped.
+#[test]
+fn execute_does_not_re_verify_a_stored_program() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+
+        // A counted back-edge to above the RANGE opener: 1,000 passes, each
+        // opening a frame without its NEXT, then one NEXT and HALT. 1,000
+        // live frames against MaxLoopDepth 32.
+        let bytecode = build_program(|b| {
+            b.emit_push(1000).emit_stow(Register(5));
+            let again = b.label();
+            b.place(again).unwrap();
+            b.emit_push(0).emit_push(1).emit_range();
+            b.emit_load(Register(5)).emit_dec().emit_stow(Register(5));
+            b.emit_load(Register(5)).emit_jump_if(again);
+            b.emit_next().emit_halt();
+        });
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode.clone())),
+            Error::<Test>::VerifierJumpAcrossLoopBoundary
+        );
+
+        let hash = program_hash(&bytecode);
+        Programs::<Test>::insert(hash, bounded(bytecode));
+        ProgramOwner::<Test>::insert(hash, 1);
+
+        assert_ok!(Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            100_000,
+        ));
+        assert!(System::events().iter().any(|record| matches!(
+            &record.event,
+            RuntimeEvent::Xqvm(Event::ProgramExecuted { program_hash, .. }) if *program_hash == hash
+        )));
+    });
+}
+
 #[test]
 fn store_rejects_an_unclosed_loop() {
     new_test_ext().execute_with(|| {

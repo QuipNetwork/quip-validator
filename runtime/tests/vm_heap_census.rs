@@ -187,7 +187,10 @@ const VM_STACK_LIMIT: usize = 8192;
 /// (asserted in `i_worst_case_fixed_run`). calldata: 256 words.
 /// - all 256 registers written (`INPUT` from 256 calldata words);
 /// - `MaxLoopDepth` (32) nested one-iteration `RANGE` loops: since xqvm 0.6.0
-///   (W1-011) the most frames a storable program can hold;
+///   (W1-011) the most frames a storable program can hold. A program stored
+///   before 0.6.0 can hold more, because `execute` does not re-verify; the
+///   runtime's pins assume no such program exists (the precondition in
+///   `MaxVmMemory`'s docs);
 /// - inside them the value stack pushed to `VM_STACK_LIMIT` (8,192), then
 ///   cleared, so the stack `Vec`'s whole doubling history is allocated;
 /// - all 256 output slots written (`execute` declares 256);
@@ -203,6 +206,9 @@ fn prog_fixed_worst() -> Vec<u8> {
 /// xqvm 0.6.0's jump-span phase (W1-011) rejects such a jump at
 /// `store_program`, so a storable program holds at most `MaxLoopDepth` frames;
 /// the pile-up builders below remain only to check that they are rejected.
+/// `execute` does not re-verify, so a program stored before 0.6.0 still piles
+/// up to this limit (933,504 B with `ITER` slice copies); the pins hold only
+/// on a chain with no such program (`MaxVmMemory`'s precondition).
 const VM_LOOP_LIMIT: usize = 8192;
 
 /// A loop-frame pile-up appended after the stack fill (claude's R8 finding).
@@ -1657,7 +1663,10 @@ fn i_worst_case_fixed_run() {
     }
     // The loop-frame pile-ups that set the worst case under xqvm 0.5.0 are no
     // longer storable: 0.6.0's jump-span phase rejects their back-edge
-    // (W1-011), so a stored program holds at most MaxLoopDepth frames.
+    // (W1-011), so a program stored under 0.6.0 holds at most MaxLoopDepth
+    // frames. One stored before it still piles up (`execute` does not
+    // re-verify, pallet-xqvm's `execute_does_not_re_verify_a_stored_program`);
+    // the pins assume a chain without one (`MaxVmMemory`'s precondition).
     for (name, bytes) in [
         ("fixed_worst_pile_range", prog_fixed_worst_pile(Pile::Range)),
         ("fixed_worst_pile_iter", prog_fixed_worst_pile(Pile::Iter)),

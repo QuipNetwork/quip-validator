@@ -547,8 +547,9 @@ parameter_types! {
     /// - the jump-span phase (W1-011) rejects at `store_program` a jump that
     ///   crosses a loop-body boundary, so a back-edge can no longer re-enter a
     ///   `RANGE`/`ITER` without its `NEXT`. The uncharged `LoopFrame` pile-up,
-    ///   up to `LOOP_LIMIT` frames each holding a slice copy, is gone: a stored
-    ///   program holds at most `MaxLoopDepth` (32) frames;
+    ///   up to `LOOP_LIMIT` frames each holding a slice copy, is gone: a
+    ///   program stored under that verifier holds at most `MaxLoopDepth` (32)
+    ///   frames (the precondition below says which chains this covers);
     /// - `ENERGY` computes without cloning the sample (W1-013), so a sample no
     ///   longer doubles in its order (census `c` dropped by about 2·L).
     ///
@@ -599,8 +600,9 @@ parameter_types! {
     /// allows, so decode's jump table and its scan temporaries are at their
     /// largest. The value stack is bounded by xqvm's `STACK_LIMIT` (8,192 `i64`
     /// entries), not by the memory meter, so it is accounted for here. The
-    /// loop stack is bounded by `MaxLoopDepth` since xqvm 0.6.0's jump-span
-    /// phase (W1-011); under 0.5.0 a back-edge could pile up `LOOP_LIMIT`
+    /// loop stack is bounded by `MaxLoopDepth` for a program stored under xqvm
+    /// 0.6.0's jump-span phase (W1-011; see the precondition below); under
+    /// 0.5.0 a back-edge could pile up `LOOP_LIMIT`
     /// (8,192) uncharged frames (933,504 B with `ITER` slice copies), which
     /// census `i` now asserts the verifier rejects.
     ///
@@ -627,11 +629,25 @@ parameter_types! {
     /// importing at 76.951 MiB high-water. It is kept as evidence for any later
     /// raise; a different cap needs Σ re-measured there before it is pinned.)
     ///
+    /// PRECONDITION (claude_reviewer's repin R8). The xqvm 0.6.0 terms here --
+    /// the fixed run, Σ and the "at most `MaxLoopDepth` frames" claims -- hold
+    /// only on a chain whose every `Programs` entry passes the xqvm 0.6.0
+    /// verifier: a fresh genesis, or an upgrade after which no stored program
+    /// fails it. The jump-span check runs at `store_program` only; `execute`
+    /// and the mempool transform decode and run what is stored without
+    /// re-verifying, which pallet-xqvm's test
+    /// `execute_does_not_re_verify_a_stored_program` pins. A program stored
+    /// before 0.6.0 still piles up loop frames under this runtime: 933,504 B of
+    /// fixed run and 28.64·L of Σ, the 0.5.0 figures, past both pins. If such a
+    /// chain is ever upgraded in place, re-verify or remove the stored programs
+    /// first.
+    ///
     /// Why 1 MiB (owner decisions of 2026-11-22). Under xqvm 0.5.0 the cap went
     /// 2 MiB → 1.5 MiB when `ITER` pile-ups raised Σ from 20·L to 29·L, then
     /// 1.5 MiB → 1 MiB when 1.5 MiB, not a power of two, reached the next
     /// allocator order (29.52·L, 30.24·L with every holder class). xqvm 0.6.0
-    /// (W1-011, W1-013) removes both effects, and on the table above 2 MiB
+    /// (W1-011, W1-013) removes both effects for programs that pass its
+    /// verifier (the precondition above), and on the table above 2 MiB
     /// would pass the floor again. The owner kept 1 MiB in favour of margin
     /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed upper bound is the gate; a real block is
     /// only a second check. At 1 MiB that check reads: census `k`, the mixed
@@ -959,7 +975,9 @@ impl pallet_miner_registry::Config for Runtime {
 /// 1 MiB: covers the measured worst run (474,784 B) plus the mempool's
 /// retained transform (164,520 B). It was 1.25 MiB under xqvm 0.5.0, whose
 /// `ITER` loop-frame pile-up measured 933,504 B; 0.6.0 (W1-011) makes that
-/// unstorable. No runtime parameter derives from it.
+/// unstorable. Holds only while every stored program passes the 0.6.0
+/// verifier: see the precondition in [`MaxVmMemory`]'s docs. No runtime
+/// parameter derives from it.
 #[doc(hidden)]
 pub const VM_FIXED_RUN_ALLOWANCE: u64 = 1_048_576;
 
@@ -967,6 +985,10 @@ pub const VM_FIXED_RUN_ALLOWANCE: u64 = 1_048_576;
 /// the larger of its two programs (the jump chain filling `MaxProgramBlocks`,
 /// under xqvm 0.6.0), importer heap net of an empty block. The census
 /// asserts it measures no more than this, and the budget test builds on it.
+///
+/// Like the allowance, it holds only while every stored program passes the
+/// xqvm 0.6.0 verifier (the precondition in [`MaxVmMemory`]'s docs; `execute`
+/// does not re-verify).
 ///
 /// Raise only with a measured census `i` run; a raise above
 /// `VM_FIXED_RUN_ALLOWANCE - vm_transform_retained_heap()` requires
@@ -981,7 +1003,10 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 /// 19.1189; census `j_sigma_at_emulated_caps` 19.11 at 1 MiB). Pinned at 20,
 /// the ceiling of the measurement. Under xqvm 0.5.0 the `ITER` loop-frame
 /// pile-ups and the `ENERGY` clone made it 28.64·L, pinned at 29; W1-011 and
-/// W1-013 remove both. Derived for a power-of-two cap.
+/// W1-013 remove both. Derived for a power-of-two cap, and for a chain whose
+/// every stored program passes the 0.6.0 verifier (the precondition in
+/// [`MaxVmMemory`]'s docs: `execute` does not re-verify, so a program stored
+/// under 0.5.0 still measures 28.64·L).
 #[doc(hidden)]
 pub const VM_SIGMA_ORDERS_PER_L: u64 = 20;
 
@@ -1168,7 +1193,9 @@ mod xqvm_weights {
         // and decoded, the value stack at xqvm's STACK_LIMIT (8,192 i64
         // entries; bounded by that count, not by the meter), the loop stack at
         // MaxLoopDepth frames (since xqvm 0.6.0's jump-span phase, W1-011, no
-        // back-edge can pile up more), 256 registers and output slots, a jump
+        // back-edge in a program stored under it can pile up more; a program
+        // stored before it is outside this budget, see the precondition in
+        // MaxVmMemory's docs), 256 registers and output slots, a jump
         // table filling MaxProgramBlocks. The allowance, the measured worst case and the
         // mempool's retained transform (164,520 B today) are the shared items
         // above; census `i` asserts the measurement against the same constant.
