@@ -707,6 +707,9 @@ brun --volume-budget 55
 benv=()
 check "budget: with the size budget spent, rule 3 measures and evicts nothing" \
   'kept 2/old && kept 3/mid && blogged "the size budget of 0s is spent; evicting nothing more this run"'
+check "budget: ... and the closing line blames the spent budget, not a lack of slots" \
+  'blogged "still over budget; the size budget was spent before a slot could be measured" \
+    && ! blogged "no removable slot is left"'
 budget_volume
 touch "$tmp/du.probe"
 brun --volume-budget 55

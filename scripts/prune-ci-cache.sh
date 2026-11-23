@@ -66,8 +66,8 @@ set -euo pipefail
 # volume (with a fresh directory put at its path) is refused. /ci-cache is
 # its own mount, so a verified directory renamed afterwards stays inside the
 # volume, and `mv`/`rm` never follow a symlink in their final component. The
-# eviction's rename is `mv -T` (GNU), so a symlink or directory planted at the
-# trash name fails the rename instead of receiving target/. /bin/pwd missing
+# eviction's rename is `mv -T` (GNU), so a symlink or non-empty directory
+# planted at the trash name fails the rename instead of receiving target/. /bin/pwd missing
 # means nothing can be verified, so nothing is swept or removed. A slot that fails
 # verification is skipped, logged and counted as a failure; nothing aborts
 # the run. If the cache root cannot be resolved, nothing is swept or removed.
@@ -97,6 +97,14 @@ set -euo pipefail
 #     this job's own ephemeral container. Closing it would need no-follow
 #     openat(2) handling, which shell cannot do cleanly, so race-hardening
 #     deliberately stops at this line.
+#   - ACCEPTED: on a scan run, the capacity report (every slot's size) can
+#     spend the du budget before rule 3 measures a candidate. Rule 3 then
+#     evicts nothing that run and logs why; it converges on a later interval.
+#   - ACCEPTED: CI_CACHE_DU_BUDGET bounds `du` only -- not cargo-sweep's own
+#     size walk, the trash `rm -rf`, or the activity probe's `find`.
+#   - DEFERRED (job side, not this script): scripts/ci-cache-lock.sh follows
+#     a STATIC symlinked .in-use or target/, and a FIFO .in-use blocks the
+#     job that opens it. The job's cargo follows a symlinked target/ anyway.
 #
 # Three rules: two for two kinds of garbage, one for the volume as a whole.
 #
@@ -590,7 +598,7 @@ evict_slot() (
     exit 0
   fi
   trash="$trash_prefix.$$.$(date +%s)"
-  # -T (GNU): the destination is a plain name. A planted symlink or
+  # -T (GNU): the destination is a plain name. A planted symlink or non-empty
   # directory at the trash name fails the rename instead of receiving target/.
   if ! mv -T -- target "$trash"; then
     log "cannot move $slot/target aside; not evicting it"
@@ -831,6 +839,7 @@ if ((budget_given)) && ((have_scan_lock)); then
           done < <(printf '%s\n' "${stamped[@]}" | sort -n)
         fi
         removed=""
+        budget_spent=0
         for slot in "${candidates[@]}"; do
           # Judge each candidate on its own stamp: the list was sorted before
           # any lock was taken, and a job may have stamped since.
@@ -859,6 +868,7 @@ if ((budget_given)) && ((have_scan_lock)); then
           # measured, so nothing more is evicted.
           if (($(du_left) == 0)); then
             log "volume budget: the size budget of ${du_budget}s is spent; evicting nothing more this run"
+            budget_spent=1
             break
           fi
           if ! slot_kib="$(target_kib "$slot")"; then
@@ -895,7 +905,11 @@ if ((budget_given)) && ((have_scan_lock)); then
           fi
           break
         done
-        if [[ -z "$removed" ]]; then
+        if [[ -n "$removed" ]]; then
+          :
+        elif ((budget_spent)); then
+          log "volume budget: still over budget; the size budget was spent before a slot could be measured, the next prune continues"
+        else
           log "volume budget: still over budget; no removable slot is left"
         fi
       fi
