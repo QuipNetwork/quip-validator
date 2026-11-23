@@ -342,6 +342,9 @@ check "du budget: a hanging du is cut off and the whole run stays inside the bud
 # budget and hangs through it, so the second (apparent-size) du is left 0s.
 # The guard must answer "size budget spent" without running du: `timeout 0`
 # means NO limit, so a du started with it would hang the run.
+# The first du's limit is 1s or 2s: the budget's deadline is taken from
+# bash's SECONDS, which can tick between setting it and that du. Either way
+# nothing is left for the second du, so the check accepts both.
 touch -d "$(days_ago 2)" "$root/1/own/.last-sweep" "$root/.last-prune"
 touch "$tmp/du.hang"
 : >"$tmp/prune.log"
@@ -354,7 +357,7 @@ elapsed=$((SECONDS - started))
 rm -f "$tmp/du.hang"
 check "du budget: with the budget spent, the next du is not started (timeout 0 is no limit)" \
   '((status == 0 && elapsed < 15)) \
-    && logged "own slot size before sweep: unknown (du failed or took over 2s) on disk, unknown (size budget spent) apparent"'
+    && grep -Eq "prune-ci-cache: own slot size before sweep: unknown \(du failed or took over [12]s\) on disk, unknown \(size budget spent\) apparent" "$tmp/prune.log"'
 # Back to the cargo without a sweep subcommand that the sections below were
 # written against (with it, rule 1 takes no exclusive lock first).
 cat >"$bin/cargo" <<'EOF'
