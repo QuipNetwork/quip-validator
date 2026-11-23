@@ -4016,6 +4016,38 @@ mod w1_012 {
         });
     }
 
+    /// The answer a submission is indexed under is the canonical form of its
+    /// BEST row, wherever that row sits in the submission. Every other W1-012
+    /// test submits one row, where row 0 is the best row; here the best row
+    /// is the second one, and flipped.
+    #[test]
+    fn the_answer_key_is_the_best_row_wherever_it_is_submitted() {
+        new_test_ext().execute_with(|| {
+            let id = propose(chain_params(4), RewardResolution::TopNEqual { n: 3 });
+            for who in [2, 3] {
+                solver(who);
+            }
+            let worse: &[i8] = &[1, -1, -1, 1]; // two domain walls
+            let ground_flipped: &[i8] = &[-1, -1, -1, -1];
+            assert_ok!(submit(
+                2,
+                id,
+                bounded(vec![
+                    bounded(worse.to_vec()),
+                    bounded(ground_flipped.to_vec())
+                ])
+            ));
+            // Solver 2's answer is the ground state, in canonical form ...
+            assert_noop!(
+                submit(3, id, row(&[1, 1, 1, 1])),
+                crate::Error::<Test>::DuplicateAnswer
+            );
+            // ... and its worse row holds no place in the index.
+            assert_ok!(submit(3, id, row(worse)));
+            assert_index_consistent(id);
+        });
+    }
+
     #[test]
     fn same_solver_same_answer_meets_the_improvement_rule() {
         new_test_ext().execute_with(|| {
