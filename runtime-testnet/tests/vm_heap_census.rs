@@ -380,12 +380,13 @@ fn prog_holders_samples() -> Vec<u8> {
     encode(b)
 }
 
-/// r4..r255 each a size-2 model with one linear and one quadratic coefficient
-/// -- two BTreeMap root leaves (144 B and 184 B on wasm32), so two
-/// 256-B-order chunks for 96 B of charge -- and 256 OUTPUT clones of them.
+/// No calldata. r4..r255 each a size-2 model with one linear and one
+/// quadratic coefficient -- two BTreeMap root leaves (144 B and 184 B on
+/// wasm32), so two 256-B-order chunks for 96 B of charge -- and 256 OUTPUT
+/// clones of them. (It must not read calldata: it runs with none, and an
+/// INPUT would fault VmCallDataIndex before any holder is built.)
 fn prog_holders_models() -> Vec<u8> {
     let mut b = InstructionBuilder::new();
-    holders_head(&mut b);
     for i in 4..=255u8 {
         b.emit_push(2).emit(I::Bqmx { reg: R(i) });
         b.emit_push(0).emit_push(1).emit(I::SetLine { reg: R(i) });

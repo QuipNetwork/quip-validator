@@ -615,16 +615,16 @@ parameter_types! {
     /// original value) put the budget past 128 MiB: five `execute` calls built
     /// a block only its author could import.
     ///
-    /// | cap   | Σ measured | Σ pin | pinned sum | free   | 25 % floor | worst real block   |
-    /// |-------|------------|-------|------------|--------|------------|--------------------|
-    /// | 1 MiB | 19.12·L    | 20    | 70 MiB     | 45.3 % | passes     | 61.73 MiB, 51.8 %  |
-    /// | 2 MiB | 19.09·L    | 20    | 90 MiB     | 29.7 % | passes     | 76.94 MiB, 39.9 %  |
-    /// | 4 MiB | -          | 20    | 130 MiB    | -      | fails      | -                  |
+    /// | cap   | Σ measured | Σ pin | pinned sum | free   | 25 % floor | worst real block    |
+    /// |-------|------------|-------|------------|--------|------------|---------------------|
+    /// | 1 MiB | 19.12·L    | 20    | 70 MiB     | 45.3 % | passes     | 61.735 MiB, 51.8 %  |
+    /// | 2 MiB | 19.09·L    | 20    | 90 MiB     | 29.7 % | passes     | 76.951 MiB, 39.9 %  |
+    /// | 4 MiB | -          | 20    | 130 MiB    | -      | fails      | -                   |
     ///
     /// (Under xqvm 0.6.0. The 2 MiB row was MEASURED on a throwaway build with
     /// both caps at 2 MiB, census `k` and `j` at that cap, not extrapolated:
     /// Σ 19.0940·L, the budget test passing with Σ 20, and the combined block
-    /// importing at 76.944 MiB high-water. It is kept as evidence for any later
+    /// importing at 76.951 MiB high-water. It is kept as evidence for any later
     /// raise; a different cap needs Σ re-measured there before it is pinned.)
     ///
     /// Why 1 MiB (owner decisions of 2026-11-22). Under xqvm 0.5.0 the cap went
@@ -636,7 +636,7 @@ parameter_types! {
     /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed upper bound is the gate; a real block is
     /// only a second check. At 1 MiB that check reads: census `k`, the mixed
     /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
-    /// 61.73 MiB high-water (51.8 % free); census `g`, without the holders,
+    /// 61.735 MiB high-water (51.8 % free); census `g`, without the holders,
     /// 60.98 MiB.
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
