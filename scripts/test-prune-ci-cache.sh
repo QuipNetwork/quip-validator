@@ -331,6 +331,25 @@ rm -f "$tmp/du.hang"
 check "du budget: a hanging du is cut off and the whole run stays inside the budget" \
   '((status == 0 && elapsed < 15)) && logged "own slot size before sweep: unknown (du failed or took over 1s)" \
     && logged "size budget of 3s spent after"'
+
+# du_size's zero-limit guard. With CI_CACHE_DU_BUDGET equal to
+# CI_CACHE_DU_TIMEOUT, the own slot's first (on-disk) du is given the whole
+# budget and hangs through it, so the second (apparent-size) du is left 0s.
+# The guard must answer "size budget spent" without running du: `timeout 0`
+# means NO limit, so a du started with it would hang the run.
+touch -d "$(days_ago 2)" "$root/1/own/.last-sweep" "$root/.last-prune"
+touch "$tmp/du.hang"
+: >"$tmp/prune.log"
+status=0
+started=$SECONDS
+rpath="$dubin:"
+du_budget=2 du_timeout=2 run || status=$?
+rpath=""
+elapsed=$((SECONDS - started))
+rm -f "$tmp/du.hang"
+check "du budget: with the budget spent, the next du is not started (timeout 0 is no limit)" \
+  '((status == 0 && elapsed < 15)) \
+    && logged "own slot size before sweep: unknown (du failed or took over 2s) on disk, unknown (size budget spent) apparent"'
 # Back to the cargo without a sweep subcommand that the sections below were
 # written against (with it, rule 1 takes no exclusive lock first).
 cat >"$bin/cargo" <<'EOF'
