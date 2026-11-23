@@ -56,7 +56,7 @@ pub struct TransformOutcome {
     pub steps_used: u64,
 }
 
-/// Deterministic xqvm 0.5.0 adapter with one budget shared by all submitted spins.
+/// Deterministic xqvm 0.6.0 adapter with one budget shared by all submitted spins.
 pub struct XqvmAdapter<T>(core::marker::PhantomData<T>);
 
 impl<T: crate::Config> QuantumVm<T::AccountId, crate::BalanceOf<T>, T::Hash> for XqvmAdapter<T> {

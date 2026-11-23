@@ -519,10 +519,13 @@ admission can be restored. Exact-height verification removes repeated loop-body
 walks; register-heavy cyclic joins now drive the cost-calibration inputs.
 Release/runtime-version selection remains a separate step.
 
-This branch pins xquad v0.5.0 plus the audit fixes at commit
-`4a31c966fb46a4ae6588d5f39ca60b162059d004`. That commit declares `xqvm 0.5.0`,
-but differs from the published crates.io `xqvm 0.5.0` at `a99f7d2e`.
-The registry release does not contain these audit fixes. Both execution
+This branch pins xquad at commit
+`ade13e6e6876ee49e9a6159ef6493842c78bc22d` (draft xquad !246: the audit fixes,
+including the jump-span verifier phase of W1-011 and the clone-free `ENERGY`
+of W1-013). That commit declares `xqvm 0.6.0`. It replaces the earlier pin,
+`4a31c966fb46a4ae6588d5f39ca60b162059d004`, which declared `xqvm 0.5.0` but
+differed from the published crates.io `xqvm 0.5.0` at `a99f7d2e`; the registry
+release does not contain these audit fixes. Both execution
 pallets and both runtime test dependencies inherit the same workspace git
 dependency; no member may independently select the registry package with
 that version. The lockfile and resolved graph must contain exactly one XQVM
@@ -556,7 +559,8 @@ actual allocation limit. Vectors with unset calldata slots are reported as
 outside the pallet's integer-only calldata API; they are not counted as
 on-chain passes. Native conformance remains responsible for those host-only
 inputs. This distinction also avoids treating upstream vectors with a 64 GiB
-allocation budget as successful executions under the chain's 16 MiB bound.
+allocation budget as successful executions under the chain's 1 MiB bound
+(`MaxVmMemory`; the replay reads the value from the runtime metadata).
 
 ### Audit SDK commission guard (QUIP-12)
 
