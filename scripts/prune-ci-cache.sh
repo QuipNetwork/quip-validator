@@ -89,15 +89,17 @@ set -euo pipefail
 #     a leaf for a symlink between its check and its use: ./.in-use and the
 #     root .prune.lock before they are opened (read-only), target/.last-used
 #     before it is stat'ed or touched, .last-prune before its touch,
-#     ./.last-sweep between its stat and its touch (spans the cargo sweep
-#     run); or swap a parent between cargo's getcwd and cargo-sweep's
-#     deletes. A swapped target/ is harmless: `mv -T` and `rm` act on the
-#     link itself, and `du -P`/`find -P` never follow it. That writer must
-#     already be able to write /ci-cache, which lets it delete or poison
-#     anything there directly; redirecting this prune reaches nothing beyond
-#     that volume and this job's own ephemeral container. Closing it would
-#     need no-follow openat(2) handling, which shell cannot do cleanly, so
-#     race-hardening deliberately stops at this line.
+#     ./.last-sweep before it is stat'ed (outside the lock, where a swap can
+#     only skip or refuse the sweep) or touched (from its re-check under the
+#     lock to the touch, a window that spans the cargo sweep run); or swap a
+#     parent between cargo's getcwd and cargo-sweep's deletes. A swapped
+#     target/ is harmless: `mv -T` and `rm` act on the link itself, and `du
+#     -P`/`find -P` never follow it. That writer must already be able to
+#     write /ci-cache, which lets it delete or poison anything there
+#     directly; redirecting this prune reaches nothing beyond that volume and
+#     this job's own ephemeral container. Closing it would need no-follow
+#     openat(2) handling, which shell cannot do cleanly, so race-hardening
+#     deliberately stops at this line.
 #   - ACCEPTED: on a scan run, the capacity report (every slot's size) can
 #     spend the du budget before rule 3 measures a candidate. Rule 3 then
 #     evicts nothing that run and logs why; it converges on a later interval.
