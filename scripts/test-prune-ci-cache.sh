@@ -1010,6 +1010,28 @@ brun --volume-budget 10
 check "leaves: a non-regular stamp is refused" \
   'kept 8/stale && grep -q "$broot/8/stale has a symlinked target/, or a symlinked or non-regular" "$tmp/budget.log"'
 
+# The activity probe fails closed: a `find` that exits non-zero (a shim that
+# fails only the fingerprint probe) must keep the stale slot and log why, not
+# read as "no recent fingerprint" and evict it.
+findfailbin="$tmp/findfailbin"
+mkdir -p "$findfailbin"
+real_find="$(command -v find)"
+cat >"$findfailbin/find" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *".fingerprint"* ]]; then
+  echo "find: simulated failure" >&2
+  exit 1
+fi
+exec "$real_find" "\$@"
+EOF
+chmod +x "$findfailbin/find"
+contained_volume
+bpath="$findfailbin:"
+brun --volume-budget 10
+bpath=""
+check "activity probe: a failing find keeps the stale slot (fails closed)" \
+  'kept 8/stale && grep -q "/8/stale: the activity probe.s find failed (exit 1); treating the slot as in use" "$tmp/budget.log"'
+
 # .last-sweep: rule 1 reads its mtime and touches it after a sweep. A dangling
 # symlink there would read as "never swept", and the touch would create the
 # outside file; a link to an old outside file would be read and then touched.

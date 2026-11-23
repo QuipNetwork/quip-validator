@@ -442,14 +442,24 @@ older_than() {
 
 # recently_built: (anchored) true when any cargo fingerprint under ./target is
 # newer than CI_CACHE_BUDGET_MIN_IDLE. Cargo rewrites these throughout a
-# build, so this sees activity whatever lock (if any) the builder took.
+# build, so this sees activity whatever lock (if any) the builder took. Fails
+# closed: if the probe cannot run to completion (no reference file, or `find`
+# exits non-zero), the slot counts as in use and the reason is logged, so an
+# error never reads as "no recent fingerprint" -- no deletion by absence.
 recently_built() {
-  local ref hit
-  ref="$(mktemp)" || return 0 # cannot tell: treat as in use
-  touch -d "@$(($(date +%s) - budget_min_idle))" "$ref"
+  local ref hit status=0
+  if ! ref="$(mktemp)" || ! touch -d "@$(($(date +%s) - budget_min_idle))" "$ref"; then
+    [[ -n "$ref" ]] && rm -f "$ref"
+    log "$PWD: cannot set up the activity probe; treating the slot as in use" >&2
+    return 0
+  fi
   hit="$(find -P ./target -mindepth 3 -maxdepth 5 -path '*/.fingerprint/*' -newer "$ref" \
-    -print -quit 2>/dev/null || true)"
+    -print -quit 2>/dev/null)" || status=$?
   rm -f "$ref"
+  if ((status != 0)); then
+    log "$PWD: the activity probe's find failed (exit $status); treating the slot as in use" >&2
+    return 0
+  fi
   [[ -n "$hit" ]]
 }
 
