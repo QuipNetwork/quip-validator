@@ -474,9 +474,10 @@ fn store_rejects_a_jump_across_a_loop_boundary() {
 }
 
 /// `execute` does not re-verify: it decodes whatever `Programs` holds and
-/// runs it. The jump-span check (W1-011) is enforced only at `store_program`,
-/// so a program stored before the xqvm 0.6.0 verifier -- simulated here by
-/// writing `Programs` directly -- still piles up loop frames past
+/// runs it. In pallet-xqvm the jump-span check (W1-011) is enforced only at
+/// `store_program` (the mempool re-runs the verifier when it registers a job
+/// spec), so a program stored before the xqvm 0.6.0 verifier -- simulated
+/// here by writing `Programs` directly -- still piles up loop frames past
 /// `MaxLoopDepth`. The runtime's VM memory pins (`VM_FIXED_RUN_MEASURED`,
 /// `VM_SIGMA_ORDERS_PER_L`) and its "at most `MaxLoopDepth` frames" claims
 /// hold only on a chain whose every stored program passes the 0.6.0

@@ -638,9 +638,9 @@ parameter_types! {
     /// the fixed run, Σ and the "at most `MaxLoopDepth` frames" claims -- hold
     /// only on a chain whose every `Programs` entry passes the xqvm 0.6.0
     /// verifier: a fresh genesis, or an upgrade after which no stored program
-    /// fails it. The jump-span check runs at `store_program` only; `execute`
-    /// and the mempool transform decode and run what is stored without
-    /// re-verifying. pallet-xqvm's test
+    /// fails it. The jump-span check runs at `store_program` (and at spec
+    /// registration, below); `execute` and the mempool transform decode and run
+    /// what is stored without re-verifying. pallet-xqvm's test
     /// `execute_does_not_re_verify_a_stored_program` pins this for `execute`
     /// only. The mempool registers a spec through `insert_job_spec` →
     /// `validate_programs`, which re-runs the current verifier, so the
