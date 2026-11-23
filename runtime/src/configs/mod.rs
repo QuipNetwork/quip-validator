@@ -533,15 +533,19 @@ parameter_types! {
     /// `Σ_orders (k · MaxVmMemory)`, independent of the number of runs, where
     /// `k` covers power-of-two rounding and the `EQUALITY`/`ATLEASTW` input-vec
     /// clones. The Σ term is not proved; it is measured, against xqvm 0.6.0.
-    /// The adversarial mixed-family order sweep reaches 17.13·L at the shipped
-    /// 1 MiB (census `c`; 17.34·L' at 256 KiB). The other holders that keep
+    /// The adversarial mixed-family order sweep reaches 17.32·L at the shipped
+    /// 1 MiB (census `c`; 17.54·L' at 256 KiB). It includes a linear model
+    /// whose coefficient `BTreeMap` is written in its worst insertion order
+    /// (`linear_anchored`: keys 0..5, then n-1 down to 5, leaving 5-entry
+    /// leaves; claude_reviewer's repin R8), the same charge in more 256-B
+    /// chunks than ascending order. The other holders that keep
     /// small buffers alive -- the 252 free registers and up to 256 `OUTPUT`
     /// clones in every order they fit, including size-2 models whose two
     /// `BTreeMap` leaves take two 256-B chunks for 96 B of charge -- and the
-    /// value and loop stacks at their limits raise it to **19.12·L** (census
-    /// `k`, 19.1189; census `j`'s L' sweep 18.20 / 18.14 / 19.11 at 256 KiB /
+    /// value and loop stacks at their limits raise it to **19.30·L** (census
+    /// `k`, 19.3038; census `j`'s L' sweep 18.39 / 18.33 / 19.30 at 256 KiB /
     /// 512 KiB / 1 MiB). That is pinned at **20·L** ([`VM_SIGMA_ORDERS_PER_L`])
-    /// in the budget test below.
+    /// in the budget test below, 0.70·L above the measurement.
     ///
     /// Two xqvm 0.6.0 changes brought it down from 28.64·L under 0.5.0:
     /// - the jump-span phase (W1-011) rejects at `store_program` a jump that
@@ -557,7 +561,7 @@ parameter_types! {
     /// still requires one: at any other cap the charged sample itself -- just
     /// over half a next_pow2(L) chunk, still <= L -- lands in the order above
     /// L's. Without the ENERGY clone that excess is now small (census `k`:
-    /// 19.1444·L at an emulated 768 KiB against 19.1189 at 1 MiB; 30.24·L
+    /// 19.3303·L at an emulated 768 KiB against 19.3038 at 1 MiB; 30.24·L
     /// under 0.5.0), but the guard stays until Σ is re-derived for a specific
     /// non-power-of-two cap.
     ///
@@ -585,7 +589,7 @@ parameter_types! {
     /// importer heap a block can be made to hold is:
     ///
     /// ```text
-    ///   Σ_orders(k·L)   order sweep + register/output holders  19.12·L max measured, 20·L pinned
+    ///   Σ_orders(k·L)   order sweep + register/output holders  19.30·L max measured, 20·L pinned
     /// + fixed_run       worst case, L-independent (below)       0.45 MiB
     /// + block_residency encoded block + largest signed xt       44.0 MiB
     /// + non_vm_baseline maximal store_program verify            3.8 MiB
@@ -610,8 +614,8 @@ parameter_types! {
     /// programs: 0.453 MiB (474,784 B with the jump chain; 471,944 B without);
     /// the HALT-only baseline 0.025 MiB.
     ///
-    /// At `L = 1 MiB`, on the measured terms: 19.12 + 0.45 + 44.0 + 3.76 ≈
-    /// 67.3 MiB (47.4 % free). The budget test sums the PINNED terms, and that
+    /// At `L = 1 MiB`, on the measured terms: 19.30 + 0.45 + 44.0 + 3.76 ≈
+    /// 67.5 MiB (47.3 % free). The budget test sums the PINNED terms, and that
     /// sum is the gate: 20 × 1 + 1 (fixed-run allowance) + 45 + 4 =
     /// **70 MiB < 128 MiB**, 45.3 % free, above the 25 % floor. 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
@@ -619,14 +623,15 @@ parameter_types! {
     ///
     /// | cap   | Σ measured | Σ pin | pinned sum | free   | 25 % floor | worst real block    |
     /// |-------|------------|-------|------------|--------|------------|---------------------|
-    /// | 1 MiB | 19.12·L    | 20    | 70 MiB     | 45.3 % | passes     | 61.735 MiB, 51.8 %  |
-    /// | 2 MiB | 19.09·L    | 20    | 90 MiB     | 29.7 % | passes     | 76.951 MiB, 39.9 %  |
+    /// | 1 MiB | 19.30·L    | 20    | 70 MiB     | 45.3 % | passes     | 61.725 MiB, 51.8 %  |
+    /// | 2 MiB | 19.31·L    | 20    | 90 MiB     | 29.7 % | passes     | 76.936 MiB, 39.9 %  |
     /// | 4 MiB | -          | 20    | 130 MiB    | -      | fails      | -                   |
     ///
     /// (Under xqvm 0.6.0. The 2 MiB row was MEASURED on a throwaway build with
-    /// both caps at 2 MiB, census `k` and `j` at that cap, not extrapolated:
-    /// Σ 19.0940·L, the budget test passing with Σ 20, and the combined block
-    /// importing at 76.951 MiB high-water. It is kept as evidence for any later
+    /// both caps at 2 MiB, census `k` and `j` at that cap, not extrapolated,
+    /// and census `k` re-measured there with the `linear_anchored` run:
+    /// Σ 19.3093·L, the budget test passing with Σ 20, and the combined block
+    /// importing at 76.936 MiB high-water. It is kept as evidence for any later
     /// raise; a different cap needs Σ re-measured there before it is pinned.)
     ///
     /// PRECONDITION (claude_reviewer's repin R8). The xqvm 0.6.0 terms here --
@@ -652,8 +657,8 @@ parameter_types! {
     /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed upper bound is the gate; a real block is
     /// only a second check. At 1 MiB that check reads: census `k`, the mixed
     /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
-    /// 61.735 MiB high-water (51.8 % free); census `g`, without the holders,
-    /// 60.98 MiB.
+    /// 61.725 MiB high-water (51.8 % free); census `g`, without the holders,
+    /// 60.97 MiB.
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
     /// legitimate on-chain `execute` workload exists today: the live testnet's
@@ -687,7 +692,7 @@ parameter_types! {
     /// bytes per element), so it alone would permit an allocation well past the
     /// heap. The pinned budget test below restates each measured term; its Σ term
     /// is the measured maximum at the shipped power-of-two cap, with every
-    /// holder class, 19.12·L, pinned at 20·L.
+    /// holder class, 19.30·L, pinned at 20·L.
     pub const MaxVmMemory: u64 = 1_048_576;
 
     /// Maximum bytes a single compute-mempool transform run may allocate inside
@@ -998,10 +1003,11 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 
 /// Whole-block VM growth across allocator orders, as a multiple of the per-run
 /// cap L, under xqvm 0.6.0. The mixed-family order sweep alone measured
-/// 17.13·L at the shipped 1 MiB (census `c_block_order_sweep_at_emulated_caps`);
-/// with the register, `OUTPUT` and stack holders, 19.12·L (census `k`,
-/// 19.1189; census `j_sigma_at_emulated_caps` 19.11 at 1 MiB). Pinned at 20,
-/// the ceiling of the measurement. Under xqvm 0.5.0 the `ITER` loop-frame
+/// 17.32·L at the shipped 1 MiB (census `c_block_order_sweep_at_emulated_caps`,
+/// with the worst-order `linear_anchored` model); with the register, `OUTPUT`
+/// and stack holders, 19.30·L (census `k`, 19.3038; census
+/// `j_sigma_at_emulated_caps` 19.30 at 1 MiB). Pinned at 20, the ceiling of
+/// the measurement, 0.70·L above it. Under xqvm 0.5.0 the `ITER` loop-frame
 /// pile-ups and the `ENERGY` clone made it 28.64·L, pinned at 29; W1-011 and
 /// W1-013 remove both. Derived for a power-of-two cap, and for a chain whose
 /// every stored program passes the 0.6.0 verifier (the precondition in
@@ -1182,8 +1188,8 @@ mod xqvm_weights {
 
         // Whole-block VM growth across allocator orders, measured as a ratio of
         // the per-run cap L, under xqvm 0.6.0: the mixed-family order sweep
-        // and the register, OUTPUT and stack holders reached 19.12 x L at the
-        // shipped 1 MiB (census k; the sweep alone 17.13), pinned at 20 -- for
+        // and the register, OUTPUT and stack holders reached 19.30 x L at the
+        // shipped 1 MiB (census k; the sweep alone 17.32), pinned at 20 -- for
         // power-of-two caps, asserted below. Rounding and the uncharged
         // EQUALITY clones are folded in; LVAL is excluded by the calldata
         // invariant (see `on_chain_calldata_cannot_carry_a_model`).
@@ -1241,7 +1247,7 @@ mod xqvm_weights {
         // next_pow2(L) chunk, still <= L -- lands in the order above L's.
         // Under xqvm 0.5.0 its uncharged ENERGY clone doubled it there
         // (30.24·L at an emulated 768 KiB); 0.6.0 (W1-013) removes the clone,
-        // and the excess is now small (19.1444·L against 19.1189 at 1 MiB),
+        // and the excess is now small (19.3303·L against 19.3038 at 1 MiB),
         // but the guard stays until Σ is re-derived for such a cap. The guard itself rests on an
         // assumption about xqvm: every buffer it allocates is no larger than
         // its own charge, or than a charged source it copies, and is aligned

@@ -158,6 +158,39 @@ fn prog_linear() -> Vec<u8> {
     encode(b)
 }
 
+/// calldata `[n]`: the same model as [`prog_linear`], written in the order
+/// that packs the coefficient `BTreeMap` worst: keys `0..5` first, then `n-1`
+/// down to `5`. Every later key lands at edge 5 of the leftmost leaf, so each
+/// split leaves a 5-entry leaf (the B-tree's minimum) that is never written
+/// again: about 5.15 entries per 256-B node against 6.0 in ascending order.
+/// The same charge, more chunks (claude_reviewer's repin R8 probe).
+fn prog_linear_anchored() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    b.emit(I::Load { reg: R(0) }).emit(I::Bqmx { reg: R(1) });
+    b.emit_push(0).emit_push(5).emit(I::Range {});
+    b.emit(I::Lidx { reg: R(2) })
+        .emit(I::Load { reg: R(2) })
+        .emit_push(1)
+        .emit(I::SetLine { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit_push(0)
+        .emit(I::Load { reg: R(0) })
+        .emit_push(5)
+        .emit(I::Sub {})
+        .emit(I::Range {});
+    b.emit(I::Lidx { reg: R(2) })
+        .emit(I::Load { reg: R(0) })
+        .emit(I::Dec {})
+        .emit(I::Load { reg: R(2) })
+        .emit(I::Sub {})
+        .emit_push(1)
+        .emit(I::SetLine { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit(I::Halt {});
+    encode(b)
+}
+
 /// calldata `[n]`: a size-`n` model with `n-1` quadratic coefficients `(0, j)`.
 fn prog_quad() -> Vec<u8> {
     let mut b = InstructionBuilder::new();
@@ -550,6 +583,7 @@ impl Chain {
             ("samples", prog_samples()),
             ("vec", prog_vec()),
             ("linear", prog_linear()),
+            ("linear_anchored", prog_linear_anchored()),
             ("quad", prog_quad()),
             ("halt", prog_halt()),
             ("fixed_worst", prog_fixed_worst()),
@@ -1185,6 +1219,11 @@ fn order_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, u64)
     out.push((
         "linear".into(),
         chain.execute("linear", &[(l / 40) as i64], ms),
+        40 * (l / 40),
+    ));
+    out.push((
+        "linear_anchored".into(),
+        chain.execute("linear_anchored", &[(l / 40) as i64], ms),
         40 * (l / 40),
     ));
     out.push((
