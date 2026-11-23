@@ -844,16 +844,21 @@ if ! flock --shared --wait 1200 9; then
   echo "ERROR: a cache prune held $slot_dir for 20 minutes" >&2
   exit 1
 fi
-# Test instrumentation: report the locked file, then hold the lock.
+# Test instrumentation: report the locked file, then hold the lock until the
+# test has made its checks and signals the release (a fixed sleep raced a slow
+# host). Bounded at 120 s so a broken test cannot hang the suite.
 stat -L -c %d:%i /dev/fd/9 >"$WAITER_INODE"
-sleep 8
+for _ in $(seq 1200); do
+  [[ -e "$WAITER_RELEASE" ]] && break
+  sleep 0.1
+done
 EOF
 # main_waiter_race SLOT PRUNE-ARGS...: run one prune with the slow mv, start
 # main's waiter on SLOT once the prune holds it, and wait for the prune.
 main_waiter_race() {
   local slot="$1"
   shift
-  rm -f "$tmp/mv.started" "$tmp/waiter.inode"
+  rm -f "$tmp/mv.started" "$tmp/waiter.inode" "$tmp/waiter.release"
   bpath="$slowmv:"
   brun "$@" &
   local prune_pid=$!
@@ -863,7 +868,7 @@ main_waiter_race() {
     sleep 0.05
   done
   CARGO_TARGET_DIR="$broot/$slot/target" WAITER_INODE="$tmp/waiter.inode" \
-    bash "$tmp/mainwaiter.sh" >/dev/null 2>&1 &
+    WAITER_RELEASE="$tmp/waiter.release" bash "$tmp/mainwaiter.sh" >/dev/null 2>&1 &
   waiter_pid=$!
   wait "$prune_pid" || true
   for _ in $(seq 200); do
@@ -884,6 +889,7 @@ touch -d "@$(($(date +%s) - 2 * day))" "$broot/.last-prune"
 brun
 check "main waiter (rule 2): a later prune sees the slot as held" \
   'kept 8/victim && grep -q "stale slot $broot/8/victim is in use (lock held), skipping" "$tmp/budget.log"'
+touch "$tmp/waiter.release"
 wait "$waiter_pid" || true
 
 budget_volume
@@ -895,6 +901,7 @@ bslot 2 old $((10 * day)) 200000
 brun --volume-budget 50
 check "main waiter (rule 3): a later prune sees the slot as held" \
   'kept 2/old && blogged "$broot/2/old is in use (lock held), skipping"'
+touch "$tmp/waiter.release"
 wait "$waiter_pid" || true
 
 # Item 12 (F1): a job that waits on its slot's lock THROUGH a rule-3 eviction
