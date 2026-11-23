@@ -2313,13 +2313,47 @@ fn g_combined_block_imports_at_cap() {
         );
         // The block carries the ~2 MiB remark and the full sweep alongside as
         // many fillers as the builder accepted, so the remark and the full
-        // sweep co-occur in one builder-full, importable block.
-        let vm_plus_remark = 1 + sweep.len();
-        assert!(
-            included >= vm_plus_remark,
-            "[{order}] the remark and the full {}-run sweep must both fit (included {included})",
+        // sweep co-occur in one builder-full, importable block. Proven from
+        // the block itself, not from a count the fillers alone could meet:
+        // extrinsic 0 is the timestamp inherent, and `applied[i]` is the
+        // result of extrinsic i + 1.
+        assert_eq!(
+            block.extrinsics.len(),
+            included + 1,
+            "[{order}] the block is the timestamp plus every applied extrinsic"
+        );
+        let mut vm_runs = Vec::new();
+        let mut big_remarks = 0usize;
+        for (xt, r) in block.extrinsics[1..].iter().zip(&applied) {
+            match &xt.0.function {
+                RuntimeCall::Xqvm(pallet_xqvm::Call::execute { .. }) => vm_runs.push(r),
+                RuntimeCall::System(frame_system::Call::remark { remark })
+                    if remark.len() > MIB as usize =>
+                {
+                    big_remarks += 1
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            vm_runs.len(),
+            sweep.len(),
+            "[{order}] every sweep run must be in the block (found {} of {})",
+            vm_runs.len(),
             sweep.len(),
         );
+        for ((name, _, _), r) in sweep.iter().zip(&vm_runs) {
+            assert_designed_outcome(
+                r,
+                sweep_designed_outcome(name),
+                &format!("census g [{order}] {name}"),
+            );
+        }
+        assert_eq!(
+            big_remarks, 1,
+            "[{order}] the ~2 MiB remark must be in the block"
+        );
+        let vm_plus_remark = 1 + sweep.len();
         println!(
             "COMBINED [{order}]: remark + full {}-run sweep + {} fillers fit and import; {dropped} calls dropped by the builder",
             sweep.len(),
