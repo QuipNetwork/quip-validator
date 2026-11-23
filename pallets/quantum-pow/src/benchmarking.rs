@@ -436,11 +436,14 @@ mod benchmarks {
 /// Every generated row must be its own answer under the W1-012 canonical form
 /// W1-004 dedupes by, or the benchmark's `min_solutions` is unreachable. With a
 /// 0 in `allowed_h_set`, a node outside every edge can draw a 0 field, become
-/// isolated, and fold rows together. `impl_benchmark_test_suite!` runs the
-/// component extremes with one nonce; at its only folding point, (16, 1, 8) at
-/// the mock's maxima, that nonce draws non-zero fields on the uncovered spins,
-/// so putting 0 back (mutation M3b) failed no test before this one.
-/// Benchmark-preflight samples the other points, on the runtime.
+/// isolated, and fold rows together. `impl_benchmark_test_suite!` runs 6
+/// values per component (`VALUES_PER_COMPONENT`: the low, the high and
+/// equidistant values between), each with the other components at their
+/// maxima, and with one nonce. Its only folding point is (16, 1, 8): n and s
+/// at the mock's maxima, e at its minimum. There that nonce draws non-zero
+/// fields on the uncovered spins, so putting 0 back (mutation M3b) failed no
+/// test before this one. Benchmark-preflight samples the other points, on the
+/// runtime.
 #[cfg(test)]
 mod generator_tests {
     use super::*;
