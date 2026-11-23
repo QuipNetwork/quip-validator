@@ -640,12 +640,16 @@ parameter_types! {
     /// verifier: a fresh genesis, or an upgrade after which no stored program
     /// fails it. The jump-span check runs at `store_program` only; `execute`
     /// and the mempool transform decode and run what is stored without
-    /// re-verifying, which pallet-xqvm's test
-    /// `execute_does_not_re_verify_a_stored_program` pins. A program stored
-    /// before 0.6.0 still piles up loop frames under this runtime: 933,504 B of
-    /// fixed run and 28.64·L of Σ, the 0.5.0 figures, past both pins. If such a
-    /// chain is ever upgraded in place, re-verify or remove the stored programs
-    /// first.
+    /// re-verifying. pallet-xqvm's test
+    /// `execute_does_not_re_verify_a_stored_program` pins this for `execute`
+    /// only. The mempool registers a spec through `insert_job_spec` →
+    /// `validate_programs`, which re-runs the current verifier, so the
+    /// transform's exposure is a spec registered before an upgrade. A program
+    /// stored before 0.6.0 still piles up loop frames under this runtime:
+    /// 933,504 B of fixed run and about 26.7·L of Σ (measured at 1 MiB with the
+    /// 0.5.0 pile-up runs under this runtime; 28.64·L under 0.5.0), past both
+    /// pins. If such a chain is ever upgraded in place, re-verify or remove the
+    /// stored programs first.
     ///
     /// Why 1 MiB (owner decisions of 2026-11-22). Under xqvm 0.5.0 the cap went
     /// 2 MiB → 1.5 MiB when `ITER` pile-ups raised Σ from 20·L to 29·L, then
@@ -1011,8 +1015,10 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 /// pile-ups and the `ENERGY` clone made it 28.64·L, pinned at 29; W1-011 and
 /// W1-013 remove both. Derived for a power-of-two cap, and for a chain whose
 /// every stored program passes the 0.6.0 verifier (the precondition in
-/// [`MaxVmMemory`]'s docs: `execute` does not re-verify, so a program stored
-/// under 0.5.0 still measures 28.64·L).
+/// [`MaxVmMemory`]'s docs: `execute` and the mempool transform do not
+/// re-verify, so a program stored under 0.5.0 still piles up, about 26.7·L of Σ
+/// measured at 1 MiB with the 0.5.0 pile-up runs under this runtime; 28.64·L
+/// under 0.5.0).
 #[doc(hidden)]
 pub const VM_SIGMA_ORDERS_PER_L: u64 = 20;
 

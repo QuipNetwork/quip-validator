@@ -1703,9 +1703,10 @@ fn i_worst_case_fixed_run() {
     // The loop-frame pile-ups that set the worst case under xqvm 0.5.0 are no
     // longer storable: 0.6.0's jump-span phase rejects their back-edge
     // (W1-011), so a program stored under 0.6.0 holds at most MaxLoopDepth
-    // frames. One stored before it still piles up (`execute` does not
-    // re-verify, pallet-xqvm's `execute_does_not_re_verify_a_stored_program`);
-    // the pins assume a chain without one (`MaxVmMemory`'s precondition).
+    // frames. One stored before it still piles up: `execute` does not
+    // re-verify (pallet-xqvm's `execute_does_not_re_verify_a_stored_program`,
+    // which pins `execute` only), nor does the mempool transform. The pins
+    // assume a chain without one (`MaxVmMemory`'s precondition).
     for (name, bytes) in [
         ("fixed_worst_pile_range", prog_fixed_worst_pile(Pile::Range)),
         ("fixed_worst_pile_iter", prog_fixed_worst_pile(Pile::Iter)),
