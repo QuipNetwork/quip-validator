@@ -1492,6 +1492,8 @@ pub mod pallet {
             // (owner decision 2026-11-22). Each class keeps its lowest-energy
             // member. Everything below -- best answer, solution count,
             // selection and diversity -- works on this distinct set.
+            // Isolation is syntactic: a self-loop or cancelling duplicate edges
+            // keep a spin non-isolated (owner, 2026-11-23).
             let canonicalizer = AnswerCanonicalizer::new(h_values, j_values, &topology)
                 .map_err(Self::map_validation_error)?;
             let distinct = distinct_solutions(&valid_solutions, &valid_energies, &canonicalizer)
@@ -1554,6 +1556,11 @@ pub mod pallet {
                 );
             }
 
+            // Diversity is measured on the raw selected rows, so spins that
+            // cannot change the energy (isolated ones, and those on self-loops
+            // or cancelling duplicate edges, which the canonicaliser does not
+            // treat as isolated) still count. Both accepted by the owner on
+            // 2026-11-23 (dec_20261123_074855_b6618ed7).
             let diversity_milli =
                 calculate_diversity(&selected_solutions).map_err(Self::map_validation_error)?;
             if let Some(min_diversity) = order.ising_params.min_diversity_milli {
