@@ -17,8 +17,13 @@
 //! with headroom for the k ~ 2 clone overhead; a larger L' would just hit the
 //! real cap with `VmMemoryLimitExceeded` and is not a valid per-run measurement.
 //!
-//! Run: `cargo test -p quip-protocol-runtime --test vm_heap_census \
-//!       -- --nocapture --test-threads 1`
+//! Run in release (the native harness -- the executor's Wasm compile, block
+//! building and hybrid signing -- is very slow in debug), with `<package>`
+//! this copy's runtime: `quip-protocol-runtime` for runtime/,
+//! `quip-testnet-runtime` for runtime-testnet/ (one line for both copies, so
+//! the parity gate sees no difference):
+//! `cargo test --release -p <package> --test vm_heap_census \
+//!       -- --ignored --nocapture --test-threads 1`
 
 use codec::{Decode, Encode};
 use frame_support::{dispatch::DispatchClass, traits::Get, BoundedVec};
