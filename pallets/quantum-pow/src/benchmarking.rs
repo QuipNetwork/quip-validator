@@ -431,3 +431,105 @@ mod benchmarks {
 
     impl_benchmark_test_suite!(QuantumPow, crate::mock::new_test_ext(), crate::mock::Test);
 }
+
+/// The `submit_proof` benchmark's generator at INTERIOR points (e < n, s > 1),
+/// where benchmark-preflight samples it but `impl_benchmark_test_suite!` (the
+/// component extremes) does not. Every generated row must be its own answer
+/// under the W1-012 canonical form W1-004 dedupes by, or the benchmark's
+/// `min_solutions` is unreachable. With a 0 in `allowed_h_set`, a node outside
+/// every edge can draw a 0 field, become isolated, and fold rows together.
+#[cfg(test)]
+mod generator_tests {
+    use super::*;
+    use crate::mock::{new_test_ext, Test};
+    use quantum_validation::{
+        generate_ising_model_indexed,
+        packed::{spin_signs, unpack_solution},
+        AnswerCanonicalizer, TopologyIndex,
+    };
+
+    #[test]
+    fn submit_proof_rows_are_pairwise_distinct_answers_at_interior_points() {
+        // (n, e, s), each e < n and s > 1. Rows differ in spins 1..=log2(s),
+        // and with few edges most of those spins lie outside every edge. The
+        // fields come from the proof nonce, which the miner account seeds, so
+        // each point is checked for several miners: one nonce can happen to
+        // put every 0 field on a covered spin.
+        for miner_index in 0..8u32 {
+            for (offset, (n, e, s)) in [
+                (16u32, 1u32, 8u32),
+                (16, 4, 8),
+                (8, 2, 4),
+                (12, 3, 8),
+                (6, 1, 4),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                new_test_ext().execute_with(|| {
+                    let miner: <Test as frame_system::Config>::AccountId =
+                        account("miner", miner_index, 0);
+                    register_miner_for::<Test>(&miner);
+                    let (allowed_h, allowed_j, allowed_spin) = (
+                        allowed_h_set::<Test>(),
+                        allowed_j_set::<Test>(),
+                        allowed_spin_set::<Test>(),
+                    );
+                    let (nodes, edges, topology_hash) = topology_with_dimensions::<Test>(
+                        1_000 * offset as u32,
+                        n,
+                        e,
+                        &allowed_h,
+                        &allowed_j,
+                        &allowed_spin,
+                    );
+                    assert!(QuantumPow::<Test>::register_topology(
+                        RawOrigin::Root.into(),
+                        nodes,
+                        edges,
+                        allowed_h,
+                        allowed_j,
+                        allowed_spin,
+                    )
+                    .is_ok());
+                    let proof = valid_proof_for::<Test>(&miner, topology_hash, s);
+
+                    let topology = RegisteredTopologies::<Test>::get(topology_hash).unwrap();
+                    let index =
+                        TopologyIndex::new(topology.nodes.as_slice(), topology.edges.as_slice())
+                            .unwrap();
+                    let (h, j) = generate_ising_model_indexed(
+                        proof.nonce,
+                        topology.nodes.as_slice(),
+                        topology.edges.as_slice(),
+                        &topology.allowed_h_values.as_slice(),
+                        &topology.allowed_j_values.as_slice(),
+                        &index,
+                    )
+                    .unwrap();
+                    let canonicalizer = AnswerCanonicalizer::new(&h, &j, &index).unwrap();
+                    let spin_spec = topology.allowed_spin_values.as_slice();
+                    let mut answers: Vec<Vec<i8>> = proof
+                        .solutions
+                        .iter()
+                        .map(|packed| {
+                            let milli =
+                                unpack_solution(packed.as_slice(), n as usize, &spin_spec).unwrap();
+                            canonicalizer
+                                .canonical(&spin_signs(&milli).unwrap())
+                                .unwrap()
+                        })
+                        .collect();
+                    answers.sort();
+                    answers.dedup();
+                    assert_eq!(
+                        answers.len() as u32,
+                        achievable_distinct(n, s),
+                        "miner {miner_index}, n={n}, e={e}, s={s}: the generator's rows must be \
+                     pairwise distinct answers"
+                    );
+                });
+            }
+        }
+    }
+}
