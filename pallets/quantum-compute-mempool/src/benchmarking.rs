@@ -765,8 +765,9 @@ mod benchmarks {
         //
         // What this case does NOT bound: a remainder transfer. The weighted
         // split adds its rounding to rank 0, so the shares sum to the whole
-        // reward, and with the runtime's constants every share is >= ED (the
-        // smallest is reward / 528 = 1024 / 528 MinReward, MinReward >= ED).
+        // reward, and every share is >= ED for ANY constants: the reward is
+        // 32 * 32 * floor with floor = max(MinReward, ED) (setup_claim_reward),
+        // so the smallest share, reward / 528, is 1024 / 528 * floor >= ED.
         // So the remainder is 0 here and neither the transfer back to the
         // proposer nor the rank-0 fallback runs.
         fund_account::<T>(&proposer, Zero::zero());

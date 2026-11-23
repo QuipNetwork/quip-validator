@@ -997,8 +997,9 @@ pub mod pallet {
                      OrderAnswers index starts empty, so orders open before the upgrade detect \
                      duplicates only among answers submitted after it (W1-012); and orders \
                      open before the per-order escrow hold their reward as a reserve on the \
-                     proposer, which nothing releases: claim_reward finds no escrow \
-                     (RewardReserveMissing) and the reserve stays stranded (W1-006)"
+                     proposer, which nothing releases: claim_reward and reclaim_order both \
+                     find no escrow (RewardReserveMissing) and the reserve stays stranded \
+                     (W1-006)"
                 );
                 return T::DbWeight::get().reads(2);
             }
