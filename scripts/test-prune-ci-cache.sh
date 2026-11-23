@@ -34,6 +34,11 @@
 # shellcheck disable=SC2016,SC2034
 set -euo pipefail
 
+# Hermetic: no CI_CACHE_* setting is inherited. A CI job exports its own
+# (cargo-test's CI_CACHE_MAX_SIZE is 140GiB), and every knob a check depends
+# on is set explicitly where it is used, never read from the caller.
+unset "${!CI_CACHE_@}"
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 prune="$here/prune-ci-cache.sh"
 
