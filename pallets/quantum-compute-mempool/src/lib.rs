@@ -196,8 +196,8 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, canonical_answer_row, distinct_solutions, energy_of_solution_indexed,
-        AnswerCanonicalizer, TopologyIndex, ValidationError,
+        calculate_diversity, distinct_solutions, energy_of_solution_indexed, AnswerCanonicalizer,
+        TopologyIndex, ValidationError,
     };
     use sp_runtime::traits::{
         AccountIdConversion, Hash as _, One, SaturatedConversion, Saturating, Zero,
@@ -1578,13 +1578,12 @@ pub mod pallet {
             // is written, so a duplicate never takes a slot. One read of the
             // answer index. The same solver resubmitting the same answer falls
             // through to the must-improve rule above.
-            let canonical = canonical_answer_row(
-                valid_solutions[best_index].as_slice(),
-                h_values,
-                j_values,
-                &topology,
-            )
-            .map_err(Self::map_validation_error)?;
+            // The canonicalizer built for the dedupe above: same h, j and
+            // topology, so the same bytes as canonical_answer_row, without
+            // rebuilding the isolation mask.
+            let canonical = canonicalizer
+                .canonical(valid_solutions[best_index].as_slice())
+                .map_err(Self::map_validation_error)?;
             let answer = sp_core::H256(sp_core::hashing::blake2_256(&canonical.encode()));
             ensure!(
                 OrderAnswers::<T>::get(order_id, answer).is_none_or(|owner| owner == solver),
