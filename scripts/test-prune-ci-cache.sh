@@ -1010,6 +1010,32 @@ brun --volume-budget 10
 check "leaves: a non-regular stamp is refused" \
   'kept 8/stale && grep -q "$broot/8/stale has a symlinked target/, or a symlinked or non-regular" "$tmp/budget.log"'
 
+# .last-sweep: rule 1 reads its mtime and touches it after a sweep. A dangling
+# symlink there would read as "never swept", and the touch would create the
+# outside file; a link to an old outside file would be read and then touched.
+# anchor_slot refuses both, so the own slot is skipped and nothing outside is
+# created or touched.
+contained_volume
+mkdir -p "$outside"
+rm -f "$broot/1/own/.last-sweep"
+ln -s "$outside/absent-sweep" "$broot/1/own/.last-sweep"
+brun --volume-budget 10
+check "leaves: a dangling .last-sweep is refused and nothing is created through it" \
+  '[[ ! -e "$outside/absent-sweep" && -L "$broot/1/own/.last-sweep" ]] \
+    && grep -q "$broot/1/own has a symlinked target/, or a symlinked or non-regular .in-use, .last-sweep" "$tmp/budget.log"'
+
+contained_volume
+mkdir -p "$outside"
+echo keep >"$outside/sweep"
+touch -d "@$(($(date +%s) - 30 * day))" "$outside/sweep"
+sweep_before="$(mtime "$outside/sweep")"
+rm -f "$broot/1/own/.last-sweep"
+ln -s "$outside/sweep" "$broot/1/own/.last-sweep"
+brun --volume-budget 10
+check "leaves: an old-mtime .last-sweep link is refused and the outside file is not touched" \
+  '[[ "$(mtime "$outside/sweep")" == "$sweep_before" && "$(cat "$outside/sweep")" == keep ]] \
+    && grep -q "$broot/1/own has a symlinked target/, or a symlinked or non-regular" "$tmp/budget.log"'
+
 # The root control files: a symlinked .prune.lock or .last-prune refuses the
 # whole scan (rules 2 and 3); the outside file is neither truncated, created
 # nor touched. An existing regular .prune.lock is opened read-only: never

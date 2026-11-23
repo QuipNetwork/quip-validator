@@ -79,8 +79,8 @@ set -euo pipefail
 # gets the same volume set. What is defended, and how:
 #   - STATIC or accidental symlinks and special files are refused, never
 #     followed: a symlinked numeric dir, slot or target/ (anchor_slot); a
-#     symlinked or non-regular ./.in-use or target/.last-used (anchor_slot,
-#     and again under the lock); a symlinked or non-regular root .prune.lock
+#     symlinked or non-regular ./.in-use, ./.last-sweep or target/.last-used
+#     (anchor_slot, and again under the lock); a symlinked or non-regular root .prune.lock
 #     or .last-prune (the whole scan is skipped). A refusal skips and logs;
 #     nothing is deleted on refusal.
 #   - Lock files are opened read-only, never truncated; an absent one is
@@ -402,10 +402,12 @@ plain_or_absent() {
   [[ ! -L "$1" ]] && { [[ ! -e "$1" ]] || [[ -f "$1" ]]; }
 }
 
-# leaves_ok: (anchored) ./target is not a symlink, and ./.in-use and
-# ./target/.last-used are each absent or a regular, non-symlink file.
+# leaves_ok: (anchored) ./target is not a symlink, and ./.in-use,
+# ./.last-sweep and ./target/.last-used are each absent or a regular,
+# non-symlink file.
 leaves_ok() {
-  [[ ! -L target ]] && plain_or_absent "$lock_name" && plain_or_absent "target/$stamp_name"
+  [[ ! -L target ]] && plain_or_absent "$lock_name" && plain_or_absent "$sweep_name" &&
+    plain_or_absent "target/$stamp_name"
 }
 
 # anchor_slot SLOT: call in a subshell. `cd -P` into SLOT and verify that the
@@ -421,7 +423,7 @@ anchor_slot() {
     return 1
   fi
   if ! leaves_ok; then
-    log "$1 has a symlinked target/, or a symlinked or non-regular $lock_name or target/$stamp_name; skipping it" >&2
+    log "$1 has a symlinked target/, or a symlinked or non-regular $lock_name, $sweep_name or target/$stamp_name; skipping it" >&2
     return 1
   fi
   anchored_at="$root_real/$rel"
