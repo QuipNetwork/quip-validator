@@ -4019,22 +4019,25 @@ mod w1_012 {
     /// The answer a submission is indexed under is the canonical form of its
     /// BEST row, wherever that row sits in the submission. Every other W1-012
     /// test submits one row, where row 0 is the best row; here the best row
-    /// is the second one, and flipped.
+    /// is the middle one, and flipped, so keying the first row or the last
+    /// row both fail.
     #[test]
     fn the_answer_key_is_the_best_row_wherever_it_is_submitted() {
         new_test_ext().execute_with(|| {
             let id = propose(chain_params(4), RewardResolution::TopNEqual { n: 3 });
-            for who in [2, 3] {
+            for who in [2, 3, 4] {
                 solver(who);
             }
             let worse: &[i8] = &[1, -1, -1, 1]; // two domain walls
             let ground_flipped: &[i8] = &[-1, -1, -1, -1];
+            let one_wall: &[i8] = &[1, 1, -1, -1]; // one domain wall
             assert_ok!(submit(
                 2,
                 id,
                 bounded(vec![
                     bounded(worse.to_vec()),
-                    bounded(ground_flipped.to_vec())
+                    bounded(ground_flipped.to_vec()),
+                    bounded(one_wall.to_vec())
                 ])
             ));
             // Solver 2's answer is the ground state, in canonical form ...
@@ -4042,8 +4045,9 @@ mod w1_012 {
                 submit(3, id, row(&[1, 1, 1, 1])),
                 crate::Error::<Test>::DuplicateAnswer
             );
-            // ... and its worse row holds no place in the index.
+            // ... and neither of its other rows holds a place in the index.
             assert_ok!(submit(3, id, row(worse)));
+            assert_ok!(submit(4, id, row(one_wall)));
             assert_index_consistent(id);
         });
     }
