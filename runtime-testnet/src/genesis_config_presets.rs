@@ -886,7 +886,20 @@ fn quip_testnet_authorities() -> Vec<(AccountId, BabeId, GrandpaId)> {
 /// council reaches Root through `ValidatorAdmission::dispatch_as_root` behind a
 /// 2/3 collective motion instead of a single-key escape hatch.
 pub fn quip_testnet_config_genesis() -> Value {
-    let authorities = quip_testnet_authorities();
+    quip_testnet_genesis_from(quip_testnet_authorities())
+}
+
+/// The live testnet preset over the given operator authorities. The operator
+/// keys are committed as raw public bytes, so they go through the same
+/// [`validate_session_keys`] guard as the mainnet and relaunch inputs; valid
+/// keys pass through unchanged.
+fn quip_testnet_genesis_from(authorities: Vec<(AccountId, BabeId, GrandpaId)>) -> Value {
+    if validate_session_keys(&authorities).is_err() {
+        panic!(
+            "live testnet genesis blocked: an operator session key is duplicated or has \
+             a degenerate classical half (G-002)"
+        );
+    }
     let accounts: Vec<_> = authorities
         .iter()
         .map(|(account, _, _)| account.clone())
@@ -1838,6 +1851,33 @@ mod tests {
                 ))
             );
         }
+    }
+
+    /// The live testnet preset runs the same guard over its operator keys:
+    /// the real keys build exactly the preset, and an operator key with a
+    /// degenerate classical half stops it.
+    #[test]
+    fn live_testnet_preset_guards_its_operator_keys() {
+        assert_eq!(
+            quip_testnet_genesis_from(quip_testnet_authorities()),
+            quip_testnet_config_genesis()
+        );
+
+        let mut authorities = quip_testnet_authorities();
+        let (_, babe, _) = authorities.last_mut().unwrap();
+        let mut bytes = babe.to_raw_vec();
+        bytes[..32].fill(0);
+        *babe = HybridBabePublic::from_slice(&bytes).unwrap().into();
+        let Err(panic) = std::panic::catch_unwind(|| quip_testnet_genesis_from(authorities)) else {
+            panic!("a degenerate operator key must stop the preset");
+        };
+        assert_eq!(
+            panic.downcast_ref::<&str>().copied(),
+            Some(
+                "live testnet genesis blocked: an operator session key is duplicated or has \
+                 a degenerate classical half (G-002)"
+            )
+        );
     }
 
     #[test]
