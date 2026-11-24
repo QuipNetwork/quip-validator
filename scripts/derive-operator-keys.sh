@@ -13,6 +13,22 @@ set -euo pipefail
 #     operator's output directory; that bundle is what to share back to the
 #     release coordinator
 #
+# Key derivation (QUIP HD v1, since WP2 batch 1): the BABE key is the
+# mnemonic's H4 key and the GRANDPA key its H2 key, at
+# m/0x514E'/<suite>'/20049'/0'/0' (suite 0x400 and 0x200); the TX account comes
+# from the BABE public key. A node from the same release derives the same keys
+# when the mnemonic is inserted with `insert-hybrid-key`. Two consequences:
+#
+#   * a public bundle made with a binary from before QUIP HD holds different
+#     keys for the same mnemonic. Regenerate it with this release before it
+#     goes into a genesis;
+#   * this script derives without a password. If the node's keystore has a
+#     password, the keystore derives with it on every start, so the bundle must
+#     be derived the same way: pass "<mnemonic>///<keystore password>" to the
+#     derive_genesis_keys example (step 3 below), then insert the bare mnemonic
+#     with the node's --password option (insert-hybrid-key refuses a SURI
+#     password and a keystore password together).
+#
 # Environment overrides:
 #   QUIP_NODE_BIN     path to the quip-network-node release binary
 #                     (default: <repo>/target/release/quip-network-node)

@@ -10,6 +10,18 @@
 //!
 //! The URI you feed in is the secret. Never paste it into commits or chat —
 //! only the printed `*_pub` / `tx_account_*` lines are safe to share.
+//!
+//! Derivation is the node's (QUIP HD v1 since WP2 batch 1). A phrase gives the
+//! BABE key at `m/0x514E'/0x400'/20049'/0'/0'` (H4) and the GRANDPA key at
+//! `m/0x514E'/0x200'/20049'/0'/0'` (H2). Up to two `//` junctions select the
+//! account and index levels, and `///password` is the BIP39 passphrase. A
+//! `0x` + 64-hex seed is used as is. Keys derived by a binary from before QUIP
+//! HD differ for the same phrase.
+//!
+//! If the validator's keystore has a password, derive with it here as
+//! `"<mnemonic>///<keystore password>"`, and insert the bare mnemonic with the
+//! node's `--password` option: the keystore re-derives with its password on
+//! every start, so genesis must hold the same keys.
 
 use codec::Encode;
 use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
