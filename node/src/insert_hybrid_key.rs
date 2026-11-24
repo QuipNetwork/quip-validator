@@ -22,7 +22,7 @@ use quip_crypto_primitives::substrate::{
 use sc_cli::{Error, KeystoreParams, SharedParams, SubstrateCli};
 use sc_keystore::LocalKeystore;
 use sc_service::config::{BasePath, KeystoreConfig};
-use sp_core::crypto::KeyTypeId;
+use sp_core::crypto::{KeyTypeId, SecretStringError};
 use sp_core::Pair;
 use sp_keystore::KeystorePtr;
 
@@ -82,24 +82,18 @@ impl InsertHybridKeyCmd {
         // `Public` implements both `AsRef<[u8]>` and `AsRef<InnerPublic>` since
         // upstream `d125cbde` (polkadot-sdk v0.2). Bind the public to a local
         // first, then disambiguate the byte-slice borrow explicitly.
-        //
-        // Surface the underlying `SecretStringError` so operators see *why*
-        // the SURI was rejected (bad checksum, unknown junction, etc.) instead
-        // of a bare "invalid SURI" message.
         let (key_type, public_bytes) = match self.scheme {
             HybridScheme::HybridBabeH444 => {
-                let pair = HybridBabePair::from_string(&suri, None).map_err(|e| {
-                    Error::Input(format!("invalid SURI for hybrid-babe-h444: {e:?}"))
-                })?;
+                let pair = HybridBabePair::from_string(&suri, None)
+                    .map_err(|e| invalid_suri("hybrid-babe-h444", &e))?;
                 let key_type = self.resolve_key_type(sp_consensus_babe::KEY_TYPE)?;
                 let public = pair.public();
                 let bytes: &[u8] = public.as_ref();
                 (key_type, bytes.to_vec())
             }
             HybridScheme::HybridGrandpaH244 => {
-                let pair = HybridGrandpaPair::from_string(&suri, None).map_err(|e| {
-                    Error::Input(format!("invalid SURI for hybrid-grandpa-h244: {e:?}"))
-                })?;
+                let pair = HybridGrandpaPair::from_string(&suri, None)
+                    .map_err(|e| invalid_suri("hybrid-grandpa-h244", &e))?;
                 let key_type = self.resolve_key_type(sp_consensus_grandpa::KEY_TYPE)?;
                 let public = pair.public();
                 let bytes: &[u8] = public.as_ref();
@@ -133,6 +127,29 @@ impl InsertHybridKeyCmd {
     }
 }
 
+/// The error for a SURI that does not parse.
+///
+/// It names the kind of problem in fixed words and never shows the SURI:
+/// `SecretStringError::InvalidFormat` carries a full copy of the input
+/// (`InvalidCharacterInfo`), so its `Debug` and `Display` print the
+/// mnemonic and the password. Only the variant is used here.
+fn invalid_suri(scheme: &str, e: &SecretStringError) -> Error {
+    let reason = match e {
+        SecretStringError::InvalidFormat(_) => {
+            "it contains a character that is not allowed (look for quotes, \
+             a byte-order mark or a line break)"
+        }
+        SecretStringError::InvalidPhrase => "it is not a valid BIP-39 mnemonic",
+        SecretStringError::InvalidPassword => "the password is not valid",
+        SecretStringError::InvalidSeed => "the seed is not valid",
+        SecretStringError::InvalidSeedLength => "the seed has the wrong length",
+        SecretStringError::InvalidPath => "the derivation path is not valid",
+    };
+    Error::Input(format!(
+        "invalid SURI for {scheme}: {reason}; the SURI is not shown"
+    ))
+}
+
 /// If `suri` names a readable file, return its trimmed contents; otherwise
 /// return `suri` as-is.
 ///
@@ -163,5 +180,32 @@ mod tests {
             <HybridScheme as ValueEnum>::from_str("hybrid-grandpa-h244", false),
             Ok(HybridScheme::HybridGrandpaH244),
         );
+    }
+
+    /// A published BIP-39 test vector, standing in for a secret.
+    const PHRASE: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    /// The echo came from the SDK error itself: `InvalidFormat` holds a copy
+    /// of the SURI. `invalid_suri` keeps only the variant.
+    #[test]
+    fn the_invalid_suri_error_names_the_problem_without_the_suri() {
+        let quoted = format!("\"{PHRASE}///hunter2\"");
+        let Err(e) = HybridBabePair::from_string(&quoted, None) else {
+            panic!("a quoted SURI must not parse");
+        };
+        assert!(matches!(e, SecretStringError::InvalidFormat(_)));
+        assert!(
+            format!("{e:?}").contains("sausage"),
+            "the SDK error carries the SURI"
+        );
+
+        let shown = invalid_suri("hybrid-babe-h444", &e);
+        for text in [format!("{shown}"), format!("{shown:?}")] {
+            assert!(text.contains("invalid SURI for hybrid-babe-h444"), "{text}");
+            for secret in PHRASE.split(' ').chain(["hunter2"]) {
+                assert!(!text.contains(secret), "{text} shows {secret:?}");
+            }
+        }
     }
 }
