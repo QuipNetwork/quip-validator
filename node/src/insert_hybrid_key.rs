@@ -106,12 +106,14 @@ impl InsertHybridKeyCmd {
             _ => unreachable!("keystore_config always returns Path; qed"),
         };
 
+        // `Keystore::insert` returns `Result<(), ()>`, so there is nothing to
+        // show. The `()` pattern keeps it that way: if the error ever gains a
+        // payload (which could hold the SURI), this stops compiling instead of
+        // printing it.
         keystore
             .insert(key_type, &suri, &public_bytes)
-            .map_err(|e| {
-                Error::Input(format!(
-                    "keystore insert failed for key_type={key_type:?}: {e:?}"
-                ))
+            .map_err(|()| {
+                Error::Input(format!("keystore insert failed for key_type={key_type:?}"))
             })?;
 
         Ok(())
