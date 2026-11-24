@@ -191,24 +191,32 @@ fn read_suri(
     prompt: impl FnOnce() -> std::io::Result<String>,
 ) -> sc_cli::Result<String> {
     let Some(suri) = suri else {
-        return prompt().map_err(|e| {
+        let typed = prompt().map_err(|e| {
             Error::Input(format!(
                 "no --suri given, and the hidden prompt failed ({e}); pass --suri <FILE>"
             ))
-        });
+        })?;
+        return Ok(clean_suri_text(&typed));
     };
     let path = std::path::Path::new(suri);
     if path.is_file() {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| Error::Input(format!("failed to read SURI file {suri}: {e}")))?;
-        Ok(raw
-            .strip_prefix('\u{feff}')
-            .unwrap_or(&raw)
-            .trim()
-            .to_owned())
+        Ok(clean_suri_text(&raw))
     } else {
         Ok(suri.to_owned())
     }
+}
+
+/// The SURI in text an operator saved or pasted: without a leading UTF-8
+/// byte-order mark, and trimmed (`trim` also drops a trailing tab or a
+/// no-break space). The file and the prompt get the same treatment, so a
+/// pasted SURI loads exactly as the same SURI saved to a file does.
+fn clean_suri_text(raw: &str) -> String {
+    raw.strip_prefix('\u{feff}')
+        .unwrap_or(raw)
+        .trim()
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -263,6 +271,21 @@ mod tests {
         .expect("prompted SURI");
         assert_eq!(suri, PHRASE);
         assert_eq!(asked, 1);
+    }
+
+    /// A pasted SURI is cleaned as a file's contents are: a BOM and
+    /// surrounding whitespace (tab, newline, no-break space) are dropped.
+    #[test]
+    fn a_pasted_suri_is_cleaned_like_a_file() {
+        for typed in [
+            format!("\u{feff}{PHRASE}"),
+            format!("{PHRASE}\t"),
+            format!("{PHRASE}\u{a0}"),
+            format!("  {PHRASE}\r\n"),
+        ] {
+            let suri = read_suri(None, || Ok(typed.clone())).expect("prompted SURI");
+            assert_eq!(suri, PHRASE, "{typed:?}");
+        }
     }
 
     #[test]
