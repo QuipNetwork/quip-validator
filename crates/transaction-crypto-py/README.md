@@ -60,8 +60,21 @@ acct = quip_signer.account_id_from_public(pub)
 env = quip_signer.sign_payload_from_seed(seed, b"hello")
 ```
 
-Invalid input (bad seed length, malformed envelope, derivation junctions in a
-URI, …) raises `quip_signer.QuipSignerError`.
+A phrase selects its QUIP HD v1 key for the transaction suite (H4),
+`m/0x514E'/0x400'/20049'/0'/0'`: the account the node and the Quip SDK derive
+from the same phrase. Secret URIs follow the node's grammar without derivation:
+an English BIP39 phrase of ASCII letters and spaces with an optional
+`///<password>`, or `0x` followed by 64 hex digits, which takes no password.
+
+Invalid input raises `quip_signer.QuipSignerError`, whose message names the
+problem without repeating the input. That covers a bad seed length, a malformed
+envelope, a derivation junction (derive the account on a node and import its
+`0x` secret seed instead), an empty phrase, an uppercase `0X` prefix and a
+character outside the phrase class.
+
+**Breaking in the next release:** phrase-derived keys changed (see
+CHANGELOG.md). An account imported from a phrase with an earlier release has a
+different address now; `0x` seeds are unchanged.
 
 ## Payload contract (read before signing extrinsics)
 
