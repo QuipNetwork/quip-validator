@@ -58,8 +58,13 @@ def test_from_seed_rejects_wrong_length(length: int) -> None:
 
 
 def test_mnemonic_rejects_derivation_junctions() -> None:
-    with pytest.raises(quip_signer.QuipSignerError):
+    with pytest.raises(quip_signer.QuipSignerError) as excinfo:
         quip_signer.seed_from_mnemonic(f"{TEST_PHRASE}//0")
+    # The message points to the 0x export and does not echo the phrase.
+    message = str(excinfo.value)
+    assert message.startswith("derivation paths"), message
+    assert "0x" in message
+    assert "bottom" not in message and "walk" not in message
 
 
 def test_invalid_mnemonic_raises() -> None:

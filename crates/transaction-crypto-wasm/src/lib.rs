@@ -27,8 +27,10 @@ fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
     encoded
 }
 
-fn crypto_error(context: &str, error: impl core::fmt::Debug) -> String {
-    format!("{context}: {error:?}")
+/// The core errors' `Display` carries no input, so a rejected secret URI
+/// is never echoed back to the page.
+fn crypto_error(context: &str, error: impl core::fmt::Display) -> String {
+    format!("{context}: {error}")
 }
 
 fn public_from_seed_impl(seed_hex: &str) -> Result<String, String> {
@@ -47,7 +49,7 @@ fn account_id_from_public_impl(public_hex: &str) -> Result<String, String> {
 
 fn seed_from_mnemonic_impl(secret_uri: &str) -> Result<String, String> {
     let seed = master_seed_from_secret_uri(secret_uri)
-        .map_err(|error| crypto_error("invalid mnemonic", error))?;
+        .map_err(|error| crypto_error("invalid secret URI", error))?;
 
     Ok(encode_hex(seed))
 }
@@ -170,6 +172,16 @@ mod tests {
 
     #[test]
     fn mnemonic_rejects_derivation_junctions() {
-        assert!(seed_from_mnemonic_impl(&format!("{TEST_PHRASE}//0")).is_err());
+        let error = seed_from_mnemonic_impl(&format!("{TEST_PHRASE}//0")).unwrap_err();
+        // The message points to the 0x export and does not echo the phrase.
+        assert!(
+            error.starts_with("invalid secret URI: derivation paths"),
+            "{error}"
+        );
+        assert!(error.contains("0x"), "{error}");
+        assert!(
+            !error.contains("bottom") && !error.contains("walk"),
+            "{error}"
+        );
     }
 }

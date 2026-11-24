@@ -28,8 +28,10 @@ create_exception!(
     "Raised when the Quip hybrid signer rejects its input."
 );
 
+/// The core errors' `Display` carries no input, so a rejected secret URI
+/// is never echoed into a Python exception or traceback.
 fn map_err(error: HybridTxCryptoError) -> PyErr {
-    QuipSignerError::new_err(format!("{error:?}"))
+    QuipSignerError::new_err(error.to_string())
 }
 
 /// Derives serialized H4 public bytes (929B) from a 32-byte master seed.
