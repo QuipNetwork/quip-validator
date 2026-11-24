@@ -27,7 +27,16 @@ set -euo pipefail
 #     be derived the same way: pass "<mnemonic>///<keystore password>" to the
 #     derive_genesis_keys example (step 3 below), then insert the bare mnemonic
 #     with the node's --password option (insert-hybrid-key refuses a SURI
-#     password and a keystore password together).
+#     password and a keystore password together). Two caveats:
+#       - --password-filename is read verbatim, including a trailing newline,
+#         and a SURI password cannot contain a newline. So "<mnemonic>///<pw>"
+#         never matches a password file that ends in one. Write the file with
+#         printf '%s' "$pw" > file, or use --password or
+#         --password-interactive;
+#       - the TX (stash) account comes from the BABE key derived with
+#         ///<pw>. To control that account from the browser or Python signer,
+#         enter "<mnemonic>///<pw>" there too; the bare mnemonic gives a
+#         different account.
 #
 # Environment overrides:
 #   QUIP_NODE_BIN     path to the quip-network-node release binary

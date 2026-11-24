@@ -21,7 +21,17 @@
 //! If the validator's keystore has a password, derive with it here as
 //! `"<mnemonic>///<keystore password>"`, and insert the bare mnemonic with the
 //! node's `--password` option: the keystore re-derives with its password on
-//! every start, so genesis must hold the same keys.
+//! every start, so genesis must hold the same keys. Two caveats:
+//!
+//! - `--password-filename` is read verbatim, including a trailing newline, and
+//!   a SURI password cannot contain a newline. So `"<mnemonic>///<pw>"` never
+//!   matches a password file that ends in one. Write the file with
+//!   `printf '%s' "$pw" > file`, or use `--password` or
+//!   `--password-interactive`.
+//! - The `tx_account_*` printed here comes from the BABE key derived with
+//!   `///<pw>`. To control that account from the browser or Python signer,
+//!   enter `"<mnemonic>///<pw>"` there too; the bare mnemonic gives a
+//!   different account.
 
 use codec::Encode;
 use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};

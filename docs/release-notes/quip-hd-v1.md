@@ -53,7 +53,17 @@ here.
   - errors carry no input.
 - Operator tooling: `scripts/derive-operator-keys.sh` and the
   `derive_genesis_keys` example document QUIP HD. When the keystore has a
-  password, derive the genesis material with `"<mnemonic>///<password>"`.
+  password, derive the genesis material with `"<mnemonic>///<password>"` and
+  insert the bare mnemonic with the node's password option. Two caveats:
+  - `--password-filename` is read verbatim, including a trailing newline, and
+    a SURI password cannot contain a newline, so `"<mnemonic>///<pw>"` never
+    matches a password file that ends in one. Write the file with
+    `printf '%s' "$pw" > file`, or use `--password` or
+    `--password-interactive`.
+  - The TX (stash) account comes from the BABE key derived with `///<pw>`.
+    To control it from the browser or Python signer, enter
+    `"<mnemonic>///<pw>"` there too; the bare mnemonic gives a different
+    account.
 - `spec_version` stays at 120 on this branch; see the blockers.
 
 ## SDK fork (QuipNetwork/polkadot-sdk, `grego/audit-wp2/hybrid-keys`)
