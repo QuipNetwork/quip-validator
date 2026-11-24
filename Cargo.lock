@@ -9498,6 +9498,8 @@ dependencies = [
  "blake2 0.10.6",
  "parity-scale-codec",
  "pqhybridsign",
+ "serde_json",
+ "sha2 0.10.9",
  "zeroize",
 ]
 

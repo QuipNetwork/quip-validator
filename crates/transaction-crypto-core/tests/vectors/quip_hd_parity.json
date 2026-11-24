@@ -1,0 +1,1021 @@
+{
+  "spec": "QUIP HD v1, Quip Substrate profile: WP2 batch 1 design note v2.1",
+  "layers": {
+    "quip-hd": "pqhybridsign quip_hd::hybrid_leaf and keypair_from_seed, from the case's derivation inputs",
+    "sdk": "SDK fork Pair::from_string(suri, None): AddressUri grammar, at most two hard junctions, strict digits (design v2.1 §3-§4)",
+    "signer": "transaction-crypto-core and the browser and Python signers: the junction-free subset (design v2.1 §6)"
+  },
+  "suites": {
+    "H1": {
+      "name": "ED-ML-44",
+      "algorithm": 256
+    },
+    "H2": {
+      "name": "ED-FN-512",
+      "algorithm": 512
+    },
+    "H3": {
+      "name": "SR-ML-44",
+      "algorithm": 768
+    },
+    "H4": {
+      "name": "SR-FN-512",
+      "algorithm": 1024
+    }
+  },
+  "positive": [
+    {
+      "name": "bare phrase",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "f5f4703d2e6926a78e1ee7fd916fcbd17f2b1652b5bfbac71f917a1fad5c869f",
+          "public_sha256": "ad72dc88f14d8024e1d9ef79e0bf55a33ad6817259bf45b7f23e9cd614109139",
+          "public": "6acff3f521c5804d1ad98652186b5e52f80acefff7fd7034ce3ac127452e171c2453ca39aa59973882a7759f20c9db3c83f0baabfce9230d066f26d5ac83a9eeef43ee8c5cf5e5d04a9664fc8a5d842b09a2d429ac5e3e7cddf253d9bc73e02ac086dbbe83c1b822c3e2817450c019e09076581c0268b41fe92fbbf5046e0c2f62c09ca7da9d763a6633cc2e021ba926d45fe8cbb6144ed3c0d8d6c2d1e18091ec685afbca04a510be6fa99935b0c2ce90e37ed28965c60f1ced2d707d8d64b25ac8e12c7afc031676b557ec5513b95c861b28debcd5868d3170d19f42ce6aa5f7c595295d05ff44006f104da8d4c57659130937559f9decf83843499fe885bb5df0264804de59fc2162847186cf8f31e34ec2745b2687845c87b353386910400c70443a37da941cc396cb3e11ad267f77515c2f135267c276d11a0f947904a9b7059d3e837194ab15bdefe916d479f09af85b3ea05ab988d965e13d30126fe634676fb5b62160a9ca52fdbaf1b18c2650dfd097788aaecdd24fb85c7e8a80325b1e13680bac1632d44a4246cd4a468bc46b8613854cf221452dbf7ef8c38ead855eb1fe89cefe991323060cfda924fa862a566185255709e6fb522bb62f23116124071074ff3427cfbe73f817c9fc4339ae3face2b7888eeb8cf390fe50c930070450db51caf967f723dd7909d0b5eedd85e37b425d20d5f06708cb41dd1b1903c9e3d862333fd3354fb91478834e1bbde0ef324f211547553771c207fc813fc5ac242ca55e8005f543a55fa230ba537515aaeae4763d77033a00285032238cbb5bb0ae669a904ed564238cb25adc8a5ec25cb305d57349dfb96581833866c1d65da6e5809737a66240f454a48963a5d646dcd1529bc309adec4299d7958af1cda647e60cfa97b9739e01c17df511e73c3d991d363a3299972c67b6e0660e6dcb4e365e53c889dd7fc1d01beb6af1a429dc80df199c38da5b8b01ac7e861e79237c16f6f3f6afb98c2e4d086913cca602e9e60955ff34bf8d4ce25341e14ff675400e8f6a2571e2b40355d34b1559a4df6a38810c4a6e3dcc13ff7f51d58731d5e03fc170d2916c0abc3f388b44e4d1baa5b346ea75d5911ec4922c45697154c7c0ad3a4f5b5e614dac4d67e1517bbbd4f0c85e62cc51c53e6cc5710ada43a2ded3a47c2ce50b9e5632e4514ee8b6667615f6969b30e0ef37a1bcdea67f7b092d410b7142036238a231d8954a12838c534b4bb5dae5ff69a6160399128ae76b69eb42494e7a2e7f9b7ba831fb7bb02947ab7943406acac03fd9e1c62e9f3aad84f076256fe2f8bdbcff512b92d14eb047656de98f8da6fb094a753ebd4b3fe8d86d138ccfb3d584aba2180ff616177a43bd50572eefd1824fa5e22c0ca12cb7dea5dde0284c21da99105294ad4258a1c99896f1fa9c0d04aeb19845b5fc9853863f320662b35c1f60b78ab460413890b464ec907cd283c4bae48aee49f2d88439c8256aa3f1844d7d656fd42733e9e0b41ec8c115e8b917e64af23e0c9d52199f1015eaa9f5b05275236ac281ab41bbae9b336af51dfd8bef260af64d7ede57f2b5eb713a861dbbd4d4a6f24697636b316696e4fc058fa3c25b1f8d2808e84b38ebfcfa924df7c4a748a5967be3b51521220c1bdf4aba5b760ac28ac4de2e61b92475377cd29eef483081943b6ef1c7c6485f6f2f943c5a41b0bf05f9180507ab3db07eaae5cf35fbbe38ddb02f776fb1ae64346ae76ab9632cd136174707f6234f815c3d1c2f9a1e7e85b3454e04adfb9d14fae7277008a37af3be966ff9af7f44fd6cbc2c87bc04c1a7af01cc9f4ad49f053d27f796e34c3a4388ebda0cd12692c3cae3d15df598fb16dc3da01737a7b6d8449ba0bac9d85b74060e507d28"
+        },
+        "H2": {
+          "seed": "ffca289f66e2473a3353d7f726f2bc45ec1d488570f78737361bae455b69a92c",
+          "public_sha256": "fc9ffefadb44f3a9f7e81e5cc460cfa8b0f2098d94c73c8a0435245cb3ae77ef",
+          "public": "a61a716603ba0479fe8afa6b3eaf2e40268127d312b48dc6ddd63368c933ab2709759ea975c935bc62569874858a112f236609514eacf6d057c7401e26e7928c69e65e3c8b863206d79175ff8f3f76fbc1028a429dfa55f65a66de890a569d5c1297f1863e6108ceda94c617a82525d9d7ba6d704af48f6f6a94f64a15a1f337ae863f02d9410b50dab3db638405eb6eb0e14599a71909488a6c59f2201a451d68c04b705ca16edaa941b27d2ced49fb53939525b383afa2b248338bed055480bc38572cab01c51d526c5b83b29e88b9204093724bbe057b2e6811de283924cb51a4244c188d4550d30ec506a0659b478b716557ca07b74ce421aba2f116ade2193f108cd8ad64848a4c4393e0510519aad834e38e53a2819114d51296126b1be372ed05f6e48f39338d282c0da9c632f0733ccedd032ae67e7ad27b9a803d65bf804f61ad24b70586883a1c5c34b7832d67f2217bb56c26615019537ea6e0d179d66c7d891d9a62e67cfd5270b7c4f4595400a3d0114d31dc59d930593178592f1a102dc08315d797b6d6f23d2cec65b6789aa67006c675104c741386ecdac96156920c52394350a03b15196b084eb42948ac71c8f420795c30030e76061f22fdc01cb01225ad14a5cf74a5bc90cbc140fd32ab08d9d6844a7510d55db352400c3b955724e56c77a6ee3c5393b28c4189dfe571394dfac882304d1166d45c2c11b0144ac266e6c4a2559a98293aab5e12473daf8df7631d0868209e5ad0060c25481d323aaa7106d89c2565f9967a04c479f312527722716ad97a020ce18ab4ea609942e23b57778d96968f6294ece15072aab27033adb0af27c962d06e31b59b9079e21105a920e3fa746248fedf7f96d80ab7121257a6c8f271bc51663b1796b17142456110e2b0c51196139b5c9eb9cdc76b71a68e7ad8938be8e4a5d98519da6ae2a3311fa79103beb8ab1d210503a260e82c0ba9fa19269f69c8501fa65e084ce1181f1e95d584ab8a4a1d6b250ab6a8714669ca9f5709ef298a3e45993151d038f31061f2d9c58e954de357fff041e7e0e0894f82b6df45cf690a14b41fc3deb7735eae4acf0ca1e215509ac9f1c3c446742f61c525230967b902f6c408999572a2e562ec5a2c184561a5254d0e1e050a861e9a8fe496b7a93bf6af63d6bbf99149103284170067aa04ae5d5cc76bb01c82098706503cb2cf29a6b0750c1c57ee3b1321a811ae9a0a36dc92111e66ada242a5af77a5f2b4c454900729a29aee58641e497796aa6c700b1be114a4390dcb1ef8b0086e1fdf02805577266a"
+        },
+        "H3": {
+          "seed": "e76268538ea1d8aa6553daa3c559ea8e25102b5e7a228d1e6635f1af145bbcda",
+          "public_sha256": "718eb3f0bde4cede82644b36b14f0834636c617f1cfa3acb13812b3135b4d699",
+          "public": "2c5fb31e977ebacea3b56863b696ba422659f8c9b6a7d87585319ce1769e6c2ae7bbbb714c3999218d6b4dc52313ece2980ea022db08e80fab0f7c3cabbdbf508bb00dc7d92dd1c027b67d5e27c1aefa93b43ea9140394147982971fd6e9c9001264d04eac32e0fd00e7d348261a8128cddfeddea5d7c550d934426d90bd8fe14c37122c5ba6b637db25c54aaaee911b8cb12c2f425c49298cc36456b9d0393f639782ed3be707524e072ead272d41f2c8ee1dbaed01a3d91aedd054768e08d13a51d7374ba2e629e8eb43b198cfcef3e438b5ba176506fbd5be9ca67f4d4fc1c6551611de624683ac8b6e45a9782091925c656baea1a216c9f4983782e1794709ef4bac1ea71c49b1e7552e06df1d1cd715407b9a18f1813e4e3a7dfe43ecfa8cf275e4e1b869c74c90f18412a1926b6005e058736801d3c7e2897d624820a907b6def83076b04b2a95b23883e9efc2b1cf4158839b7894f0ac8267db57805ac359f3f69732a174d25302276ce7a0f95c2031bfb380b0238f7909e12a7328aedda55377fee02ecec943eb020e69798bf0bad752efc83a0fdcb6cb4b0cbc3e11395bcbe58db57329bea3fb1bb51f1b28f538a570108cebad4af85957e02cf44bb171a42fe81f4d783da989c6e39d94696be4c74e93c28486aaa5c52aadeb26226246b091455fccc680d0d8d7e6b3050f5b677ff807d74b43cb4a6d6b62ff38a9161b21e9eae994d784eb06ddd2a09e70afeda763cb70cfe700bbed32361653b87066791b5880c3602f09b1314138d0882ebfa17cd2a822c6c771c824b1a313a7ac68d7b4e0faf6dad7baf40a46cec09fb34079ac5995ac64c954c0bf51ed7f85a4a3e816143014722ac84b13b65c7138043507aa584ea936f9287c634ce6529bce04d592c3f1ae7c2e0788e59c733734c91644d5e741adee369f4a7c44e1fdb203d643a7a66ff8502ab6a55f23084f314028a98c150677b38d8376e1a28a3640a49be4559c4fa5feecd6053440dbd28549740b9a6f6f953bb3ea2257e8dc7c3f9753706be83858ed121197749bbe4b78f44e1e3482d0be3d353415dc1e40975f38858bfc07a71c715b0c622e0eb64430f859474e0c8577bfd2e26ef04abe2ad2f8536c60b35a75308503b1d9fbbe507a732ceaa8ddd6278033bce2440521f9f4655d879a840bfb4607bca588608d07bca71d0e5b141dba7ad4ae71fd08851d752f86e4523044aa0aae501c24f6aa36117e5a6d7cf3ca390e78466857c4db03d405e3a021cb8b01ec7c123f190950b10a395788b196c4bf0e1a458c94f1f9ee1d8505161a4721fb6915f88eb543745c9254df0528b56b3338debb22b9eb410328f4c194c0cefe898e3a0162195d792ae3788b7675b7f906bce897b42293af4ac25663849c05f46a238f94b3cec9ecbc1d27651001ce683952fa559ac5dbf9cca966ae9dbf7a0e4fa225bd3b36b0895f4a093ab6481798c065d1e7f2b96d2cf45cb7adcb06382a997020ff82b34d05b0da0cbc1ff9e9d19116d8f373c3f3db4b77df95c8c693c0d2eeb6864e8db06c6bdd8353167353b81b0e9c543da9d5ac6ae46cd29dcd20b346ed4d92b30de101ba5d383b6554abb7c0cf445814708aaf0e75bad2cff5888a29ce2295fb21549a35f3153238bbbb622950a58e795d8f66fbc68c84a0b9ae5f70b2d805cdd3799952d15bb05ae4bf7febf5876266ec1a767934a207e731bb70f0c3f545def3750574b8b3ed1c12db4d5a1f257772047c75dbfd0927dd05d3c7dacdbe1dbe833629ed36b2473de9750e3a6bee88a274cccf9f1b405df1982ca512728af670800733723004680965dd48fed01b4d5b182e654d34c29e6e2705a4caa2d9414400cdc8dc2731fd3be76a861c5b357ec1dcc9640bf6"
+        },
+        "H4": {
+          "seed": "6e1129fa46fceba24607c5b056e9a327d91b1390783c40786d86d405b0ed4dce",
+          "public_sha256": "ac0df5eebece33a514d85a4c874b8a709ab3cb27a32b5e0127303d15560d8d5a",
+          "public": "c098dd69d03de8e67339557702981ae8106027f4d15363bc6d32b38483b58129095be78fe01f049700c18bf237f144b51b0d1b5978b7e540a267839e18b9278c219884036084e158117654cb4666467a26aa5b8881ab9f3aa95e0f5f898b928c0dadbef6c79d16b7092f883b09a8d34b0886896a5182d8f9a94add5e5197d2d4b26cb77b624a945bde691d820392a71eae4106ff02ba8888a2828bb6280a322586bc86379e47e09ac3a141a13c13659b5a713c11c743cc1b6a7abb642ebc14cb7e38ead816c5279e1466016741a891019c53dfda8dc03152dc5c522e6962874da687338ca60e51281353689274433366cd068b5aaa63d13c962e2fc970693b6497bb1763a0d5228c286755602ae52283ac1670c69e817b52c533f2f65e7362fa197f88a7bcc9a47b41509503ed2ff715791d41aa2693881c87c2e52321a36e0914e5ed45979e46875b4165054238eedbba422ea66cdf0da15b29e1380be813c3f49074282bfa35a5d518c92a29c034ee6dc258a0a3c60206b088cde32764b74cc7742b63c58ee7c8104264b67e28d1ef760a4208661a9fd272d84a0bc95a27a6d17b4668fb6193ee4112c5e6bb84fe3b230d4d94cd020f405635353a01672496fe208bf969190fd8a709ac5d2c87d215fa165e390706c6f6c65af70482217c1e3b83cd8125b33537b7573854744284789bd190e16e2aa26b9c6b5fd625054b2e99653c3586a46fc348724dbc615d03e366bc43884f35850aa90be5f900af1c0ebc4fcfc84374acf0ad41894b051d76c2d9090872b40a9a073481dc6ac5d2ef458e015a822f7753d16a37058e6013b0245f370396da20e6654faec4883a8561bc06cfa5638553b0ab305568e5942b4a5de7e90899e3a9cb8637c081f9922ee5dc263cd0a71f473be8152b2a4f5be10c4f38aa8c8ad50856f72d64a95496a16e16e089a6ceb6d8a5a84b6e75be79c772c9f579894a628b0b4b1d5ca56ff4e4900641d9c8fcf6e756050213eea4da961b736a000b0dd21896439d8809fd1aa2241584f4963d268f7f96a9862fd589356008a8b61cdf328277bd82fc6156240b502df98eb8c71fc8ad82eb1514052264b29623391c480a382abb350d89ac978706d17fd62f581247f9345c855a8134351de2b0f75f17c89bd8845bae407b61f99ffdc99708780269ad082929f83059ee625638647ea0564ad34535b27559053a960c7c8a84abe1430ebe9e7f41e6162fe20718d903385f8a6fa25e0f2a6f86a1296e3810833c14650bdf992f86594747924b1cc483fce80f4800fe1351ef4e707c2c20"
+        }
+      }
+    },
+    {
+      "name": "surrounding and doubled spaces",
+      "suri": "  legal  winner thank year wave sausage worth useful legal winner thank yellow ",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "f5f4703d2e6926a78e1ee7fd916fcbd17f2b1652b5bfbac71f917a1fad5c869f",
+          "public_sha256": "ad72dc88f14d8024e1d9ef79e0bf55a33ad6817259bf45b7f23e9cd614109139"
+        },
+        "H2": {
+          "seed": "ffca289f66e2473a3353d7f726f2bc45ec1d488570f78737361bae455b69a92c",
+          "public_sha256": "fc9ffefadb44f3a9f7e81e5cc460cfa8b0f2098d94c73c8a0435245cb3ae77ef"
+        },
+        "H3": {
+          "seed": "e76268538ea1d8aa6553daa3c559ea8e25102b5e7a228d1e6635f1af145bbcda",
+          "public_sha256": "718eb3f0bde4cede82644b36b14f0834636c617f1cfa3acb13812b3135b4d699"
+        },
+        "H4": {
+          "seed": "6e1129fa46fceba24607c5b056e9a327d91b1390783c40786d86d405b0ed4dce",
+          "public_sha256": "ac0df5eebece33a514d85a4c874b8a709ab3cb27a32b5e0127303d15560d8d5a"
+        }
+      }
+    },
+    {
+      "name": "empty password",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow///",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "f5f4703d2e6926a78e1ee7fd916fcbd17f2b1652b5bfbac71f917a1fad5c869f",
+          "public_sha256": "ad72dc88f14d8024e1d9ef79e0bf55a33ad6817259bf45b7f23e9cd614109139"
+        },
+        "H2": {
+          "seed": "ffca289f66e2473a3353d7f726f2bc45ec1d488570f78737361bae455b69a92c",
+          "public_sha256": "fc9ffefadb44f3a9f7e81e5cc460cfa8b0f2098d94c73c8a0435245cb3ae77ef"
+        },
+        "H3": {
+          "seed": "e76268538ea1d8aa6553daa3c559ea8e25102b5e7a228d1e6635f1af145bbcda",
+          "public_sha256": "718eb3f0bde4cede82644b36b14f0834636c617f1cfa3acb13812b3135b4d699"
+        },
+        "H4": {
+          "seed": "6e1129fa46fceba24607c5b056e9a327d91b1390783c40786d86d405b0ed4dce",
+          "public_sha256": "ac0df5eebece33a514d85a4c874b8a709ab3cb27a32b5e0127303d15560d8d5a"
+        }
+      }
+    },
+    {
+      "name": "password",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow///pw",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "pw",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "67dc83bebfefb94dc3bdbf8b4b2d3e7352025b47d95e5a5d986de6ff3622617f",
+          "public_sha256": "91c0437e406fb30c33c846eaaa1884dad2654ec6af4523b83e553a6a9d5377ee"
+        },
+        "H2": {
+          "seed": "82334aa11135e8e874eb85a62907ad6af004a2f8411e760852078975f1b2aabf",
+          "public_sha256": "918e27bf6bf15e65681a39195cd923d00014a8eae6c4dd28b61fcb332ae2c48e"
+        },
+        "H3": {
+          "seed": "a2359d638aa2e3652d026688db7d9f01c52f723e398600dbd7563a59abb4f686",
+          "public_sha256": "cee317954f339969535d0cb0a141e2b60e9de920bc81105bcfbcd4549b84944a"
+        },
+        "H4": {
+          "seed": "109bd180bb13c9b0093dd821f7b3f491bd6c4cb6ead3fe1560a42ef7a85d27f3",
+          "public_sha256": "0a7bdd6c6e0489cfee345368cde3e12ed0a2696bd28dcb55f090e8880bf1a30c"
+        }
+      }
+    },
+    {
+      "name": "NFKD password, precomposed",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow///café",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "café",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "9fa6f1d6478021bb38ada9756d303ed72f17a3fc017bf2c1d3946a8a71807789",
+          "public_sha256": "5dedeead794cf34b6fc09bb2841ac1bcc55e334ae046ecb17b1004aa250699f5"
+        },
+        "H2": {
+          "seed": "c5e19e1bd64bbd1cb314fd683660acd57dbac3ef84b552da25204e4efa45093f",
+          "public_sha256": "c33cb7b2b8dd8f50df118b899bb1cfedef1257c3b4e29a6cefbcb2c35f906c31"
+        },
+        "H3": {
+          "seed": "df28aacf5dba6594e88e7552a9d4b744b62949628ed8e30eecf06ae658df7a17",
+          "public_sha256": "19d6cf8fb8844b5d0fa75eb27b1d36815b0bd204da1b503ca9ffff17aef9646c"
+        },
+        "H4": {
+          "seed": "1e21eadc5b266e0317077617731cee8767f2b29170f6c20568992a0d1e433c70",
+          "public_sha256": "27fbc6234ed1634f9bb0fe34236a45a6e91a103d430f11800b8930da7b68dce2"
+        }
+      }
+    },
+    {
+      "name": "NFKD password, decomposed",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow///café",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "café",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "9fa6f1d6478021bb38ada9756d303ed72f17a3fc017bf2c1d3946a8a71807789",
+          "public_sha256": "5dedeead794cf34b6fc09bb2841ac1bcc55e334ae046ecb17b1004aa250699f5"
+        },
+        "H2": {
+          "seed": "c5e19e1bd64bbd1cb314fd683660acd57dbac3ef84b552da25204e4efa45093f",
+          "public_sha256": "c33cb7b2b8dd8f50df118b899bb1cfedef1257c3b4e29a6cefbcb2c35f906c31"
+        },
+        "H3": {
+          "seed": "df28aacf5dba6594e88e7552a9d4b744b62949628ed8e30eecf06ae658df7a17",
+          "public_sha256": "19d6cf8fb8844b5d0fa75eb27b1d36815b0bd204da1b503ca9ffff17aef9646c"
+        },
+        "H4": {
+          "seed": "1e21eadc5b266e0317077617731cee8767f2b29170f6c20568992a0d1e433c70",
+          "public_sha256": "27fbc6234ed1634f9bb0fe34236a45a6e91a103d430f11800b8930da7b68dce2"
+        }
+      }
+    },
+    {
+      "name": "tab, newline and no-break space (library only: not in the ASCII SURI phrase class)",
+      "suri": "legal\twinner thank year wave sausage worth useful legal winner thank yellow\n",
+      "scope": [
+        "quip-hd"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "f5f4703d2e6926a78e1ee7fd916fcbd17f2b1652b5bfbac71f917a1fad5c869f",
+          "public_sha256": "ad72dc88f14d8024e1d9ef79e0bf55a33ad6817259bf45b7f23e9cd614109139"
+        },
+        "H2": {
+          "seed": "ffca289f66e2473a3353d7f726f2bc45ec1d488570f78737361bae455b69a92c",
+          "public_sha256": "fc9ffefadb44f3a9f7e81e5cc460cfa8b0f2098d94c73c8a0435245cb3ae77ef"
+        },
+        "H3": {
+          "seed": "e76268538ea1d8aa6553daa3c559ea8e25102b5e7a228d1e6635f1af145bbcda",
+          "public_sha256": "718eb3f0bde4cede82644b36b14f0834636c617f1cfa3acb13812b3135b4d699"
+        },
+        "H4": {
+          "seed": "6e1129fa46fceba24607c5b056e9a327d91b1390783c40786d86d405b0ed4dce",
+          "public_sha256": "ac0df5eebece33a514d85a4c874b8a709ab3cb27a32b5e0127303d15560d8d5a"
+        }
+      }
+    },
+    {
+      "name": "NFKD phrase, fi ligature (library only: not in the ASCII SURI phrase class)",
+      "suri": "bottom drive obey lake curtain smoke basket hold race lonely ﬁt walk",
+      "scope": [
+        "quip-hd"
+      ],
+      "phrase": "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "c5d99faf109f40a5c342a5e8a663c73bdb9cb01bc583a1ecdd582210917b85c3",
+          "public_sha256": "cc6d38554c6a6989a48cad8d6c3bfc658a10cf91de02d3f4f0de17167a3f0635"
+        },
+        "H2": {
+          "seed": "352502186339d1e627ab78a1b09b8178adea8557ae0aa3871816254d8419a53d",
+          "public_sha256": "469ccad628eed0e0442537441904d51ca1450b0758faa35cee8d3f47750002d9"
+        },
+        "H3": {
+          "seed": "82530d8ece916281362a2a817c04e0eefc2764a72124de51c29f33523ef26096",
+          "public_sha256": "543d456ba8794d3e24642279d5e0e87b1fd44f32dca7b8f1adf3522617629acc"
+        },
+        "H4": {
+          "seed": "e3c7b2985b2fec5da49f7378a64df009babf2b815f5352bc5671c91425b5f4b2",
+          "public_sha256": "888794f7584793ed4ebfe55d05f1d31b64fd7371944cf6dc7ba45e5f143c4527"
+        }
+      }
+    },
+    {
+      "name": "junction //0",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//0",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "f5f4703d2e6926a78e1ee7fd916fcbd17f2b1652b5bfbac71f917a1fad5c869f",
+          "public_sha256": "ad72dc88f14d8024e1d9ef79e0bf55a33ad6817259bf45b7f23e9cd614109139"
+        },
+        "H2": {
+          "seed": "ffca289f66e2473a3353d7f726f2bc45ec1d488570f78737361bae455b69a92c",
+          "public_sha256": "fc9ffefadb44f3a9f7e81e5cc460cfa8b0f2098d94c73c8a0435245cb3ae77ef"
+        },
+        "H3": {
+          "seed": "e76268538ea1d8aa6553daa3c559ea8e25102b5e7a228d1e6635f1af145bbcda",
+          "public_sha256": "718eb3f0bde4cede82644b36b14f0834636c617f1cfa3acb13812b3135b4d699"
+        },
+        "H4": {
+          "seed": "6e1129fa46fceba24607c5b056e9a327d91b1390783c40786d86d405b0ed4dce",
+          "public_sha256": "ac0df5eebece33a514d85a4c874b8a709ab3cb27a32b5e0127303d15560d8d5a"
+        }
+      }
+    },
+    {
+      "name": "junctions //0//0",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//0//0",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "f5f4703d2e6926a78e1ee7fd916fcbd17f2b1652b5bfbac71f917a1fad5c869f",
+          "public_sha256": "ad72dc88f14d8024e1d9ef79e0bf55a33ad6817259bf45b7f23e9cd614109139"
+        },
+        "H2": {
+          "seed": "ffca289f66e2473a3353d7f726f2bc45ec1d488570f78737361bae455b69a92c",
+          "public_sha256": "fc9ffefadb44f3a9f7e81e5cc460cfa8b0f2098d94c73c8a0435245cb3ae77ef"
+        },
+        "H3": {
+          "seed": "e76268538ea1d8aa6553daa3c559ea8e25102b5e7a228d1e6635f1af145bbcda",
+          "public_sha256": "718eb3f0bde4cede82644b36b14f0834636c617f1cfa3acb13812b3135b4d699"
+        },
+        "H4": {
+          "seed": "6e1129fa46fceba24607c5b056e9a327d91b1390783c40786d86d405b0ed4dce",
+          "public_sha256": "ac0df5eebece33a514d85a4c874b8a709ab3cb27a32b5e0127303d15560d8d5a"
+        }
+      }
+    },
+    {
+      "name": "junction //1",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//1",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 1,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "b277845d8dc9429abcd9c992ed309ee76adfb0378f2a89e6af2840def2817115",
+          "public_sha256": "ff55319529f84c37dc3836b7374a9373508f3fe1d7da9c090a7537e03773cb9c"
+        },
+        "H2": {
+          "seed": "1db93189366b4d4d3c4e215fc89d0d3c5ffc5e9fb0158cdfdc1ee1db54583fa7",
+          "public_sha256": "5052814117dd52c6ddb46cb210cb954057779b572febaa47e9550d044f477171"
+        },
+        "H3": {
+          "seed": "61afc473cf69cac2dbebe9a9bc6acf3d53b487c4c4f2a2c8280a27ad2a9d61db",
+          "public_sha256": "4227782920a28ff24a5fb5b24052d3e1136f5f3a0316a312efc25c581925e395"
+        },
+        "H4": {
+          "seed": "27e3e9e7815d8071d6d92e3c2df0411ad664923d04527d0958a41f8abc1059ce",
+          "public_sha256": "c5cdfb8ec96e95c674ca98c2d5d0244bac73881d1450dcabc8b9688e7e9e0d48"
+        }
+      }
+    },
+    {
+      "name": "junctions //1//7",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//1//7",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 1,
+      "index": 7,
+      "keys": {
+        "H1": {
+          "seed": "aeb2f52ebd4610425433ef492968904b3b69a17631b77254ce4715db20eb1b81",
+          "public_sha256": "cd91658cf7360f65d1e8418b22fd66162d34611723a2c5d48dd460a1b3006a95"
+        },
+        "H2": {
+          "seed": "8b1aa31477cc07f559ed9dddd54079208e99c072a166edc0e0c6ccaf1389f789",
+          "public_sha256": "50616dea565e3f88856e62d056df557409699965cd9dadb017fcaa52e95de8c0"
+        },
+        "H3": {
+          "seed": "a27c081e24e17111fba4681553b761a8d28ab3094489cc5749104cf7c4ff5d1e",
+          "public_sha256": "f5eef04a47401d2d52012e13673a1fb8e64da4d4698a801e2598497f8913a302"
+        },
+        "H4": {
+          "seed": "2cd6f33e5f82b9716ea00ceab289254659145972bea65b174d134cb85387bce5",
+          "public_sha256": "20ba7e8f31c2e48016c87c0b770cf72b6db52b2419510cbb557d3a5365891c95"
+        }
+      }
+    },
+    {
+      "name": "junction //2147483647, the largest numeric level",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//2147483647",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 2147483647,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "a888ee81cfd7180e66740f034ae938e60114b868a3247cb6f6aba3a7e448f55a",
+          "public_sha256": "0b602a5ff1d04775e52979463e61aab923298c1b24237c7b32009032a0fd8bd3"
+        },
+        "H2": {
+          "seed": "98eb1f3c861d1f6195f2a17c8892f2d3d5ae81688461a62d58dd589a3dfabe47",
+          "public_sha256": "71cd32ef046a25d572f134decd8c74b20208102848f51581f208eda7f944059c"
+        },
+        "H3": {
+          "seed": "c64f02b66bd5265ebe3e7d2bf1b6ea2ecb77c326f3aa536c59a2c4904b421843",
+          "public_sha256": "8d0d53d53ecf708715897b5c314e71172280ae2b336a172b6bd9ef4f83d894d9"
+        },
+        "H4": {
+          "seed": "33b9f02d586b0e5ba80014a7d77b8bba64dffd678ec494d961afc03376c369fe",
+          "public_sha256": "ad04d2d84f015b04ae71c195a490ab1dae989edd8d7f23ac42745b5750834f60"
+        }
+      }
+    },
+    {
+      "name": "named junction //Alice",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//Alice",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 910586124,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "01c252ba5e634b05af0751846162e7fbcc0962255bfea121f604c7f7bc47e8ee",
+          "public_sha256": "3f30dec1ff4eae613503ae6bb0400b29f4598e9e97a03e031484945a0fa98bde"
+        },
+        "H2": {
+          "seed": "3aa154527ed0e50767c570d683f15cc6043183fa023f8fc8da241a22268f859b",
+          "public_sha256": "84517fd0e8c9a707995e5360c58fa45b13b616ed96e9f248b158404e88a1463d"
+        },
+        "H3": {
+          "seed": "197057e56b2f21af412261e5ff81d26c568b3e00bf8d3a169095daf95e636e68",
+          "public_sha256": "3ae51689c478e9069e06e947d189636f13313662cc48d79ec57da333a7440975"
+        },
+        "H4": {
+          "seed": "784a356bc90a6178985b4110fc58f63a7638938f2f189b38016ce1767b2a64a3",
+          "public_sha256": "8fb1b8f820258b0d71f6515582ec6ee7a125751f77bd6459746d741b207ebfb9"
+        }
+      }
+    },
+    {
+      "name": "named junctions //Alice//Bob",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//Alice//Bob",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 910586124,
+      "index": 1714080267,
+      "keys": {
+        "H1": {
+          "seed": "9ebab6df64b33e97c5009deb505cc3bad0ccc59da812260db55c873bd434b065",
+          "public_sha256": "985502a8bdca70b2818154deec0d907501251a31ab3ba53a6516cc532f67d1c9"
+        },
+        "H2": {
+          "seed": "d8fb57a76ac319a0b5c3b0796a2349e8511018acb002e059c923b32cc68c2ad5",
+          "public_sha256": "b03a158378958a3eb01c6701cc5ebc46aa3f8cb00c13dc63109bacac8c1d3b61"
+        },
+        "H3": {
+          "seed": "c792fd0faeb7d0c1fd2983898d385e608ad3ad4f95bb68b6cd7df330df1774b5",
+          "public_sha256": "6442d848ae1153ee337c24be9b5660f8488a03ddba6930d8de91f28f7578514c"
+        },
+        "H4": {
+          "seed": "e9125d8620bdab6cbf13fbb0a37a52cb8c863f17cbcc326b5c577dcbbb5f17d0",
+          "public_sha256": "fb03f99ac91598cc4bf3e8067b7b0fe909c81e5bdb707baee425eb66c6e66644"
+        }
+      }
+    },
+    {
+      "name": "junction and password",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//1///pw",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "pw",
+      "account": 1,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "4ed650ddf199232205c5cc8967cb108e03e75baf3b74ff1e3593292ca50c1a16",
+          "public_sha256": "0538f9fefe64da3b3cd30f817810895e6638788265aac224a9d2a2bf1cf5f7be"
+        },
+        "H2": {
+          "seed": "49967aa4d9b43fa6f29e93a5d04da55da6fae9f03d10963e9c6f69a57f42a885",
+          "public_sha256": "afbf5710f721bcf61573d930d9399e31e970fc7a02ee2047da63bfc7a8a0abf5"
+        },
+        "H3": {
+          "seed": "7d3697aa4f361ec2004e6d5929f01d781e5b8e0bc58b0e11aa0e0407cc174672",
+          "public_sha256": "cbdc9adc2ba5110db4b0163464592ddbd5118c8783ac5c6c46d492987cfa8e91"
+        },
+        "H4": {
+          "seed": "2e74b62d6b821787a71286571623c22080930681406291de0c4e7c68027e4310",
+          "public_sha256": "c45868d812876fc2fc0ab3b00215c68a35a3ad2de8000fd20306c9e88d8fa0f5"
+        }
+      }
+    },
+    {
+      "name": "dev phrase //Alice",
+      "suri": "//Alice",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
+      "passphrase": "",
+      "account": 910586124,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "685f319a7ec906c98fbdd442a8d78b85b7567c7ad620c5f3fce1652cf048579a",
+          "public_sha256": "8f6759aefababbc028da476bfca7d4915ba2ea3ed2439801114bcd4618bd4e16"
+        },
+        "H2": {
+          "seed": "c03d2d10eaccd68b09de4f76c0128ee8f6eec6e2cd89af2329d541124c9cf3d3",
+          "public_sha256": "3625f0c14355704be8cee52523e24fd5acad5540eb54ba78fc2ab8c0dcb2853c"
+        },
+        "H3": {
+          "seed": "ac61f67f6d1efe4f527839710c49e223b524e5cf2babb6a3e525b1ca9308087a",
+          "public_sha256": "59931f2040ad7582075e2e28c1d84371773a6fefa835d3a882dc49e79716f850"
+        },
+        "H4": {
+          "seed": "662f07772f9286b1ad6d9f08dce85ff9dfcc126fb56cff9baf7b33b4a0352f2d",
+          "public_sha256": "318c5d55bbb471a4a5aa0076fb9f90d86b0632135bfadaaba7dc101ee5a8dbf7"
+        }
+      }
+    },
+    {
+      "name": "dev phrase (empty SURI)",
+      "suri": "",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
+      "passphrase": "",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "c5d99faf109f40a5c342a5e8a663c73bdb9cb01bc583a1ecdd582210917b85c3",
+          "public_sha256": "cc6d38554c6a6989a48cad8d6c3bfc658a10cf91de02d3f4f0de17167a3f0635"
+        },
+        "H2": {
+          "seed": "352502186339d1e627ab78a1b09b8178adea8557ae0aa3871816254d8419a53d",
+          "public_sha256": "469ccad628eed0e0442537441904d51ca1450b0758faa35cee8d3f47750002d9"
+        },
+        "H3": {
+          "seed": "82530d8ece916281362a2a817c04e0eefc2764a72124de51c29f33523ef26096",
+          "public_sha256": "543d456ba8794d3e24642279d5e0e87b1fd44f32dca7b8f1adf3522617629acc"
+        },
+        "H4": {
+          "seed": "e3c7b2985b2fec5da49f7378a64df009babf2b815f5352bc5671c91425b5f4b2",
+          "public_sha256": "888794f7584793ed4ebfe55d05f1d31b64fd7371944cf6dc7ba45e5f143c4527"
+        }
+      }
+    },
+    {
+      "name": "dev phrase with ///pw",
+      "suri": "///pw",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
+      "passphrase": "pw",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "49b86808cd253f2bcf869af47492b0c3e0aa53bd3a0efc4add71cebeabac09b0",
+          "public_sha256": "dabd5d0fccf1540c02d10f004b84505d0f5f33724e9dbb014bb71ec0de1c5f97"
+        },
+        "H2": {
+          "seed": "1ce886401cddc686b597dd65cff5e797be3610b74b3e9a2094bb70d8f3a6ad74",
+          "public_sha256": "f92aa1deee8f898a84b7fdcf8fc8f4dff324410fdc477e604918b0d45a2e9258"
+        },
+        "H3": {
+          "seed": "f819ff90fe024d0474c8c8dbedda3ceb16c2b5ff87713510ee3304b5f265bbba",
+          "public_sha256": "0502541b2b672894495ccffb4a62eac116ae1dfbe5c2ad4ae4676fca875453ed"
+        },
+        "H4": {
+          "seed": "c8a7e7301e1671e8bd1417f429001c8d73cb2767e5edaadc06976b229b17debc",
+          "public_sha256": "26cf33a41ffebfff55b3d93f7d42ba6394285f52c7e808243d3ae11fb4930f4c"
+        }
+      }
+    },
+    {
+      "name": "password containing a slash",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow///p/w",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "p/w",
+      "account": 0,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "c70a59e9332763301f82e0b7bd14e16dab58add4769b78cb5f6d0cc8a610709f",
+          "public_sha256": "c823eed1c980795c0f4f0f6dfcfc6097069f5554c34253339ba79a4070afbda7"
+        },
+        "H2": {
+          "seed": "27ca56e3c41a0b6e046063e218407f95fbd35d5e0ed0302b5e3cd2799ff15285",
+          "public_sha256": "1dae4415a182d2220733473fe0b350a652519bbbb00e8dcd034fecb03e5c802c"
+        },
+        "H3": {
+          "seed": "1bc1b6abebd6d63ed4d006734b1f2e5455f94ec8f24e2f4fec0f56e1d712988c",
+          "public_sha256": "5d3d9b1d91597517be5e19f4c43d6ee310b2dfa2f180bc175941f5ac8b6a068d"
+        },
+        "H4": {
+          "seed": "54adc26a1f53111f3b62c3b9b3687aea603cf3282cdc57bbec8fc48ed1f92c20",
+          "public_sha256": "831135a15d3e53e20b8363a39db0cac7d467d7927f1dd1adc85590878aa79983"
+        }
+      }
+    },
+    {
+      "name": "junction name of 64 bytes or more (two-byte SCALE length)",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//QUIP-HD-parity-phrase-junction-name-that-is-sixty-four-bytes-or-more!!",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "passphrase": "",
+      "account": 218918165,
+      "index": 0,
+      "keys": {
+        "H1": {
+          "seed": "2260632a6d4a23e2038d7b5b2a331be6947c3db9d1022eb95c860aa1d41f4484",
+          "public_sha256": "b0d2b3ee3ad4ff4208724cf0e53afe1adb0dd3e19901b1594fdd3530a93fb179"
+        },
+        "H2": {
+          "seed": "dba24e89fb4afdb22aa8ae100a8d5b6ff6e32b843c2b9cb3ddfc1e45871e392e",
+          "public_sha256": "cb98cefdcb737b3fdf7670787b7ef8c7c04c32d3ba130d367a144c40da3605b8"
+        },
+        "H3": {
+          "seed": "15c3ff439d916644cb08c81b3cbd9e22f661611207723ce257d7e566bcebaf5d",
+          "public_sha256": "40d5e51c1b3f9b1e05428ed06ecbbb70672a507d32d6895d23c7732450e7cc99"
+        },
+        "H4": {
+          "seed": "7b33c695190447daeb19a3c7656ed56730405c85b9bcf79c99d70e30a2a1bdbe",
+          "public_sha256": "7358bf637ef861630ce4d1f89cdabd2164c4dc6e9e7016a1bc0b548ba0bb40b1"
+        }
+      }
+    },
+    {
+      "name": "raw seed",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "raw_seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "keys": {
+        "H1": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "b72c7c8c42aecaa5e4c7fda2a333ea1288c17208c3a101832ff3a9f98b2f10bb"
+        },
+        "H2": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "8c6bb2adcea87959f2a8f43a45432c195e6f313211b9a351e19c696e28a1cb7b"
+        },
+        "H3": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "49d1d3234b00ffb42926995573234b556729949494b4e1221268eeba00b25e19"
+        },
+        "H4": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "09aa552fb33edb728cccd6578134c72bc0094bef29c9e9f47473c81a8ce57f77"
+        }
+      }
+    },
+    {
+      "name": "raw seed in uppercase hex digits",
+      "suri": "0x2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A",
+      "scope": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ],
+      "raw_seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "keys": {
+        "H1": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "b72c7c8c42aecaa5e4c7fda2a333ea1288c17208c3a101832ff3a9f98b2f10bb"
+        },
+        "H2": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "8c6bb2adcea87959f2a8f43a45432c195e6f313211b9a351e19c696e28a1cb7b"
+        },
+        "H3": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "49d1d3234b00ffb42926995573234b556729949494b4e1221268eeba00b25e19"
+        },
+        "H4": {
+          "seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+          "public_sha256": "09aa552fb33edb728cccd6578134c72bc0094bef29c9e9f47473c81a8ce57f77"
+        }
+      }
+    },
+    {
+      "name": "raw seed junction name over 32 encoded bytes (blake2 chain code)",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//QUIP-HD-parity-raw-seed-junction-name",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "raw_seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "junction_chain_codes": [
+        "138c2ec7d940313a0df3f8c7e81abb307dfc62c6d14e78d8a2815861ed49de92"
+      ],
+      "keys": {
+        "H1": {
+          "seed": "b80f3de3805159c0e1228f21844b355e82b18468b5f158c04c8a47c72bb2638b",
+          "public_sha256": "6e2e5b402c556bc9a09527a6d06e01c78e90e333d1c1ea0fd82c103e563b4535"
+        },
+        "H2": {
+          "seed": "b80f3de3805159c0e1228f21844b355e82b18468b5f158c04c8a47c72bb2638b",
+          "public_sha256": "e5685a51c90a03694c59b372f3b24635f4c7e1880dfe915ccddf10ac75418151"
+        },
+        "H3": {
+          "seed": "b80f3de3805159c0e1228f21844b355e82b18468b5f158c04c8a47c72bb2638b",
+          "public_sha256": "1d7bdf6ed349c0fbf46c07a387ac1b55046a4ea4bed3389a02a42a44bfe1eea2"
+        },
+        "H4": {
+          "seed": "b80f3de3805159c0e1228f21844b355e82b18468b5f158c04c8a47c72bb2638b",
+          "public_sha256": "1c196d80104aa93ee8ddba50d1226597d4bb6beffa1979e69a1fa9ee5ecf6b53"
+        }
+      }
+    },
+    {
+      "name": "raw seed //1 (HKDF junction)",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//1",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "raw_seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "junction_chain_codes": [
+        "0100000000000000000000000000000000000000000000000000000000000000"
+      ],
+      "keys": {
+        "H1": {
+          "seed": "ed1b2713b4b49b4f15d4ab3867b49ad980238d1294fa63ec25ec308e3b8ed185",
+          "public_sha256": "b8127150d4d0d051998b23adc04a9e5cb8c8d76c9674c31effb2d35de38439f4"
+        },
+        "H2": {
+          "seed": "ed1b2713b4b49b4f15d4ab3867b49ad980238d1294fa63ec25ec308e3b8ed185",
+          "public_sha256": "ab23c445bd1e626490ad0e5ab901862feb097fc5de3f9435859ac20d270d3e74"
+        },
+        "H3": {
+          "seed": "ed1b2713b4b49b4f15d4ab3867b49ad980238d1294fa63ec25ec308e3b8ed185",
+          "public_sha256": "15475666e3de3c10659b88e73eb6586e64446f2577f7e509fe8c8bdd6bccd9a0"
+        },
+        "H4": {
+          "seed": "ed1b2713b4b49b4f15d4ab3867b49ad980238d1294fa63ec25ec308e3b8ed185",
+          "public_sha256": "26295930fd2a13623850bb95b2a226b475a172098f8f27bc24a40d76d3a05c0f"
+        }
+      }
+    },
+    {
+      "name": "raw seed //Alice//1 (HKDF junctions)",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//Alice//1",
+      "scope": [
+        "quip-hd",
+        "sdk"
+      ],
+      "raw_seed": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "junction_chain_codes": [
+        "14416c6963650000000000000000000000000000000000000000000000000000",
+        "0100000000000000000000000000000000000000000000000000000000000000"
+      ],
+      "keys": {
+        "H1": {
+          "seed": "33c5dea4dc3e827e07942eed47a794218bfa762b6532d8255927292d5710dba4",
+          "public_sha256": "8921e338d26595060d74470b1ec93ac3c19185d41e960cf3dcded93d49d7ea39"
+        },
+        "H2": {
+          "seed": "33c5dea4dc3e827e07942eed47a794218bfa762b6532d8255927292d5710dba4",
+          "public_sha256": "3b069d953bc196685a00fcba10e99b2016d1ffeffe9122a3e0b9f2419dcd100b"
+        },
+        "H3": {
+          "seed": "33c5dea4dc3e827e07942eed47a794218bfa762b6532d8255927292d5710dba4",
+          "public_sha256": "51d78cfc874a21de90e0c483253986813ce50bd4223bfa276921cdb65b4028d5"
+        },
+        "H4": {
+          "seed": "33c5dea4dc3e827e07942eed47a794218bfa762b6532d8255927292d5710dba4",
+          "public_sha256": "9def8fb1b2094a19835eee4e17b1fac0b744d5f0f40df80f127a3c3be2718362"
+        }
+      }
+    }
+  ],
+  "negative": [
+    {
+      "name": "uppercase 0X",
+      "suri": "0X2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed of 31 bytes",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed with an empty ///",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a///",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed with ///pw",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a///pw",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed //01",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//01",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed //+1",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//+1",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed //2147483648",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//2147483648",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed soft junction",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a/1",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed third junction",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//1//2//3",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "raw seed junction (signers take no junctions)",
+      "suri": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a//1",
+      "rejected_by": [
+        "signer"
+      ]
+    },
+    {
+      "name": "soft junction",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow/soft",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "empty junction",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "dev phrase, empty SURI (signers have no dev phrase)",
+      "suri": "",
+      "rejected_by": [
+        "signer"
+      ]
+    },
+    {
+      "name": "dev phrase with ///pw (signers have no dev phrase)",
+      "suri": "///pw",
+      "rejected_by": [
+        "signer"
+      ]
+    },
+    {
+      "name": "third junction",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//1//2//3",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "non-canonical //01",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//01",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "non-canonical //00",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//00",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "plus sign //+1",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//+1",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "//2147483648, 2^31",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//2147483648",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "//4294967296, 2^32",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//4294967296",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "junction (signers take no junctions)",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//1",
+      "rejected_by": [
+        "signer"
+      ]
+    },
+    {
+      "name": "named junction (signers take no junctions)",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank yellow//Alice",
+      "rejected_by": [
+        "signer"
+      ]
+    },
+    {
+      "name": "tab, newline and no-break space between words",
+      "suri": "legal\twinner thank year wave sausage worth useful legal winner thank yellow\n",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "fi ligature in the phrase",
+      "suri": "bottom drive obey lake curtain smoke basket hold race lonely ﬁt walk",
+      "rejected_by": [
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "bad checksum",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank legal",
+      "rejected_by": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ]
+    },
+    {
+      "name": "unknown word",
+      "suri": "legal winner thank year wave sausage worth useful legal winner thank quipq",
+      "rejected_by": [
+        "quip-hd",
+        "sdk",
+        "signer"
+      ]
+    }
+  ]
+}
