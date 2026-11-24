@@ -174,7 +174,12 @@ fn invalid_suri(scheme: &str, e: &SecretStringError) -> Error {
             "it contains a character that is not allowed (look for quotes, \
              a byte-order mark or a line break)"
         }
-        SecretStringError::InvalidPhrase => "it is not a valid BIP-39 mnemonic",
+        // The hybrid pairs report a character outside the phrase class as
+        // `InvalidPhrase` too, since their errors carry no input.
+        SecretStringError::InvalidPhrase => {
+            "it is not a valid BIP-39 mnemonic, or it contains a character that is not \
+             allowed (look for quotes, a byte-order mark or a line break)"
+        }
         SecretStringError::InvalidPassword => "the password is not valid",
         SecretStringError::InvalidSeed => "the seed is not valid",
         SecretStringError::InvalidSeedLength => "the seed has the wrong length",
@@ -364,25 +369,37 @@ mod tests {
     const PHRASE: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
-    /// The echo came from the SDK error itself: `InvalidFormat` holds a copy
-    /// of the SURI. `invalid_suri` keeps only the variant.
+    /// G-001's echo came from the SDK error itself: upstream's
+    /// `InvalidFormat` holds a copy of the SURI. Since the SDK fork's QUIP HD
+    /// profile (design v2.1) the hybrid pairs' parse errors carry no input, so
+    /// a quoted SURI is `InvalidPhrase`. `invalid_suri` keeps only the variant
+    /// either way, and both variants point at the stray character.
     #[test]
     fn the_invalid_suri_error_names_the_problem_without_the_suri() {
         let quoted = format!("\"{PHRASE}///hunter2\"");
-        let Err(e) = HybridBabePair::from_string(&quoted, None) else {
+        let Err(hybrid) = HybridBabePair::from_string(&quoted, None) else {
             panic!("a quoted SURI must not parse");
         };
-        assert!(matches!(e, SecretStringError::InvalidFormat(_)));
+        assert_eq!(hybrid, SecretStringError::InvalidPhrase);
+        // Upstream's error still holds the SURI; this is what `invalid_suri`
+        // must never show.
+        let Err(upstream) = sp_core::sr25519::Pair::from_string(&quoted, None) else {
+            panic!("a quoted SURI must not parse upstream either");
+        };
+        assert!(matches!(upstream, SecretStringError::InvalidFormat(_)));
         assert!(
-            format!("{e:?}").contains("sausage"),
-            "the SDK error carries the SURI"
+            format!("{upstream:?}").contains("sausage"),
+            "the upstream error carries the SURI"
         );
 
-        let shown = invalid_suri("hybrid-babe-h444", &e);
-        for text in [format!("{shown}"), format!("{shown:?}")] {
-            assert!(text.contains("invalid SURI for hybrid-babe-h444"), "{text}");
-            for secret in PHRASE.split(' ').chain(["hunter2"]) {
-                assert!(!text.contains(secret), "{text} shows {secret:?}");
+        for e in [&hybrid, &upstream] {
+            let shown = invalid_suri("hybrid-babe-h444", e);
+            for text in [format!("{shown}"), format!("{shown:?}")] {
+                assert!(text.contains("invalid SURI for hybrid-babe-h444"), "{text}");
+                assert!(text.contains("look for quotes"), "{text}");
+                for secret in PHRASE.split(' ').chain(["hunter2"]) {
+                    assert!(!text.contains(secret), "{text} shows {secret:?}");
+                }
             }
         }
     }
