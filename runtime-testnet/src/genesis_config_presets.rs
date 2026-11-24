@@ -1342,10 +1342,9 @@ mod tests {
     // (WP2 batch 1). Comparing serialized bytes catches drift the parity gate
     // cannot: the same accidental change in both runtime trees.
     //
-    // To regenerate, run with `QUIP_PRINT_LEGACY_HASHES` set and `--nocapture`,
-    // once per profile: the test then prints `legacy_hash <profile> <preset>
-    // <hash>` for every preset instead of comparing.
-    // `scripts/regenerate-quip-hd-fixtures.sh` does this and writes the file.
+    // To regenerate, run the ignored `print_legacy_preset_hashes` below, once
+    // per profile; `scripts/regenerate-quip-hd-fixtures.sh` does this and
+    // writes the file. This test has no switch that turns its check off.
     #[test]
     fn legacy_preset_bytes_match_pre_launch_base() {
         let fixture: Value =
@@ -1357,19 +1356,34 @@ mod tests {
         };
         let expected = fixture[profile].as_object().unwrap();
         assert_eq!(expected.len(), 5);
-        let print_only = std::env::var_os("QUIP_PRINT_LEGACY_HASHES").is_some();
         for (name, hash) in expected {
             let bytes = get_preset(&PresetId::from(name.clone())).unwrap();
-            let actual = hex_encode(&sp_core::blake2_256(&bytes));
-            if print_only {
-                println!("legacy_hash {profile} {name} {actual}");
-                continue;
-            }
             assert_eq!(
-                actual,
+                hex_encode(&sp_core::blake2_256(&bytes)),
                 hash.as_str().unwrap(),
                 "legacy preset changed: {name}"
             );
+        }
+    }
+
+    /// Prints `legacy_hash <profile> <preset> <hash>` for every preset in
+    /// genesis_legacy_hashes.json, from this build's `get_preset`. It checks
+    /// nothing, so it is ignored by default; the regeneration script runs it
+    /// with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "prints the preset hashes for scripts/regenerate-quip-hd-fixtures.sh"]
+    fn print_legacy_preset_hashes() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("genesis_legacy_hashes.json")).unwrap();
+        let profile = if cfg!(feature = "runtime-benchmarks") {
+            "benchmark"
+        } else {
+            "production"
+        };
+        for name in fixture[profile].as_object().unwrap().keys() {
+            let bytes = get_preset(&PresetId::from(name.clone())).unwrap();
+            let hash = hex_encode(&sp_core::blake2_256(&bytes));
+            println!("legacy_hash {profile} {name} {hash}");
         }
     }
 

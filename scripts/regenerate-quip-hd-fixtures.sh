@@ -10,7 +10,8 @@
 #   `print_dev_accounts` example (the SDK fork's `Pair::from_string_with_seed`);
 # - ALICE_PINNED_ACCOUNT_HEX in both runtimes' genesis_config_presets.rs;
 # - both runtimes' genesis_legacy_hashes.json, from each runtime's own
-#   `get_preset` in both feature profiles (production and runtime-benchmarks).
+#   `get_preset` in both feature profiles (production and runtime-benchmarks),
+#   printed by the ignored `print_legacy_preset_hashes` test.
 #
 # Prerequisite: `npm ci --prefix js/quip-signer`, for @polkadot/util-crypto's
 # keccak (the revive address). Re-running on an up-to-date tree changes
@@ -39,11 +40,11 @@ for crate in quip-protocol-runtime quip-testnet-runtime; do
     # The benchmark build compiles pallet-revive's contract fixtures, which
     # need solc and resolc. No preset embeds a fixture, so skipping them
     # cannot change a preset hash.
-    out="$(QUIP_PRINT_LEGACY_HASHES=1 SKIP_PALLET_REVIVE_FIXTURES=1 \
+    out="$(SKIP_PALLET_REVIVE_FIXTURES=1 \
       cargo test -q --release --locked -p "$crate" \
       ${features:+--features "$features"} --lib \
-      genesis_config_presets::tests::legacy_preset_bytes_match_pre_launch_base \
-      -- --exact --nocapture)"
+      genesis_config_presets::tests::print_legacy_preset_hashes \
+      -- --exact --ignored --nocapture)"
     hashes+="$(grep '^legacy_hash ' <<<"$out" | sed "s/^/$crate /")"$'\n'
   done
 done
