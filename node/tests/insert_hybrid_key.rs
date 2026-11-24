@@ -49,6 +49,10 @@ fn scratch_dir() -> ScratchDir {
 }
 
 fn insert(scheme: &str, suri: &str, base_path: &Path) -> Output {
+    insert_with(scheme, suri, base_path, &[])
+}
+
+fn insert_with(scheme: &str, suri: &str, base_path: &Path, extra: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_quip-network-node"))
         .args([
             "insert-hybrid-key",
@@ -60,6 +64,7 @@ fn insert(scheme: &str, suri: &str, base_path: &Path) -> Output {
         ])
         .arg("--base-path")
         .arg(base_path)
+        .args(extra)
         .output()
         .expect("run quip-network-node")
 }
@@ -214,5 +219,67 @@ fn a_suri_file_with_a_byte_order_mark_inserts_the_same_key() {
         let plain_keys = keystore_entries(&plain_base);
         assert_eq!(plain_keys.len(), 1, "{scheme}: {plain_keys:?}");
         assert_eq!(keystore_entries(&bom_base), plain_keys, "{scheme}");
+    }
+}
+
+/// The keystore stores the SURI and re-derives the key with its own password
+/// on every load (`LocalKeystore::key_pair_by_type`). A key inserted on a node
+/// run with `--password` must be the one that password derives, or it fails
+/// to load with `PublicKeyMismatch` and the validator does not author
+/// (design v2 §7).
+#[test]
+fn a_key_inserted_under_a_keystore_password_loads_with_it() {
+    use quip_crypto_primitives::substrate::{ed25519_fndsa512, sr25519_fndsa512};
+    use sc_keystore::LocalKeystore;
+    use sp_core::crypto::{ByteArray, Pair, SecretString};
+
+    const KEYSTORE_PASSWORD: &str = "keystore-pw";
+    let dir = scratch_dir();
+    let file = dir.join("suri");
+    std::fs::write(&file, format!("{PHRASE}\n")).expect("write SURI file");
+    for scheme in SCHEMES {
+        let base = dir.join(format!("base-{scheme}"));
+        let out = insert_with(
+            scheme,
+            file.to_str().unwrap(),
+            &base,
+            &["--password", KEYSTORE_PASSWORD],
+        );
+        assert!(
+            out.status.success(),
+            "{scheme}: insert failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let keystore = LocalKeystore::open(
+            base.join("chains").join("dev").join("keystore"),
+            Some(SecretString::new(KEYSTORE_PASSWORD.to_owned())),
+        )
+        .expect("open keystore");
+        let loaded = match scheme {
+            "hybrid-babe-h444" => {
+                let want = sr25519_fndsa512::Pair::from_string(PHRASE, Some(KEYSTORE_PASSWORD))
+                    .expect("pair")
+                    .public();
+                let found = keystore
+                    .key_pair::<sp_consensus_babe::AuthorityPair>(&want.clone().into())
+                    .expect("the key loads without PublicKeyMismatch");
+                found.map(|pair| pair.public().to_raw_vec() == want.to_raw_vec())
+            }
+            _ => {
+                let want = ed25519_fndsa512::Pair::from_string(PHRASE, Some(KEYSTORE_PASSWORD))
+                    .expect("pair")
+                    .public();
+                let found = keystore
+                    .key_pair::<sp_consensus_grandpa::AuthorityPair>(&want.clone().into())
+                    .expect("the key loads without PublicKeyMismatch");
+                found.map(|pair| pair.public().to_raw_vec() == want.to_raw_vec())
+            }
+        };
+        assert_eq!(
+            loaded,
+            Some(true),
+            "{scheme}: the inserted key is not the one the keystore password derives"
+        );
+        assert_eq!(keystore_entries(&base).len(), 1, "{scheme}");
     }
 }

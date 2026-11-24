@@ -22,7 +22,7 @@ use quip_crypto_primitives::substrate::{
 use sc_cli::{Error, KeystoreParams, SharedParams, SubstrateCli};
 use sc_keystore::LocalKeystore;
 use sc_service::config::{BasePath, KeystoreConfig};
-use sp_core::crypto::{KeyTypeId, SecretStringError};
+use sp_core::crypto::{ExposeSecret, KeyTypeId, SecretStringError};
 use sp_core::Pair;
 use sp_keystore::KeystorePtr;
 
@@ -90,12 +90,25 @@ impl InsertHybridKeyCmd {
         let chain_spec = cli.load_spec(&chain_id)?;
         let config_dir = base_path.config_dir(chain_spec.id());
 
+        let (keystore_path, password) = match self.keystore_params.keystore_config(&config_dir)? {
+            KeystoreConfig::Path { path, password } => (path, password),
+            _ => unreachable!("keystore_config always returns Path; qed"),
+        };
+        // Derive with the keystore's password, as `sc-cli key insert` does.
+        // The keystore stores the SURI and re-derives the pair from it on
+        // every load with `from_string(&suri, keystore_password)`
+        // (`LocalKeystore::key_pair_by_type`). A key derived here without
+        // that password would be filed under a public key the keystore then
+        // fails to reproduce (`PublicKeyMismatch`), and the validator would
+        // not author.
+        let password_str = password.as_ref().map(|p| p.expose_secret().as_str());
+
         // `Public` implements both `AsRef<[u8]>` and `AsRef<InnerPublic>` since
         // upstream `d125cbde` (polkadot-sdk v0.2). Bind the public to a local
         // first, then disambiguate the byte-slice borrow explicitly.
         let (key_type, public_bytes) = match self.scheme {
             HybridScheme::HybridBabeH444 => {
-                let pair = HybridBabePair::from_string(&suri, None)
+                let pair = HybridBabePair::from_string(&suri, password_str)
                     .map_err(|e| invalid_suri("hybrid-babe-h444", &e))?;
                 let key_type = self.resolve_key_type(sp_consensus_babe::KEY_TYPE)?;
                 let public = pair.public();
@@ -103,7 +116,7 @@ impl InsertHybridKeyCmd {
                 (key_type, bytes.to_vec())
             }
             HybridScheme::HybridGrandpaH244 => {
-                let pair = HybridGrandpaPair::from_string(&suri, None)
+                let pair = HybridGrandpaPair::from_string(&suri, password_str)
                     .map_err(|e| invalid_suri("hybrid-grandpa-h244", &e))?;
                 let key_type = self.resolve_key_type(sp_consensus_grandpa::KEY_TYPE)?;
                 let public = pair.public();
@@ -112,10 +125,7 @@ impl InsertHybridKeyCmd {
             }
         };
 
-        let keystore: KeystorePtr = match self.keystore_params.keystore_config(&config_dir)? {
-            KeystoreConfig::Path { path, password } => LocalKeystore::open(path, password)?.into(),
-            _ => unreachable!("keystore_config always returns Path; qed"),
-        };
+        let keystore: KeystorePtr = LocalKeystore::open(keystore_path, password)?.into();
 
         // `Keystore::insert` returns `Result<(), ()>`, so there is nothing to
         // show. The `()` pattern keeps it that way: if the error ever gains a
