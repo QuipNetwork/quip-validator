@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
     "pretest": "npm run build",
-    "test": "tsc -p tsconfig.test.json && node dist-test/test/index.test.js && node test/revive-fund-account.test.mjs",
+    "test": "tsc -p tsconfig.test.json && node dist-test/test/index.test.js && node test/revive-fund-account.test.mjs && node test/golden-parity.test.mjs",
     "test:integration": "node test/local-node.mjs"
   },
   "peerDependencies": {
