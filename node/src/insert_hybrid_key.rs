@@ -43,10 +43,18 @@ pub enum HybridScheme {
     about = "Insert a hybrid (post-quantum) BABE or GRANDPA session key into the keystore."
 )]
 pub struct InsertHybridKeyCmd {
-    /// The secret key URI (BIP39 mnemonic or derivation path like `//Alice`).
-    /// If the value names a file, the file's contents are used instead.
-    /// If omitted, you are prompted for it and the input is not shown.
-    #[arg(long)]
+    /// The secret key URI: use a bare BIP-39 mnemonic, in a file only you can
+    /// read, or leave this out to be prompted for it.
+    ///
+    /// A bare mnemonic is the 12 or 24 words separated by single spaces, with
+    /// no quotes, derivation path (`//...`) or password (`///...`). Paths such
+    /// as `//Alice` are for development chains.
+    ///
+    /// If the value names a file, the file's contents are used (a UTF-8
+    /// byte-order mark and surrounding whitespace are dropped). If omitted, you
+    /// are prompted for the SURI and the input is not shown. A SURI typed on
+    /// the command line is visible in shell history and the process list.
+    #[arg(long, value_name = "FILE")]
     pub suri: Option<String>,
 
     /// Override the runtime key-type id. Defaults to the standard id for the
@@ -218,6 +226,21 @@ mod tests {
         ])
         .expect("--suri may be omitted");
         assert_eq!(cmd.suri, None);
+    }
+
+    #[test]
+    fn suri_help_recommends_a_bare_mnemonic_and_the_prompt() {
+        use clap::CommandFactory;
+        let cmd = InsertHybridKeyCmd::command();
+        let suri = cmd
+            .get_arguments()
+            .find(|arg| arg.get_id() == "suri")
+            .expect("--suri");
+        let short = suri.get_help().expect("short help").to_string();
+        assert!(short.contains("bare BIP-39 mnemonic"), "{short}");
+        assert!(short.contains("prompted"), "{short}");
+        let long = suri.get_long_help().expect("long help").to_string();
+        assert!(long.contains("shell history"), "{long}");
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub enum Subcommand {
     /// Insert a hybrid post-quantum BABE or GRANDPA session key into the
     /// keystore. Derives the standard key-type id (`babe` / `gran`) from the
     /// chosen scheme; the equivalent stock command is
-    /// `key insert --scheme hybrid-(babe|grandpa)-h(344|144) --key-type ...`.
+    /// `key insert --scheme hybrid-babe-h444|hybrid-grandpa-h244 --key-type ...`.
     InsertHybridKey(crate::insert_hybrid_key::InsertHybridKeyCmd),
 
     /// Build a chain specification.
