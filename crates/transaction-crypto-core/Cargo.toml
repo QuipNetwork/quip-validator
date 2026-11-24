@@ -8,11 +8,9 @@ repository.workspace = true
 edition.workspace = true
 
 [dependencies]
-pqhybridsign.workspace = true
-bip39 = { workspace = true }
+pqhybridsign = { workspace = true, features = ["quip-hd"] }
 blake2.workspace = true
 codec = { features = ["derive"], workspace = true }
-substrate-bip39 = { workspace = true }
 zeroize.workspace = true
 
 [features]
@@ -21,6 +19,5 @@ std = [
     "pqhybridsign/std",
     "blake2/std",
     "codec/std",
-    "substrate-bip39/std",
     "zeroize/std",
 ]

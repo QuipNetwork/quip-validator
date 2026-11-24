@@ -108,8 +108,6 @@ blake2 = { version = "0.10", default-features = false }
 # `alloc`/`std` features are intentionally omitted: they pull in
 # `unicode-normalization`, whose tables roughly double the browser WASM bundle.
 # The core crate uses `Mnemonic::parse_in_normalized`, which needs neither.
-bip39 = { version = "2.2", default-features = false }
-substrate-bip39 = { version = "0.6.1", default-features = false }
 hex = { version = "0.4.3", default-features = false }
 # Used only as runtime test/dev dependencies for the Metadata V16 conformance
 # tests; versions match what the SDK fork resolves transitively.

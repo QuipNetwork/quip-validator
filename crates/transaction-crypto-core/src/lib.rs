@@ -15,8 +15,8 @@
 //!
 //! What stays quip-specific and lives here: account-id derivation
 //! (`quip-account-v1`), the SCALE transaction-signature envelope, and the
-//! BIP39 / secret-URI → master-seed helpers. None of those exist in the shared
-//! crate.
+//! signers' secret-URI grammar. A phrase becomes a seed through the shared
+//! [`pqhybridsign::quip_hd`] (QUIP HD v1), exactly as in the SDK fork.
 //!
 //! It does not depend on runtime traits, `sp_core`, or `sp_io`.
 
@@ -24,16 +24,19 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use bip39::{Language, Mnemonic};
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use codec::{Decode, DecodeWithMemTracking, Encode};
 use pqhybridsign::composite_delta;
+use pqhybridsign::quip_hd::{self, HybridSuite};
 use pqhybridsign::suite::DeltaSuite;
 use pqhybridsign::{SrFn512, MIN_FALCON512_SIG_LEN};
 use zeroize::Zeroize;
 
 const MASTER_SEED_LEN: usize = 32;
+
+/// The suite whose QUIP HD leaf the signers derive: H4, the transaction suite.
+const SIGNER_SUITE: HybridSuite = HybridSuite::SrFn512;
 const CLASSICAL_SIGNATURE_LEN: usize = 64;
 const DELTA_LEN: usize = 1;
 const MIN_HYBRID_SIGNATURE_LEN: usize = CLASSICAL_SIGNATURE_LEN + DELTA_LEN + MIN_FALCON512_SIG_LEN;
@@ -68,11 +71,46 @@ pub enum HybridTxCryptoError {
     InvalidSecretKey,
     InvalidSeed,
     SigningFailed,
-    /// The BIP39 phrase was not a valid English mnemonic.
+    /// The phrase was not a valid English BIP-39 mnemonic, was empty, or held
+    /// a character outside the secret-URI phrase class (ASCII letters, digits
+    /// and spaces).
     InvalidMnemonic,
-    /// The secret URI contained `/`-prefixed derivation junctions, which the
-    /// browser signer intentionally does not support.
+    /// A `///password` followed a `0x` seed, or the password held a line break.
+    InvalidPassword,
+    /// The secret URI contained `/` or `//` derivation junctions, which the
+    /// signers intentionally do not support.
     UnsupportedDerivationPath,
+}
+
+/// Messages carry no part of the input, so a rejected secret URI is never
+/// echoed into a log or an exception.
+impl core::fmt::Display for HybridTxCryptoError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidLength { expected, actual } => {
+                write!(f, "expected {expected} bytes, got {actual}")
+            }
+            Self::InvalidPublicKey => f.write_str("invalid hybrid public key"),
+            Self::InvalidSecretKey => f.write_str("invalid hybrid secret key"),
+            Self::InvalidSeed => {
+                f.write_str("invalid seed: expected 0x followed by 64 hex digits (32 bytes)")
+            }
+            Self::SigningFailed => f.write_str("signing failed"),
+            Self::InvalidMnemonic => f.write_str(
+                "invalid secret phrase: expected an English BIP-39 mnemonic of ASCII words \
+                 separated by spaces, optionally followed by ///password",
+            ),
+            Self::InvalidPassword => f.write_str(
+                "invalid password: a 0x seed takes no ///password, and a password cannot \
+                 contain a line break",
+            ),
+            Self::UnsupportedDerivationPath => f.write_str(
+                "derivation paths (/ or //) are not supported here: derive the account \
+                 elsewhere (for example with the node's `key inspect`) and import its 0x \
+                 secret seed instead",
+            ),
+        }
+    }
 }
 
 pub type HybridResult<T> = core::result::Result<T, HybridTxCryptoError>;
@@ -176,67 +214,91 @@ pub fn public_key_from_seed(seed: &[u8]) -> HybridResult<[u8; HYBRID_PUBLIC_LEN]
     result.map(|()| public)
 }
 
-/// Derives the 32-byte H4 master seed from a limited secret URI.
+/// Derives the 32-byte H4 master seed from a secret URI, using the signers'
+/// junction-free subset of the SDK fork's grammar (WP2 batch 1 design §6).
 ///
-/// This mirrors the supported subset of substrate's `Pair::from_string`:
+/// The grammar is upstream `AddressUri`'s, character for character: a phrase
+/// of ASCII letters, digits and spaces, then an optional `///password` that
+/// runs to the end and holds no line break. What it accepts:
 ///
-/// - a `0x`-prefixed 64-digit hex string is used directly as the master seed;
-/// - otherwise the input is an English BIP39 phrase, optionally followed by
-///   `///<password>`.
+/// - `0x` + 64 hex digits (either case) is the master seed itself. It takes no
+///   `///password`, not even an empty one. `0X` is rejected.
+/// - Any other phrase is an English BIP-39 mnemonic. The seed is its QUIP HD
+///   v1 leaf for H4 at account 0, index 0 ([`master_seed_from_mnemonic`]); the
+///   password is the BIP-39 passphrase. This is the seed the SDK fork's
+///   `Pair::from_string` gives for the same URI.
 ///
-/// Derivation junctions (`//hard`, `/soft`) and the leading-`/` dev-phrase
-/// shortcut are intentionally **not** supported: a `/` outside the `///`
-/// password separator is rejected rather than silently ignored, so an imported
-/// account can never derive to an address the runtime would not recognize.
+/// What it rejects, unlike the SDK fork: any `/` or `//` junction before the
+/// `///` ([`HybridTxCryptoError::UnsupportedDerivationPath`]; import the
+/// derived account's `0x` seed instead), and an empty phrase, because the
+/// signers have no development phrase. A `/` inside the password
+/// (`phrase///p/w`) is part of the password.
 pub fn master_seed_from_secret_uri(uri: &str) -> HybridResult<[u8; MASTER_SEED_LEN]> {
-    let (phrase, password) = match uri.split_once("///") {
-        Some((phrase, password)) => (phrase, Some(password)),
-        None => (uri, None),
-    };
-    let phrase = phrase.trim();
+    let (phrase, password) = split_secret_uri(uri)?;
 
-    if let Some(hex) = phrase
-        .strip_prefix("0x")
-        .or_else(|| phrase.strip_prefix("0X"))
-    {
+    if let Some(hex) = phrase.strip_prefix("0x") {
+        if password.is_some() {
+            return Err(HybridTxCryptoError::InvalidPassword);
+        }
         return decode_seed_hex(hex);
     }
-
-    if phrase.contains('/') {
-        return Err(HybridTxCryptoError::UnsupportedDerivationPath);
+    if phrase.starts_with("0X") {
+        return Err(HybridTxCryptoError::InvalidSeed);
+    }
+    if phrase.is_empty() {
+        return Err(HybridTxCryptoError::InvalidMnemonic);
     }
 
     master_seed_from_mnemonic(phrase, password)
 }
 
-/// Derives the 32-byte H4 master seed from an English BIP39 phrase.
+/// Splits a secret URI into its phrase and `///password` the way upstream
+/// `AddressUri::parse` does, refusing junctions.
+fn split_secret_uri(uri: &str) -> HybridResult<(&str, Option<&str>)> {
+    // Every byte counted here is ASCII, so the split is on a char boundary.
+    let phrase_len = uri
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b' ')
+        .count();
+    let (phrase, rest) = uri.split_at(phrase_len);
+
+    if rest.is_empty() {
+        return Ok((phrase, None));
+    }
+    if let Some(password) = rest.strip_prefix("///") {
+        if password.contains('\n') {
+            return Err(HybridTxCryptoError::InvalidPassword);
+        }
+        return Ok((phrase, Some(password)));
+    }
+    if rest.starts_with('/') {
+        return Err(HybridTxCryptoError::UnsupportedDerivationPath);
+    }
+    // A character outside the phrase class: a tab, a no-break space, a quote,
+    // a line break, any non-ASCII letter.
+    Err(HybridTxCryptoError::InvalidMnemonic)
+}
+
+/// Derives the 32-byte H4 master seed from an English BIP-39 phrase: its
+/// QUIP HD v1 leaf `m/0x514E'/0x400'/20049'/0'/0'`
+/// ([`pqhybridsign::quip_hd::hybrid_leaf`]).
 ///
-/// This matches substrate's `Pair::from_phrase`: the mnemonic entropy is run
-/// through `substrate_bip39::seed_from_entropy` (PBKDF2-HMAC-SHA512, salt
-/// `"mnemonic" || password`, 2048 rounds) and the first 32 bytes of the 64-byte
-/// output are taken as the master seed.
+/// The BIP-39 seed is standard: PBKDF2-HMAC-SHA512 over the NFKD phrase with
+/// salt `"mnemonic" || NFKD(password)`, 2048 rounds, 64 bytes. This replaces
+/// the earlier Substrate derivation (PBKDF2 over the mnemonic's entropy, first
+/// 32 bytes), so the same phrase now gives a different key.
+///
+/// This is the library entry point, so the phrase follows QUIP HD's own
+/// normalization: surrounding and repeated whitespace (JavaScript `\s`) is
+/// accepted. [`master_seed_from_secret_uri`] is stricter about characters.
 pub fn master_seed_from_mnemonic(
     phrase: &str,
     password: Option<&str>,
 ) -> HybridResult<[u8; MASTER_SEED_LEN]> {
-    // `parse_in_normalized` expects already-NFKD input and, unlike `parse_in`,
-    // does not pull in `unicode-normalization`. English BIP39 words are
-    // lowercase ASCII (always NFKD) and NFKD never changes case, so this yields
-    // the same entropy as substrate's `parse_in` for every valid English
-    // mnemonic.
-    let mnemonic = Mnemonic::parse_in_normalized(Language::English, phrase)
+    let leaf = quip_hd::hybrid_leaf(SIGNER_SUITE, phrase, password.unwrap_or(""), 0, 0)
         .map_err(|_| HybridTxCryptoError::InvalidMnemonic)?;
-    let (entropy, entropy_len) = mnemonic.to_entropy_array();
-
-    let mut big_seed =
-        substrate_bip39::seed_from_entropy(&entropy[..entropy_len], password.unwrap_or(""))
-            .map_err(|_| HybridTxCryptoError::InvalidMnemonic)?;
-
-    let mut seed = [0u8; MASTER_SEED_LEN];
-    seed.copy_from_slice(&big_seed[..MASTER_SEED_LEN]);
-    big_seed.zeroize();
-
-    Ok(seed)
+    // `leaf` is wiped on drop; the returned copy is the caller's to wipe.
+    Ok(*leaf)
 }
 
 /// Decodes a 64-digit hex string into a 32-byte master seed.
@@ -484,6 +546,155 @@ mod tests {
             master_seed_from_secret_uri("not a real mnemonic phrase at all"),
             Err(HybridTxCryptoError::InvalidMnemonic)
         );
+    }
+
+    const HEX_SEED: &str = "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a";
+
+    #[test]
+    fn mnemonic_seed_is_the_h4_quip_hd_leaf() {
+        let leaf =
+            quip_hd::hybrid_leaf(HybridSuite::SrFn512, TEST_PHRASE, "hunter2", 0, 0).unwrap();
+        assert_eq!(
+            master_seed_from_mnemonic(TEST_PHRASE, Some("hunter2")).unwrap(),
+            *leaf
+        );
+        // An absent password and an empty one are the same BIP-39 passphrase.
+        assert_eq!(
+            master_seed_from_mnemonic(TEST_PHRASE, None).unwrap(),
+            master_seed_from_mnemonic(TEST_PHRASE, Some("")).unwrap()
+        );
+    }
+
+    #[test]
+    fn secret_uri_phrase_is_the_mnemonic_seed() {
+        let bare = master_seed_from_mnemonic(TEST_PHRASE, None).unwrap();
+        assert_eq!(master_seed_from_secret_uri(TEST_PHRASE).unwrap(), bare);
+        // Spaces are in the phrase class; QUIP HD normalizes them away.
+        assert_eq!(
+            master_seed_from_secret_uri(&alloc::format!("  {TEST_PHRASE}  ")).unwrap(),
+            bare
+        );
+        // An empty `///` is an empty passphrase.
+        assert_eq!(
+            master_seed_from_secret_uri(&alloc::format!("{TEST_PHRASE}///")).unwrap(),
+            bare
+        );
+        // A `/` after `///` belongs to the password (design v2.2).
+        assert_eq!(
+            master_seed_from_secret_uri(&alloc::format!("{TEST_PHRASE}///p/w")).unwrap(),
+            master_seed_from_mnemonic(TEST_PHRASE, Some("p/w")).unwrap()
+        );
+        assert_eq!(
+            master_seed_from_secret_uri(&alloc::format!("{TEST_PHRASE}////w")).unwrap(),
+            master_seed_from_mnemonic(TEST_PHRASE, Some("/w")).unwrap()
+        );
+    }
+
+    #[test]
+    fn secret_uri_raw_seed_takes_either_digit_case_and_no_password() {
+        let upper = alloc::format!("0x{}", HEX_SEED.to_uppercase());
+        assert_eq!(master_seed_from_secret_uri(&upper).unwrap(), [0x2a; 32]);
+        for suri in [
+            alloc::format!("0x{HEX_SEED}///"),
+            alloc::format!("0x{HEX_SEED}///pw"),
+        ] {
+            assert_eq!(
+                master_seed_from_secret_uri(&suri),
+                Err(HybridTxCryptoError::InvalidPassword)
+            );
+        }
+        for suri in [
+            alloc::format!("0X{HEX_SEED}"),
+            alloc::format!("0x{}", &HEX_SEED[..62]),
+            alloc::format!("0x{HEX_SEED} "),
+            alloc::format!("0x{HEX_SEED}2a"),
+        ] {
+            assert_eq!(
+                master_seed_from_secret_uri(&suri),
+                Err(HybridTxCryptoError::InvalidSeed),
+                "{}",
+                suri.len()
+            );
+        }
+    }
+
+    #[test]
+    fn secret_uri_rejects_every_junction() {
+        for suri in [
+            alloc::format!("{TEST_PHRASE}//1"),
+            alloc::format!("{TEST_PHRASE}//Alice"),
+            alloc::format!("{TEST_PHRASE}/soft"),
+            alloc::format!("{TEST_PHRASE}//"),
+            alloc::format!("{TEST_PHRASE}//1///pw"),
+            alloc::format!("0x{HEX_SEED}//1"),
+            alloc::format!("0x{HEX_SEED}/1"),
+            "//Alice".into(),
+        ] {
+            assert_eq!(
+                master_seed_from_secret_uri(&suri),
+                Err(HybridTxCryptoError::UnsupportedDerivationPath),
+                "{suri}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_uri_has_no_dev_phrase() {
+        for suri in ["", "///pw", "///"] {
+            assert_eq!(
+                master_seed_from_secret_uri(suri),
+                Err(HybridTxCryptoError::InvalidMnemonic),
+                "{suri:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_uri_phrase_class_is_ascii_letters_digits_and_spaces() {
+        // The library entry point accepts what QUIP HD normalizes ...
+        let tabbed = TEST_PHRASE.replacen(' ', "\t", 1);
+        assert!(master_seed_from_mnemonic(&tabbed, None).is_ok());
+        // ... the secret URI, like the SDK's, does not.
+        for suri in [
+            tabbed,
+            TEST_PHRASE.replacen(' ', "\u{a0}", 1),
+            TEST_PHRASE.replacen("fit", "\u{fb01}t", 1),
+            alloc::format!("\"{TEST_PHRASE}\""),
+            alloc::format!("{TEST_PHRASE}\n"),
+        ] {
+            assert_eq!(
+                master_seed_from_secret_uri(&suri),
+                Err(HybridTxCryptoError::InvalidMnemonic),
+                "{suri:?}"
+            );
+        }
+        // A password runs to the end of the URI and holds no line break.
+        assert_eq!(
+            master_seed_from_secret_uri(&alloc::format!("{TEST_PHRASE}///pw\nx")),
+            Err(HybridTxCryptoError::InvalidPassword)
+        );
+    }
+
+    /// The messages carry no part of the input, and the junction refusal
+    /// points to the `0x` export (design §6).
+    #[test]
+    fn errors_name_the_problem_without_the_input() {
+        for suri in [
+            alloc::format!("{TEST_PHRASE}//1"),
+            alloc::format!("\"{TEST_PHRASE}///Tr0ub4dor\""),
+            alloc::format!("{TEST_PHRASE}///Tr0ub4dor\nx"),
+            alloc::format!("0x{HEX_SEED}///Tr0ub4dor"),
+            alloc::format!("0X{HEX_SEED}"),
+        ] {
+            let error = master_seed_from_secret_uri(&suri).unwrap_err();
+            for text in [alloc::format!("{error}"), alloc::format!("{error:?}")] {
+                for secret in ["bottom", "walk", "Tr0ub4dor", "2a2a"] {
+                    assert!(!text.contains(secret), "{text} shows {secret}");
+                }
+            }
+        }
+        let message = alloc::format!("{}", HybridTxCryptoError::UnsupportedDerivationPath);
+        assert!(message.contains("0x"), "{message}");
     }
 
     #[test]
