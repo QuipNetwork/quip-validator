@@ -38,6 +38,8 @@ const MASTER_SEED_LEN: usize = 32;
 /// The suite whose QUIP HD leaf the signers derive: H4, the transaction suite.
 const SIGNER_SUITE: HybridSuite = HybridSuite::SrFn512;
 const CLASSICAL_SIGNATURE_LEN: usize = 64;
+/// The sr25519 half at the front of an H4 public key.
+const CLASSICAL_PUBLIC_LEN: usize = 32;
 const DELTA_LEN: usize = 1;
 const MIN_HYBRID_SIGNATURE_LEN: usize = CLASSICAL_SIGNATURE_LEN + DELTA_LEN + MIN_FALCON512_SIG_LEN;
 
@@ -139,6 +141,22 @@ fn validate_signature_padding(signature: &[u8; HYBRID_SIGNATURE_LEN]) -> HybridR
     Ok(wire_len)
 }
 
+/// G-002 (GregoAI wp-2): the sr25519 half of an H4 public key must not be the
+/// Ristretto identity.
+///
+/// For `A = identity`, schnorrkel's check `R == s·B - k·A` becomes `R == s·B`,
+/// so `R = B, s = 1` verifies every message without a secret, and the
+/// post-quantum half signs a message that depends only on the suite label,
+/// context and payload. Such a key is post-quantum only while it claims to be
+/// hybrid. Ristretto is a prime-order group and its encoding is canonical, so
+/// the identity is the only degenerate point and `[0; 32]` its only encoding.
+/// Every other encoding schnorrkel rejects is refused by the suite's verify.
+/// This matches the SDK fork's `sr25519_public_is_valid` (quip crypto-core
+/// `suite/classical_key.rs`).
+fn classical_public_is_valid(public: &[u8; HYBRID_PUBLIC_LEN]) -> bool {
+    public[..CLASSICAL_PUBLIC_LEN] != [0u8; CLASSICAL_PUBLIC_LEN]
+}
+
 /// Bytes-level transaction signature envelope.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Encode, Decode, DecodeWithMemTracking)]
 pub struct HybridTxSignatureBytes {
@@ -162,7 +180,13 @@ impl HybridTxSignatureBytes {
     }
 
     /// Verifies the embedded signature against the provided raw message bytes.
+    ///
+    /// A public key whose sr25519 half is the Ristretto identity is refused
+    /// (G-002), as the SDK fork's `Public::to_suite_public` refuses it.
     pub fn verify(&self, message: &[u8]) -> bool {
+        if !classical_public_is_valid(&self.public) {
+            return false;
+        }
         let Ok(wire_len) = validate_signature_padding(&self.signature) else {
             return false;
         };
@@ -472,6 +496,48 @@ mod tests {
         envelope.signature[envelope.signature.len() / 2] ^= 0xFF;
 
         assert!(!envelope.verify(b"quip-message"));
+    }
+
+    /// The compressed Ristretto basepoint `B`.
+    const RISTRETTO_BASEPOINT: &str =
+        "e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76";
+
+    /// An honest envelope with its sr25519 half replaced by the identity and
+    /// the classical signature by the secret-free forgery `R = B, s = 1`
+    /// (schnorrkel's marker bit set).
+    fn identity_half_forgery(message: &[u8]) -> HybridTxSignatureBytes {
+        let mut forged = sign_payload_from_seed(&[7u8; 32], message).unwrap();
+        forged.public[..CLASSICAL_PUBLIC_LEN].fill(0);
+        for (index, byte) in forged.signature[..32].iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&RISTRETTO_BASEPOINT[2 * index..2 * index + 2], 16).unwrap();
+        }
+        forged.signature[32..CLASSICAL_SIGNATURE_LEN].fill(0);
+        forged.signature[32] = 1;
+        forged.signature[CLASSICAL_SIGNATURE_LEN - 1] |= 0x80;
+        forged
+    }
+
+    /// The forgery is real: the suite's own verify accepts it, so the G-002
+    /// check in `verify` is what refuses it.
+    #[test]
+    fn the_identity_half_forgery_passes_the_bare_suite_verify() {
+        let forged = identity_half_forgery(b"quip-message");
+        let wire_len = validate_signature_padding(&forged.signature).unwrap();
+        assert!(composite_delta::verify::<SrFn512>(
+            &forged.public,
+            b"quip-message",
+            SUBSTRATE_PAIR_SIGNATURE_CONTEXT,
+            &forged.signature[..wire_len],
+        ));
+    }
+
+    #[test]
+    fn verify_refuses_the_sr25519_identity_half() {
+        let forged = identity_half_forgery(b"quip-message");
+        assert!(!forged.verify(b"quip-message"));
+        // Decoding the envelope does not bypass it.
+        let decoded = HybridTxSignatureBytes::decode_envelope(&forged.encode_envelope()).unwrap();
+        assert!(!decoded.verify(b"quip-message"));
     }
 
     #[test]

@@ -216,7 +216,7 @@ mod tests {
     use codec::Decode;
     use quip_transaction_crypto_core::{
         master_seed_from_mnemonic, master_seed_from_secret_uri, public_key_from_seed,
-        sign_payload_from_seed,
+        sign_payload_from_seed, HybridTxSignatureBytes,
     };
 
     const TEST_PHRASE: &str =
@@ -266,6 +266,48 @@ mod tests {
             runtime_signature.signature.encode(),
             core_envelope.signature
         );
+    }
+
+    /// G-002 parity: the identity-half forgery (sr25519 half `A = 0`,
+    /// classical signature `R = B, s = 1`) is refused by the core envelope's
+    /// `verify` and by the runtime `Verify`, which goes through the SDK fork's
+    /// `HybridPair::verify`; the honest envelope passes both.
+    #[test]
+    fn core_and_sdk_agree_on_the_sr25519_identity_half() {
+        const RISTRETTO_BASEPOINT: &str =
+            "e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76";
+        let message = b"G-002 weak classical half";
+        let pair = HybridPair::from_seed(&[7u8; 32]);
+        let honest = sign_payload_from_seed(&[7u8; 32], message).unwrap();
+
+        let mut forged = honest.clone();
+        forged.public[..32].fill(0);
+        for (index, byte) in forged.signature[..32].iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&RISTRETTO_BASEPOINT[2 * index..2 * index + 2], 16).unwrap();
+        }
+        forged.signature[32..64].fill(0);
+        forged.signature[32] = 1;
+        forged.signature[63] |= 0x80;
+
+        let runtime = |bytes: &HybridTxSignatureBytes| {
+            HybridTxSignature::new(
+                HybridPublic::decode(&mut &bytes.public[..]).unwrap(),
+                HybridSignatureBytes::decode(&mut &bytes.signature[..]).unwrap(),
+            )
+        };
+        let honest_rt = runtime(&honest);
+        assert_eq!(honest_rt.public, pair.public());
+        assert!(honest.verify(message));
+        assert!(honest_rt.verify(&message[..], &honest_rt.derived_account_id()));
+        assert!(honest_rt.public.to_suite_public().is_ok());
+
+        let forged_rt = runtime(&forged);
+        assert!(!forged.verify(message), "core accepted the identity half");
+        assert!(
+            !forged_rt.verify(&message[..], &forged_rt.derived_account_id()),
+            "the SDK accepted the identity half"
+        );
+        assert!(forged_rt.public.to_suite_public().is_err());
     }
 
     #[test]
