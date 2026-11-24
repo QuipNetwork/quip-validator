@@ -470,7 +470,35 @@ fn resolved_launch_at(value: Option<u64>, name: &str) -> Result<u64, String> {
     Ok(value)
 }
 
+/// G-002 (GregoAI wp-2): a session key whose classical half is a degenerate
+/// point (the sr25519 identity, a small-order ed25519 point) signs for anyone,
+/// so the SDK fork's `Public::to_suite_public` refuses it, and every
+/// verification surface with it. Genesis must not commit to such a key.
+fn session_keys_are_valid(babe: &BabeId, grandpa: &GrandpaId) -> Result<(), &'static str> {
+    if AsRef::<HybridBabePublic>::as_ref(babe)
+        .to_suite_public()
+        .is_err()
+    {
+        return Err("BABE key");
+    }
+    if AsRef::<HybridGrandpaPublic>::as_ref(grandpa)
+        .to_suite_public()
+        .is_err()
+    {
+        return Err("GRANDPA key");
+    }
+    Ok(())
+}
+
 fn validate_session_keys(authorities: &[(AccountId, BabeId, GrandpaId)]) -> Result<(), String> {
+    for (index, (_, babe, grandpa)) in authorities.iter().enumerate() {
+        session_keys_are_valid(babe, grandpa).map_err(|kind| {
+            format!(
+                "genesis blocked: Validator {} {kind} has a degenerate classical half (G-002)",
+                index + 1
+            )
+        })?;
+    }
     let babe: BTreeSet<_> = authorities.iter().map(|(_, key, _)| key.encode()).collect();
     let grandpa: BTreeSet<_> = authorities.iter().map(|(_, _, key)| key.encode()).collect();
     if babe.len() != authorities.len() || grandpa.len() != authorities.len() {
@@ -1766,6 +1794,50 @@ mod tests {
     #[test]
     fn mainnet_rejects_cross_network_stash() {
         assert_mainnet_network_key_collisions_rejected(0);
+    }
+
+    /// G-002: a session key with a degenerate classical half is refused, by
+    /// the same SDK check every verification surface uses.
+    #[test]
+    fn genesis_refuses_session_keys_with_a_degenerate_classical_half() {
+        let authority = |seed: &str| {
+            (
+                tx_account_from_seed(seed),
+                babe_authority_from_seed(seed),
+                grandpa_authority_from_seed(seed),
+            )
+        };
+        let honest = vec![authority("//Alice"), authority("//Bob")];
+        assert_eq!(validate_session_keys(&honest), Ok(()));
+        // Every testnet operator key passes the check too.
+        assert_eq!(validate_session_keys(&quip_testnet_authorities()), Ok(()));
+
+        // The sr25519 identity, and the ed25519 identity (`y = 1`), which is
+        // small-order.
+        let sr25519_identity = [0u8; 32];
+        let mut ed25519_identity = [0u8; 32];
+        ed25519_identity[0] = 1;
+        for (component, classical) in [(1, sr25519_identity), (2, ed25519_identity)] {
+            let mut authorities = honest.clone();
+            let (_, babe, grandpa) = authorities.last_mut().unwrap();
+            let kind = if component == 1 {
+                let mut bytes = babe.to_raw_vec();
+                bytes[..32].copy_from_slice(&classical);
+                *babe = HybridBabePublic::from_slice(&bytes).unwrap().into();
+                "BABE key"
+            } else {
+                let mut bytes = grandpa.to_raw_vec();
+                bytes[..32].copy_from_slice(&classical);
+                *grandpa = HybridGrandpaPublic::from_slice(&bytes).unwrap().into();
+                "GRANDPA key"
+            };
+            assert_eq!(
+                validate_session_keys(&authorities),
+                Err(format!(
+                    "genesis blocked: Validator 2 {kind} has a degenerate classical half (G-002)"
+                ))
+            );
+        }
     }
 
     #[test]
