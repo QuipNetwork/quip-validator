@@ -283,3 +283,47 @@ fn a_key_inserted_under_a_keystore_password_loads_with_it() {
         assert_eq!(keystore_entries(&base).len(), 1, "{scheme}");
     }
 }
+
+/// With a keystore password set, the keystore password replaces a SURI's own
+/// `///` password at insert and at load, so the stored key would not be the
+/// one `phrase///pw` gives elsewhere (the signers, `key inspect`). The insert
+/// is refused, without showing the SURI, and nothing is written.
+#[test]
+fn a_suri_password_and_a_keystore_password_together_are_refused() {
+    let dir = scratch_dir();
+    for (i, suri) in [format!("{PHRASE}///{PASSWORD}"), format!("{PHRASE}///")]
+        .iter()
+        .enumerate()
+    {
+        let file = dir.join(format!("suri-{i}"));
+        std::fs::write(&file, format!("{suri}\n")).expect("write SURI file");
+        for scheme in SCHEMES {
+            let base = dir.join(format!("base-{scheme}-{i}"));
+            let out = insert_with(
+                scheme,
+                file.to_str().unwrap(),
+                &base,
+                &["--password", "kspw"],
+            );
+            assert!(!out.status.success(), "{scheme}: must be refused");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(stderr.contains("own `///` password"), "{scheme}: {stderr}");
+            assert!(echoed(&out).is_empty(), "{scheme}: {:?}", echoed(&out));
+            let keystore = base.join("chains").join("dev").join("keystore");
+            let entries = std::fs::read_dir(&keystore).map(|d| d.count()).unwrap_or(0);
+            assert_eq!(entries, 0, "{scheme}: nothing may be written");
+
+            // Without a keystore password the same SURI inserts.
+            let control = insert(
+                scheme,
+                file.to_str().unwrap(),
+                &dir.join(format!("ok-{scheme}-{i}")),
+            );
+            assert!(
+                control.status.success(),
+                "{scheme}: {}",
+                String::from_utf8_lossy(&control.stderr)
+            );
+        }
+    }
+}

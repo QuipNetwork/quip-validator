@@ -25,6 +25,7 @@ use sc_service::config::{BasePath, KeystoreConfig};
 use sp_core::crypto::{ExposeSecret, KeyTypeId, SecretStringError};
 use sp_core::Pair;
 use sp_keystore::KeystorePtr;
+use std::str::FromStr;
 
 /// Hybrid post-quantum scheme to insert.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -104,6 +105,15 @@ impl InsertHybridKeyCmd {
         // fails to reproduce (`PublicKeyMismatch`), and the validator would
         // not author.
         let password_str = password.as_ref().map(|p| p.expose_secret().as_str());
+        if password_str.is_some() && suri_has_password(&suri) {
+            return Err(Error::Input(
+                "the SURI has its own `///` password, and a keystore password is set: the \
+                 keystore password replaces the SURI's when the key is inserted and loaded, so \
+                 the stored key would not be the one this SURI gives elsewhere. Remove one of \
+                 the two; the SURI is not shown"
+                    .into(),
+            ));
+        }
 
         // `Public` implements both `AsRef<[u8]>` and `AsRef<InnerPublic>` since
         // upstream `d125cbde` (polkadot-sdk v0.2). Bind the public to a local
@@ -173,6 +183,15 @@ fn invalid_suri(scheme: &str, e: &SecretStringError) -> Error {
     Error::Input(format!(
         "invalid SURI for {scheme}: {reason}; the SURI is not shown"
     ))
+}
+
+/// Whether `suri` carries an explicit `///` password, even an empty one.
+///
+/// Parses with sp-core's own SURI grammar. A SURI that does not parse has no
+/// password to conflict with; it is rejected by the derivation instead, with
+/// an error that does not show it.
+fn suri_has_password(suri: &str) -> bool {
+    sp_core::crypto::SecretUri::from_str(suri).is_ok_and(|uri| uri.password.is_some())
 }
 
 /// The SURI to insert.
@@ -290,6 +309,18 @@ mod tests {
             let suri = read_suri(None, || Ok(typed.clone())).expect("prompted SURI");
             assert_eq!(suri, PHRASE, "{typed:?}");
         }
+    }
+
+    /// An explicit `///` password, even an empty one, is detected; a SURI
+    /// without one, or one that does not parse, is not.
+    #[test]
+    fn an_explicit_suri_password_is_detected() {
+        assert!(suri_has_password(&format!("{PHRASE}///pw")));
+        assert!(suri_has_password(&format!("{PHRASE}///")));
+        assert!(suri_has_password("//Alice///pw"));
+        assert!(!suri_has_password(PHRASE));
+        assert!(!suri_has_password("//Alice"));
+        assert!(!suri_has_password(&format!("\"{PHRASE}\"///pw")));
     }
 
     #[test]
