@@ -38,7 +38,7 @@ const REPO = REPO_ROOT;
 
 const ALICE = {
   name: 'Quip Alice',
-  seedHex: '0xe5be9a5092b81bca64be81d212e7f2f9eba183bb7a90954f7b76361f6edb5c0a'
+  seedHex: '0x662f07772f9286b1ad6d9f08dce85ff9dfcc126fb56cff9baf7b33b4a0352f2d'
 };
 
 let failures = 0;

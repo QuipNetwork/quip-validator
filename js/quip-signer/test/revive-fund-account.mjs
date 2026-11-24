@@ -26,14 +26,17 @@ import initWasm, * as wasm from '../../quip-transaction-crypto-wasm/quip_transac
 
 export const DEV_ETH_ADDRESS = '0x75e480db528101a381ce68544611c169ad7eb342'
 export const ALICE_ACCOUNT_ID =
-  '0x504c921d4b618d2cbb53ebebfbc98db585b325c355259545739daafb3146cdb4'
-export const ALICE_REVIVE_ADDRESS = '0x065e461ede034a4014d9bd5d6c8fa64a2a314ab3'
+  '0xa1d2764702d2e458c1885ae8e4604ef52550066ff7337f07cfbd7b9ffb24d3d0'
+export const ALICE_REVIVE_ADDRESS = '0x89edc3865bcc1c33863ede8e45a66d268ff2f8b6'
 export const NATIVE_TO_ETH_RATIO = 1_000_000n
 export const ED_FLOOR_MULTIPLIER = 100n
 
 const EXPECTED_CHAIN_ID = 1_337n
 const EXPECTED_SPEC_NAME = 'quip'
-const EXPECTED_SPEC_VERSION = 115
+// The branch's runtime `spec_version` (runtime/src/lib.rs), set by
+// scripts/regenerate-quip-hd-fixtures.sh. It must follow the bump above
+// main's 121 at integration: the same release blocker as in !132.
+const EXPECTED_SPEC_VERSION = 120
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 const CALL_WEIGHT_LIMIT = {
   refTime: 1_000_000_000n,
@@ -44,7 +47,7 @@ const CALL_WEIGHT_LIMIT = {
 const DEV_ETH_SEED_HEX =
   '0xa872f6cbd25a0e04a08b1e21098017a9e6194d101d75e13111f71410c59cd57f'
 const ALICE_SEED_HEX =
-  '0xe5be9a5092b81bca64be81d212e7f2f9eba183bb7a90954f7b76361f6edb5c0a'
+  '0x662f07772f9286b1ad6d9f08dce85ff9dfcc126fb56cff9baf7b33b4a0352f2d'
 
 function assert (condition, message) {
   if (!condition) {

@@ -28,11 +28,11 @@ const WS_URL = process.env.QUIP_WS_URL || 'ws://127.0.0.1:9944';
 const DEV_SEEDS = [
   {
     name: 'Quip Alice',
-    seedHex: '0xe5be9a5092b81bca64be81d212e7f2f9eba183bb7a90954f7b76361f6edb5c0a'
+    seedHex: '0x662f07772f9286b1ad6d9f08dce85ff9dfcc126fb56cff9baf7b33b4a0352f2d'
   },
   {
     name: 'Quip Bob',
-    seedHex: '0x398f0c28f98885e046333d4a41c19cee4c37368a9832c6502f6cfd182e2aef89'
+    seedHex: '0x646eaa5f408cd876a0be6be5b9e9ff42efa60cc2654da08b3721ebfbaa41632a'
   }
 ];
 

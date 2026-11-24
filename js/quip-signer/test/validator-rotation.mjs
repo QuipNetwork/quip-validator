@@ -16,8 +16,8 @@ assert(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(endpoint).hostname),
 await initWasm({ module_or_path: readFileSync(new URL('../../quip-transaction-crypto-wasm/quip_transaction_crypto_wasm_bg.wasm', import.meta.url)) });
 patchExtrinsicSignFake(GenericExtrinsicSignatureV4);
 const { accounts, provider } = await DevSeedProvider.fromSeeds(wasm, [
-  { name: 'Alice', seedHex: '0xe5be9a5092b81bca64be81d212e7f2f9eba183bb7a90954f7b76361f6edb5c0a' },
-  { name: 'Bob', seedHex: '0x398f0c28f98885e046333d4a41c19cee4c37368a9832c6502f6cfd182e2aef89' }
+  { name: 'Alice', seedHex: '0x662f07772f9286b1ad6d9f08dce85ff9dfcc126fb56cff9baf7b33b4a0352f2d' },
+  { name: 'Bob', seedHex: '0x646eaa5f408cd876a0be6be5b9e9ff42efa60cc2654da08b3721ebfbaa41632a' }
 ]);
 const [alice, bob] = accounts;
 const signer = new QuipSigner(provider);

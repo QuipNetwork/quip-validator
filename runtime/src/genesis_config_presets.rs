@@ -1093,7 +1093,7 @@ mod tests {
     /// genesis, and this constant is the cheapest grep target for catching
     /// that regression.
     const ALICE_PINNED_ACCOUNT_HEX: &str =
-        "4de1b06b817f61f830d5b046e4fed5c124aa52ea97ba077817c225e56e757ac9";
+        "a1d2764702d2e458c1885ae8e4604ef52550066ff7337f07cfbd7b9ffb24d3d0";
 
     fn hex_encode(bytes: &[u8]) -> alloc::string::String {
         const TABLE: &[u8; 16] = b"0123456789abcdef";
