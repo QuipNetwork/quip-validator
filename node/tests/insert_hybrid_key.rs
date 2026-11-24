@@ -327,3 +327,60 @@ fn a_suri_password_and_a_keystore_password_together_are_refused() {
         }
     }
 }
+
+/// `--password-filename` is read verbatim: a password file holding
+/// "secret\n" is the password "secret\n". A key inserted with it loads under
+/// that file (the node started with the same option) and not under
+/// `--password secret`. This pins why the help says to reuse the node's own
+/// option.
+#[test]
+fn a_password_file_is_read_verbatim_including_its_newline() {
+    use quip_crypto_primitives::substrate::sr25519_fndsa512;
+    use sc_keystore::LocalKeystore;
+    use sp_core::crypto::{Pair, SecretString};
+
+    let dir = scratch_dir();
+    let suri_file = dir.join("suri");
+    std::fs::write(&suri_file, format!("{PHRASE}\n")).expect("write SURI file");
+    let password_file = dir.join("keystore-password");
+    std::fs::write(&password_file, "secret\n").expect("write password file");
+    let base = dir.join("base");
+    let out = insert_with(
+        "hybrid-babe-h444",
+        suri_file.to_str().unwrap(),
+        &base,
+        &["--password-filename", password_file.to_str().unwrap()],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let keystore_dir = base.join("chains").join("dev").join("keystore");
+    let open = |password: &str| {
+        LocalKeystore::open(&keystore_dir, Some(SecretString::new(password.to_owned())))
+            .expect("open keystore")
+    };
+    let public = |password: &str| {
+        sr25519_fndsa512::Pair::from_string(PHRASE, Some(password))
+            .expect("pair")
+            .public()
+    };
+    // The node started with the same file loads the key.
+    let with_file = open("secret\n")
+        .key_pair::<sp_consensus_babe::AuthorityPair>(&public("secret\n").into())
+        .expect("loads with the file's password");
+    assert!(
+        with_file.is_some(),
+        "the key is the one the file's verbatim password derives"
+    );
+    // A node started with `--password secret` does not find a key for it.
+    let with_flag = open("secret")
+        .key_pair::<sp_consensus_babe::AuthorityPair>(&public("secret").into())
+        .expect("lookup");
+    assert!(
+        with_flag.is_none(),
+        "no key exists for the password without the newline"
+    );
+}

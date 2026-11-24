@@ -18,6 +18,12 @@ pub enum Subcommand {
     /// keystore. Derives the standard key-type id (`babe` / `gran`) from the
     /// chosen scheme; the equivalent stock command is
     /// `key insert --scheme hybrid-babe-h444|hybrid-grandpa-h244 --key-type ...`.
+    ///
+    /// If the node's keystore has a password, use the same --password,
+    /// --password-filename or --password-interactive option you start the node
+    /// with: the keystore re-derives the key with that password on every
+    /// start. --password-filename is read verbatim, including a trailing
+    /// newline.
     InsertHybridKey(crate::insert_hybrid_key::InsertHybridKeyCmd),
 
     /// Build a chain specification.

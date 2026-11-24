@@ -284,6 +284,25 @@ mod tests {
         assert!(!long.contains("12 or 24"), "{long}");
     }
 
+    /// What `quip-network-node insert-hybrid-key --help` shows: the
+    /// subcommand's description comes from `cli.rs`.
+    #[test]
+    fn the_long_help_says_to_reuse_the_nodes_password_option() {
+        use clap::CommandFactory;
+        let cli = crate::cli::Cli::command();
+        let long = cli
+            .find_subcommand("insert-hybrid-key")
+            .expect("subcommand")
+            .get_long_about()
+            .expect("long about")
+            .to_string();
+        assert!(long.contains("same --password"), "{long}");
+        assert!(
+            long.contains("read verbatim, including a trailing newline"),
+            "{long}"
+        );
+    }
+
     #[test]
     fn without_suri_the_prompt_supplies_it() {
         let mut asked = 0;
