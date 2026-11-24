@@ -1865,16 +1865,31 @@ mod tests {
         }
     }
 
-    /// The live testnet preset runs the same guard over its operator keys:
-    /// the real keys build exactly the preset, and an operator key with a
-    /// degenerate classical half stops it.
+    /// The live testnet preset's bytes are pinned on their own, so a failure
+    /// in another preset (as in `legacy_preset_bytes_match_pre_launch_base`,
+    /// which stops at the first mismatch) cannot mask a change to them.
+    #[test]
+    fn quip_testnet_preset_bytes_are_pinned() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("genesis_legacy_hashes.json")).unwrap();
+        let profile = if cfg!(feature = "runtime-benchmarks") {
+            "benchmark"
+        } else {
+            "production"
+        };
+        let bytes = get_preset(&PresetId::from("quip_testnet")).unwrap();
+        assert_eq!(
+            hex_encode(&sp_core::blake2_256(&bytes)),
+            fixture[profile]["quip_testnet"].as_str().unwrap(),
+            "the live testnet preset changed"
+        );
+    }
+
+    /// The live testnet preset runs the same guard over its operator keys: an
+    /// operator key with a degenerate classical half stops it. That valid keys
+    /// leave the preset unchanged is `quip_testnet_preset_bytes_are_pinned`.
     #[test]
     fn live_testnet_preset_guards_its_operator_keys() {
-        assert_eq!(
-            quip_testnet_genesis_from(quip_testnet_authorities()),
-            quip_testnet_config_genesis()
-        );
-
         let mut authorities = quip_testnet_authorities();
         let (_, babe, _) = authorities.last_mut().unwrap();
         let mut bytes = babe.to_raw_vec();
