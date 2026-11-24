@@ -20,8 +20,11 @@ here.
   keys from the stored phrase on every start, so a testnet validator upgraded
   to this binary would get `PublicKeyMismatch` and stop authoring. See L5
   below.
-- **The browser and Python signers take no junctions.** Derive the account on a
-  node (for example with `key inspect`) and import its `0x` secret seed. They
+- **The browser and Python signers take no junctions.** They take a bare
+  phrase (optionally `///password`) or a raw `0x` seed. An account derived with
+  junctions (`//…`) can't be imported into the signers in this release. The
+  SDK fork's `key inspect` has no hybrid scheme, so its seed for such a path is
+  an sr25519 seed for a different account (follow-up QUI-2531). The signers
   also refuse an empty phrase, since they have no development phrase.
 - **`0X` is refused everywhere.** Only a lowercase `0x` prefix marks a raw seed.
   Uppercase hex digits after it are fine.
@@ -131,6 +134,9 @@ Tracked in the batch plan's "Out of scope" list, items L1 to L4:
 - **L2:** xqsa's `quip-signer` version pin is stale.
 - **L3:** record the QUIP HD algorithm IDs in ethereum-sdk's registry.
 - **L4:** update §9 and §10 of the external hybrid-signature specification.
+
+QUI-2531 tracks a hybrid `key inspect` scheme in the SDK fork, so that an
+account derived with junctions can be exported and imported into the signers.
 
 QUI-2530 tracks the four runtime tests that fail under `runtime-benchmarks`.
 They fail the same way before this batch.

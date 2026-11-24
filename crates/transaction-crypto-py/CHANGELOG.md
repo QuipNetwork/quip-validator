@@ -23,8 +23,10 @@ Ships with the first node release that includes it, which must be at least
   - an empty phrase (`""`, `///pw`): there is no development phrase here;
   - an uppercase `0X` prefix;
   - `///` after a `0x` seed, even an empty one;
-  - any `/` or `//` junction, as before. The error now says to derive the
-    account elsewhere and import its `0x` secret seed.
+  - any `/` or `//` junction, as before. The signers take a bare phrase
+    (optionally `///password`) or a raw `0x` seed. An account derived with
+    junctions (`//…`) can't be imported into the signers in this release; a
+    hybrid `key inspect` scheme in the SDK fork is follow-up QUI-2531.
   A `/` inside the password (`phrase///p/w`) is part of the password.
 - **Error text changed.** `QuipSignerError` messages describe the problem and
   never include the input. Before, they were the Rust error's variant name.

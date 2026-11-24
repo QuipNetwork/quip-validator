@@ -55,8 +55,8 @@ Each `mnemonic` is a secret URI in the node's grammar, without derivation:
 - `0x` followed by 64 hex digits (either case), used as the seed itself. It
   takes no `///<password>`.
 
-Rejected: derivation junctions (`//hard`, `/soft`; derive the account on a
-node and import its `0x` secret seed instead), an empty phrase (there is no
+Rejected: derivation junctions (`//hard`, `/soft`; an account derived with
+junctions can't be imported into the signer in this release), an empty phrase (there is no
 development phrase here), an uppercase `0X` prefix, and any character outside
 the phrase class (a tab, a no-break space, quotes). Errors name the problem and
 never repeat the input.

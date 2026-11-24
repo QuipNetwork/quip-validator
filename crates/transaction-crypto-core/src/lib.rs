@@ -107,9 +107,9 @@ impl core::fmt::Display for HybridTxCryptoError {
                  contain a line break",
             ),
             Self::UnsupportedDerivationPath => f.write_str(
-                "derivation paths (/ or //) are not supported here: derive the account \
-                 elsewhere (for example with the node's `key inspect`) and import its 0x \
-                 secret seed instead",
+                "derivation paths (/ or //) are not supported here: the signers take a bare \
+                 phrase, optionally with ///password, or a raw 0x seed; an account derived \
+                 with junctions cannot be imported in this release",
             ),
         }
     }
@@ -253,8 +253,8 @@ pub fn public_key_from_seed(seed: &[u8]) -> HybridResult<[u8; HYBRID_PUBLIC_LEN]
 ///   `Pair::from_string` gives for the same URI.
 ///
 /// What it rejects, unlike the SDK fork: any `/` or `//` junction before the
-/// `///` ([`HybridTxCryptoError::UnsupportedDerivationPath`]; import the
-/// derived account's `0x` seed instead), and an empty phrase, because the
+/// `///` ([`HybridTxCryptoError::UnsupportedDerivationPath`]; an account
+/// derived with junctions cannot be imported here), and an empty phrase, because the
 /// signers have no development phrase. A `/` inside the password
 /// (`phrase///p/w`) is part of the password.
 pub fn master_seed_from_secret_uri(uri: &str) -> HybridResult<[u8; MASTER_SEED_LEN]> {
@@ -742,7 +742,7 @@ mod tests {
     }
 
     /// The messages carry no part of the input, and the junction refusal
-    /// points to the `0x` export (design §6).
+    /// says what the signers accept: a bare phrase or a raw `0x` seed.
     #[test]
     fn errors_name_the_problem_without_the_input() {
         for suri in [

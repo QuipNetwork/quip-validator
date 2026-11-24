@@ -68,8 +68,8 @@ an English BIP39 phrase of ASCII letters and spaces with an optional
 
 Invalid input raises `quip_signer.QuipSignerError`, whose message names the
 problem without repeating the input. That covers a bad seed length, a malformed
-envelope, a derivation junction (derive the account on a node and import its
-`0x` secret seed instead), an empty phrase, an uppercase `0X` prefix and a
+envelope, a derivation junction (an account derived with junctions can't be
+imported into the signer in this release), an empty phrase, an uppercase `0X` prefix and a
 character outside the phrase class.
 
 **Breaking in the next release:** phrase-derived keys changed (see

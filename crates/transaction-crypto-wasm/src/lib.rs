@@ -173,7 +173,8 @@ mod tests {
     #[test]
     fn mnemonic_rejects_derivation_junctions() {
         let error = seed_from_mnemonic_impl(&format!("{TEST_PHRASE}//0")).unwrap_err();
-        // The message points to the 0x export and does not echo the phrase.
+        // The message says what the signer takes (a phrase or a 0x seed) and
+        // does not echo the phrase.
         assert!(
             error.starts_with("invalid secret URI: derivation paths"),
             "{error}"

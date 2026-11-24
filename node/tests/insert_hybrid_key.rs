@@ -286,7 +286,7 @@ fn a_key_inserted_under_a_keystore_password_loads_with_it() {
 
 /// With a keystore password set, the keystore password replaces a SURI's own
 /// `///` password at insert and at load, so the stored key would not be the
-/// one `phrase///pw` gives elsewhere (the signers, `key inspect`). The insert
+/// one `phrase///pw` gives elsewhere (the signers, `derive_genesis_keys`). The insert
 /// is refused, without showing the SURI, and nothing is written.
 #[test]
 fn a_suri_password_and_a_keystore_password_together_are_refused() {
