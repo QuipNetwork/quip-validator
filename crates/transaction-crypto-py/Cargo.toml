@@ -33,3 +33,11 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "unwind"
+
+# WP2 batch 1: pqhybridsign 0.1.1 (QUIP HD) is not published yet, and the
+# root workspace's `[patch]` does not apply here because this crate is its
+# own workspace. Same pin as the root `Cargo.toml`: the pushed branch head
+# `grego/audit-wp2/quip-hd` 0c8eaa81. Both move to the published 0.1.1 at
+# release.
+[patch.crates-io]
+pqhybridsign = { git = "https://gitlab.com/quip.network/pqhybridsign.git", rev = "0c8eaa81d439fd7b36c13218241634e79e2c9b9f" }
