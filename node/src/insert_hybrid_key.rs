@@ -46,13 +46,15 @@ pub struct InsertHybridKeyCmd {
     /// The secret key URI: use a bare BIP-39 mnemonic, in a file only you can
     /// read, or leave this out to be prompted for it.
     ///
-    /// A bare mnemonic is the 12 or 24 words separated by single spaces, with
-    /// no quotes, derivation path (`//...`) or password (`///...`). Paths such
-    /// as `//Alice` are for development chains.
+    /// A bare mnemonic is its 12-24 words (BIP-39 allows 12, 15, 18, 21 or 24)
+    /// separated by single spaces, with no quotes, derivation path (`//...`)
+    /// or password (`///...`). Paths such as `//Alice` are for development
+    /// chains.
     ///
     /// If the value names a file, the file's contents are used (a UTF-8
-    /// byte-order mark and surrounding whitespace are dropped). If omitted, you
-    /// are prompted for the SURI and the input is not shown. A SURI typed on
+    /// byte-order mark and surrounding whitespace are dropped, as they are
+    /// from a SURI typed at the prompt). If omitted, you are prompted for the
+    /// SURI and the input is not shown. A SURI typed on
     /// the command line is visible in shell history and the process list.
     #[arg(long, value_name = "FILE")]
     pub suri: Option<String>,
@@ -259,6 +261,8 @@ mod tests {
         assert!(short.contains("prompted"), "{short}");
         let long = suri.get_long_help().expect("long help").to_string();
         assert!(long.contains("shell history"), "{long}");
+        assert!(long.contains("12-24 words"), "{long}");
+        assert!(!long.contains("12 or 24"), "{long}");
     }
 
     #[test]
