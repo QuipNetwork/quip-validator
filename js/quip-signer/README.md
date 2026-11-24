@@ -33,8 +33,10 @@ only expose the injected accounts plus the signer.
 ## Mnemonic Import
 
 `DevSeedProvider.fromMnemonics` derives master seeds from BIP39 phrases using
-the WASM module, matching substrate's `Pair::from_phrase`, so imported accounts
-resolve to the same addresses the runtime recognizes:
+the WASM module. A phrase selects its QUIP HD v1 key for the transaction suite
+(H4), `m/0x514E'/0x400'/20049'/0'/0'`, which is what the node and the Quip SDK's
+`Pair::from_string` give for the same phrase, so imported accounts resolve to
+the addresses the runtime recognizes:
 
 ```ts
 const { accounts, provider } = await DevSeedProvider.fromMnemonics(wasm, [
@@ -45,9 +47,22 @@ const { accounts, provider } = await DevSeedProvider.fromMnemonics(wasm, [
 ]);
 ```
 
-Each `mnemonic` may be an English BIP39 phrase, optionally followed by
-`///<password>`, or a `0x`-prefixed 64-digit hex seed. Derivation junctions
-(`//hard`, `/soft`) are intentionally not supported and are rejected.
+Each `mnemonic` is a secret URI in the node's grammar, without derivation:
+
+- an English BIP39 phrase of ASCII letters and spaces, optionally followed by
+  `///<password>` (the BIP39 passphrase, which may contain `/` but not a line
+  break); or
+- `0x` followed by 64 hex digits (either case), used as the seed itself. It
+  takes no `///<password>`.
+
+Rejected: derivation junctions (`//hard`, `/soft`; derive the account on a
+node and import its `0x` secret seed instead), an empty phrase (there is no
+development phrase here), an uppercase `0X` prefix, and any character outside
+the phrase class (a tab, a no-break space, quotes). Errors name the problem and
+never repeat the input.
+
+Phrase-derived keys changed in 0.2.0 (see CHANGELOG.md): an account imported
+from a phrase with 0.1.0 has a different address now. `0x` seeds are unchanged.
 
 The underlying `wasm.seedFromMnemonic(secretUri)` export returns the master seed
 hex, which can also be passed to `publicFromSeed` / `signPayloadFromSeed`.

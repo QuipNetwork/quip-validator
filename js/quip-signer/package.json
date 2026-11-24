@@ -1,6 +1,6 @@
 {
   "name": "@quip-network/quip-signer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Polkadot.js signer wrapper for Quip hybrid transaction signatures",
   "license": "MIT-0",
   "type": "module",
