@@ -150,8 +150,11 @@ fn invalid_suri(scheme: &str, e: &SecretStringError) -> Error {
     ))
 }
 
-/// If `suri` names a readable file, return its trimmed contents; otherwise
-/// return `suri` as-is.
+/// If `suri` names a readable file, return its contents without a leading
+/// UTF-8 byte-order mark and trimmed; otherwise return `suri` as-is.
+///
+/// Editors on Windows save "UTF-8" files with a BOM, which `trim` keeps
+/// (U+FEFF is not whitespace) and sp-core rejects as an invalid character.
 ///
 /// Mirrors the file-or-literal handling in `sc_cli::commands::utils::read_uri`
 /// without depending on its non-prompted code path.
@@ -160,7 +163,11 @@ fn read_suri(suri: &str) -> sc_cli::Result<String> {
     if path.is_file() {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| Error::Input(format!("failed to read SURI file {suri}: {e}")))?;
-        Ok(raw.trim().to_owned())
+        Ok(raw
+            .strip_prefix('\u{feff}')
+            .unwrap_or(&raw)
+            .trim()
+            .to_owned())
     } else {
         Ok(suri.to_owned())
     }

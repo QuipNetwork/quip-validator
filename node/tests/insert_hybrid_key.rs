@@ -20,8 +20,23 @@ const PASSWORD: &str = "Tr0ub4dor-hunter2";
 
 const SCHEMES: [&str; 2] = ["hybrid-babe-h444", "hybrid-grandpa-h244"];
 
-/// A fresh, empty directory under the system temp dir.
-fn scratch_dir() -> PathBuf {
+/// A fresh, empty directory under the system temp dir, removed on drop so
+/// no SURI file or keystore is left behind.
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn join(&self, name: impl AsRef<Path>) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch_dir() -> ScratchDir {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "quip-insert-hybrid-key-{}-{}",
@@ -30,7 +45,7 @@ fn scratch_dir() -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    ScratchDir(dir)
 }
 
 fn insert(scheme: &str, suri: &str, base_path: &Path) -> Output {
@@ -89,7 +104,6 @@ fn rejection_problems(what: &str, out: &Output) -> Vec<String> {
 /// (the recommended form) and, where a shell could pass it, as a literal.
 fn malformed_files() -> Vec<(&'static str, String)> {
     vec![
-        ("a byte-order mark", format!("\u{feff}{PHRASE}\n")),
         ("a double-quoted phrase", format!("\"{PHRASE}\"\n")),
         ("a single-quoted phrase", format!("'{PHRASE}'\n")),
         (
@@ -154,5 +168,51 @@ fn a_well_formed_suri_file_is_inserted() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(echoed(&out).is_empty(), "{scheme}: {:?}", echoed(&out));
+    }
+}
+
+/// The keystore file names under `base`: `<key type hex><public key hex>`.
+fn keystore_entries(base: &Path) -> Vec<String> {
+    let keystore = base.join("chains").join("dev").join("keystore");
+    let mut names: Vec<String> = std::fs::read_dir(&keystore)
+        .unwrap_or_else(|e| panic!("read {}: {e}", keystore.display()))
+        .map(|entry| {
+            entry
+                .expect("keystore entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// A SURI file saved with a UTF-8 byte-order mark (Windows editors do this)
+/// inserts the same key as the plain file.
+#[test]
+fn a_suri_file_with_a_byte_order_mark_inserts_the_same_key() {
+    let dir = scratch_dir();
+    for scheme in SCHEMES {
+        let plain = dir.join(format!("plain-{scheme}"));
+        let bom = dir.join(format!("bom-{scheme}"));
+        std::fs::write(&plain, format!("{PHRASE}\n")).expect("write SURI file");
+        std::fs::write(&bom, format!("\u{feff}{PHRASE}\r\n")).expect("write SURI file");
+
+        let plain_base = dir.join(format!("plain-base-{scheme}"));
+        let bom_base = dir.join(format!("bom-base-{scheme}"));
+        for (file, base) in [(&plain, &plain_base), (&bom, &bom_base)] {
+            let out = insert(scheme, file.to_str().unwrap(), base);
+            assert!(
+                out.status.success(),
+                "{scheme}: insert of {} failed: {}",
+                file.display(),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(echoed(&out).is_empty(), "{scheme}: {:?}", echoed(&out));
+        }
+        let plain_keys = keystore_entries(&plain_base);
+        assert_eq!(plain_keys.len(), 1, "{scheme}: {plain_keys:?}");
+        assert_eq!(keystore_entries(&bom_base), plain_keys, "{scheme}");
     }
 }
