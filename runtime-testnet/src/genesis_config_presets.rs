@@ -1384,7 +1384,7 @@ mod tests {
             council_placeholders: vec![],
             validators: (1..=5)
                 .map(|index| {
-                    let seed = format!("//QUI2083//MainnetFixture//Validator{index}");
+                    let seed = format!("//QUI2083MainnetFixture//Validator{index}");
                     MainnetValidator {
                         stash: tx_account_from_seed(&seed),
                         session_keys: Some((
