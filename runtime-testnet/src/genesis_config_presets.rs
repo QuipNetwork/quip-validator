@@ -1337,9 +1337,15 @@ mod tests {
              ALICE_PINNED_ACCOUNT_HEX above with the new value: {hex}",
         );
     }
-    // Captured by running get_preset on unmodified 59a095c in both feature
-    // configurations. Comparing serialized bytes catches drift the parity gate
+    // Captured by running get_preset in both feature configurations: first on
+    // unmodified 59a095c, then again when QUIP HD v1 changed the dev keys
+    // (WP2 batch 1). Comparing serialized bytes catches drift the parity gate
     // cannot: the same accidental change in both runtime trees.
+    //
+    // To regenerate, run with `QUIP_PRINT_LEGACY_HASHES` set and `--nocapture`,
+    // once per profile: the test then prints `legacy_hash <profile> <preset>
+    // <hash>` for every preset instead of comparing.
+    // `scripts/regenerate-quip-hd-fixtures.sh` does this and writes the file.
     #[test]
     fn legacy_preset_bytes_match_pre_launch_base() {
         let fixture: Value =
@@ -1351,10 +1357,16 @@ mod tests {
         };
         let expected = fixture[profile].as_object().unwrap();
         assert_eq!(expected.len(), 5);
+        let print_only = std::env::var_os("QUIP_PRINT_LEGACY_HASHES").is_some();
         for (name, hash) in expected {
             let bytes = get_preset(&PresetId::from(name.clone())).unwrap();
+            let actual = hex_encode(&sp_core::blake2_256(&bytes));
+            if print_only {
+                println!("legacy_hash {profile} {name} {actual}");
+                continue;
+            }
             assert_eq!(
-                hex_encode(&sp_core::blake2_256(&bytes)),
+                actual,
                 hash.as_str().unwrap(),
                 "legacy preset changed: {name}"
             );
