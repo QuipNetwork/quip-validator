@@ -45,8 +45,9 @@ pub enum HybridScheme {
 pub struct InsertHybridKeyCmd {
     /// The secret key URI (BIP39 mnemonic or derivation path like `//Alice`).
     /// If the value names a file, the file's contents are used instead.
+    /// If omitted, you are prompted for it and the input is not shown.
     #[arg(long)]
-    pub suri: String,
+    pub suri: Option<String>,
 
     /// Override the runtime key-type id. Defaults to the standard id for the
     /// chosen scheme (`babe` for HybridBabeH444, `gran` for HybridGrandpaH244).
@@ -69,7 +70,9 @@ pub struct InsertHybridKeyCmd {
 impl InsertHybridKeyCmd {
     /// Run the command.
     pub fn run<C: SubstrateCli>(&self, cli: &C) -> sc_cli::Result<()> {
-        let suri = read_suri(&self.suri)?;
+        let suri = read_suri(self.suri.as_deref(), || {
+            rpassword::prompt_password("Secret URI (input hidden): ")
+        })?;
 
         let base_path = self
             .shared_params
@@ -152,15 +155,30 @@ fn invalid_suri(scheme: &str, e: &SecretStringError) -> Error {
     ))
 }
 
-/// If `suri` names a readable file, return its contents without a leading
-/// UTF-8 byte-order mark and trimmed; otherwise return `suri` as-is.
+/// The SURI to insert.
 ///
-/// Editors on Windows save "UTF-8" files with a BOM, which `trim` keeps
-/// (U+FEFF is not whitespace) and sp-core rejects as an invalid character.
+/// - No `--suri`: ask `prompt`, which reads it from the terminal without
+///   showing it, so the secret stays out of shell history and the process
+///   list.
+/// - `--suri` naming a readable file: its contents without a leading UTF-8
+///   byte-order mark, trimmed. Editors on Windows save "UTF-8" files with a
+///   BOM, which `trim` keeps (U+FEFF is not whitespace) and sp-core rejects
+///   as an invalid character.
+/// - Otherwise: the `--suri` value as given.
 ///
-/// Mirrors the file-or-literal handling in `sc_cli::commands::utils::read_uri`
-/// without depending on its non-prompted code path.
-fn read_suri(suri: &str) -> sc_cli::Result<String> {
+/// Mirrors the file-or-literal-or-prompt handling in
+/// `sc_cli::commands::utils::read_uri`.
+fn read_suri(
+    suri: Option<&str>,
+    prompt: impl FnOnce() -> std::io::Result<String>,
+) -> sc_cli::Result<String> {
+    let Some(suri) = suri else {
+        return prompt().map_err(|e| {
+            Error::Input(format!(
+                "no --suri given, and the hidden prompt failed ({e}); pass --suri <FILE>"
+            ))
+        });
+    };
     let path = std::path::Path::new(suri);
     if path.is_file() {
         let raw = std::fs::read_to_string(path)
@@ -188,6 +206,47 @@ mod tests {
         assert_eq!(
             <HybridScheme as ValueEnum>::from_str("hybrid-grandpa-h244", false),
             Ok(HybridScheme::HybridGrandpaH244),
+        );
+    }
+
+    #[test]
+    fn suri_is_optional_on_the_command_line() {
+        let cmd = InsertHybridKeyCmd::try_parse_from([
+            "insert-hybrid-key",
+            "--scheme",
+            "hybrid-babe-h444",
+        ])
+        .expect("--suri may be omitted");
+        assert_eq!(cmd.suri, None);
+    }
+
+    #[test]
+    fn without_suri_the_prompt_supplies_it() {
+        let mut asked = 0;
+        let suri = read_suri(None, || {
+            asked += 1;
+            Ok(PHRASE.to_owned())
+        })
+        .expect("prompted SURI");
+        assert_eq!(suri, PHRASE);
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn with_suri_the_prompt_is_not_used() {
+        let suri = read_suri(Some("//Alice"), || panic!("must not prompt")).expect("literal");
+        assert_eq!(suri, "//Alice");
+    }
+
+    #[test]
+    fn a_failed_prompt_says_to_pass_suri() {
+        let Err(e) = read_suri(None, || Err(std::io::Error::other("no terminal"))) else {
+            panic!("a failed prompt is an error");
+        };
+        let text = e.to_string();
+        assert!(
+            text.contains("--suri") && text.contains("no terminal"),
+            "{text}"
         );
     }
 

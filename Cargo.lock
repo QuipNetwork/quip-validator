@@ -9287,6 +9287,7 @@ dependencies = [
  "quip-crypto-primitives",
  "quip-protocol-runtime",
  "quip-transaction-crypto",
+ "rpassword",
  "sc-basic-authorship",
  "sc-cli",
  "sc-client-api",
