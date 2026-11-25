@@ -3455,6 +3455,8 @@ fn retention_sweep_preserves_poll_ttl_then_removes_all_auxiliary_records() {
             crate::types::FrontRunner {
                 solver: 2,
                 energy_milli: -1_000,
+                effective_at: 0,
+                seq: 0,
             },
         );
         assert!(crate::OrderTopSolvers::<Test>::contains_key(0));
@@ -4081,7 +4083,10 @@ mod w1_012 {
     fn assert_index_consistent(id: u64) {
         let mut stored = 0;
         for (who, entry) in OrderSolutions::<Test>::iter_prefix(id) {
-            assert_eq!(OrderAnswers::<Test>::get(id, entry.answer), Some(who));
+            assert_eq!(
+                OrderAnswers::<Test>::get(id, entry.answer).map(|owner| owner.solver),
+                Some(who)
+            );
             stored += 1;
         }
         assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), stored);
@@ -4296,8 +4301,26 @@ mod w1_012 {
             assert_no_answer_keys(id);
             // Retention pruning of the closed order also clears the index
             // (defensively: plant stray entries first).
-            OrderAnswers::<Test>::insert(id, sp_core::H256::repeat_byte(1), 2);
-            OrderAnswers::<Test>::insert(id, sp_core::H256::repeat_byte(2), 3);
+            OrderAnswers::<Test>::insert(
+                id,
+                sp_core::H256::repeat_byte(1),
+                crate::types::AnswerOwner {
+                    solver: 2,
+                    best_energy_milli: 0,
+                    effective_at: 0,
+                    seq: 0,
+                },
+            );
+            OrderAnswers::<Test>::insert(
+                id,
+                sp_core::H256::repeat_byte(2),
+                crate::types::AnswerOwner {
+                    solver: 3,
+                    best_energy_milli: 0,
+                    effective_at: 0,
+                    seq: 0,
+                },
+            );
         });
         ext.commit_all().expect("commit");
         ext.execute_with(|| {
@@ -4942,6 +4965,128 @@ mod w3_001_min_block_wait {
         new_test_ext().execute_with(|| {
             MinBlockWait::set(20);
             <QuantumComputeMempool as Hooks<u64>>::integrity_test();
+        });
+    }
+}
+
+/// W3-001 B5b (design §B5 v2, N2) -- the ordering key.
+mod w3_001_ordering_key {
+    use super::*;
+
+    fn propose(resolution: RewardResolution) -> u64 {
+        let spec_id = register_spec();
+        let order_id = NextOrderId::<Test>::get();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            chain_params(4),
+            100,
+            JobMode::Open,
+            resolution,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        order_id
+    }
+
+    fn submit(who: AccountId, order_id: u64, k: u32) {
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(who),
+            order_id,
+            chain_row(4, k)
+        ));
+    }
+
+    fn register(who: AccountId) {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+    }
+
+    /// The architect's tie-break (R8 note on the B5 cut): A submits at +1000
+    /// ("7"), B at -1000 ("5"), then A improves to -1000 with a different
+    /// answer. Whoever first reached an energy ranks ahead: B, under every
+    /// resolution. (This is today's order too: an improved entry was already
+    /// behind every entry at its new energy; the key makes it explicit.)
+    #[test]
+    fn an_improved_resubmission_ranks_after_an_earlier_equal_energy() {
+        for resolution in [
+            RewardResolution::SingleBest,
+            RewardResolution::TopNEqual { n: 2 },
+            RewardResolution::TopNWeighted { n: 2 },
+        ] {
+            new_test_ext().execute_with(|| {
+                register(2);
+                register(3);
+                let id = propose(resolution);
+                let (a, b) = (2, 3);
+                submit(a, id, 1);
+                submit(b, id, 4);
+                submit(a, id, 6);
+                let energy = |who| {
+                    OrderSolutions::<Test>::get(id, who)
+                        .unwrap()
+                        .best_energy_milli
+                };
+                assert_eq!((energy(a), energy(b)), (-1_000, -1_000));
+                match resolution {
+                    RewardResolution::SingleBest => {
+                        assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, b);
+                    }
+                    _ => {
+                        let order: Vec<_> = crate::OrderTopSolvers::<Test>::get(id)
+                            .iter()
+                            .map(|entry| entry.solver)
+                            .collect();
+                        assert_eq!(order, vec![b, a], "{resolution:?}");
+                    }
+                }
+            });
+        }
+    }
+
+    /// Each accepted submission takes the order's next `seq` and, uncommitted,
+    /// its arrival block as `effective_at`; the solution, the answer index and
+    /// the ranking all carry them, and the counter is cleared with the
+    /// solutions at finalisation.
+    #[test]
+    fn submissions_carry_effective_at_and_seq_and_the_counter_is_cleared() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            let id = propose(RewardResolution::TopNEqual { n: 2 });
+            submit(2, id, 1);
+            run_to_block(2);
+            submit(3, id, 4);
+            submit(2, id, 6);
+            assert_eq!(crate::NextSubmissionSeq::<Test>::get(id), 3);
+            for (who, k_seq, at) in [(3u128, 1u32, 2u64), (2, 2, 2)] {
+                let solution = OrderSolutions::<Test>::get(id, who).unwrap();
+                assert_eq!((solution.seq, solution.effective_at), (k_seq, at), "{who}");
+                let owner = crate::OrderAnswers::<Test>::get(id, solution.answer).unwrap();
+                assert_eq!(
+                    (
+                        owner.solver,
+                        owner.best_energy_milli,
+                        owner.effective_at,
+                        owner.seq
+                    ),
+                    (who, solution.best_energy_milli, at, k_seq)
+                );
+                let ranked = crate::OrderTopSolvers::<Test>::get(id)
+                    .into_iter()
+                    .find(|entry| entry.solver == who)
+                    .unwrap();
+                assert_eq!((ranked.effective_at, ranked.seq), (at, k_seq));
+            }
+            run_to_block(20);
+            assert_eq!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Expired
+            );
+            assert!(!crate::NextSubmissionSeq::<Test>::contains_key(id));
         });
     }
 }

@@ -291,6 +291,190 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5b (ordering key, N2). Exact deltas:
+// - `effective_at: BlockNumber` and `seq: u32` appended to `JobSolution`,
+//   `RankedSolver` and `FrontRunner`; the last two also gain a `BlockNumber`
+//   type parameter (appended after `AccountId`);
+// - `OrderAnswers`' value becomes `AnswerOwner { solver, best_energy_milli,
+//   effective_at, seq }` (was the solver's account);
+// - `NextSubmissionSeq` (u64 -> u32, `ValueQuery`) appended after B4a's
+//   `OrderDeposit`.
+// Runs first: the storage entry is the newest delta.
+const ORDER_ANSWERS_OWNER_DOCS: &[&str] = &[
+    "",
+    " The value is the answer's owner with its energy and ordering key",
+    " (W3-001), so a contested answer and a ranking recompute read no",
+    " payloads.",
+];
+const NEXT_SUBMISSION_SEQ_DOCS: &[&str] = &[
+    " Each open order's arrival counter (W3-001 N2): the `seq` of its next",
+    " accepted submission. Cleared with the order's solutions.",
+];
+
+fn mempool_type_path(name: &str) -> Value {
+    serde_json::json!(["pallet_quantum_compute_mempool", "types", name])
+}
+
+fn is_primitive(metadata: &Value, id: &Value, primitive: &str) -> bool {
+    registry_type(metadata, id).is_some_and(|ty| ty["def"]["primitive"] == primitive)
+}
+
+fn normalize_ordering_key(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let types = after.clone();
+
+    // Storage: `NextSubmissionSeq`, last, after `OrderDeposit`.
+    if mempool_storage_entries(before)?
+        .iter()
+        .any(|e| e["name"] == "NextSubmissionSeq")
+    {
+        return Err("unexpected baseline mempool NextSubmissionSeq".into());
+    }
+    let entries = mempool_storage_entries(after)?;
+    let deposit = entries
+        .iter()
+        .find(|e| e["name"] == "OrderDeposit")
+        .cloned()
+        .ok_or("missing candidate OrderDeposit")?;
+    let len = entries.len();
+    let last = entries.last().cloned().unwrap_or(Value::Null);
+    let want = serde_json::json!({
+        "default": [0, 0, 0, 0],
+        "deprecation_info": "NotDeprecated",
+        "docs": NEXT_SUBMISSION_SEQ_DOCS,
+        "modifier": "Default",
+        "name": "NextSubmissionSeq",
+        "ty": {"Map": {
+            "hashers": deposit["ty"]["Map"]["hashers"].clone(),
+            "key": deposit["ty"]["Map"]["key"].clone(),
+            "value": last["ty"]["Map"]["value"].clone(),
+        }},
+    });
+    if len < 2
+        || entries[len - 2]["name"] != "OrderDeposit"
+        || last != want
+        || !is_primitive(&types, &last["ty"]["Map"]["value"], "u32")
+    {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool NextSubmissionSeq: {}",
+            serde_json::to_string(&last).unwrap_or_default()
+        ));
+    }
+    entries.pop();
+
+    // `OrderAnswers`' value: the exact `AnswerOwner`, restored to the account.
+    let entries = mempool_storage_entries(after)?;
+    let solutions = entries
+        .iter()
+        .find(|e| e["name"] == "OrderSolutions")
+        .cloned()
+        .ok_or("missing candidate OrderSolutions")?;
+    let account = tuple_fields(&types, &solutions["ty"]["Map"]["key"])
+        .and_then(|key| key.get(1).cloned())
+        .ok_or("OrderSolutions key is not a pair")?;
+    let answers = entries
+        .iter_mut()
+        .find(|e| e["name"] == "OrderAnswers")
+        .ok_or("missing candidate OrderAnswers")?;
+    let owner_id = answers["ty"]["Map"]["value"].clone();
+    let owner = registry_type(&types, &owner_id).unwrap_or(Value::Null);
+    let block_number = owner["params"]
+        .as_array()
+        .and_then(|params| params.iter().find(|p| p["name"] == "BlockNumber"))
+        .map(|p| p["type"].clone())
+        .unwrap_or(Value::Null);
+    let want_owner = serde_json::json!([
+        {"name": "solver", "type": account.clone(), "typeName": "AccountId"},
+        {"name": "best_energy_milli", "type": owner["def"]["composite"]["fields"][1]["type"].clone(), "typeName": "i64"},
+        {"name": "effective_at", "type": block_number.clone(), "typeName": "BlockNumber"},
+        {"name": "seq", "type": owner["def"]["composite"]["fields"][3]["type"].clone(), "typeName": "u32"},
+    ]);
+    if owner["path"] != mempool_type_path("AnswerOwner")
+        || owner["def"]["composite"]["fields"] != want_owner
+        || !is_primitive(&types, &want_owner[1]["type"], "i64")
+        || !is_primitive(&types, &want_owner[3]["type"], "u32")
+    {
+        return Err(format!(
+            "missing or incorrect required OrderAnswers value AnswerOwner: {}",
+            serde_json::to_string(&owner).unwrap_or_default()
+        ));
+    }
+    answers["ty"]["Map"]["value"] = account;
+    let want_docs: Vec<&str> = ORDER_ANSWERS_DOCS
+        .iter()
+        .chain(ORDER_ANSWERS_OWNER_DOCS)
+        .copied()
+        .collect();
+    if answers["docs"] != serde_json::json!(want_docs) {
+        return Err(format!(
+            "missing or incorrect required OrderAnswers owner docs: {}",
+            serde_json::to_string(&answers["docs"]).unwrap_or_default()
+        ));
+    }
+    answers["docs"] = serde_json::json!(ORDER_ANSWERS_DOCS);
+
+    // Struct fields and type parameters.
+    for (name, new_param) in [
+        ("JobSolution", false),
+        ("RankedSolver", true),
+        ("FrontRunner", true),
+    ] {
+        let path = mempool_type_path(name);
+        let mut found = 0;
+        for ty in after["types"]["types"]
+            .as_array_mut()
+            .ok_or("missing candidate registry")?
+            .iter_mut()
+            .filter(|ty| ty["type"]["path"] == path)
+        {
+            let block_number = ty["type"]["params"]
+                .as_array()
+                .and_then(|params| params.iter().find(|p| p["name"] == "BlockNumber"))
+                .map(|p| p["type"].clone())
+                .unwrap_or(Value::Null);
+            let fields = ty
+                .pointer_mut("/type/def/composite/fields")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| format!("{name} is not a struct"))?;
+            let n = fields.len();
+            let seq_ty = fields
+                .last()
+                .map(|f| f["type"].clone())
+                .unwrap_or(Value::Null);
+            let want = serde_json::json!([
+                {"name": "effective_at", "type": block_number, "typeName": "BlockNumber"},
+                {"name": "seq", "type": seq_ty.clone(), "typeName": "u32"},
+            ]);
+            if n < 2
+                || fields.get(n - 2..) != want.as_array().map(Vec::as_slice)
+                || !is_primitive(&types, &seq_ty, "u32")
+            {
+                return Err(format!(
+                    "missing or incorrect required {name}.effective_at/seq fields: {}",
+                    serde_json::to_string(&fields.get(n.saturating_sub(2)..)).unwrap_or_default()
+                ));
+            }
+            fields.truncate(n - 2);
+            if new_param {
+                let params = ty["type"]["params"]
+                    .as_array_mut()
+                    .ok_or_else(|| format!("{name} has no type parameters"))?;
+                if params.len() != 2 || params[1]["name"] != "BlockNumber" {
+                    return Err(format!(
+                        "missing or incorrect required {name} BlockNumber parameter: {}",
+                        serde_json::to_string(params).unwrap_or_default()
+                    ));
+                }
+                params.pop();
+            }
+            found += 1;
+        }
+        if found == 0 {
+            return Err(format!("missing candidate {name} type"));
+        }
+    }
+    Ok(())
+}
+
 // W3-001 B5a (minimum block wait). Exact deltas, each appended last: the
 // `MinBlockWait` constant after B4a's `OrderDepositPerByte` (the type of
 // `MaxBlockWait`, value 2), and the `BlockWaitTooShort` error after B4c's
@@ -2185,6 +2369,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     // First: W3-001 then W3-006 append after every other mempool delta,
     // newest first.
+    normalize_ordering_key(&mut left, &mut right)?;
     normalize_min_block_wait(&mut left, &mut right)?;
     normalize_deadline_too_short(&mut left, &mut right)?;
     normalize_order_deposit(&mut left, &mut right)?;
@@ -2859,6 +3044,108 @@ mod tests {
             check(&before, &wrong_type).is_err(),
             "accepted a different value type"
         );
+    }
+
+    /// Every registry type at `path` in `metadata`.
+    fn types_at<'a>(metadata: &'a mut Value, name: &str) -> Vec<&'a mut Value> {
+        let path = mempool_type_path(name);
+        metadata["types"]["types"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .filter(|ty| ty["type"]["path"] == path)
+            .collect()
+    }
+
+    #[test]
+    fn requires_exact_mempool_ordering_key() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        // NextSubmissionSeq.
+        for field in [
+            "name",
+            "modifier",
+            "default",
+            "docs",
+            "deprecation_info",
+            "ty",
+        ] {
+            let mut wrong = after.clone();
+            mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "NextSubmissionSeq")
+                .unwrap()[field] = Value::from("mutated");
+            cases.push((format!("NextSubmissionSeq.{field}"), wrong));
+        }
+        let mut missing = after.clone();
+        mempool_storage_entries(&mut missing)
+            .unwrap()
+            .retain(|e| e["name"] != "NextSubmissionSeq");
+        cases.push(("missing NextSubmissionSeq".into(), missing));
+        let mut misplaced = after.clone();
+        let entries = mempool_storage_entries(&mut misplaced).unwrap();
+        let len = entries.len();
+        entries.swap(len - 1, len - 2);
+        cases.push(("misplaced NextSubmissionSeq".into(), misplaced));
+        // OrderAnswers: the value and the docs.
+        let mut docs = after.clone();
+        mempool_storage_entries(&mut docs)
+            .unwrap()
+            .iter_mut()
+            .find(|e| e["name"] == "OrderAnswers")
+            .unwrap()["docs"] = Value::from("mutated");
+        cases.push(("OrderAnswers.docs".into(), docs));
+        for (index, field) in ["name", "type", "typeName"].into_iter().enumerate() {
+            let mut wrong = after.clone();
+            for ty in types_at(&mut wrong, "AnswerOwner") {
+                ty["type"]["def"]["composite"]["fields"][index % 4][field] = Value::from(999);
+            }
+            cases.push((format!("AnswerOwner field {index}.{field}"), wrong));
+        }
+        let mut dropped = after.clone();
+        for ty in types_at(&mut dropped, "AnswerOwner") {
+            ty["type"]["def"]["composite"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .pop();
+        }
+        cases.push(("AnswerOwner without seq".into(), dropped));
+        // The appended fields and the new parameter.
+        for name in ["JobSolution", "RankedSolver", "FrontRunner"] {
+            for (label, mutate) in [
+                ("seq dropped", 0usize),
+                ("effective_at renamed", 1),
+                ("seq retyped", 2),
+            ] {
+                let mut wrong = after.clone();
+                for ty in types_at(&mut wrong, name) {
+                    let fields = ty["type"]["def"]["composite"]["fields"]
+                        .as_array_mut()
+                        .unwrap();
+                    let n = fields.len();
+                    match mutate {
+                        0 => {
+                            fields.pop();
+                        }
+                        1 => fields[n - 2]["name"] = Value::from("effective"),
+                        _ => fields[n - 1]["typeName"] = Value::from("u64"),
+                    }
+                }
+                cases.push((format!("{name}: {label}"), wrong));
+            }
+        }
+        for name in ["RankedSolver", "FrontRunner"] {
+            let mut wrong = after.clone();
+            for ty in types_at(&mut wrong, name) {
+                ty["type"]["params"].as_array_mut().unwrap().pop();
+            }
+            cases.push((format!("{name} without the BlockNumber parameter"), wrong));
+        }
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

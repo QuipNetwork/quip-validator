@@ -4,11 +4,11 @@ use alloc::vec::Vec;
 use crate::types::{FrontRunner, RankedSolver};
 
 /// Update a ranked top-N set with a new candidate.
-pub fn update_ranked_solvers<AccountId: Clone + Eq>(
-    current: &[RankedSolver<AccountId>],
-    candidate: RankedSolver<AccountId>,
+pub fn update_ranked_solvers<AccountId: Clone + Eq, BlockNumber: Copy + Ord>(
+    current: &[RankedSolver<AccountId, BlockNumber>],
+    candidate: RankedSolver<AccountId, BlockNumber>,
     limit: usize,
-) -> Vec<RankedSolver<AccountId>> {
+) -> Vec<RankedSolver<AccountId, BlockNumber>> {
     let mut next = current.to_vec();
 
     if let Some(existing) = next
@@ -22,14 +22,15 @@ pub fn update_ranked_solvers<AccountId: Clone + Eq>(
         next.push(candidate);
     }
 
-    next.sort_by_key(|entry| entry.energy_milli);
+    // W3-001: energy, then effective time, then arrival (N2).
+    next.sort_by_key(|entry| entry.rank_key());
     next.truncate(limit);
     next
 }
 
 /// Compute single-best payouts.
-pub fn single_best_payouts<AccountId: Clone>(
-    front_runner: &FrontRunner<AccountId>,
+pub fn single_best_payouts<AccountId: Clone, BlockNumber>(
+    front_runner: &FrontRunner<AccountId, BlockNumber>,
     reward: u128,
 ) -> Vec<(AccountId, u128, i64)> {
     vec![(
@@ -40,8 +41,8 @@ pub fn single_best_payouts<AccountId: Clone>(
 }
 
 /// Compute equal-split payouts, assigning any remainder to the best-ranked solver.
-pub fn top_n_equal_payouts<AccountId: Clone>(
-    ranked: &[RankedSolver<AccountId>],
+pub fn top_n_equal_payouts<AccountId: Clone, BlockNumber>(
+    ranked: &[RankedSolver<AccountId, BlockNumber>],
     reward: u128,
 ) -> Vec<(AccountId, u128, i64)> {
     if ranked.is_empty() {
@@ -68,8 +69,8 @@ pub fn top_n_equal_payouts<AccountId: Clone>(
 /// weight `k - r`, so the leader has weight `k` and the last solver weight 1.
 /// Energies only decide the order; their sign and magnitude never change the
 /// split. Any rounding remainder goes to rank 0.
-pub fn top_n_weighted_payouts<AccountId: Clone>(
-    ranked: &[RankedSolver<AccountId>],
+pub fn top_n_weighted_payouts<AccountId: Clone, BlockNumber>(
+    ranked: &[RankedSolver<AccountId, BlockNumber>],
     reward: u128,
 ) -> Vec<(AccountId, u128, i64)> {
     if ranked.is_empty() {
@@ -107,7 +108,7 @@ pub fn top_n_weighted_payouts<AccountId: Clone>(
 mod tests {
     use super::*;
 
-    fn ranked(energies: &[i64]) -> Vec<RankedSolver<u64>> {
+    fn ranked(energies: &[i64]) -> Vec<RankedSolver<u64, u64>> {
         energies
             .iter()
             .enumerate()
@@ -115,8 +116,47 @@ mod tests {
                 solver: index as u64 + 1,
                 energy_milli: *energy,
                 answer: sp_core::H256::repeat_byte(index as u8),
+                effective_at: 0,
+                seq: index as u32,
             })
             .collect()
+    }
+
+    fn entry(
+        solver: u64,
+        energy_milli: i64,
+        effective_at: u64,
+        seq: u32,
+    ) -> RankedSolver<u64, u64> {
+        RankedSolver {
+            solver,
+            energy_milli,
+            answer: sp_core::H256::repeat_byte(solver as u8),
+            effective_at,
+            seq,
+        }
+    }
+
+    /// W3-001 B5b: ties in energy go to the earlier effective time, then the
+    /// earlier arrival -- whatever order the entries arrive in.
+    #[test]
+    fn ranking_orders_by_energy_then_effective_time_then_arrival() {
+        let current = vec![entry(1, 5, 10, 0), entry(2, 5, 10, 2)];
+        let earlier = update_ranked_solvers(&current, entry(3, 5, 3, 3), 3);
+        assert_eq!(
+            earlier.iter().map(|e| e.solver).collect::<Vec<_>>(),
+            vec![3, 1, 2]
+        );
+        let between = update_ranked_solvers(&current, entry(3, 5, 10, 1), 3);
+        assert_eq!(
+            between.iter().map(|e| e.solver).collect::<Vec<_>>(),
+            vec![1, 3, 2]
+        );
+        let lower = update_ranked_solvers(&current, entry(3, 4, 99, 9), 2);
+        assert_eq!(
+            lower.iter().map(|e| e.solver).collect::<Vec<_>>(),
+            vec![3, 1]
+        );
     }
 
     fn amounts(payouts: &[(u64, u128, i64)]) -> Vec<u128> {
@@ -161,7 +201,7 @@ mod tests {
 
     #[test]
     fn weighted_empty_ranked_pays_nothing() {
-        assert!(top_n_weighted_payouts::<u64>(&[], 100).is_empty());
+        assert!(top_n_weighted_payouts::<u64, u64>(&[], 100).is_empty());
     }
 
     #[test]

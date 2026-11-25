@@ -361,7 +361,7 @@ pallet_revive::impl_runtime_apis_plus_revive_traits!(
 
         fn order_top_solvers(
             order_id: u64,
-        ) -> Vec<pallet_quantum_compute_mempool::types::RankedSolver<AccountId>> {
+        ) -> Vec<pallet_quantum_compute_mempool::types::RankedSolver<AccountId, BlockNumber>> {
             QuantumComputeMempool::order_top_solvers(order_id)
         }
     }

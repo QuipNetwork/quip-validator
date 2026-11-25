@@ -223,6 +223,13 @@ pub struct JobSolution<AccountId, BlockNumber, Solutions> {
     /// Canonical answer of the best row (W1-012): `blake2_256` of the row
     /// after flip normalisation and with isolated spins set to `+1`.
     pub answer: sp_core::H256,
+    /// Ordering time (W3-001): the block of the commitment this submission
+    /// was revealed against, or of its arrival when uncommitted. Ranks ties in
+    /// energy.
+    pub effective_at: BlockNumber,
+    /// The order's arrival counter at acceptance (W3-001 N2): breaks ties in
+    /// `(energy, effective_at)` deterministically, by arrival.
+    pub seq: u32,
 }
 
 /// Registered solver metadata.
@@ -241,20 +248,67 @@ pub struct SolverInfo<AccountId, Balance, BlockNumber> {
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
-pub struct RankedSolver<AccountId> {
+pub struct RankedSolver<AccountId, BlockNumber> {
     pub solver: AccountId,
     pub energy_milli: i64,
     /// The solver's canonical answer (W1-012); see [`JobSolution::answer`].
     pub answer: sp_core::H256,
+    /// Ordering time (W3-001): the block of the commitment this submission
+    /// was revealed against, or of its arrival when uncommitted. Ranks ties in
+    /// energy.
+    pub effective_at: BlockNumber,
+    /// The order's arrival counter at acceptance (W3-001 N2): breaks ties in
+    /// `(energy, effective_at)` deterministically, by arrival.
+    pub seq: u32,
+}
+
+impl<AccountId, BlockNumber: Copy> RankedSolver<AccountId, BlockNumber> {
+    /// Rank order (W3-001): lower energy, then earlier effective time, then
+    /// earlier arrival.
+    pub fn rank_key(&self) -> (i64, BlockNumber, u32) {
+        (self.energy_milli, self.effective_at, self.seq)
+    }
 }
 
 /// SingleBest frontrunner state.
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
-pub struct FrontRunner<AccountId> {
+pub struct FrontRunner<AccountId, BlockNumber> {
     pub solver: AccountId,
     pub energy_milli: i64,
+    /// Ordering time (W3-001): the block of the commitment this submission
+    /// was revealed against, or of its arrival when uncommitted. Ranks ties in
+    /// energy.
+    pub effective_at: BlockNumber,
+    /// The order's arrival counter at acceptance (W3-001 N2): breaks ties in
+    /// `(energy, effective_at)` deterministically, by arrival.
+    pub seq: u32,
+}
+
+impl<AccountId, BlockNumber: Copy> FrontRunner<AccountId, BlockNumber> {
+    /// Rank order (W3-001); see [`RankedSolver::rank_key`].
+    pub fn rank_key(&self) -> (i64, BlockNumber, u32) {
+        (self.energy_milli, self.effective_at, self.seq)
+    }
+}
+
+/// The owner of a canonical answer on an order (W1-012, extended by W3-001):
+/// the solver, and the energy and ordering key of its accepted submission, so
+/// a contested answer and a ranking recompute need no payload reads.
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
+pub struct AnswerOwner<AccountId, BlockNumber> {
+    pub solver: AccountId,
+    pub best_energy_milli: i64,
+    /// Ordering time (W3-001): the block of the commitment this submission
+    /// was revealed against, or of its arrival when uncommitted. Ranks ties in
+    /// energy.
+    pub effective_at: BlockNumber,
+    /// The order's arrival counter at acceptance (W3-001 N2): breaks ties in
+    /// `(energy, effective_at)` deterministically, by arrival.
+    pub seq: u32,
 }
 
 /// Summary of a settled winner used for off-chain result delivery.

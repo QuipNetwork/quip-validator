@@ -160,6 +160,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `3538 + e * (12 ±0) + n * (8 ±0)`
@@ -172,8 +173,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(80_658, 0).saturating_mul(e.into()))
 			// Standard Error: 4_212_456
 			.saturating_add(Weight::from_parts(94_627_987, 0).saturating_mul(s.into()))
-			.saturating_add(T::DbWeight::get().reads(8_u64))
-			.saturating_add(T::DbWeight::get().writes(7_u64))
+			.saturating_add(T::DbWeight::get().reads(9_u64))
+			.saturating_add(T::DbWeight::get().writes(8_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
@@ -230,6 +231,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution_with_payee(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `3591 + e * (12 ±0) + n * (8 ±0)`
@@ -242,8 +244,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(80_768, 0).saturating_mul(e.into()))
 			// Standard Error: 4_214_491
 			.saturating_add(Weight::from_parts(94_464_281, 0).saturating_mul(s.into()))
-			.saturating_add(T::DbWeight::get().reads(8_u64))
-			.saturating_add(T::DbWeight::get().writes(8_u64))
+			.saturating_add(T::DbWeight::get().reads(9_u64))
+			.saturating_add(T::DbWeight::get().writes(9_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -264,6 +266,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution_replacement(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -276,8 +279,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(80_037, 0).saturating_mul(e.into()))
 			// Standard Error: 4_248_144
 			.saturating_add(Weight::from_parts(97_602_727, 0).saturating_mul(s.into()))
-			.saturating_add(T::DbWeight::get().reads(8_u64))
-			.saturating_add(T::DbWeight::get().writes(6_u64))
+			.saturating_add(T::DbWeight::get().reads(9_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -298,6 +301,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution_clear_payee(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -310,8 +314,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(79_897, 0).saturating_mul(e.into()))
 			// Standard Error: 4_258_856
 			.saturating_add(Weight::from_parts(97_442_359, 0).saturating_mul(s.into()))
-			.saturating_add(T::DbWeight::get().reads(8_u64))
-			.saturating_add(T::DbWeight::get().writes(6_u64))
+			.saturating_add(T::DbWeight::get().reads(9_u64))
+			.saturating_add(T::DbWeight::get().writes(7_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)
@@ -574,6 +578,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `3538 + e * (12 ±0) + n * (8 ±0)`
@@ -586,8 +591,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(80_658, 0).saturating_mul(e.into()))
 			// Standard Error: 4_212_456
 			.saturating_add(Weight::from_parts(94_627_987, 0).saturating_mul(s.into()))
-			.saturating_add(RocksDbWeight::get().reads(8_u64))
-			.saturating_add(RocksDbWeight::get().writes(7_u64))
+			.saturating_add(RocksDbWeight::get().reads(9_u64))
+			.saturating_add(RocksDbWeight::get().writes(8_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobSpecs` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobSpecs` (`max_values`: None, `max_size`: Some(297), added: 2772, mode: `MaxEncodedLen`)
@@ -644,6 +649,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution_with_payee(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `3591 + e * (12 ±0) + n * (8 ±0)`
@@ -656,8 +662,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(80_768, 0).saturating_mul(e.into()))
 			// Standard Error: 4_214_491
 			.saturating_add(Weight::from_parts(94_464_281, 0).saturating_mul(s.into()))
-			.saturating_add(RocksDbWeight::get().reads(8_u64))
-			.saturating_add(RocksDbWeight::get().writes(8_u64))
+			.saturating_add(RocksDbWeight::get().reads(9_u64))
+			.saturating_add(RocksDbWeight::get().writes(9_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -678,6 +684,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution_replacement(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -690,8 +697,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(80_037, 0).saturating_mul(e.into()))
 			// Standard Error: 4_248_144
 			.saturating_add(Weight::from_parts(97_602_727, 0).saturating_mul(s.into()))
-			.saturating_add(RocksDbWeight::get().reads(8_u64))
-			.saturating_add(RocksDbWeight::get().writes(6_u64))
+			.saturating_add(RocksDbWeight::get().reads(9_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -712,6 +719,7 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[2, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 20]`.
+	// BENCHMARK-PLACEHOLDER(W3-001): the NextSubmissionSeq read and write (ordering key) added by hand to the measured counts (+1 read, +1 write); regenerate (benchmark-weights job).
 	fn submit_solution_clear_payee(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `0 + e * (12 ±0) + n * (28 ±0) + s * (5002 ±0)`
@@ -724,8 +732,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(79_897, 0).saturating_mul(e.into()))
 			// Standard Error: 4_258_856
 			.saturating_add(Weight::from_parts(97_442_359, 0).saturating_mul(s.into()))
-			.saturating_add(RocksDbWeight::get().reads(8_u64))
-			.saturating_add(RocksDbWeight::get().writes(6_u64))
+			.saturating_add(RocksDbWeight::get().reads(9_u64))
+			.saturating_add(RocksDbWeight::get().writes(7_u64))
 	}
 	/// Storage: `QuantumComputeMempool::JobOrders` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::JobOrders` (`max_values`: None, `max_size`: Some(640946), added: 643421, mode: `MaxEncodedLen`)

@@ -236,7 +236,12 @@ fn seed_answer_index<T: Config>(order_id: u64) {
         OrderAnswers::<T>::insert(
             order_id,
             synthetic_answer(index),
-            account::<T::AccountId>("indexed-solver", index, 0),
+            types::AnswerOwner {
+                solver: account::<T::AccountId>("indexed-solver", index, 0),
+                best_energy_milli: 0,
+                effective_at: Zero::zero(),
+                seq: index,
+            },
         );
     }
 }
@@ -402,6 +407,8 @@ fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::Accoun
                 solver: winner.clone(),
                 energy_milli: -i64::from(winner_count) + index as i64,
                 answer: synthetic_answer(index as u32),
+                effective_at: Zero::zero(),
+                seq: index as u32,
             })
             .collect(),
     );
@@ -500,6 +507,8 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
                 solver: account("ranked-solver", index, 0),
                 energy_milli: old_energy + i64::from(index),
                 answer: synthetic_answer(index),
+                effective_at: Zero::zero(),
+                seq: index,
             })
             .collect(),
     );
@@ -640,6 +649,8 @@ mod benchmarks {
                     solver: account("ranked-solver", index, 0),
                     energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
                     answer: synthetic_answer(index),
+                    effective_at: Zero::zero(),
+                    seq: index,
                 })
                 .collect(),
         );
@@ -723,6 +734,8 @@ mod benchmarks {
                     solver: account("ranked-solver", index, 0),
                     energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
                     answer: synthetic_answer(index),
+                    effective_at: Zero::zero(),
+                    seq: index,
                 })
                 .collect(),
         );
@@ -1089,6 +1102,8 @@ mod benchmarks {
                 types::FrontRunner {
                     solver: first.clone(),
                     energy_milli: -1,
+                    effective_at: Zero::zero(),
+                    seq: 0,
                 },
             );
             OrderPayeeRequirements::<T>::insert(id, 20033);
@@ -1096,7 +1111,16 @@ mod benchmarks {
             OrdersPrunableAt::<T>::insert(now, id, ());
             for (winner_index, winner) in (0u32..).zip(&winners) {
                 // Defensive cleanup also covers a full answer index (W1-012).
-                OrderAnswers::<T>::insert(id, synthetic_answer(winner_index), winner);
+                OrderAnswers::<T>::insert(
+                    id,
+                    synthetic_answer(winner_index),
+                    types::AnswerOwner {
+                        solver: winner.clone(),
+                        best_energy_milli: -1,
+                        effective_at: order.created_at,
+                        seq: winner_index,
+                    },
+                );
                 OrderPayees::<T>::insert(
                     id,
                     winner,
@@ -1120,6 +1144,8 @@ mod benchmarks {
                         num_valid: T::MaxSolutions::get(),
                         submitted_at: order.created_at,
                         answer: synthetic_answer(winner_index),
+                        effective_at: order.created_at,
+                        seq: winner_index,
                     },
                 );
             }

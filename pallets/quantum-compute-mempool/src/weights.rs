@@ -24,9 +24,10 @@ pub fn solution_pruning_weight<T: crate::Config>() -> Weight {
 fn solution_pruning_weight_with(db: RuntimeDbWeight) -> Weight {
     let cap = u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER);
     // OrderSolutions and the OrderAnswers index (W1-012), each at most `cap`
-    // entries per order and cleared in the same step.
+    // entries per order and cleared in the same step, and the order's
+    // NextSubmissionSeq counter (W3-001).
     Weight::from_parts(100_000_000, SOLUTION_PRUNING_PROOF_FLOOR)
-        .saturating_add(db.reads_writes(2 * cap + 2, 2 * cap))
+        .saturating_add(db.reads_writes(2 * cap + 2, 2 * cap + 1))
 }
 
 /// Unmeasured registration reserve/refund allowance pending reference weights.

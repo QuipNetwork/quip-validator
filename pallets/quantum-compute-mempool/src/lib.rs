@@ -67,7 +67,7 @@ type SolutionsOf<T> = frame_support::pallet_prelude::BoundedVec<
 type ProposerOrdersOf<T> =
     frame_support::pallet_prelude::BoundedVec<u64, <T as Config>::MaxOrdersPerProposer>;
 type TopSolversOf<T> = frame_support::pallet_prelude::BoundedVec<
-    types::RankedSolver<AccountIdOf<T>>,
+    types::RankedSolver<AccountIdOf<T>, BlockNumberOf<T>>,
     frame_support::traits::ConstU32<{ types::MAX_REWARD_WINNERS }>,
 >;
 type IsingParamsOf<T> = types::IsingParams<NodesOf<T>, EdgesOf<T>, FieldsOf<T>, CouplingsOf<T>>;
@@ -84,7 +84,8 @@ type JobOrderOf<T> = types::JobOrder<
 >;
 type JobSolutionOf<T> = types::JobSolution<AccountIdOf<T>, BlockNumberOf<T>, SolutionsOf<T>>;
 type SolverInfoOf<T> = types::SolverInfo<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
-type FrontRunnerOf<T> = types::FrontRunner<AccountIdOf<T>>;
+type FrontRunnerOf<T> = types::FrontRunner<AccountIdOf<T>, BlockNumberOf<T>>;
+type AnswerOwnerOf<T> = types::AnswerOwner<AccountIdOf<T>, BlockNumberOf<T>>;
 type WinnerSummariesOf<T> = frame_support::pallet_prelude::BoundedVec<
     types::WinnerSummary<AccountIdOf<T>, BalanceOf<T>>,
     frame_support::traits::ConstU32<{ types::MAX_REWARD_WINNERS }>,
@@ -176,7 +177,7 @@ sp_api::decl_runtime_apis! {
 
         /// Current ranked solver list for Top-N settlement modes. Empty for
         /// unknown orders and for SingleBest orders.
-        fn order_top_solvers(order_id: u64) -> Vec<crate::types::RankedSolver<AccountId>>;
+        fn order_top_solvers(order_id: u64) -> Vec<crate::types::RankedSolver<AccountId, BlockNumber>>;
     }
 }
 
@@ -397,8 +398,18 @@ pub mod pallet {
     /// solutions. Makes the duplicate-answer check a single read instead of a
     /// scan of the (large) solution payloads.
     #[pallet::storage]
-    pub type OrderAnswers<T: Config> =
-        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, sp_core::H256, T::AccountId>;
+    ///
+    /// The value is the answer's owner with its energy and ordering key
+    /// (W3-001), so a contested answer and a ranking recompute read no
+    /// payloads.
+    pub type OrderAnswers<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        sp_core::H256,
+        AnswerOwnerOf<T>,
+    >;
 
     /// Immutable destination chain required by a native proposal; no payment activation.
     #[pallet::storage]
@@ -443,6 +454,11 @@ pub mod pallet {
     /// unreserved, exactly this amount, when the order is pruned.
     #[pallet::storage]
     pub type OrderDeposit<T: Config> = StorageMap<_, Blake2_128Concat, u64, BalanceOf<T>>;
+
+    /// Each open order's arrival counter (W3-001 N2): the `seq` of its next
+    /// accepted submission. Cleared with the order's solutions.
+    #[pallet::storage]
+    pub type NextSubmissionSeq<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -1147,7 +1163,9 @@ pub mod pallet {
             JobOrders::<T>::get(order_id)
         }
 
-        pub fn order_top_solvers(order_id: u64) -> Vec<types::RankedSolver<T::AccountId>> {
+        pub fn order_top_solvers(
+            order_id: u64,
+        ) -> Vec<types::RankedSolver<T::AccountId, BlockNumberFor<T>>> {
             OrderTopSolvers::<T>::get(order_id).to_vec()
         }
 
@@ -1732,16 +1750,32 @@ pub mod pallet {
                 .map_err(Self::map_validation_error)?;
             let answer = sp_core::H256(sp_core::hashing::blake2_256(&canonical.encode()));
             ensure!(
-                OrderAnswers::<T>::get(order_id, answer).is_none_or(|owner| owner == solver),
+                OrderAnswers::<T>::get(order_id, answer).is_none_or(|owner| owner.solver == solver),
                 Error::<T>::DuplicateAnswer
             );
+
+            // W3-001: the ordering key. Uncommitted, so the effective time is
+            // the arrival block (a revealed commitment, B5d, will set it
+            // earlier); `seq` is the order's arrival counter (N2).
+            let effective_at = now;
+            let seq = NextSubmissionSeq::<T>::get(order_id);
+            NextSubmissionSeq::<T>::insert(order_id, seq.saturating_add(1));
 
             let is_new_solver = previous.is_none();
             // Keep exactly one index entry per solver: its current answer.
             if let Some(previous) = previous.as_ref() {
                 OrderAnswers::<T>::remove(order_id, previous.answer);
             }
-            OrderAnswers::<T>::insert(order_id, answer, &solver);
+            OrderAnswers::<T>::insert(
+                order_id,
+                answer,
+                AnswerOwnerOf::<T> {
+                    solver: solver.clone(),
+                    best_energy_milli: best_energy,
+                    effective_at,
+                    seq,
+                },
+            );
             OrderSolutions::<T>::insert(
                 order_id,
                 &solver,
@@ -1754,6 +1788,8 @@ pub mod pallet {
                     num_valid: selected_solutions.len() as u32,
                     submitted_at: now,
                     answer,
+                    effective_at,
+                    seq,
                 },
             );
 
@@ -1789,7 +1825,15 @@ pub mod pallet {
                 });
             }
 
-            Self::update_ranking(order_id, &order.resolution, &solver, best_energy, answer)?;
+            Self::update_ranking(
+                order_id,
+                &order.resolution,
+                &solver,
+                best_energy,
+                answer,
+                effective_at,
+                seq,
+            )?;
             if OrderPayees::<T>::get(order_id, &solver) != payee {
                 match payee {
                     Some(destination) => OrderPayees::<T>::insert(order_id, &solver, destination),
@@ -2176,29 +2220,38 @@ pub mod pallet {
             // bound clears it in the same step (W1-012).
             let _ =
                 OrderAnswers::<T>::clear_prefix(order_id, types::MAX_SOLVERS_PER_OPEN_ORDER, None);
+            // W3-001: the arrival counter is only needed while the order is open.
+            NextSubmissionSeq::<T>::remove(order_id);
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn update_ranking(
             order_id: u64,
             resolution: &types::RewardResolution,
             solver: &T::AccountId,
             best_energy: i64,
             answer: sp_core::H256,
+            effective_at: BlockNumberFor<T>,
+            seq: u32,
         ) -> Result<(), DispatchError> {
             match resolution {
                 types::RewardResolution::SingleBest => {
+                    let candidate = FrontRunnerOf::<T> {
+                        solver: solver.clone(),
+                        energy_milli: best_energy,
+                        effective_at,
+                        seq,
+                    };
+                    // W3-001: lower energy, or equal energy with an earlier
+                    // effective time (then arrival). An uncommitted submission
+                    // arrives after the front runner, so it still needs a
+                    // strictly lower energy.
                     let should_replace = OrderFrontRunner::<T>::get(order_id)
-                        .map(|entry| best_energy < entry.energy_milli)
+                        .map(|entry| candidate.rank_key() < entry.rank_key())
                         .unwrap_or(true);
 
                     if should_replace {
-                        OrderFrontRunner::<T>::insert(
-                            order_id,
-                            FrontRunnerOf::<T> {
-                                solver: solver.clone(),
-                                energy_milli: best_energy,
-                            },
-                        );
+                        OrderFrontRunner::<T>::insert(order_id, candidate);
                         Self::deposit_event(Event::FrontRunnerChanged {
                             order_id,
                             solver: solver.clone(),
@@ -2218,6 +2271,8 @@ pub mod pallet {
                             solver: solver.clone(),
                             energy_milli: best_energy,
                             answer,
+                            effective_at,
+                            seq,
                         },
                         *n as usize,
                     );
