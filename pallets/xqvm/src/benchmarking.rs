@@ -137,7 +137,8 @@ fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
         shape.loop_depth as usize, nesting,
         "shape must nest as computed"
     );
-    xqvm::checker::check(&decoded).expect("nested loops around unreferenced TARGETs verify");
+    crate::structural_gate(&decoded)
+        .expect("nested loops around unreferenced TARGETs pass the gate");
     bytes
 }
 

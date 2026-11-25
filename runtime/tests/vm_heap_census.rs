@@ -598,9 +598,9 @@ impl Chain {
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
-            let verdict = xqvm::checker::check(&program);
+            let verdict = pallet_xqvm::structural_gate(&program);
             println!(
-                "program {name}: {} bytes, verifier {}",
+                "program {name}: {} bytes, structural gate {}",
                 bytes.len(),
                 if verdict.is_ok() {
                     "accepts"
@@ -1478,8 +1478,9 @@ fn e_largest_legitimate_run() {
     // canonical, and runs to completion on chain.
     let synthetic = prog_linear();
     assert!(
-        xqvm::checker::check(&xqvm::Program::decode(&synthetic).expect("linear decodes")).is_ok(),
-        "the synthetic program must verify"
+        pallet_xqvm::structural_gate(&xqvm::Program::decode(&synthetic).expect("linear decodes"))
+            .is_ok(),
+        "the synthetic program must pass the structural gate"
     );
     let n: i64 = 4096;
     let (_, applied) = chain.author(vec![chain.execute("linear", &[n], ms)]);
@@ -1506,7 +1507,7 @@ fn e_largest_legitimate_run() {
         "conformance fixture must be non-empty"
     );
     assert!(
-        xqvm::checker::check(&xqvm::Program::new(fixture_bytes)).is_err(),
+        pallet_xqvm::structural_gate(&xqvm::Program::new(fixture_bytes)).is_err(),
         "kimi-spine-control.bin is a control-flow stress stream: wrapping it must be \
          rejected by the verifier, not run as a program"
     );
@@ -1636,8 +1637,8 @@ fn i_worst_case_fixed_run() {
         );
         assert_eq!(program.encode(), bytes, "{name}: canonical");
         assert!(
-            xqvm::checker::check(&program).is_ok(),
-            "{name}: the verifier admits it"
+            pallet_xqvm::structural_gate(&program).is_ok(),
+            "{name}: the structural gate admits it"
         );
         let shape = pallet_xqvm::ControlFlowShape::of(program.code());
         assert!(
@@ -1727,7 +1728,7 @@ fn i_worst_case_fixed_run() {
     ] {
         let program = xqvm::Program::decode(&bytes).expect("decodes");
         assert_eq!(
-            xqvm::checker::check(&program)
+            pallet_xqvm::structural_gate(&program)
                 .err()
                 .map(|e| e.variant_name()),
             Some("JumpAcrossLoopBoundary"),

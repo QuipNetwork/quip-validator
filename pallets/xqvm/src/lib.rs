@@ -4,6 +4,21 @@ extern crate alloc;
 
 pub use pallet::*;
 
+/// The structural gate `store_program` runs (QUI-2516): loop nesting must
+/// balance and no jump may cross a loop-body boundary (W1-011). With both, the
+/// run-time loop stack equals the lexical nesting at every pc, so
+/// `MaxLoopDepth` bounds the loop frames a run can hold.
+///
+/// Public so the runtime's VM-memory census and the benchmarks check exactly
+/// what admission runs, not xqvm's full checker.
+pub fn structural_gate(program: &xqvm::Program) -> Result<(), xqvm::CheckerError> {
+    use xqvm::checker::{Checker, JumpSpanPhase, LoopNestingPhase};
+    Checker::new()
+        .with_phase(LoopNestingPhase)
+        .with_phase(JumpSpanPhase)
+        .run(program)
+}
+
 #[cfg(test)]
 mod mock;
 
@@ -28,7 +43,6 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::{Hash as _, Saturating};
 
-    use xqvm::checker::{Checker, JumpSpanPhase, LoopNestingPhase};
     use xqvm::{Program, RegVal, Vm};
 
     /// The storage layout this code expects: `Programs`, `ProgramOwner` and
@@ -619,11 +633,7 @@ pub mod pallet {
             // the loop frames a run can hold. Both passes are lexical and
             // linear. Register, stack and type properties are left to the VM,
             // which faults on them at `execute` with the caller paying.
-            Checker::new()
-                .with_phase(LoopNestingPhase)
-                .with_phase(JumpSpanPhase)
-                .run(&program)
-                .map_err(|e| map_structural_error::<T>(&e))?;
+            crate::structural_gate(&program).map_err(|e| map_structural_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);
             ensure!(
