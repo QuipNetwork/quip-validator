@@ -40,6 +40,14 @@ pub fn schedule_order_pruning_weight<T: crate::Config>() -> Weight {
     Weight::from_parts(50_000_000, 10_000).saturating_add(T::DbWeight::get().reads_writes(2, 2))
 }
 
+/// Lazy finalisation in `claim_reward`/`reclaim_order` (W3-006, design §B4 v2
+/// item 3): one measured `finalise_order` at maximum size (`CallbackWithPoll`,
+/// all winners) plus removing the order's `OrdersExpiringAt` key.
+pub fn lazy_finalisation_weight<T: crate::Config>() -> Weight {
+    <<T as crate::Config>::WeightInfo as WeightInfo>::finalise_expired_orders(1)
+        .saturating_add(T::DbWeight::get().writes(1))
+}
+
 /// Conservative unmeasured cleanup bound, including empty-bucket traversal.
 pub fn closed_order_pruning_weight<T: crate::Config>(orders: u32, buckets: u64) -> Weight {
     closed_order_pruning_weight_with(T::DbWeight::get(), orders, buckets)

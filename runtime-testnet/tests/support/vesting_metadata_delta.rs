@@ -291,6 +291,35 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-006 B4c (minimum deadline). Exact delta: the `DeadlineTooShort` error
+// appended directly after B4a's `DepositNotAvailable`. Runs before
+// `normalize_order_deposit`, which expects its own error last.
+const DEADLINE_TOO_SHORT_DOCS: &[&str] = &["`deadline_blocks` must be at least 1 (W3-006)."];
+
+fn normalize_deadline_too_short(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    if mempool_variants(before, "error")?
+        .iter()
+        .any(|v| v["name"] == "DeadlineTooShort")
+    {
+        return Err("unexpected baseline mempool DeadlineTooShort".into());
+    }
+    let errors = mempool_variants(after, "error")?;
+    let len = errors.len();
+    let want = serde_json::json!({
+        "docs": DEADLINE_TOO_SHORT_DOCS,
+        "index": len.saturating_sub(1),
+        "name": "DeadlineTooShort",
+    });
+    if len < 2 || errors[len - 2]["name"] != "DepositNotAvailable" || errors.last() != Some(&want) {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool DeadlineTooShort: {}",
+            serde_json::to_string(&errors.last()).unwrap_or_default()
+        ));
+    }
+    errors.pop();
+    Ok(())
+}
+
 fn normalize_order_deposit(before: &mut Value, after: &mut Value) -> Result<(), String> {
     let has = |list: &[Value], name: &str| list.iter().any(|v| v["name"] == name);
     if has(mempool_constants(before)?, "OrderDepositPerItem")
@@ -2094,7 +2123,8 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
             ));
         }
     }
-    // First: W3-006 appends after every other mempool delta.
+    // First: W3-006 appends after every other mempool delta, B4c last.
+    normalize_deadline_too_short(&mut left, &mut right)?;
     normalize_order_deposit(&mut left, &mut right)?;
     normalize_audit_retention(&mut left, &mut right)?;
     normalize_audit_expiry_storage(&mut left, &mut right)?;
@@ -2767,6 +2797,35 @@ mod tests {
             check(&before, &wrong_type).is_err(),
             "accepted a different value type"
         );
+    }
+
+    #[test]
+    fn requires_exact_mempool_deadline_too_short() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        for field in ["docs", "name", "index"] {
+            let mut wrong = after.clone();
+            mempool_variants(&mut wrong, "error")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "DeadlineTooShort")
+                .unwrap()[field] = Value::from(999);
+            cases.push((format!("DeadlineTooShort.{field}"), wrong));
+        }
+        let mut missing = after.clone();
+        mempool_variants(&mut missing, "error")
+            .unwrap()
+            .retain(|v| v["name"] != "DeadlineTooShort");
+        cases.push(("missing DeadlineTooShort".into(), missing));
+        let mut misplaced = after.clone();
+        let errors = mempool_variants(&mut misplaced, "error").unwrap();
+        let len = errors.len();
+        errors.swap(len - 1, len - 2);
+        cases.push(("misplaced DeadlineTooShort".into(), misplaced));
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

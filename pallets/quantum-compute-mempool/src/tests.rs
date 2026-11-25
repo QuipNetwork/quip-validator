@@ -1583,10 +1583,27 @@ fn propose_job_schedules_expiry_at_hard_deadline() {
     });
 }
 
+/// W3-006: `deadline_blocks` is at least 1, so an order is never due in the
+/// block it was proposed in; the minimum lands in the next block's bucket.
 #[test]
-fn propose_job_with_zero_deadline_schedules_next_block() {
+fn propose_job_rejects_a_zero_deadline_and_schedules_the_minimum_next_block() {
     new_test_ext().execute_with(|| {
-        let order_id = propose_single_best(1, 0, 0);
+        let spec_id = register_spec();
+        assert_noop!(
+            QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec_id,
+                sample_params(),
+                100,
+                JobMode::Open,
+                RewardResolution::SingleBest,
+                0,
+                0,
+                ResultDelivery::OnChainOnly,
+            ),
+            crate::Error::<Test>::DeadlineTooShort
+        );
+        let order_id = propose_single_best(1, 1, 0);
         assert_eq!(bucket_ids(1), Vec::<u64>::new());
         assert_eq!(bucket_ids(2), vec![order_id]);
     });
@@ -1808,8 +1825,11 @@ fn on_initialize_visits_at_most_eight_buckets_per_block_and_resumes() {
     });
 }
 
+/// W3-006 (design §B4 v2 item 3): a due order the backlogged queue has not
+/// reached is finalised by `reclaim_order` itself -- auto-closed, refunded,
+/// `Ok` -- and the queue does not touch it again.
 #[test]
-fn reclaim_order_waits_for_finalisation_under_backlog() {
+fn reclaim_order_finalises_a_due_order_lazily_under_backlog() {
     new_test_ext().execute_with(|| {
         let ids = propose_nine_orders_expiring_at_block_2();
         run_to_block(2);
@@ -1817,24 +1837,42 @@ fn reclaim_order_waits_for_finalisation_under_backlog() {
             .iter()
             .find(|id| JobOrders::<Test>::get(**id).unwrap().status == OrderStatus::Opened)
             .unwrap();
-        let proposer = JobOrders::<Test>::get(lagging).unwrap().proposer;
-
-        assert_noop!(
-            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(proposer), lagging),
-            crate::Error::<Test>::OrderNotExpired
+        let order = JobOrders::<Test>::get(lagging).unwrap();
+        let bucket = QuantumComputeMempool::bucket_of(&order);
+        assert!(
+            OrdersExpiringAt::<Test>::contains_key(bucket, lagging),
+            "queued"
         );
 
-        run_to_block(3);
-        // W3-006: finalisation refunded and closed it; nothing to reclaim.
+        System::reset_events();
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(order.proposer),
+            lagging
+        ));
         assert_eq!(
             JobOrders::<Test>::get(lagging).unwrap().status,
             OrderStatus::Closed
         );
         assert_eq!(escrow_balance(lagging), 0);
-        assert_noop!(
-            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(proposer), lagging),
-            crate::Error::<Test>::AlreadyClaimed
-        );
+        assert!(!OrdersExpiringAt::<Test>::contains_key(bucket, lagging));
+        let reclaimed = || {
+            System::events()
+                .into_iter()
+                .filter(|record| {
+                    matches!(
+                        record.event,
+                        RuntimeEvent::QuantumComputeMempool(
+                            QuantumComputeMempoolEvent::RewardReclaimed { order_id, .. }
+                        ) if order_id == lagging
+                    )
+                })
+                .count()
+        };
+        assert_eq!(reclaimed(), 1);
+
+        run_to_block(3);
+        assert_eq!(reclaimed(), 1, "the queue does not finalise it again");
+        assert_eq!(status_count(&ids, OrderStatus::Closed), 9);
     });
 }
 
@@ -4672,6 +4710,179 @@ mod w3_006_auto_close {
                     8,
                 ));
             assert!(charged.all_gte(floor), "charged {charged:?} < {floor:?}");
+        });
+    }
+}
+
+/// W3-006 (design §B4 v2 item 3) -- lazy finalisation via `bucket_of`.
+mod w3_006_lazy {
+    use super::*;
+
+    fn order(id: u64) -> crate::JobOrderOf<Test> {
+        JobOrders::<Test>::get(id).unwrap()
+    }
+
+    /// The order's only queue key, wherever it is.
+    fn queued_at(id: u64) -> Vec<u64> {
+        OrdersExpiringAt::<Test>::iter_keys()
+            .filter(|(_, order_id)| *order_id == id)
+            .map(|(bucket, _)| bucket)
+            .collect()
+    }
+
+    fn solver() {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+    }
+
+    fn solve(id: u64) {
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            id,
+            sample_solution()
+        ));
+    }
+
+    /// `bucket_of` names the order's queue key in every scheduling case, and
+    /// never depends on the current block.
+    #[test]
+    fn bucket_of_names_the_queue_key_in_every_case() {
+        new_test_ext().execute_with(|| {
+            solver();
+            // (deadline, block_wait, solved at, expected bucket); proposed at 1.
+            let cases = [
+                // Unsolved: the hard deadline E = 1 + 5.
+                (5, 3, None, 6),
+                // Solved at 2, closes_at = 4 < hard 6: E = 4.
+                (5, 2, Some(2), 4),
+                // Solved at 2 with block_wait 0: E = 2, scheduled at 2 + 1.
+                (5, 0, Some(2), 3),
+                // Solved at 2, closes_at = min(6, 2 + 9) = hard: unmoved, E = 6.
+                (5, 9, Some(2), 6),
+            ];
+            let mut ids = Vec::new();
+            for (deadline, wait, _, _) in cases {
+                ids.push(propose_single_best(1, deadline, wait));
+            }
+            System::set_block_number(2);
+            for (&id, (_, _, solved_at, _)) in ids.iter().zip(cases) {
+                if solved_at.is_some() {
+                    solve(id);
+                }
+            }
+            for later in [2, 50] {
+                System::set_block_number(later);
+                for (&id, (_, _, _, expected)) in ids.iter().zip(cases) {
+                    assert_eq!(queued_at(id), vec![expected], "order {id}");
+                    assert_eq!(QuantumComputeMempool::bucket_of(&order(id)), expected);
+                }
+            }
+        });
+    }
+
+    /// `reclaim_order` on a due unsolved order the queue has not reached (no
+    /// hooks run): finalised inline, auto-closed, refunded, `Ok`, key gone.
+    #[test]
+    fn lazy_reclaim_returns_ok_after_the_inline_auto_close() {
+        new_test_ext().execute_with(|| {
+            let id = propose_single_best(1, 1, 1);
+            let after_posting = Balances::free_balance(1);
+            let bucket = QuantumComputeMempool::bucket_of(&order(id));
+            System::set_block_number(5);
+            assert!(OrdersExpiringAt::<Test>::contains_key(bucket, id));
+            assert_eq!(order(id).status, OrderStatus::Opened);
+
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+            assert_eq!(order(id).status, OrderStatus::Closed);
+            assert_eq!(Balances::free_balance(1), after_posting + 100);
+            assert!(queued_at(id).is_empty());
+            assert!(!crate::ProposerOrders::<Test>::contains_key(1));
+            assert!(crate::OrdersPrunableAt::<Test>::contains_key(
+                5 + OrderRetentionBlocks::get(),
+                id
+            ));
+        });
+    }
+
+    /// `claim_reward` on a due solved order the queue has not reached:
+    /// finalised inline to `Expired` (solutions pruned), then settled from
+    /// there in the same call.
+    #[test]
+    fn lazy_claim_continues_from_expired() {
+        new_test_ext().execute_with(|| {
+            solver();
+            let id = propose_single_best(1, 3, 1);
+            System::set_block_number(2);
+            solve(id);
+            let bucket = QuantumComputeMempool::bucket_of(&order(id));
+            assert_eq!(bucket, 3);
+            System::set_block_number(9);
+            assert!(OrdersExpiringAt::<Test>::contains_key(bucket, id));
+            let before = Balances::free_balance(2);
+            System::reset_events();
+
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
+                id
+            ));
+            assert_eq!(order(id).status, OrderStatus::Closed);
+            assert_eq!(Balances::free_balance(2), before + 100);
+            assert!(queued_at(id).is_empty());
+            assert!(crate::OrderSolutions::<Test>::iter_key_prefix(id)
+                .next()
+                .is_none());
+            let events: Vec<_> = System::events()
+                .into_iter()
+                .filter_map(|record| match record.event {
+                    RuntimeEvent::QuantumComputeMempool(event) => Some(event),
+                    _ => None,
+                })
+                .collect();
+            let expired = events
+                .iter()
+                .position(|e| matches!(e, QuantumComputeMempoolEvent::OrderExpired { .. }));
+            let closed = events
+                .iter()
+                .position(|e| matches!(e, QuantumComputeMempoolEvent::OrderClosed { .. }));
+            assert!(
+                expired.unwrap() < closed.unwrap(),
+                "finalised, then settled"
+            );
+        });
+    }
+
+    /// Wrong-kind lazy calls fail before finalising anything: the order stays
+    /// `Opened` and queued.
+    #[test]
+    fn lazy_calls_of_the_wrong_kind_change_nothing() {
+        new_test_ext().execute_with(|| {
+            solver();
+            let unsolved = propose_single_best(1, 1, 1);
+            let solved = propose_single_best(1, 2, 1);
+            System::set_block_number(2);
+            solve(solved);
+            System::set_block_number(9);
+            assert_noop!(
+                QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), unsolved),
+                crate::Error::<Test>::NoSolutionsAccepted
+            );
+            assert_noop!(
+                QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), solved),
+                crate::Error::<Test>::NoSolutionsAccepted
+            );
+            assert_noop!(
+                QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(4), unsolved),
+                crate::Error::<Test>::NotProposer
+            );
+            for id in [unsolved, solved] {
+                assert_eq!(order(id).status, OrderStatus::Opened);
+                assert_eq!(queued_at(id).len(), 1);
+            }
         });
     }
 }

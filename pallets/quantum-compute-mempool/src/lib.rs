@@ -618,6 +618,8 @@ pub mod pallet {
         DuplicateAnswer,
         /// The proposer cannot reserve the order's storage deposit (W3-006).
         DepositNotAvailable,
+        /// `deadline_blocks` must be at least 1 (W3-006).
+        DeadlineTooShort,
     }
 
     #[pallet::call]
@@ -775,11 +777,18 @@ pub mod pallet {
         /// Settle an expired solved order. Any signed account may call; rewards
         /// go only to the selected solvers, with no bounty for the caller.
         #[pallet::call_index(5)]
-        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()))]
+        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()).saturating_add(weights::lazy_finalisation_weight::<T>()))]
         pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let _caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
+            // W3-006: settle a due order without waiting for the expiry queue.
+            if Self::is_due(&order) {
+                ensure!(order.solution_count > 0, Error::<T>::NoSolutionsAccepted);
+                Self::finalise_due(order_id, &order);
+                // Continue from the finalised (`Expired`) record.
+                order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
+            }
             ensure!(
                 order.status != types::OrderStatus::Closed,
                 Error::<T>::AlreadyClaimed
@@ -888,11 +897,22 @@ pub mod pallet {
         }
 
         #[pallet::call_index(6)]
-        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()))]
+        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()).saturating_add(weights::lazy_finalisation_weight::<T>()).saturating_add(<T as Config>::WeightInfo::auto_close_unsolved(1)))]
         pub fn reclaim_order(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
             let caller = ensure_signed(origin)?;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             ensure!(order.proposer == caller, Error::<T>::NotProposer);
+            // W3-006: finalise a due order here instead of waiting for the
+            // expiry queue. Finalisation auto-closes an unsolved order (B4b),
+            // refund included: that is the reclaim, so return `Ok` and keep it.
+            if Self::is_due(&order) {
+                ensure!(order.solution_count == 0, Error::<T>::NoSolutionsAccepted);
+                Self::finalise_due(order_id, &order);
+                order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
+                if order.status == types::OrderStatus::Closed {
+                    return Ok(());
+                }
+            }
             ensure!(
                 order.status != types::OrderStatus::Closed,
                 Error::<T>::AlreadyClaimed
@@ -1256,6 +1276,9 @@ pub mod pallet {
             delivery: types::ResultDelivery,
         ) -> Result<u64, DispatchError> {
             ensure!(reward >= T::MinReward::get(), Error::<T>::RewardTooLow);
+            // W3-006: an order is due no earlier than the block after it was
+            // proposed, so its expiry bucket is derivable from it (`bucket_of`).
+            ensure!(!deadline_blocks.is_zero(), Error::<T>::DeadlineTooShort);
             ensure!(
                 deadline_blocks <= T::MaxDeadlineBlocks::get(),
                 Error::<T>::DeadlineTooLong
@@ -1804,6 +1827,44 @@ pub mod pallet {
                         .unwrap_or(0),
                 ),
             }
+        }
+
+        /// The `OrdersExpiringAt` bucket that holds an open order (W3-006, design
+        /// §B4 v2 item 3), derived from the order alone -- never from the
+        /// current block, which `expiry_bucket` reads. The order was scheduled
+        /// at `expiry_bucket(E)` in the block of its last (re)scheduling: its
+        /// proposal (`created_at`), or its first solution when that moved it
+        /// earlier. That is `max(E, anchor + 1)`, with `anchor` the first
+        /// solution's block if there is one and `created_at` otherwise. (When a
+        /// first solution does not move it, `E` is the hard deadline, which
+        /// already exceeds both anchors.) With `block_wait = 0` this is `E + 1`.
+        pub(crate) fn bucket_of(order: &JobOrderOf<T>) -> BlockNumberFor<T> {
+            let expiry = lifecycle::effective_expiry(
+                order.created_at,
+                order.first_solution_at,
+                &order.timing,
+            );
+            let anchor = order.first_solution_at.unwrap_or(order.created_at);
+            expiry.max(anchor.saturating_add(One::one()))
+        }
+
+        /// An `Opened` order at or past its effective expiry, which the expiry
+        /// queue may not have reached yet.
+        fn is_due(order: &JobOrderOf<T>) -> bool {
+            order.status == types::OrderStatus::Opened
+                && lifecycle::is_expired(
+                    frame_system::Pallet::<T>::block_number(),
+                    order.created_at,
+                    order.first_solution_at,
+                    &order.timing,
+                )
+        }
+
+        /// Lazy finalisation (W3-006): take a due order out of its expiry
+        /// bucket and finalise it now, exactly as the queue would.
+        fn finalise_due(order_id: u64, order: &JobOrderOf<T>) {
+            OrdersExpiringAt::<T>::remove(Self::bucket_of(order), order_id);
+            Self::finalise_order(order_id);
         }
 
         /// Block whose `on_initialize` must finalise an order with `expiry`.
