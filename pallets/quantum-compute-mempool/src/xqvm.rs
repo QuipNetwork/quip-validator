@@ -2,9 +2,11 @@
 //!
 //! None/None specs are inert. Referenced transform programs execute on chain;
 //! changes to their semantics require a runtime change, not an operational update.
-//! Validation programs are checked at registration but never executed on the
-//! summary-only reward path. Extending that payload and metering it is a future
-//! owner decision.
+//! At registration a referenced program must exist and decode; its structure
+//! was checked when the program source admitted it, and a fault the program
+//! raises at run time rejects the submission, charged for the steps used.
+//! Validation programs are never executed on the summary-only reward path.
+//! Extending that payload and metering it is a future owner decision.
 
 use alloc::vec::Vec;
 
@@ -15,7 +17,8 @@ use crate::types::WinnerSummary;
 /// Mempool-owned integration contract; runtimes bridge it to program storage.
 /// The mempool does not depend on the pallet that owns the program bytes.
 pub trait QuantumVm<AccountId, Balance, Hash> {
-    /// Validate referenced validation/transform programs when a job spec is registered.
+    /// Check that the referenced validation/transform programs exist and decode
+    /// when a job spec is registered.
     fn validate_programs(
         validation_program: Option<&Hash>,
         transform_program: Option<&Hash>,
@@ -31,7 +34,7 @@ pub trait QuantumVm<AccountId, Balance, Hash> {
     ) -> TransformOutcome;
 
     /// The payload contains solver, energy and amount, not spins. This slice
-    /// executes no validation program here: it is verified at registration only.
+    /// executes no validation program here: it is checked at registration only.
     /// Spin validation belongs to `transform_solutions`. Executing validation
     /// programs requires an owner-approved payload extension and metering.
     fn validate_result(
@@ -43,8 +46,8 @@ pub trait QuantumVm<AccountId, Balance, Hash> {
 }
 
 /// Source of immutable, content-addressed program bytes. Implementations must
-/// bound byte size and verifier control-flow complexity before admitting bytes
-/// to storage, and supply weights covering their lookup/decode/verification bounds.
+/// bound byte size and control-flow shape (basic blocks, loop depth) before
+/// admitting bytes to storage, and supply weights covering lookup and decode.
 /// Runtime wiring reads pallet-xqvm storage; the mempool owns no program storage.
 pub trait ProgramLookup<Hash> {
     fn program(hash: &Hash) -> Option<Vec<u8>>;
@@ -70,10 +73,10 @@ impl<T: crate::Config> QuantumVm<T::AccountId, crate::BalanceOf<T>, T::Hash> for
         {
             let bytes =
                 T::ProgramSource::program(hash).ok_or(crate::Error::<T>::VmProgramNotFound)?;
-            let program =
-                ::xqvm::Program::decode(&bytes).map_err(|_| crate::Error::<T>::VmBadBytecode)?;
-            ::xqvm::checker::check(&program)
-                .map_err(|_| crate::Error::<T>::VmVerificationFailed)?;
+            // QUI-2516: existence and decode only. The program source's
+            // structural gate admitted the bytes; anything else a program
+            // gets wrong faults when it runs, and the submitter pays.
+            ::xqvm::Program::decode(&bytes).map_err(|_| crate::Error::<T>::VmBadBytecode)?;
         }
         Ok(())
     }

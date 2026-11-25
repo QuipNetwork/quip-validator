@@ -83,19 +83,16 @@ fn base_weight() -> frame_support::weights::Weight {
 }
 
 #[test]
-fn registration_rejects_absent_bad_and_unverified_programs_without_changes() {
+fn registration_rejects_absent_and_undecodable_programs_without_changes() {
     new_test_ext().execute_with(|| {
         use_real_vm();
         let bad = store(&[1, 2, 3]);
-        // Well-formed container, but NEG has no stack operand.
-        let rejected = store(&Program::new(vec![0x27, 0xFF]).encode());
         for (hash, error) in [
             (
                 sp_core::H256::repeat_byte(99),
                 Error::<Test>::VmProgramNotFound,
             ),
             (bad, Error::<Test>::VmBadBytecode),
-            (rejected, Error::<Test>::VmVerificationFailed),
         ] {
             let error: sp_runtime::DispatchError = error.into();
             for validation in [false, true] {
@@ -117,6 +114,47 @@ fn registration_rejects_absent_bad_and_unverified_programs_without_changes() {
                 );
             }
         }
+    });
+}
+
+/// QUI-2516: registration no longer re-runs the checker. A program the full
+/// checker refused (NEG with no stack operand) registers as either kind of
+/// program; as a transform it faults when a solution is submitted, and that
+/// submission is rejected and charged for the steps it used, like any other
+/// transform fault.
+#[test]
+fn registration_accepts_a_checker_refused_program_and_its_fault_is_charged() {
+    let program = Program::new(vec![0x27, 0xFF]).encode();
+    assert!(::xqvm::checker::check(&Program::decode(&program).unwrap()).is_err());
+    new_test_ext().execute_with(|| {
+        use_real_vm();
+        let hash = store(&program);
+        assert_ok!(QuantumComputeMempool::register_job_spec(
+            RuntimeOrigin::root(),
+            1,
+            bounded(b"validation".to_vec()),
+            Formulation::Ising,
+            Some(hash),
+            None
+        ));
+        let spec = register_program_spec(hash);
+        setup(spec);
+        let steps = run_steps(&program, vec![1, 1], MaxTransformSteps::get());
+        assert!(steps > 0);
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution())
+                .map_err(|error| error.error),
+            Error::<Test>::VmExecutionFailed
+        );
+        let failure =
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution())
+                .unwrap_err();
+        assert_eq!(
+            failure.post_info.actual_weight,
+            Some(
+                base_weight().saturating_add(QuantumComputeMempool::transform_weight(steps, true))
+            )
+        );
     });
 }
 
@@ -385,7 +423,7 @@ fn default_spec_is_byte_identical_to_identity_vm() {
 }
 
 #[test]
-fn validation_program_is_verified_but_never_executed_at_reward_validation() {
+fn validation_program_is_checked_but_never_executed_at_reward_validation() {
     new_test_ext().execute_with(|| {
         let program = bytes(|b| {
             b.emit_push(1).emit_push(0).emit_div();

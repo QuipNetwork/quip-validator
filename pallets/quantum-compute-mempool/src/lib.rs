@@ -2,8 +2,8 @@
 
 //! Registered transforms execute on chain before scoring and are part of
 //! consensus. Default specs without programs are inert. Validation programs
-//! are verified at registration only: winner summaries contain no spins, so
-//! reward validation executes nothing. Extending that payload and metering its
+//! are checked at registration only (they must exist and decode): winner
+//! summaries contain no spins, so reward validation executes nothing. Extending that payload and metering its
 //! validation requires a separate owner decision.
 //!
 //! Store the transform program first from a team-controlled account and
