@@ -3093,10 +3093,11 @@ fn f_non_vm_baseline_submit_proof() {
 // Combined end-to-end regression (owner/architect required). ONE importer
 // block at the shipped 1 MiB cap carrying, together: the mixed-family order
 // sweep (samples across orders + SETLINE/SETQUAD BTreeMap-node runs +
-// vec+EQUALITY), the ~2 MiB signed remark applied under a fresh nonce, and
+// vec+EQUALITY), the ~2 MiB signed remark (payload 2 MiB + 1 KiB, past the
+// 2 MiB payload cliff) applied under a fresh nonce, and
 // 2,049-byte-body fillers as far as weight/length allow. Asserts the block
 // imports and prints the measured high-water against the pinned budget sum
-// (`vm_importer_budget()`, 70 MiB at the shipped 1 MiB cap).
+// (`vm_importer_budget()`).
 // Also measures the mixed-family Σ at the shipped L directly (not extrapolated).
 // ---------------------------------------------------------------------------
 
@@ -3151,8 +3152,11 @@ fn g_combined_block_imports_at_cap() {
     // no future nonce behind) and finalizes to a true header, so whatever it
     // admits is by definition an authorable block that a correct importer
     // must accept. Contents: the full
-    // shipped-cap mixed-family sweep (all runs), the ~2 MiB-body signed remark
-    // (2^21+1 body, fresh nonce) and 2,049-B-body fillers up to the length cap.
+    // shipped-cap mixed-family sweep (all runs), the ~2 MiB signed remark (fresh
+    // nonce) and 2,049-B-body fillers up to the length cap. The remark's
+    // payload is 2 MiB + 1 KiB, on census d's worst plateau, past both cliffs
+    // where its copies reach the 4 MiB allocator order (A6h); until A8 it was
+    // a 2^21+1 opaque body, whose payload sat about 1.7 KB under the cliff.
     // Authored in both orders so neither the remark nor the sweep is privileged.
     let remark = |p: usize| -> RuntimeCall {
         frame_system::Call::<Runtime>::remark {
@@ -3161,7 +3165,7 @@ fn g_combined_block_imports_at_cap() {
         .into()
     };
     let body0 = opaque_body_len(&chain.sign(remark(0), 0));
-    let big_payload = (2 * MIB as usize + 1).saturating_sub(body0);
+    let big_payload = 2 * MIB as usize + 1024;
     let filler_payload = (2049usize).saturating_sub(body0);
     // More fillers than any block can hold, so the author fills the block
     // until the builder refuses (weight or length) and stops after its skip
