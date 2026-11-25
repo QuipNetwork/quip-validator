@@ -2029,25 +2029,16 @@ fn c_block_order_sweep_at_emulated_caps() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Decode-peak of an adversarial block, measured on a hand-built header.
+// 4. Block residency: valid blocks, imported through finalize (A6h).
 //
-// This block is assembled directly (header with zero state/extrinsics roots),
-// so it is NOT a valid, importable block: `Core_execute_block` rejects it at
-// `final_checks`. That is deliberate and does not weaken the measurement --
-// the SCALE decode of the `LazyBlock` argument (header + every
-// `OpaqueExtrinsic` body) happens before any check runs, so the importer
-// allocates the full decode footprint regardless. The high-water therefore
-// bounds what even an invalid block an attacker gossips makes an importer
-// allocate before it rejects it. It is the block-residency term of the heap
-// budget; it is not a claim that this block imports.
+// Until A6h this section measured hand-built or nonce-repeating blocks that
+// the importer rejects at apply or at `final_checks`. Those measure the
+// decode footprint only, and missed what `finalize` allocates (the
+// `ExtrinsicData` re-read and the extrinsics-root encoding), several MiB at
+// a full block. Census d now measures blocks the builder admitted, imported
+// through finalize, and keeps a trapped copy of each only as a decode-only
+// control.
 // ---------------------------------------------------------------------------
-
-/// Round up to the freeing-bump chunk a Vec<u8> of `len` bytes occupies:
-/// next_power_of_two(max(len, 8)) + 8-byte header, clamped at 32 MiB order.
-fn chunk_bytes(len: usize) -> u64 {
-    let n = (len.max(8) as u64).next_power_of_two().min(32 * MIB);
-    n + 8
-}
 
 /// The body length the importer actually holds per extrinsic: `OpaqueExtrinsic`
 /// stores the extrinsic body WITHOUT the outer SCALE compact length prefix
@@ -2061,13 +2052,39 @@ fn opaque_body_len(xt: &UncheckedExtrinsic) -> usize {
         .len()
 }
 
+/// Block residency, measured THROUGH FINALIZE (A6h; claude_reviewer's R8 on
+/// A6c..A6f): what a VALID block -- signed with increasing nonces, admitted by
+/// the builder, imported without a trap -- makes the importer hold. The term
+/// is `VM_BLOCK_RESIDENCY`, and this test asserts the worst shape plus 1 MiB
+/// of margin fits under it.
+///
+/// Why valid blocks: until A6h this test built blocks that repeat a nonce and
+/// trap at apply. Those measure decode only. `frame_system::finalize` re-reads
+/// every `ExtrinsicData` entry and `extrinsics_data_root` encodes them as one
+/// `Vec<Vec<u8>>` through a buffer that grows by doubling, so a block that
+/// finalizes holds several MiB more. **A trapping block must never be this
+/// term's worst case;** each shape below keeps a trapped copy (its last two
+/// extrinsics swapped, so the last one's nonce fails at apply) only as a
+/// decode-only control, and prints the difference as the finalize share.
+///
+/// Shapes, all bounded by the builder (length and weight):
+/// - fillers whose opaque body sits at each rounding boundary, from the
+///   minimal remark (the smallest body, the most extrinsics) to bodies just
+///   over each power of two (the worst decode rounding);
+/// - one large remark from just over 2 MiB up to the largest the builder
+///   admits, plus fillers at the worst rounding (the largest decoded call is
+///   live while the rest of the block is resident).
+///
+/// A block with VM runs is census k's combined block; its high-water is the
+/// real-block check of the whole budget.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn d_encoded_block_residency_and_largest_extrinsic() {
     use core::mem::size_of;
     let chain = Chain::new();
     println!("size_of::<RuntimeCall>() = {} B", size_of::<RuntimeCall>());
-
+    let (empty, _) = chain.author(vec![]);
+    let (_, empty_import) = chain.import(&empty);
     let max_len = 5usize * 1024 * 1024; // 5 MiB all-class block length bound.
     let remark = |p: usize| -> RuntimeCall {
         frame_system::Call::<Runtime>::remark {
@@ -2075,87 +2092,121 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
         }
         .into()
     };
-    // Calibrate payload so the resident OPAQUE BODY is 2^11 + 1 = 2049 B, i.e.
-    // just over a power of two -> each body rounds up to a 4096+8 chunk, the
-    // worst case for decode rounding. (Correction 1: a body of exactly 2048
-    // rounds with zero waste.)
     let body0 = opaque_body_len(&chain.sign(remark(0), 0));
-    let filler_payload = (2049usize).saturating_sub(body0);
-    let filler_body = opaque_body_len(&chain.sign(remark(filler_payload), 1));
-    let per_wire = chain.sign(remark(filler_payload), 1).encode().len();
-    println!(
-        "empty-remark body {body0} B; padded to body {filler_body} B (wire {per_wire} B); each opaque chunk {} B",
-        chunk_bytes(filler_body)
-    );
-    let count = max_len / per_wire;
+    let payload_for = |body: usize| body.saturating_sub(body0);
+    println!("empty-remark opaque body {body0} B");
 
-    // Case (a): a block of padded fillers at the worst-rounding body. Decode
-    // residency does not need distinct signatures -- `Core_execute_block`
-    // decodes the whole `Vec<OpaqueExtrinsic>` argument before apply -- so
-    // replicate one signed filler and read the peak; apply then traps on the
-    // repeated nonce, after the decode peak is realised.
-    let one = chain.sign(remark(filler_payload), 1);
-    let mut xts = vec![Chain::timestamp(1)];
-    xts.extend(std::iter::repeat(one).take(count));
-    let block_a = Block {
-        header: chain.header(1),
-        extrinsics: xts,
-    };
-    let (empty, _) = chain.author(vec![]);
-    let (_, empty_import) = chain.import(&empty);
-    let (_, heap_a) = chain.import(&block_a);
-    let model_a = chunk_bytes(block_a.encode().len())
-        + block_a
-            .extrinsics
+    // One shape: author it through the builder, check the head (`head` calls
+    // that must all be included, in order) made it, import it valid, then the
+    // trapped control. Returns the valid import's net high-water.
+    let mut worst = (0u32, String::new());
+    let mut measure = |label: String, calls: Vec<RuntimeCall>, head: usize| {
+        let supplied = calls.len();
+        let (block, applied) = chain.author_fast(calls.clone());
+        let included: Vec<RuntimeCall> = block.extrinsics[1..]
             .iter()
-            .map(|xt| chunk_bytes(opaque_body_len(xt)))
-            .sum::<u64>();
-    println!(
-        "(a) {count} fillers: encoded block {:.3} MiB; importer peak {:.3} MiB (net {:.3}); analytic {:.3} MiB [input chunk + Σ body chunks]",
-        block_a.encode().len() as f64 / MIB as f64,
-        mib(heap_a),
-        mib(heap_a.saturating_sub(empty_import)),
-        model_a as f64 / MIB as f64,
+            .map(|xt| xt.0.function.clone())
+            .collect();
+        assert!(
+            included.len() >= head && included[..head] == calls[..head],
+            "{label}: the leading {head} call(s) must be included"
+        );
+        assert!(
+            applied.iter().all(|r| matches!(r, Ok(Ok(())))),
+            "{label}: every included extrinsic applies"
+        );
+        let (ok, heap) = chain.import(&block);
+        assert!(ok.is_ok(), "{label}: the valid block imports: {ok:?}");
+        let mut trapped = block.clone();
+        let n = trapped.extrinsics.len();
+        trapped.extrinsics.swap(n - 2, n - 1);
+        let (tok, theap) = chain.import(&trapped);
+        assert!(tok.is_err(), "{label}: the control traps at apply");
+        let net = heap.saturating_sub(empty_import);
+        println!(
+            "(d) {label}: supplied {supplied}, included {}, encoded {:.3} MiB | VALID net {:.3} MiB \
+             | trapped control (decode only) {:.3} MiB | finalize share {:.3} MiB",
+            applied.len(),
+            block.encode().len() as f64 / MIB as f64,
+            mib(net),
+            mib(theap.saturating_sub(empty_import)),
+            mib(heap.saturating_sub(theap)),
+        );
+        if net > worst.0 {
+            worst = (net, label);
+        }
+    };
+
+    // Fillers at each rounding boundary: the minimal remark, then bodies of
+    // exactly a power of two and just over it.
+    let mut bodies = vec![body0, 2048, 2049];
+    let mut p2 = 4096usize;
+    while p2 <= MIB as usize {
+        bodies.push(p2 + 1);
+        p2 <<= 2;
+    }
+    for body in bodies {
+        let wire = chain.sign(remark(payload_for(body)), 1).encode().len();
+        let count = max_len / wire + 16;
+        measure(
+            format!("fillers body {body} B"),
+            (0..count).map(|_| remark(payload_for(body))).collect(),
+            1,
+        );
+    }
+    // One large remark plus fillers at the worst rounding. The builder admits
+    // a remark up to the Normal class's share of the block length; the
+    // largest admitted is measured, and a larger one must be refused.
+    let filler = payload_for(2049);
+    let filler_wire = chain.sign(remark(filler), 1).encode().len();
+    let mut largest_admitted = 0usize;
+    // Remark payloads across the two cliffs at the 2 MiB order (the opaque
+    // body is the payload plus `body0`): just below 2 MiB; just over it, where
+    // the first payload copies reach the 4 MiB order; 2 MiB + 768 B, where
+    // the rest do (the measured worst, a plateau to about 2 MiB + 1.2 KiB);
+    // then larger remarks, with fewer fillers, up to the largest admitted.
+    for big_body in [
+        body0 + 2 * MIB as usize - 1,
+        body0 + 2 * MIB as usize + 1,
+        body0 + 2 * MIB as usize + 512,
+        body0 + 2 * MIB as usize + 768,
+        body0 + 2 * MIB as usize + 1024,
+        2 * MIB as usize + 64 * KIB as usize + 1,
+        3 * MIB as usize,
+        3 * MIB as usize + 512 * KIB as usize,
+        3 * MIB as usize + 704 * KIB as usize + 1,
+        3 * MIB as usize + 768 * KIB as usize,
+    ] {
+        let big = remark(payload_for(big_body));
+        let (probe, _) = chain.author_fast(vec![big.clone()]);
+        if probe.extrinsics.len() < 2 {
+            println!("(d) a {big_body} B remark is not admitted by the builder");
+            continue;
+        }
+        largest_admitted = largest_admitted.max(big_body);
+        let mut calls = vec![big];
+        calls.extend((0..max_len / filler_wire + 16).map(|_| remark(filler)));
+        measure(format!("remark {big_body} B + 2049-B fillers"), calls, 1);
+    }
+    assert!(
+        largest_admitted >= 2 * MIB as usize,
+        "a >2 MiB remark must be measured"
     );
 
-    // Case (b): one large remark (body just over 2 MiB) applied with a FRESH
-    // nonce, plus padded fillers to the length cap. The big call is applied
-    // first, so its decoded Vec is live while every opaque body is resident:
-    // the largest decoded extrinsic is ADDITIVE to the block residency.
-    let big_payload = (2 * MIB as usize + 1).saturating_sub(body0);
-    let big = chain.sign(remark(big_payload), 0); // fresh nonce 0, applies
-    let big_body = opaque_body_len(&big);
-    let big_wire = big.encode().len();
-    let rest = (max_len - big_wire) / per_wire;
-    let filler1 = chain.sign(remark(filler_payload), 1); // applies once, then dups
-    let mut xts_b = vec![Chain::timestamp(1), big];
-    xts_b.extend(std::iter::repeat(filler1).take(rest));
-    let block_b = Block {
-        header: chain.header(1),
-        extrinsics: xts_b,
-    };
-    let (_, heap_b) = chain.import(&block_b);
-    let model_b = chunk_bytes(block_b.encode().len())
-        + block_b
-            .extrinsics
-            .iter()
-            .map(|xt| chunk_bytes(opaque_body_len(xt)))
-            .sum::<u64>()
-        + chunk_bytes(big_body); // + the large call's decoded Vec during its dispatch
+    let (worst_net, worst_label) = worst;
+    let pinned = quip_protocol_runtime::configs::VM_BLOCK_RESIDENCY;
     println!(
-        "(b) big body {:.3} MiB + {rest} fillers: encoded block {:.3} MiB; importer peak {:.3} MiB (net {:.3}); analytic {:.3} MiB [input + Σ bodies + largest decoded call]",
-        big_body as f64 / MIB as f64,
-        block_b.encode().len() as f64 / MIB as f64,
-        mib(heap_b),
-        mib(heap_b.saturating_sub(empty_import)),
-        model_b as f64 / MIB as f64,
+        "RESIDENCY (valid blocks, through finalize): worst {:.3} MiB ({worst_label}); \
+         largest admitted remark {largest_admitted} B; pinned VM_BLOCK_RESIDENCY {:.1} MiB",
+        mib(worst_net),
+        pinned as f64 / MIB as f64,
     );
-    let residency = heap_a.max(heap_b).saturating_sub(empty_import);
-    println!(
-        "RESIDENCY BOUND = max(measured, analytic) = {:.3} MiB (measured net {:.3}, analytic {:.3})",
-        (model_a.max(model_b) as f64 / MIB as f64).max(mib(residency) as f64),
-        mib(residency),
-        model_a.max(model_b) as f64 / MIB as f64,
+    assert!(
+        u64::from(worst_net) + MIB <= pinned,
+        "the worst valid block, {:.3} MiB ({worst_label}), plus 1 MiB of margin exceeds \
+         VM_BLOCK_RESIDENCY ({:.1} MiB) -- re-pin it",
+        mib(worst_net),
+        pinned as f64 / MIB as f64,
     );
 }
 
@@ -2570,7 +2621,9 @@ fn k_combined_block_with_holders_at_cap() {
         .into()
     };
     let body0 = opaque_body_len(&chain.sign(remark(0), 0));
-    let big = remark((2 * MIB as usize + 1).saturating_sub(body0));
+    // The big remark on census d's worst plateau: a payload of 2 MiB + 1 KiB,
+    // past both cliffs where its copies reach the 4 MiB allocator order.
+    let big = remark(2 * MIB as usize + 1024);
     let fillers: Vec<RuntimeCall> = (0..1200)
         .map(|_| remark(2049usize.saturating_sub(body0)))
         .collect();
@@ -2836,7 +2889,10 @@ fn l_store_program_verify_peak() {
 /// Three figures per cap (claude's and the architect's R8 on A6c/A6d):
 /// - Σ vs the empty block. At a small L' this includes allocations that do
 ///   not scale with L' -- the fixed run and block-level overhead -- divided
-///   by L'. Its step of about 0.56 MiB (about 2·L') at 256 KiB is a block-level allocation made when the block finalizes (at 256 KiB the 85th extrinsic crosses an allocator doubling; the same block trapped at apply does not show it), not VM growth.
+///   by L'. Its step of about 0.56 MiB (about 2·L') at 256 KiB is a
+///   block-level allocation made when the block finalizes (at 256 KiB the 85th
+///   extrinsic crosses an allocator doubling; the same block trapped at apply
+///   does not show it), not VM growth.
 ///   So over the pin it is REPORTED for investigation, not a STOP.
 /// - The same-count control ([`Chain::control_import`]): the block-level share.
 /// - Σ net of that control: the VM's share, a LOWER bound (the VM runs reuse
@@ -2847,7 +2903,8 @@ fn l_store_program_verify_peak() {
 /// run's SHAPE -- a run no chain at a real cap of L' makes panics there,
 /// before it is measured -- and the Σ gates above are the STOP for SIZE. The
 /// Σ gates alone do not stop an illegal run: one that adds about 2·L' only
-/// reaches the vs-empty figure, which reports.
+/// reaches the vs-empty figure, which at most reports; at 512 KiB it passed
+/// outright.
 ///
 /// Up to xqvm 0.5.0 this test measured `ITER` loop-frame pile-ups (28.65·L'
 /// at 256 KiB); 0.6.0's jump-span phase (W1-011) rejects them at

@@ -602,7 +602,7 @@ parameter_types! {
     /// ```text
     ///   Σ_orders(k·L)   order sweep + holders + vec clones     20.99·L measured (k), 24·L pinned
     /// + fixed_run       worst case, L-independent (below)       0.45 MiB
-    /// + block_residency encoded block + largest signed xt       44.0 MiB
+    /// + block_residency valid block through finalize (census d)  62.97 MiB
     /// + non_vm_baseline maximal submit_proof decode             3.27 MiB
     /// ```
     ///
@@ -629,19 +629,23 @@ parameter_types! {
     /// same as the completed run, so a fault does not raise the high-water
     /// mark; and the stack filled from a 3-byte loop body, 149,464 B.
     ///
-    /// At `L = 1 MiB`, on the measured terms: 20.99 + 0.45 + 44.0 + 3.27 ≈
-    /// 68.7 MiB (46.3 % free). The budget test sums the PINNED terms, and that
-    /// sum is the gate: 24 × 1 + 1 (fixed-run allowance) + 45 + 4 =
-    /// **74 MiB**, 42.2 % free; with the 25 % floor (32 MiB),
-    /// **106 MiB ≤ 128 MiB**. 16 MiB (the
+    /// At `L = 1 MiB`, on the measured terms: 20.99 + 0.45 + 62.97 + 3.27 ≈
+    /// 87.7 MiB (31.5 % free). The budget test sums the PINNED terms, and that
+    /// sum is the gate: 24 × 1 + 1 (fixed-run allowance) + 64 + 4 =
+    /// **93 MiB**, 27.3 % free; with the 25 % floor (32 MiB),
+    /// **125 MiB ≤ 128 MiB**, a margin of 3 MiB. The terms over-count a real
+    /// block rather than under-count it: census `k`'s combined block, the VM
+    /// holders plus the worst remark and fillers, peaks at 75.012 MiB, against
+    /// 84.4 MiB for its measured Σ, fixed-run and residency terms summed (Σ vs
+    /// the empty block and census d both contain the block-level share). 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
     /// a block only its author could import.
     ///
     /// | cap   | Σ measured | Σ pin | pinned sum | free   | 25 % floor | worst real block    |
     /// |-------|------------|-------|------------|--------|------------|---------------------|
-    /// | 1 MiB | 20.99·L    | 24    | 74 MiB     | 42.2 % | passes     | 61.012 MiB, 52.3 %  |
-    /// | 2 MiB | 19.31·L *  | 24    | 98 MiB     | 23.4 % | fails      | 76.936 MiB, 39.9 %  |
-    /// | 4 MiB | -          | 24    | 146 MiB    | -      | fails      | -                   |
+    /// | 1 MiB | 20.99·L    | 24    | 93 MiB     | 27.3 % | passes     | 75.012 MiB, 41.4 %  |
+    /// | 2 MiB | 19.31·L *  | 24    | 117 MiB    | 8.6 %  | fails      | 76.936 MiB, 39.9 % †|
+    /// | 4 MiB | -          | 24    | 165 MiB    | -      | fails      | -                   |
     ///
     /// (Under xqvm 0.6.0. The 2 MiB row was MEASURED on a throwaway build with
     /// both caps at 2 MiB, census `k` and `j` at that cap, not extrapolated,
@@ -649,8 +653,10 @@ parameter_types! {
     /// Σ 19.3093·L, the budget test passing with Σ 20, and the combined block
     /// importing at 76.936 MiB high-water. * That was before the
     /// `EQUALITY`/`ATLEASTW` clone holders, which 2 MiB was not re-measured
-    /// with. At the Σ pin of 24 its pinned sum fails the floor (98 + 32 =
-    /// 130 MiB > 128). It is kept as evidence for any later raise; a different
+    /// with. At the Σ pin of 24 and the block-residency term of 64 MiB its
+    /// pinned sum fails the floor (117 + 32 = 149 MiB > 128). † Its real block
+    /// carried a remark below the 2 MiB payload cliff (see
+    /// [`VM_BLOCK_RESIDENCY`]), so it understates. It is kept as evidence for any later raise; a different
     /// cap needs Σ re-measured there before it is pinned.)
     ///
     /// PRECONDITION (claude_reviewer's repin R8; !132 release blocker 5). The
@@ -681,8 +687,10 @@ parameter_types! {
     /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed upper bound is the gate; a real block is
     /// only a second check. At 1 MiB that check reads: census `k`, the mixed
     /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
-    /// 61.012 MiB high-water (52.3 % free); census `g`, without the holders,
-    /// 60.97 MiB.
+    /// 75.012 MiB high-water (41.4 % free) with the worst remark on census d's
+    /// plateau (61.012 MiB, 52.3 % free, with the old remark just below the
+    /// 2 MiB payload cliff); census `g`, without the holders and with that old
+    /// remark, 60.97 MiB.
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
     /// legitimate on-chain `execute` workload exists today: the live testnet's
@@ -1046,8 +1054,8 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 /// frames, a vec and its two clones). Every run is checked natively to be one
 /// a chain at that real cap makes.
 /// - **Census `k`, at the shipped 1 MiB cap, defines the pin: 20.99·L** vs
-///   the empty block (20.9910). Its real combined block peaks at 61.012 MiB,
-///   52.3 % of the heap free.
+///   the empty block (20.9910). Its real combined block, with the worst remark
+///   on census d's plateau, peaks at 75.012 MiB, 41.4 % of the heap free.
 /// - The analytic per-order ceiling (claude_reviewer's R8 on A6c..A6f) is
 ///   **20.54·L at 1 MiB** (20.82 / 20.65·L' at 256 / 512 KiB), an upper
 ///   bound on the VM's per-order share: it sums, per allocator order, the
@@ -1108,9 +1116,9 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 /// The main uncharged source is `EQUALITY`/`ATLEAST`/`ATLEASTW`'s pre-charge
 /// clones and success-path temporaries (QUI-2546; reachable by programs the
 /// full checker accepts too). Once xqvm charges or borrows them, re-measure
-/// and tighten the pin. The pinned budget at 24 is 74 MiB, 106 MiB with
-/// `MIN_FREE`; the largest pin the 128 MiB heap allows with `MIN_FREE` is 46
-/// (46 + 1 + 45 + 4 + 32).
+/// and tighten the pin. The pinned budget at 24 is 93 MiB, 125 MiB with
+/// `MIN_FREE`; the largest pin the 128 MiB heap allows with `MIN_FREE` is 27
+/// (27 + 1 + 64 + 4 + 32), set by the block-residency term.
 ///
 /// History: 20 until census covered the clones in every order, then 21, then
 /// 24 with the mixed-family holders and the headroom above (A6). Under xqvm
@@ -1124,11 +1132,40 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 #[doc(hidden)]
 pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 
-/// Worst-case block residency in the importer heap: the encoded block plus the
-/// largest signed extrinsic and its verification copies, measured 44.0 MiB
-/// (census `d_encoded_block_residency_and_largest_extrinsic`), pinned at 45.
+/// Worst-case block residency in the importer heap: what a VALID block -- one
+/// the builder admits, imported through finalize -- makes the importer hold,
+/// measured **62.973 MiB** (census `d_encoded_block_residency_and_largest_extrinsic`,
+/// A6h), pinned at **64** (the next whole MiB leaving at least 1 MiB).
+///
+/// Three components, from census d's shapes:
+/// - **Decode and apply of a large extrinsic.** The worst block is one remark
+///   with a payload just over 2 MiB plus fillers. Several copies of the
+///   payload -- the encoded block, the opaque body, the decoded call, the
+///   signed-payload and storage encodings -- each land in an allocator order,
+///   and the payload crossing 2 MiB moves them from the 2 MiB to the 4 MiB
+///   order in two measured steps: a payload of 2 MiB − 1 or 2 MiB holds
+///   48.97 MiB; 2 MiB + 1 holds 54.97 (+6.0); 2 MiB + 768 holds 62.97
+///   (+8.0), a plateau to about 2 MiB + 1.2 KiB, then falling slowly as fewer
+///   fillers fit (56.20 MiB at the largest remark the builder admits). The
+///   same block trapped at apply holds 59.47 MiB of the 62.97.
+/// - **The finalize re-read of `ExtrinsicData`.** `frame_system::finalize`
+///   reads every extrinsic's stored bytes back to compute the extrinsics root.
+/// - **The extrinsics-root encoding.** `ordered_root` `encode()`s those bytes
+///   as one `Vec<Vec<u8>>`, through a buffer that starts from codec's
+///   `[T]::size_hint` and grows by doubling; the freed rungs stay in their
+///   orders. With the re-read, finalize adds 3.5 MiB to the worst block and up
+///   to 23.5 MiB to a block of small fillers (34.4–35.0 MiB valid; 7.7–23.0
+///   MiB trapped).
+///
+/// Method: census d measures valid blocks only. A block that traps at apply or
+/// at `final_checks` measures decode alone and must never be this term's
+/// worst case; census d keeps a trapped copy of each shape as a decode-only
+/// control. (Until A6h this term was 45 MiB, from a trapped block whose
+/// remark payload sat about 1.7 KB under the 2 MiB cliff.) A cap below 2 MiB
+/// on one extrinsic's payload would remove both steps; that is an owner
+/// decision, and a runtime upgrade carries the ~1.8 MiB Wasm.
 #[doc(hidden)]
-pub const VM_BLOCK_RESIDENCY: u64 = 45 * 1024 * 1024;
+pub const VM_BLOCK_RESIDENCY: u64 = 64 * 1024 * 1024;
 
 /// Maximal non-VM dispatch, pinned at 4 MiB. The two largest measured: a
 /// `submit_proof` decoding the full topology meta plus the packed proof,
@@ -1330,10 +1367,10 @@ mod xqvm_weights {
              {FIXED_RUN_MEASURED} B (worst case) exceeds the {FIXED_RUN} B fixed-run term; give the \
              retained Vec its own budget line",
         );
-        // Worst-case decoded block the importer holds in the same heap: the
-        // encoded block plus the largest single signed extrinsic and its
-        // verification copies -- measured 44.0 MiB (test
-        // `d_encoded_block_residency_and_largest_extrinsic`, case (b)).
+        // Worst-case block the importer holds in the same heap: a valid block
+        // imported through finalize, its largest extrinsic's payload just over
+        // 2 MiB -- measured 62.973 MiB (census
+        // `d_encoded_block_residency_and_largest_extrinsic`, A6h).
         const BLOCK_RESIDENCY: u64 = VM_BLOCK_RESIDENCY;
         // Maximal non-VM dispatch: a `submit_proof` decoding the full
         // topology meta plus the packed proof, 3.27 MiB (census
@@ -1380,15 +1417,15 @@ mod xqvm_weights {
         }
 
         // The pinned sum at the shipped caps, spelled out so a change to any
-        // term shows here: 24 x 1 MiB + 1 MiB + 45 MiB + 4 MiB = 74 MiB, and
-        // with MIN_FREE 106 MiB of the 128 MiB heap.
+        // term shows here: 24 x 1 MiB + 1 MiB + 64 MiB + 4 MiB = 93 MiB, and
+        // with MIN_FREE 125 MiB of the 128 MiB heap (a margin of 3 MiB).
         const MIB: u64 = 1024 * 1024;
         assert_eq!(
             budget,
-            74 * MIB,
+            93 * MIB,
             "pinned importer budget at the shipped caps"
         );
-        assert_eq!(budget.saturating_add(MIN_FREE), 106 * MIB);
+        assert_eq!(budget.saturating_add(MIN_FREE), 125 * MIB);
         assert!(
             budget.saturating_add(MIN_FREE) <= RUNTIME_HEAP_BYTES,
             "importer budget {budget} bytes + {MIN_FREE} min-free exceeds the \
