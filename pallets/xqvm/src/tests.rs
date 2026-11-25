@@ -311,13 +311,16 @@ fn execute_step_limit_exceeded() {
 }
 
 /// xqvm 0.6.0's `NonBinaryModel` has its own dispatch error, appended at the
-/// end of the enum (A4). A constraint opcode on a spin model raises it; on a
-/// binary model of the same size the same opcode does not.
+/// end of the enum (A4). The two programs differ only in the model kind: a
+/// 2x2 grid, then a one-hot constraint on row 0. On a spin model `ONEHOTR`
+/// raises `VmNonBinaryModel`; on a binary model the same program runs to
+/// `HALT` (kimi R8 on A4). The spin program's prefix up to `ONEHOTR` runs
+/// cleanly, so the fault is raised by `ONEHOTR` itself.
 #[test]
 fn a_constraint_on_a_spin_model_faults_with_vm_non_binary_model() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        let program = |spin: bool| {
+        let program = |spin: bool, constrain: bool| {
             build_program(|b| {
                 b.emit_push(4);
                 if spin {
@@ -325,31 +328,43 @@ fn a_constraint_on_a_spin_model_faults_with_vm_non_binary_model() {
                 } else {
                     b.emit(xqvm::Instruction::Bqmx { reg: Register(0) });
                 }
-                // penalty 1, row 0
-                b.emit_push(1)
-                    .emit_push(0)
-                    .emit(xqvm::Instruction::OneHotR { reg: Register(0) });
+                // rows 2, cols 2: RESIZE pops cols, then rows.
+                b.emit_push(2)
+                    .emit_push(2)
+                    .emit(xqvm::Instruction::Resize { reg: Register(0) });
+                if constrain {
+                    // ONEHOTR pops the penalty, then the row: row 0, penalty 1.
+                    b.emit_push(0)
+                        .emit_push(1)
+                        .emit(xqvm::Instruction::OneHotR { reg: Register(0) });
+                }
                 b.emit_halt();
             })
         };
-        stored_program_faults_at_execute(program(true), 1_000, Error::<Test>::VmNonBinaryModel);
+        let execute = |bytecode: Vec<u8>| {
+            let hash = program_hash(&bytecode);
+            assert_ok!(Xqvm::store_program(
+                RuntimeOrigin::signed(1),
+                bounded(bytecode)
+            ));
+            Xqvm::execute(
+                RuntimeOrigin::signed(1),
+                hash,
+                BoundedVec::default(),
+                0,
+                1_000,
+            )
+        };
 
-        let binary = program(false);
-        let hash = program_hash(&binary);
-        assert_ok!(Xqvm::store_program(
-            RuntimeOrigin::signed(1),
-            bounded(binary)
-        ));
-        let outcome = Xqvm::execute(
-            RuntimeOrigin::signed(1),
-            hash,
-            BoundedVec::default(),
-            0,
+        // The binary control runs to HALT.
+        assert_ok!(execute(program(false, true)));
+        // The spin prefix, everything before ONEHOTR, runs to HALT too.
+        assert_ok!(execute(program(true, false)));
+        // So the spin program's fault is ONEHOTR's own.
+        stored_program_faults_at_execute(
+            program(true, true),
             1_000,
-        );
-        assert_ne!(
-            outcome.map_err(|e| e.error),
-            Err(Error::<Test>::VmNonBinaryModel.into())
+            Error::<Test>::VmNonBinaryModel,
         );
     });
 }
