@@ -501,6 +501,180 @@ mod tests {
         });
     }
 
+    // QUI-2548 (owner decision of 2026-11-25): `BlockLength` is Normal 3.5 MiB,
+    // Operational 3.75 MiB, Mandatory 5 MiB, enforced by `CheckWeight` when a
+    // transaction is validated.
+    mod block_length {
+        use super::*;
+        use frame_support::dispatch::{DispatchClass, GetDispatchInfo};
+        use sp_runtime::transaction_validity::{TransactionSource, TransactionValidity};
+
+        fn ext_with_funded(who: &AccountId) -> sp_io::TestExternalities {
+            let mut ext = sp_io::TestExternalities::new(
+                RuntimeGenesisConfig::default().build_storage().unwrap(),
+            );
+            ext.execute_with(|| {
+                System::set_block_number(1);
+                let _ =
+                    <Balances as frame_support::traits::Currency<AccountId>>::make_free_balance_be(
+                        who,
+                        1_000_000_000 * UNIT,
+                    );
+            });
+            ext
+        }
+
+        fn validate(xt: UncheckedExtrinsic) -> TransactionValidity {
+            Executive::validate_transaction(TransactionSource::External, xt, System::block_hash(0))
+        }
+
+        /// The payload that makes `make(payload)`'s encoding exactly `len`
+        /// bytes: from 2^14 up every compact prefix is four bytes, so the
+        /// encoding grows byte for byte with the payload.
+        fn payload_for_len(make: &dyn Fn(usize) -> UncheckedExtrinsic, len: usize) -> usize {
+            let probe = 64 * 1024;
+            let overhead = make(probe).encode().len() - probe;
+            let payload = len - overhead;
+            assert_eq!(make(payload).encode().len(), len);
+            payload
+        }
+
+        #[test]
+        fn block_length_limits_are_the_qui_2548_decision() {
+            let lengths = configs::RuntimeBlockLength::get();
+            assert_eq!(*lengths.max.get(DispatchClass::Normal), 3_670_016);
+            assert_eq!(*lengths.max.get(DispatchClass::Operational), 3_932_160);
+            assert_eq!(*lengths.max.get(DispatchClass::Mandatory), 5_242_880);
+        }
+
+        /// Each class admits an extrinsic that fills its limit exactly and
+        /// refuses one byte more with `ExhaustsResources`: a signed `set_code`
+        /// and a `Foundation::propose` wrapping a remark (both Operational, and
+        /// both included even when they fail at dispatch), and a plain remark
+        /// (Normal). `CheckWeight` counts the whole block against the limit:
+        /// the empty header and digest that `frame_system::initialize` books
+        /// (`BlockSize`), plus every extrinsic.
+        #[test]
+        fn extrinsics_over_their_class_block_length_are_refused_at_validation() {
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let who = account_id_from_public(&sender.public());
+            let sign =
+                |call: RuntimeCall| signed_test_extrinsic(&sender, who.clone().into(), call, 0);
+            let remark = |p: usize| -> RuntimeCall {
+                SystemCall::remark {
+                    remark: vec![0u8; p],
+                }
+                .into()
+            };
+            let set_code = |p: usize| sign(SystemCall::set_code { code: vec![0u8; p] }.into());
+            let propose = |p: usize| {
+                sign(
+                    pallet_collective::Call::<Runtime, pallet_collective::Instance1>::propose {
+                        threshold: 2,
+                        proposal: Box::new(remark(p)),
+                        // What a submitter would pass; `u32::MAX` would inflate
+                        // `propose`'s weight past the Operational limit.
+                        length_bound: remark(p).encoded_size() as u32,
+                    }
+                    .into(),
+                )
+            };
+            let normal = |p: usize| sign(remark(p));
+            let cases: [(
+                &str,
+                &dyn Fn(usize) -> UncheckedExtrinsic,
+                DispatchClass,
+                u32,
+            ); 3] = [
+                (
+                    "signed set_code",
+                    &set_code,
+                    DispatchClass::Operational,
+                    configs::OPERATIONAL_BLOCK_LENGTH,
+                ),
+                (
+                    "Foundation::propose(remark)",
+                    &propose,
+                    DispatchClass::Operational,
+                    configs::OPERATIONAL_BLOCK_LENGTH,
+                ),
+                (
+                    "remark",
+                    &normal,
+                    DispatchClass::Normal,
+                    configs::NORMAL_BLOCK_LENGTH,
+                ),
+            ];
+            for (label, make, class, cap) in cases {
+                ext_with_funded(&who).execute_with(|| {
+                    // `validate_transaction` initializes the next block with an
+                    // empty digest.
+                    let header = <Header as sp_runtime::traits::Header>::new(
+                        System::block_number() + 1,
+                        Default::default(),
+                        Default::default(),
+                        System::block_hash(0),
+                        Default::default(),
+                    );
+                    let overhead =
+                        header.encoded_size() + sp_runtime::Digest::default().encoded_size();
+                    let fits = payload_for_len(make, cap as usize - overhead);
+                    assert_eq!(
+                        make(fits).0.function.get_dispatch_info().class,
+                        class,
+                        "{label}"
+                    );
+                    assert!(
+                        validate(make(fits)).is_ok(),
+                        "{label}: {} B + the {overhead}-B header fills the {cap}-B limit and is \
+                         admitted: {:?}",
+                        cap as usize - overhead,
+                        validate(make(fits))
+                    );
+                    assert_eq!(
+                        validate(make(fits + 1)),
+                        Err(InvalidTransaction::ExhaustsResources.into()),
+                        "{label}: one byte more is refused"
+                    );
+                });
+            }
+        }
+
+        /// The runtime upgrade path still fits: the Foundation's
+        /// `dispatch_as_root(set_code)` carrying this runtime's real Wasm is
+        /// Operational and admitted at validation.
+        #[test]
+        fn foundation_runtime_upgrade_fits_the_operational_block_length() {
+            let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let who = account_id_from_public(&sender.public());
+            ext_with_funded(&who).execute_with(|| {
+                pallet_membership::Members::<Runtime, pallet_membership::Instance1>::put(
+                    frame_support::BoundedVec::try_from(vec![who.clone()]).unwrap(),
+                );
+                let xt = signed_test_extrinsic(
+                    &sender,
+                    who.clone().into(),
+                    pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
+                        call: Box::new(SystemCall::set_code { code: wasm.to_vec() }.into()),
+                    }
+                    .into(),
+                    0,
+                );
+                let len = xt.encode().len();
+                println!(
+                    "runtime upgrade extrinsic: {len} B (Wasm {} B); Operational limit {} B, {} B spare",
+                    wasm.len(),
+                    configs::OPERATIONAL_BLOCK_LENGTH,
+                    configs::OPERATIONAL_BLOCK_LENGTH as usize - len
+                );
+                assert!(wasm.len() > 1024 * 1024, "the real runtime Wasm");
+                assert_eq!(xt.0.function.get_dispatch_info().class, DispatchClass::Operational);
+                assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+            });
+        }
+    }
+
     // QUI-2549: pallet-revive deployment is restricted to Root and Foundation
     // members (`configs::ReviveDeployOrigin`). These run in the normal build,
     // which pins the restriction against the `runtime-benchmarks` carve-out.

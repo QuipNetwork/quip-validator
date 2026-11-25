@@ -2051,6 +2051,35 @@ fn opaque_body_len(xt: &UncheckedExtrinsic) -> usize {
         .len()
 }
 
+/// The largest `payload` for which `make(payload)` alone is admitted by the
+/// builder, by bisection over single-extrinsic blocks; `lo` must be admitted
+/// and `hi` refused, so `payload + 1` is refused (QUI-2548: the per-class
+/// `BlockLength` counts the header and digest too, so this is the measured
+/// limit rather than one derived from the constant).
+fn largest_admitted_alone(
+    chain: &Chain,
+    make: &dyn Fn(usize) -> RuntimeCall,
+    mut lo: usize,
+    mut hi: usize,
+) -> usize {
+    let admitted = |p: usize| chain.author_fast(vec![make(p)]).0.extrinsics.len() == 2;
+    assert!(admitted(lo), "bisection: {lo} is admitted");
+    assert!(!admitted(hi), "bisection: {hi} is refused");
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if admitted(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+fn set_code_call(p: usize) -> RuntimeCall {
+    frame_system::Call::<Runtime>::set_code { code: vec![0u8; p] }.into()
+}
+
 /// Block residency, measured THROUGH FINALIZE (A6h; claude_reviewer's R8 on
 /// A6c..A6f): what a VALID block -- signed with increasing nonces, admitted by
 /// the builder, imported without a trap -- makes the importer hold. The term
@@ -2072,8 +2101,13 @@ fn opaque_body_len(xt: &UncheckedExtrinsic) -> usize {
 ///   minimal remark (the smallest body, the most extrinsics) to bodies just
 ///   over each power of two (the worst decode rounding);
 /// - one large remark from just over 2 MiB up to the largest the builder
-///   admits, plus fillers at the worst rounding (the largest decoded call is
-///   live while the rest of the block is resident).
+///   admits (Normal, 3.5 MiB `BlockLength`), plus fillers at the worst
+///   rounding (the largest decoded call is live while the rest of the block
+///   is resident);
+/// - the Operational class (QUI-2548): one signed `set_code` -- included even
+///   though it fails at dispatch (`BadOrigin`) -- swept across the same 2 MiB
+///   cliffs up to the largest the builder admits (3.75 MiB `BlockLength`),
+///   plus Normal fillers while they still fit.
 ///
 /// A block with VM runs is census k's combined block; its high-water is the
 /// real-block check of the whole budget.
@@ -2085,7 +2119,9 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
     println!("size_of::<RuntimeCall>() = {} B", size_of::<RuntimeCall>());
     let (empty, _) = chain.author(vec![]);
     let (_, empty_import) = chain.import(&empty);
-    let max_len = 5usize * 1024 * 1024; // 5 MiB all-class block length bound.
+    // Oversupply: more than any class admits (Mandatory, inherents only, is the
+    // largest at 5 MiB; Normal 3.5 MiB, Operational 3.75 MiB).
+    let max_len = 5usize * 1024 * 1024;
     let remark = |p: usize| -> RuntimeCall {
         frame_system::Call::<Runtime>::remark {
             remark: vec![0u8; p],
@@ -2100,7 +2136,12 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
     // that must all be included, in order) made it, import it valid, then the
     // trapped control. Returns the valid import's net high-water.
     let mut worst = (0u32, String::new());
-    let mut measure = |label: String, calls: Vec<RuntimeCall>, head: usize| {
+    // `head_fails_at_dispatch`: the first call is a signed `set_code`,
+    // included but failing at dispatch (`BadOrigin`), which is the point.
+    let mut measure = |label: String,
+                       calls: Vec<RuntimeCall>,
+                       head: usize,
+                       head_fails_at_dispatch: bool| {
         let supplied = calls.len();
         let (block, applied) = chain.author_fast(calls.clone());
         let included: Vec<RuntimeCall> = block.extrinsics[1..]
@@ -2112,25 +2153,38 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
             "{label}: the leading {head} call(s) must be included"
         );
         assert!(
-            applied.iter().all(|r| matches!(r, Ok(Ok(())))),
+            applied.iter().enumerate().all(|(i, r)| match r {
+                Ok(Ok(())) => true,
+                Ok(Err(_)) => head_fails_at_dispatch && i == 0,
+                Err(_) => false,
+            }),
             "{label}: every included extrinsic applies"
         );
         let (ok, heap) = chain.import(&block);
         assert!(ok.is_ok(), "{label}: the valid block imports: {ok:?}");
-        let mut trapped = block.clone();
-        let n = trapped.extrinsics.len();
-        trapped.extrinsics.swap(n - 2, n - 1);
-        let (tok, theap) = chain.import(&trapped);
-        assert!(tok.is_err(), "{label}: the control traps at apply");
         let net = heap.saturating_sub(empty_import);
+        // The trapped control needs a filler to swap; a block holding only the
+        // big extrinsic has none.
+        let control = if block.extrinsics.len() >= 3 {
+            let mut trapped = block.clone();
+            let n = trapped.extrinsics.len();
+            trapped.extrinsics.swap(n - 2, n - 1);
+            let (tok, theap) = chain.import(&trapped);
+            assert!(tok.is_err(), "{label}: the control traps at apply");
+            format!(
+                "trapped at the last apply (no finalize) {:.3} MiB | finalize share {:.3} MiB",
+                mib(theap.saturating_sub(empty_import)),
+                mib(heap.saturating_sub(theap)),
+            )
+        } else {
+            "no filler to trap (control n/a)".to_string()
+        };
         println!(
             "(d) {label}: supplied {supplied}, included {}, encoded {:.3} MiB | VALID net {:.3} MiB \
-             | trapped at the last apply (no finalize) {:.3} MiB | finalize share {:.3} MiB",
+             | {control}",
             applied.len(),
             block.encode().len() as f64 / MIB as f64,
             mib(net),
-            mib(theap.saturating_sub(empty_import)),
-            mib(heap.saturating_sub(theap)),
         );
         if net > worst.0 {
             worst = (net, label);
@@ -2152,6 +2206,7 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
             format!("fillers body {body} B"),
             (0..count).map(|_| remark(payload_for(body))).collect(),
             1,
+            false,
         );
     }
     // One large remark plus fillers at the worst rounding. The builder admits
@@ -2160,6 +2215,18 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
     let filler = payload_for(2049);
     let filler_wire = chain.sign(remark(filler), 1).encode().len();
     let mut largest_admitted = 0usize;
+    let largest_remark = largest_admitted_alone(
+        &chain,
+        &remark,
+        MIB as usize,
+        quip_protocol_runtime::configs::NORMAL_BLOCK_LENGTH as usize,
+    );
+    println!(
+        "(d) largest admitted Normal remark: payload {largest_remark} B, body {} B \
+         (Normal BlockLength {} B)",
+        body0 + largest_remark,
+        quip_protocol_runtime::configs::NORMAL_BLOCK_LENGTH
+    );
     // Remark payloads across the two cliffs at the 2 MiB order (the opaque
     // body is the payload plus `body0`): just below 2 MiB; just over it, where
     // the first payload copies reach the 4 MiB order; 2 MiB + 768 B, where
@@ -2173,9 +2240,8 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
         body0 + 2 * MIB as usize + 1024,
         2 * MIB as usize + 64 * KIB as usize + 1,
         3 * MIB as usize,
-        3 * MIB as usize + 512 * KIB as usize,
-        3 * MIB as usize + 704 * KIB as usize + 1,
-        3 * MIB as usize + 768 * KIB as usize,
+        3 * MIB as usize + 448 * KIB as usize,
+        body0 + largest_remark,
     ] {
         let big = remark(payload_for(big_body));
         let (probe, _) = chain.author_fast(vec![big.clone()]);
@@ -2186,18 +2252,79 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
         largest_admitted = largest_admitted.max(big_body);
         let mut calls = vec![big];
         calls.extend((0..max_len / filler_wire + 16).map(|_| remark(filler)));
-        measure(format!("remark {big_body} B + 2049-B fillers"), calls, 1);
+        measure(
+            format!("remark {big_body} B + 2049-B fillers"),
+            calls,
+            1,
+            false,
+        );
     }
     assert!(
         largest_admitted >= 2 * MIB as usize,
         "a >2 MiB remark must be measured"
+    );
+    assert_eq!(
+        largest_admitted,
+        body0 + largest_remark,
+        "the largest admitted Normal remark is measured"
+    );
+
+    // Operational (QUI-2548): a signed `set_code`, included though it fails at
+    // dispatch, across the same cliffs and up to the largest admitted; Normal
+    // fillers follow while the block is under the Normal limit.
+    let sc_body0 = opaque_body_len(&chain.sign(set_code_call(0), 0));
+    let largest_sc = largest_admitted_alone(
+        &chain,
+        &set_code_call,
+        MIB as usize,
+        quip_protocol_runtime::configs::OPERATIONAL_BLOCK_LENGTH as usize,
+    );
+    println!(
+        "(d) largest admitted signed set_code: payload {largest_sc} B, body {} B \
+         (Operational BlockLength {} B)",
+        sc_body0 + largest_sc,
+        quip_protocol_runtime::configs::OPERATIONAL_BLOCK_LENGTH
+    );
+    let mut sc_measured = 0usize;
+    for sc_body in [
+        sc_body0 + 2 * MIB as usize - 1,
+        sc_body0 + 2 * MIB as usize + 1,
+        sc_body0 + 2 * MIB as usize + 512,
+        sc_body0 + 2 * MIB as usize + 768,
+        sc_body0 + 2 * MIB as usize + 1024,
+        2 * MIB as usize + 64 * KIB as usize + 1,
+        3 * MIB as usize,
+        3 * MIB as usize + 448 * KIB as usize,
+        3 * MIB as usize + 640 * KIB as usize,
+        sc_body0 + largest_sc,
+    ] {
+        let p = sc_body - sc_body0;
+        assert!(
+            p <= largest_sc,
+            "{sc_body} B is within the Operational limit"
+        );
+        let mut calls = vec![set_code_call(p)];
+        calls.extend((0..max_len / filler_wire + 16).map(|_| remark(filler)));
+        measure(
+            format!("signed set_code {sc_body} B (Operational) + 2049-B fillers"),
+            calls,
+            1,
+            true,
+        );
+        sc_measured = sc_measured.max(sc_body);
+    }
+    assert_eq!(
+        sc_measured,
+        sc_body0 + largest_sc,
+        "the largest admitted signed set_code is measured"
     );
 
     let (worst_net, worst_label) = worst;
     let pinned = quip_protocol_runtime::configs::VM_BLOCK_RESIDENCY;
     println!(
         "RESIDENCY (valid blocks, through finalize): worst {:.3} MiB ({worst_label}); \
-         largest admitted remark {largest_admitted} B; pinned VM_BLOCK_RESIDENCY {:.1} MiB",
+         largest admitted remark {largest_admitted} B, signed set_code {sc_measured} B; \
+         pinned VM_BLOCK_RESIDENCY {:.1} MiB",
         mib(worst_net),
         pinned as f64 / MIB as f64,
     );
@@ -2630,6 +2757,14 @@ fn k_combined_block_with_holders_at_cap() {
     // The shipped cap, and 768 KiB (not a power of two, emulated under the
     // compiled cap) for comparison only. Σ is asserted after both are
     // measured, so one run reports every number.
+    // QUI-2548: the largest signed `set_code` admitted alone (Operational,
+    // 3.75 MiB `BlockLength`), the start of the VM-then-set_code search below.
+    let largest_sc_alone = largest_admitted_alone(
+        &chain,
+        &set_code_call,
+        MIB as usize,
+        quip_protocol_runtime::configs::OPERATIONAL_BLOCK_LENGTH as usize,
+    );
     let mut sigma = Vec::new();
     let mut low_free = Vec::new();
     for l in [SHIPPED_CAP, 3 * MIB / 4] {
@@ -2781,6 +2916,72 @@ fn k_combined_block_with_holders_at_cap() {
             if mib(heap) > 128.0 * 0.75 {
                 low_free.push((l, order, mib(heap)));
             }
+        }
+        // claude_reviewer's `z_vm_then_setcode` at the new caps (QUI-2548):
+        // every VM run, then the largest signed `set_code` that still fits the
+        // Operational limit (included though it fails at dispatch). At the old
+        // 5 MiB length a 4,196,352-B `set_code` here (the 8 MiB allocator order)
+        // made the block unimportable. The payload is found from the VM
+        // block's encoded length and checked both ways: it is included and
+        // one byte more is not.
+        let vm_len: usize = vm_block.extrinsics[1..]
+            .iter()
+            .map(|xt| xt.encode().len())
+            .sum();
+        let with_sc = |p: usize| {
+            let mut v = vm_calls.clone();
+            v.push(set_code_call(p));
+            chain.author_fast(v)
+        };
+        let sc_included = |block: &Block| {
+            block.extrinsics.len() == vm_calls.len() + 2
+                && matches!(
+                    block.extrinsics.last().map(|xt| &xt.0.function),
+                    Some(RuntimeCall::System(frame_system::Call::set_code { .. }))
+                )
+        };
+        let mut p = largest_sc_alone.saturating_sub(vm_len);
+        let (block, applied) = loop {
+            let (block, applied) = with_sc(p);
+            if sc_included(&block) {
+                break (block, applied);
+            }
+            p -= 1;
+        };
+        assert!(
+            !sc_included(&with_sc(p + 1).0),
+            "L={} KiB: a set_code one byte larger is refused",
+            l / KIB
+        );
+        for (r, (name, expect)) in applied[..vm_calls.len()].iter().zip(&expected) {
+            assert_designed_outcome(
+                r,
+                *expect,
+                &format!("census k [vm-then-set_code] {name} at L={} KiB", l / KIB),
+            );
+        }
+        let (imported, heap) = chain.import(&block);
+        println!(
+            "COMBINED+HOLDERS@L={}KiB [vm-then-set_code]: {} VM runs + a signed set_code of {p} B \
+             (largest alone {largest_sc_alone} B, VM extrinsics {vm_len} B), dispatch {:?}, \
+             encoded {:.2} MiB; importer high-water {:.3} MiB (net {:.3}), {:.1} % of 128 MiB \
+             free; import {}",
+            l / KIB,
+            vm_calls.len(),
+            applied.last(),
+            block.encode().len() as f64 / MIB as f64,
+            mib(heap),
+            mib(heap.saturating_sub(empty_import)),
+            (128.0 - mib(heap)) / 128.0 * 100.0,
+            if imported.is_ok() { "IMPORTED" } else { "TRAP" }
+        );
+        assert!(
+            imported.is_ok(),
+            "[vm-then-set_code] L={} KiB block must import: {imported:?}",
+            l / KIB
+        );
+        if mib(heap) > 128.0 * 0.75 {
+            low_free.push((l, "vm-then-set_code", mib(heap)));
         }
     }
     let ratio_of = |cap: u64| {

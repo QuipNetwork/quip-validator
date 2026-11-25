@@ -66,6 +66,18 @@ impl ApprovedConstantDelta {
 }
 
 pub const APPROVED_CONSTANT_DELTAS: &[ApprovedConstantDelta] = &[
+    // QUI-2548 (owner decision of 2026-11-25): `BlockLength`, encoded as its
+    // `PerDispatchClass<u32>` (Normal, Operational, Mandatory, each u32
+    // little-endian) and then `max_header_size: Option<u32>` (`None`, one 0
+    // byte). Baseline 3.75 / 5 / 5 MiB (Normal = 75 % of 5 MiB); candidate
+    // 3.5 / 3.75 / 5 MiB.
+    ApprovedConstantDelta {
+        pallet: "System",
+        name: "BlockLength",
+        location: ConstantLocation::PalletConstant,
+        baseline: &[0, 0, 60, 0, 0, 0, 80, 0, 0, 0, 80, 0, 0],
+        candidate: &[0, 0, 56, 0, 0, 0, 60, 0, 0, 0, 80, 0, 0],
+    },
     ApprovedConstantDelta {
         pallet: "Staking",
         name: "BondingDuration",

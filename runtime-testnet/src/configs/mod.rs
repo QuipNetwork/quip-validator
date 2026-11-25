@@ -56,6 +56,10 @@ use super::{
 use crate::weights::{BlockExecutionWeight, ExtrinsicBaseWeight};
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
+/// Block length limits per dispatch class (QUI-2548); see `RuntimeBlockLength`.
+pub const NORMAL_BLOCK_LENGTH: u32 = 3 * 1024 * 1024 + 512 * 1024;
+pub const OPERATIONAL_BLOCK_LENGTH: u32 = 3 * 1024 * 1024 + 768 * 1024;
+pub const MANDATORY_BLOCK_LENGTH: u32 = 5 * 1024 * 1024;
 const AVERAGE_ON_INITIALIZE_RATIO: Perbill = Perbill::from_percent(10);
 
 parameter_types! {
@@ -82,14 +86,29 @@ parameter_types! {
             .avg_block_initialization(AVERAGE_ON_INITIALIZE_RATIO)
             .build_or_panic()
     };
-    // Replacement for the now-deprecated `BlockLength::max_with_normal_ratio` —
-    // reconstruct the same shape via the builder: max = 5 MiB for all dispatch
-    // classes, but the Normal class is scaled down by `NORMAL_DISPATCH_RATIO`.
+    /// Block length per dispatch class (QUI-2548, owner decision of
+    /// 2026-11-25, `dec_20261125_205850_2d4af7ff`): Normal 3.5 MiB,
+    /// Operational 3.75 MiB, Mandatory 5 MiB. `CheckWeight` admits an
+    /// extrinsic only while the block's total encoded length stays within its
+    /// class's limit, so no signed extrinsic -- Normal, or an Operational one
+    /// such as `set_code` or a council `propose` that is included even when
+    /// its dispatch fails -- carries a payload in the 8 MiB allocator order
+    /// (over 4 MiB), which an importer could not hold next to the VM budget
+    /// (see [`VM_BLOCK_RESIDENCY`]). Operational keeps 0.25 MiB above Normal in
+    /// reserve; Mandatory (inherents only) keeps the previous 5 MiB. A runtime
+    /// upgrade (`dispatch_as_root(set_code)` with the 1,587,318-B Wasm, a
+    /// 1,589,028-B extrinsic) fits with 2.3 MB to spare.
     pub RuntimeBlockLength: BlockLength = BlockLength::builder()
-        .max_length(5 * 1024 * 1024)
+        .max_length(MANDATORY_BLOCK_LENGTH)
         .modify_max_length_for_class(frame_support::dispatch::DispatchClass::Normal, |len| {
-            *len = NORMAL_DISPATCH_RATIO * (5u32 * 1024 * 1024);
+            *len = NORMAL_BLOCK_LENGTH;
         })
+        .modify_max_length_for_class(
+            frame_support::dispatch::DispatchClass::Operational,
+            |len| {
+                *len = OPERATIONAL_BLOCK_LENGTH;
+            },
+        )
         .build();
     pub const SS58Prefix: u8 = 42;
 }
@@ -709,10 +728,17 @@ parameter_types! {
     /// (75.0), because Σ vs empty and census d both contain the block-level
     /// share; this is a property of that block, not a bound.
     ///
-    /// **The budget does not cover oversized Operational calls (QUI-2548); it
-    /// is not an upper bound until that is resolved.** pallet-revive contract
-    /// execution, which the budget does not measure either, is closed by origin
-    /// (QUI-2549, see [`VM_BLOCK_RESIDENCY`]).
+    /// **What the pinned sum bounds.** QUI-2548 is closed by `BlockLength`
+    /// (Normal 3.5 MiB, Operational 3.75 MiB): no admitted extrinsic carries a
+    /// payload past the 4 MiB allocator order, and census d measures the
+    /// Operational class (a signed `set_code`, included though it fails at
+    /// dispatch) up to its limit. So the pinned sum is an upper bound on the
+    /// importer heap for the classes the census measures -- VM runs (Σ and the
+    /// fixed run), the largest non-VM dispatch, and the residency of every
+    /// block the builder admits, Normal and Operational -- under the
+    /// structural-gate precondition below. It has no revive term:
+    /// pallet-revive contract execution is closed by origin instead (QUI-2549,
+    /// see [`VM_BLOCK_RESIDENCY`]).
     ///
     /// 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
@@ -762,13 +788,14 @@ parameter_types! {
     /// then applied, 2 MiB would have passed the floor again; at today's pin
     /// of 24 it does not (table above). The owner kept 1 MiB in favour of margin
     /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed
-    /// upper bound is the gate (not an upper bound until QUI-2548, see
-    /// above); a real block is only a second check. At 1 MiB that check reads: census `k`, the mixed
-    /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
-    /// 75.012 MiB high-water (41.4 % free) with the worst remark on census d's
-    /// plateau (61.012 MiB, 52.3 % free, with the old remark just below the
-    /// 2 MiB payload cliff); census `g`, without the holders and with that old
-    /// remark, 60.97 MiB.
+    /// upper bound is the gate; a real block is only a second check. At 1 MiB
+    /// that check reads: census `k`, the mixed sweep plus the holder runs plus
+    /// the ~2 MiB remark and fillers, 75.012 MiB high-water (41.4 % free) with
+    /// the worst remark on census d's plateau (61.012 MiB, 52.3 % free, with
+    /// the old remark just below the 2 MiB payload cliff); the same VM runs
+    /// plus the largest signed `set_code` that still fits the Operational
+    /// limit (3,718,826 B), 73.746 MiB (42.4 % free); census `g`, without the
+    /// holders and with that old remark, 60.97 MiB.
     ///
     /// Headroom for legitimate work, as measured rather than assumed. No
     /// legitimate on-chain `execute` workload exists today: the live testnet's
@@ -1219,8 +1246,9 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 
 /// Worst-case block residency in the importer heap: what a VALID block -- one
 /// the builder admits, imported through finalize -- makes the importer hold,
-/// measured **62.973 MiB** (census `d_encoded_block_residency_and_largest_extrinsic`,
-/// A6h), pinned at **64** (the next whole MiB leaving at least 1 MiB).
+/// measured **61.971 MiB** at the QUI-2548 block lengths (census
+/// `d_encoded_block_residency_and_largest_extrinsic`, A10; 62.973 MiB under
+/// the previous 5 MiB length, A6h), pinned at **64** (at least 1 MiB above).
 ///
 /// Three components, from census d's shapes:
 /// - **Decode and apply of a large extrinsic.** The worst block is one remark
@@ -1233,19 +1261,19 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 ///   exactly sized buffers in the 4 MiB order. Step 2: the doubling buffer's
 ///   rung 4 × 524,480 B = 2 MiB + 768 lands in the 8 MiB order; above 4 MiB +
 ///   1.5 KiB its next rung lands in the 16 MiB order. The opaque body and the
-///   re-encoded extrinsic already sit in the 4 MiB order. Measured: a payload
-///   of 2 MiB − 1 or 2 MiB holds 48.97 MiB; 2 MiB + 1 holds 54.97 (+6.0);
-///   2 MiB + 768 holds 62.97 (+8.0), a plateau to about 2 MiB + 1.2 KiB, then
-///   falling slowly as fewer fillers fit (56.20 MiB at the largest remark the
+///   re-encoded extrinsic already sit in the 4 MiB order. Measured (A10): a
+///   payload of 2 MiB − 1 holds 47.98 MiB; 2 MiB + 1 holds 53.98 (+6.0);
+///   2 MiB + 768 holds 61.97 (+8.0), a plateau to about 2 MiB + 1.2 KiB, then
+///   falling slowly as fewer fillers fit (55.96 MiB at the largest remark the
 ///   builder admits). The same block trapped at the last apply (no finalize)
-///   holds 59.47 MiB of the 62.97.
+///   holds 58.97 MiB of the 61.97.
 /// - **The finalize re-read of `ExtrinsicData`.** `frame_system::finalize`
 ///   reads every extrinsic's stored bytes back to compute the extrinsics root.
 /// - **The extrinsics-root encoding.** `ordered_root` `encode()`s those bytes
 ///   as one `Vec<Vec<u8>>`, through a buffer that starts from codec's
 ///   `[T]::size_hint` and grows by doubling; the freed rungs stay in their
-///   orders. With the re-read, finalize adds 3.5 MiB to the worst block and up
-///   to 23.5 MiB to a block of small fillers (34.4–35.0 MiB valid; 7.7–23.0
+///   orders. With the re-read, finalize adds 3.0 MiB to the worst block and up
+///   to 23.0 MiB to a block of small fillers (27.3–35.0 MiB valid; 7.7–23.0
 ///   MiB trapped at the last apply).
 ///
 /// Method: census d measures valid blocks only. A block that traps at apply or
@@ -1254,23 +1282,30 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 /// finalize) as a control. (Until A6h this term was 45 MiB, from a trapped block whose
 /// remark payload sat about 1.7 KB under the 2 MiB cliff.) A cap below 2 MiB
 /// on one extrinsic's payload would remove both steps; that is an owner
-/// decision, and a runtime upgrade carries the ~1.8 MiB Wasm.
+/// decision, and a runtime upgrade carries the Wasm (1,587,318 B today).
 ///
-/// **The budget does not cover oversized Operational calls (QUI-2548); it is
-/// not an upper bound until that is resolved.** A signed Operational call such
-/// as `set_code` that fails at dispatch is still included and finalizes, and
-/// its payload may reach the full 5 MiB block length; census d does not yet
-/// measure that class. It is an import failure without any revive: a block of
-/// 119 VM runs plus a signed 4 MiB `set_code` is admitted by the builder, and
-/// its import fails with "Allocator ran out of space".
+/// **Oversized Operational calls are closed by `BlockLength` (QUI-2548, owner
+/// decision of 2026-11-25).** A signed Operational call -- `set_code`, or a
+/// `Foundation::propose` wrapping any call -- that fails at dispatch is still
+/// included and finalizes. Its payload is now bounded by the Operational limit
+/// (3.75 MiB of block, header included), in the same 4 MiB allocator order as
+/// the Normal class's largest remark, and census d measures the class: a
+/// signed `set_code` swept across the 2 MiB cliffs holds exactly what a remark
+/// of the same body holds, and the largest admitted (body 3,931,989 B) holds
+/// 55.957 MiB. Census k's block of 119 VM runs plus the largest `set_code`
+/// that still fits (3,718,826 B) imports at 73.746 MiB (42.4 % free). Under
+/// the previous 5 MiB length that shape, with a 4,196,352-B `set_code` (the
+/// 8 MiB order), was admitted by the builder and its import failed with
+/// "Allocator ran out of space".
 ///
 /// **pallet-revive contract execution is closed by origin (QUI-2549):** only
 /// Root and Foundation members may upload or instantiate code
 /// ([`ReviveDeployOrigin`]), and a fresh genesis holds no contracts. The
-/// budget has no revive term; the closure rests on measurement: a block
-/// carrying a revive contract's recursion and a signed `set_code` of 4 MiB or
-/// more was admitted by the builder and its import failed with "Allocator ran
-/// out of space" (`eth_transact` is unmeasured). **Opening deployment requires
+/// budget has no revive term; the closure rests on measurement: under the
+/// previous 5 MiB length, a block carrying a revive contract's recursion and a
+/// signed `set_code` of 4 MiB or more was admitted by the builder and its
+/// import failed with "Allocator ran out of space" (`eth_transact` is
+/// unmeasured). **Opening deployment requires
 /// a measured revive term plus limits.**
 ///
 /// Every contract the Foundation deploys is callable by anyone, and the
@@ -1446,10 +1481,10 @@ mod xqvm_weights {
     /// cap past it fails this test rather than silently permitting an
     /// unimportable block.
     ///
-    /// A green run is not a proof that every block fits: the budget does not
-    /// cover oversized Operational calls (QUI-2548) and is not an upper bound
-    /// until that is resolved; pallet-revive contract execution is closed by
-    /// origin instead (QUI-2549). See `VM_BLOCK_RESIDENCY`.
+    /// The budget covers the Operational class at its `BlockLength` limit
+    /// (QUI-2548, closed by `BlockLength` and measured by census d and k) and
+    /// has no revive term: pallet-revive contract execution is closed by origin
+    /// instead (QUI-2549). See `VM_BLOCK_RESIDENCY`.
     #[test]
     fn vm_memory_budget_stays_under_the_runtime_heap() {
         /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB
