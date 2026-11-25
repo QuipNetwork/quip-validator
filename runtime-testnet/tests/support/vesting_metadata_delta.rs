@@ -1166,6 +1166,133 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+// W3-009 (QuantumPow: one accepted proof per miner per block). Exact deltas:
+// one error appended at the end of the QuantumPow error enum,
+// `ProofAlreadySubmittedThisBlock`, and one new storage value,
+// `BlockSubmitters`, right after `BlockBestProof`: a bounded set of the same
+// account type as the `Miners` key, empty by default.
+const PROOF_ALREADY_SUBMITTED_DOCS: &[&str] = &[
+    "This miner already had a proof accepted in this block: one",
+    "`submit_proof` per miner per block (W3-009).",
+];
+const BLOCK_SUBMITTERS_DOCS: &[&str] = &[
+    " The miners that submitted an accepted proof in this block (W3-009):",
+    " one `submit_proof` per miner per block, checked before the",
+    " `MaxProofsPerBlock` limit so one miner cannot take every slot. Cleared",
+    " in `on_initialize`; bounded by `MaxProofsPerBlock`, since each accepted",
+    " proof adds one miner and the block accepts at most that many.",
+];
+
+fn pow_errors(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    let id = metadata["pallets"]
+        .as_array()
+        .and_then(|pallets| pallets.iter().find(|p| p["name"] == "QuantumPow"))
+        .and_then(|pallet| pallet["error"]["ty"].as_u64())
+        .ok_or("missing QuantumPow.error type")?;
+    let id = usize::try_from(id).map_err(|_| "QuantumPow error type id does not fit usize")?;
+    metadata["types"]["types"]
+        .get_mut(id)
+        .and_then(|ty| ty.pointer_mut("/type/def/variant/variants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "missing QuantumPow.error variants".into())
+}
+
+fn normalize_block_submitters(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    // The appended error.
+    let baseline = pow_errors(before)?;
+    if baseline
+        .iter()
+        .any(|v| v["name"] == "ProofAlreadySubmittedThisBlock")
+    {
+        return Err("unexpected baseline QuantumPow ProofAlreadySubmittedThisBlock".into());
+    }
+    let base_len = baseline.len();
+    let candidate = pow_errors(after)?;
+    let expected = serde_json::json!({
+        "name": "ProofAlreadySubmittedThisBlock",
+        "index": base_len,
+        "docs": PROOF_ALREADY_SUBMITTED_DOCS,
+    });
+    if candidate.len() != base_len + 1 || candidate.last() != Some(&expected) {
+        return Err(format!(
+            "missing or incorrect required QuantumPow appended error: {}",
+            serde_json::to_string(&candidate.last()).unwrap_or_default()
+        ));
+    }
+    candidate.pop();
+
+    // The new storage value.
+    if pow_storage_entries(before)?
+        .iter()
+        .any(|entry| entry["name"] == "BlockSubmitters")
+    {
+        return Err("unexpected baseline QuantumPow BlockSubmitters".into());
+    }
+    let types = after.clone();
+    let entries = pow_storage_entries(after)?;
+    let best_at = entries
+        .iter()
+        .position(|entry| entry["name"] == "BlockBestProof")
+        .ok_or("missing candidate BlockBestProof")?;
+    let found: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry["name"] == "BlockSubmitters")
+        .map(|(index, _)| index)
+        .collect();
+    if found != [best_at + 1] {
+        return Err("missing or misplaced required QuantumPow BlockSubmitters".into());
+    }
+    let submitters = entries[best_at + 1].clone();
+    let account = entries
+        .iter()
+        .find(|entry| entry["name"] == "Miners")
+        .map(|miners| miners["ty"]["Map"]["key"].clone())
+        .ok_or("missing candidate Miners")?;
+    let expected = serde_json::json!({
+        "default": [0],
+        "deprecation_info": "NotDeprecated",
+        "docs": BLOCK_SUBMITTERS_DOCS,
+        "modifier": "Default",
+        "name": "BlockSubmitters",
+        "ty": {"Plain": submitters["ty"]["Plain"].clone()},
+    });
+    if submitters != expected {
+        return Err(format!(
+            "incorrect required QuantumPow BlockSubmitters entry: {}",
+            serde_json::to_string(&submitters).unwrap_or_default()
+        ));
+    }
+    // The value: a `BoundedBTreeSet` of the miner account type, followed
+    // through its wrapper composites down to the element sequence.
+    let set = registry_type(&types, &submitters["ty"]["Plain"])
+        .ok_or("missing BlockSubmitters value type")?;
+    if set["path"].as_array().and_then(|p| p.last()) != Some(&Value::from("BoundedBTreeSet")) {
+        return Err(format!(
+            "BlockSubmitters is not a BoundedBTreeSet: {}",
+            serde_json::to_string(&set["path"]).unwrap_or_default()
+        ));
+    }
+    let mut ty = set;
+    let element = loop {
+        if let Some(element) = ty.pointer("/def/sequence/type") {
+            break element.clone();
+        }
+        let inner = ty
+            .pointer("/def/composite/fields")
+            .and_then(Value::as_array)
+            .filter(|fields| fields.len() == 1)
+            .map(|fields| fields[0]["type"].clone())
+            .ok_or("BlockSubmitters value does not reduce to a sequence")?;
+        ty = registry_type(&types, &inner).ok_or("missing BlockSubmitters inner type")?;
+    };
+    if element != account {
+        return Err("BlockSubmitters element is not the Miners account type".into());
+    }
+    pow_storage_entries(after)?.remove(best_at + 1);
+    Ok(())
+}
+
 // W1-009 (MinerRegistry retention pruning and bounded paging). Exact deltas:
 // two constants appended to the pallet, a new `PruneCursor` storage value, and
 // MinerRegistryApi moving to version 2 with the storage-order paging docs.
@@ -1815,6 +1942,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     normalize_xqvm(&mut left, &mut right)?;
     normalize_miner_registry(&mut left, &mut right)?;
     normalize_topology_summary(&mut left, &mut right)?;
+    normalize_block_submitters(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
         .ok_or("missing baseline registry")?
@@ -2474,6 +2602,98 @@ mod tests {
         assert!(
             check(&before, &wrong_type).is_err(),
             "accepted a different value type"
+        );
+    }
+
+    #[test]
+    fn requires_exact_quantum_pow_block_submitters_and_error() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        for field in [
+            "name",
+            "modifier",
+            "default",
+            "docs",
+            "deprecation_info",
+            "ty",
+        ] {
+            let mut wrong = after.clone();
+            pow_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "BlockSubmitters")
+                .unwrap()[field] = Value::from("mutated");
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted BlockSubmitters.{field}"
+            );
+        }
+        let mut missing = after.clone();
+        pow_storage_entries(&mut missing)
+            .unwrap()
+            .retain(|e| e["name"] != "BlockSubmitters");
+        assert!(
+            check(&before, &missing).is_err(),
+            "accepted a missing BlockSubmitters"
+        );
+        let mut misplaced = after.clone();
+        let entries = pow_storage_entries(&mut misplaced).unwrap();
+        let at = entries
+            .iter()
+            .position(|e| e["name"] == "BlockSubmitters")
+            .unwrap();
+        let entry = entries.remove(at);
+        entries.push(entry);
+        assert!(
+            check(&before, &misplaced).is_err(),
+            "accepted a misplaced BlockSubmitters"
+        );
+        // A set of a different element type: point the innermost sequence at
+        // another registry type.
+        let mut wrong_element = after.clone();
+        let mut id = pow_storage_entries(&mut wrong_element)
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "BlockSubmitters")
+            .unwrap()["ty"]["Plain"]
+            .as_u64()
+            .unwrap() as usize;
+        loop {
+            let ty = &wrong_element["types"]["types"][id]["type"];
+            if ty.pointer("/def/sequence/type").is_some() {
+                break;
+            }
+            id = ty["def"]["composite"]["fields"][0]["type"]
+                .as_u64()
+                .unwrap() as usize;
+        }
+        let element = wrong_element["types"]["types"][id]["type"]["def"]["sequence"]["type"]
+            .as_u64()
+            .unwrap();
+        wrong_element["types"]["types"][id]["type"]["def"]["sequence"]["type"] =
+            Value::from(if element == 0 { 1 } else { 0 });
+        assert!(
+            check(&before, &wrong_element).is_err(),
+            "accepted a BlockSubmitters of another element type"
+        );
+        // The appended error: its docs, its name, its index, or its absence.
+        for (what, field, value) in [
+            ("docs", "docs", Value::from("mutated")),
+            ("name", "name", Value::from("Other")),
+            ("index", "index", Value::from(999)),
+        ] {
+            let mut wrong = after.clone();
+            pow_errors(&mut wrong).unwrap().last_mut().unwrap()[field] = value;
+            assert!(
+                check(&before, &wrong).is_err(),
+                "accepted ProofAlreadySubmittedThisBlock with a different {what}"
+            );
+        }
+        let mut no_error = after.clone();
+        pow_errors(&mut no_error).unwrap().pop();
+        assert!(
+            check(&before, &no_error).is_err(),
+            "accepted a missing ProofAlreadySubmittedThisBlock"
         );
     }
 

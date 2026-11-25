@@ -134,6 +134,7 @@ pub mod pallet {
     use frame_support::{
         pallet_prelude::*,
         traits::{ReservableCurrency, StorageVersion},
+        BoundedBTreeSet,
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
@@ -283,6 +284,15 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type BlockBestProof<T: Config> = StorageValue<_, ProofRecordOf<T>>;
+
+    /// The miners that submitted an accepted proof in this block (W3-009):
+    /// one `submit_proof` per miner per block, checked before the
+    /// `MaxProofsPerBlock` limit so one miner cannot take every slot. Cleared
+    /// in `on_initialize`; bounded by `MaxProofsPerBlock`, since each accepted
+    /// proof adds one miner and the block accepts at most that many.
+    #[pallet::storage]
+    pub type BlockSubmitters<T: Config> =
+        StorageValue<_, BoundedBTreeSet<T::AccountId, T::MaxProofsPerBlock>, ValueQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -458,12 +468,16 @@ pub mod pallet {
         /// A positive diversity floor requires at least two selected
         /// solutions; diversity is defined as zero for fewer than two.
         InvalidDiversityConfig,
+        /// This miner already had a proof accepted in this block: one
+        /// `submit_proof` per miner per block (W3-009).
+        ProofAlreadySubmittedThisBlock,
     }
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         fn on_initialize(n: BlockNumberFor<T>) -> Weight {
             BlockProofCount::<T>::put(0);
+            BlockSubmitters::<T>::kill();
 
             // Capture `block_hash(LastProofBlock)` permanently as soon as it
             // becomes available. The only place this hash is freshly known
@@ -485,7 +499,10 @@ pub mod pallet {
                 LastProofBlockHash::<T>::put(H256::from(Self::hash_to_bytes_32(parent)));
             }
 
-            <T as Config>::WeightInfo::register_miner().saturating_add(T::RewardPayment::weight())
+            <T as Config>::WeightInfo::register_miner()
+                .saturating_add(T::RewardPayment::weight())
+                // `BlockSubmitters` cleared above (W3-009).
+                .saturating_add(T::DbWeight::get().writes(1))
         }
 
         fn integrity_test() {
@@ -942,6 +959,13 @@ pub mod pallet {
                 Miners::<T>::contains_key(&who),
                 Error::<T>::MinerNotRegistered
             );
+            // One proof per miner per block (W3-009), checked before the
+            // block-wide limit: otherwise one miner can fill every slot with
+            // proofs under different salts and lock the others out.
+            ensure!(
+                !BlockSubmitters::<T>::get().contains(&who),
+                Error::<T>::ProofAlreadySubmittedThisBlock
+            );
             ensure!(
                 BlockProofCount::<T>::get() < T::MaxProofsPerBlock::get(),
                 Error::<T>::ProofLimitReached
@@ -1046,6 +1070,14 @@ pub mod pallet {
             BlockProofCount::<T>::mutate(|count| {
                 *count = count.saturating_add(1);
             });
+            // Cannot be full: one entry per accepted proof, and the count
+            // check above keeps accepted proofs below `MaxProofsPerBlock`.
+            BlockSubmitters::<T>::try_mutate(|submitters| {
+                submitters
+                    .try_insert(who.clone())
+                    .map(|_| ())
+                    .map_err(|_| Error::<T>::ProofLimitReached)
+            })?;
 
             Self::deposit_event(Event::ProofAccepted {
                 miner: who,

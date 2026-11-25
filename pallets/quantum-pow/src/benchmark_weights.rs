@@ -178,6 +178,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 32]`.
+	// BENCHMARK-PLACEHOLDER(W3-009): `BlockSubmitters` (r:1 w:1) added by hand to the generated
+	// counts (11 -> 12 reads, 3 -> 4 writes); regenerate (benchmark-weights job).
 	fn submit_proof(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `531 + e * (8 ±0) + n * (4 ±0)`
@@ -190,8 +192,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(57_007, 0).saturating_mul(e.into()))
 			// Standard Error: 3_233_838
 			.saturating_add(Weight::from_parts(63_590_458, 0).saturating_mul(s.into()))
-			.saturating_add(T::DbWeight::get().reads(11_u64))
-			.saturating_add(T::DbWeight::get().writes(3_u64))
+			.saturating_add(T::DbWeight::get().reads(12_u64))
+			.saturating_add(T::DbWeight::get().writes(4_u64))
 	}
 	/// Storage: `QuantumPow::TopologySummary` (r:1 w:0)
 	/// Proof: `QuantumPow::TopologySummary` (`max_values`: None, `max_size`: Some(316), added: 2791, mode: `MaxEncodedLen`)
@@ -337,6 +339,8 @@ impl WeightInfo for () {
 	/// The range of component `n` is `[16, 5000]`.
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 32]`.
+	// BENCHMARK-PLACEHOLDER(W3-009): `BlockSubmitters` (r:1 w:1) added by hand to the generated
+	// counts (11 -> 12 reads, 3 -> 4 writes); regenerate (benchmark-weights job).
 	fn submit_proof(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `531 + e * (8 ±0) + n * (4 ±0)`
@@ -349,8 +353,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(57_007, 0).saturating_mul(e.into()))
 			// Standard Error: 3_233_838
 			.saturating_add(Weight::from_parts(63_590_458, 0).saturating_mul(s.into()))
-			.saturating_add(RocksDbWeight::get().reads(11_u64))
-			.saturating_add(RocksDbWeight::get().writes(3_u64))
+			.saturating_add(RocksDbWeight::get().reads(12_u64))
+			.saturating_add(RocksDbWeight::get().writes(4_u64))
 	}
 	/// Storage: `QuantumPow::TopologySummary` (r:1 w:0)
 	/// Proof: `QuantumPow::TopologySummary` (`max_values`: None, `max_size`: Some(316), added: 2791, mode: `MaxEncodedLen`)

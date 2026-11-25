@@ -219,6 +219,19 @@ fn proof_for(
         s[..4].copy_from_slice(b"salt");
         s
     };
+    proof_with_salt(miner, nodes, edges, topology_hash, solution_indexes, salt)
+}
+
+/// `proof_for` with a chosen salt: a different salt gives a different nonce,
+/// so one miner can build several distinct valid proofs.
+fn proof_with_salt(
+    miner: u64,
+    nodes: &BoundedVec<u32, MaxNodes>,
+    edges: &BoundedVec<(u32, u32), MaxEdges>,
+    topology_hash: sp_core::H256,
+    solution_indexes: &[usize],
+    salt: [u8; 32],
+) -> QuantumProof<crate::PackedSolutionsOf<Test>> {
     // Mirror the chain-side lookup: the pallet reads from the cached
     // `LastProofBlockHash` storage value (populated lazily by
     // on_initialize), not directly from frame_system's ring buffer.
@@ -3655,5 +3668,63 @@ fn topology_summary_matches_the_meta_for_every_registered_topology() {
         }
         assert_eq!(checked, 3);
         assert_eq!(crate::TopologySummary::<Test>::iter().count(), 3);
+    });
+}
+
+/// W3-009: one miner must not take every `MaxProofsPerBlock` slot. Each proof
+/// under a different salt is a different valid proof, so before the fix one
+/// miner could fill all 8 slots in a block (e.g. in one `batch_all`) and every
+/// other miner's proof, however good, met `ProofLimitReached`. Now a second
+/// proof from the same miner is refused before the limit is checked, another
+/// miner still gets in, and the set clears with the block.
+#[test]
+fn one_proof_per_miner_per_block_leaves_room_for_other_miners() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(2)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
+        let salt = |i: u8| [i; 32];
+        let accepted_energy = || match System::events().last().map(|e| e.event.clone()) {
+            Some(RuntimeEvent::QuantumPow(crate::Event::ProofAccepted {
+                energy_milli, ..
+            })) => energy_milli,
+            other => panic!("expected ProofAccepted, got {other:?}"),
+        };
+
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(1),
+            proof_with_salt(1, &nodes, &edges, topology_hash, &[0], salt(0)),
+        ));
+        let first = accepted_energy();
+        for i in 1..<Test as crate::Config>::MaxProofsPerBlock::get() as u8 {
+            assert_noop!(
+                QuantumPow::submit_proof(
+                    RuntimeOrigin::signed(1),
+                    proof_with_salt(1, &nodes, &edges, topology_hash, &[0], salt(i)),
+                ),
+                crate::Error::<Test>::ProofAlreadySubmittedThisBlock
+            );
+        }
+        assert_eq!(BlockProofCount::<Test>::get(), 1);
+
+        // Another miner still gets in, and the better of the two is the best.
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(2),
+            proof_with_salt(2, &nodes, &edges, topology_hash, &[0], salt(0)),
+        ));
+        let second = accepted_energy();
+        let best = BlockBestProof::<Test>::get().expect("a best proof");
+        assert_eq!(best.energy_milli, first.min(second));
+        assert_eq!(crate::BlockSubmitters::<Test>::get().len(), 2);
+
+        // A new block clears the set: miner 1 may submit again.
+        System::set_block_number(2);
+        QuantumPow::on_initialize(2);
+        assert!(crate::BlockSubmitters::<Test>::get().is_empty());
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(1),
+            proof_with_salt(1, &nodes, &edges, topology_hash, &[0], salt(9)),
+        ));
     });
 }
