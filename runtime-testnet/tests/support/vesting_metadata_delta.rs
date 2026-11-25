@@ -291,6 +291,66 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5a (minimum block wait). Exact deltas, each appended last: the
+// `MinBlockWait` constant after B4a's `OrderDepositPerByte` (the type of
+// `MaxBlockWait`, value 2), and the `BlockWaitTooShort` error after B4c's
+// `DeadlineTooShort`. Runs before every other mempool normaliser.
+const MIN_BLOCK_WAIT_DOCS: &[&str] = &[
+    " The shortest `block_wait` an order may set (W3-001, design §B5 v2",
+    " item 8): at least 2, so an honest reveal that slips one block behind",
+    " a copied answer at block M still lands, at M + 1, before the order",
+    " closes.",
+];
+const BLOCK_WAIT_TOO_SHORT_DOCS: &[&str] = &["`block_wait` is below `MinBlockWait` (W3-001)."];
+
+fn normalize_min_block_wait(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let has = |list: &[Value], name: &str| list.iter().any(|v| v["name"] == name);
+    if has(mempool_constants(before)?, "MinBlockWait")
+        || has(mempool_variants(before, "error")?, "BlockWaitTooShort")
+    {
+        return Err("unexpected baseline mempool MinBlockWait".into());
+    }
+    let max_wait_ty = mempool_constants(after)?
+        .iter()
+        .find(|c| c["name"] == "MaxBlockWait")
+        .map(|c| c["ty"].clone())
+        .ok_or("missing candidate MaxBlockWait")?;
+    let constants = mempool_constants(after)?;
+    let want = serde_json::json!({
+        "deprecation_info": "NotDeprecated",
+        "docs": MIN_BLOCK_WAIT_DOCS,
+        "name": "MinBlockWait",
+        "ty": max_wait_ty,
+        "value": [2, 0, 0, 0],
+    });
+    let len = constants.len();
+    if len < 2
+        || constants[len - 2]["name"] != "OrderDepositPerByte"
+        || constants.last() != Some(&want)
+    {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool MinBlockWait: {}",
+            serde_json::to_string(&constants.last()).unwrap_or_default()
+        ));
+    }
+    constants.pop();
+    let errors = mempool_variants(after, "error")?;
+    let len = errors.len();
+    let want = serde_json::json!({
+        "docs": BLOCK_WAIT_TOO_SHORT_DOCS,
+        "index": len.saturating_sub(1),
+        "name": "BlockWaitTooShort",
+    });
+    if len < 2 || errors[len - 2]["name"] != "DeadlineTooShort" || errors.last() != Some(&want) {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool BlockWaitTooShort: {}",
+            serde_json::to_string(&errors.last()).unwrap_or_default()
+        ));
+    }
+    errors.pop();
+    Ok(())
+}
+
 // W3-006 B4c (minimum deadline). Exact delta: the `DeadlineTooShort` error
 // appended directly after B4a's `DepositNotAvailable`. Runs before
 // `normalize_order_deposit`, which expects its own error last.
@@ -2123,7 +2183,9 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
             ));
         }
     }
-    // First: W3-006 appends after every other mempool delta, B4c last.
+    // First: W3-001 then W3-006 append after every other mempool delta,
+    // newest first.
+    normalize_min_block_wait(&mut left, &mut right)?;
     normalize_deadline_too_short(&mut left, &mut right)?;
     normalize_order_deposit(&mut left, &mut right)?;
     normalize_audit_retention(&mut left, &mut right)?;
@@ -2797,6 +2859,51 @@ mod tests {
             check(&before, &wrong_type).is_err(),
             "accepted a different value type"
         );
+    }
+
+    #[test]
+    fn requires_exact_mempool_min_block_wait() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        for field in ["name", "ty", "value", "docs", "deprecation_info"] {
+            let mut wrong = after.clone();
+            mempool_constants(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|c| c["name"] == "MinBlockWait")
+                .unwrap()[field] = Value::from("mutated");
+            cases.push((format!("MinBlockWait.{field}"), wrong));
+        }
+        let mut one = after.clone();
+        mempool_constants(&mut one)
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["name"] == "MinBlockWait")
+            .unwrap()["value"] = serde_json::json!([1, 0, 0, 0]);
+        cases.push(("MinBlockWait = 1".into(), one));
+        for field in ["docs", "name", "index"] {
+            let mut wrong = after.clone();
+            mempool_variants(&mut wrong, "error")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "BlockWaitTooShort")
+                .unwrap()[field] = Value::from(999);
+            cases.push((format!("BlockWaitTooShort.{field}"), wrong));
+        }
+        let mut misplaced = after.clone();
+        let constants = mempool_constants(&mut misplaced).unwrap();
+        let len = constants.len();
+        constants.swap(len - 1, len - 2);
+        cases.push(("misplaced MinBlockWait".into(), misplaced));
+        let mut misplaced = after.clone();
+        let errors = mempool_variants(&mut misplaced, "error").unwrap();
+        let len = errors.len();
+        errors.swap(len - 1, len - 2);
+        cases.push(("misplaced BlockWaitTooShort".into(), misplaced));
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

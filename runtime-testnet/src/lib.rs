@@ -1480,7 +1480,8 @@ mod tests {
                     min_diversity_milli: None,
                     min_solutions: None,
                 },
-                reward, JobMode::Open, RewardResolution::SingleBest, 2, 1,
+                // W3-001: block_wait >= MinBlockWait (2); still closes at block 2.
+                reward, JobMode::Open, RewardResolution::SingleBest, 1, 2,
                 ResultDelivery::OnChainOnly,
             ));
             assert_ok!(QuantumComputeMempool::submit_solution(
@@ -1567,8 +1568,9 @@ mod tests {
                 miner_types: None
             },
             RewardResolution::TopNEqual { n: 2 },
-            2,
+            // W3-001: block_wait >= MinBlockWait (2); still closes at block 2.
             1,
+            2,
             ResultDelivery::CallbackWithPoll {
                 endpoint: b"https://solver.example/poll".to_vec().try_into().unwrap()
             },
@@ -1940,7 +1942,7 @@ mod tests {
                     JobMode::Open,
                     RewardResolution::SingleBest,
                     10,
-                    1,
+                    2,
                     ResultDelivery::OnChainOnly,
                 )
             };

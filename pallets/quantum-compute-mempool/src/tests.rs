@@ -4886,3 +4886,62 @@ mod w3_006_lazy {
         });
     }
 }
+
+/// W3-001 (design §B5 v2 item 8) -- the minimum block wait.
+mod w3_001_min_block_wait {
+    use super::*;
+
+    fn propose_with_wait(block_wait: u64) -> frame_support::dispatch::DispatchResult {
+        let spec_id = match JobSpecs::<Test>::iter_keys().next() {
+            Some(spec_id) => spec_id,
+            None => register_spec(),
+        };
+        QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            block_wait,
+            ResultDelivery::OnChainOnly,
+        )
+    }
+
+    /// At the runtimes' minimum of 2, a block wait of 1 is refused and 2 is
+    /// admitted.
+    #[test]
+    fn block_wait_below_the_minimum_is_refused() {
+        new_test_ext().execute_with(|| {
+            MinBlockWait::set(2);
+            register_spec();
+            for short in [0, 1] {
+                assert_noop!(
+                    propose_with_wait(short),
+                    crate::Error::<Test>::BlockWaitTooShort
+                );
+            }
+            assert_ok!(propose_with_wait(2));
+            assert_eq!(JobOrders::<Test>::get(0).unwrap().timing.block_wait, 2);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "MinBlockWait must not exceed MaxBlockWait")]
+    fn integrity_test_requires_min_block_wait_at_most_max() {
+        new_test_ext().execute_with(|| {
+            // The mock's MaxBlockWait is 20.
+            MinBlockWait::set(21);
+            <QuantumComputeMempool as Hooks<u64>>::integrity_test();
+        });
+    }
+
+    #[test]
+    fn integrity_test_accepts_min_block_wait_equal_to_max() {
+        new_test_ext().execute_with(|| {
+            MinBlockWait::set(20);
+            <QuantumComputeMempool as Hooks<u64>>::integrity_test();
+        });
+    }
+}

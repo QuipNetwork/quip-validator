@@ -295,6 +295,13 @@ pub mod pallet {
         #[pallet::constant]
         type OrderDepositPerByte: Get<BalanceOf<Self>>;
 
+        /// The shortest `block_wait` an order may set (W3-001, design §B5 v2
+        /// item 8): at least 2, so an honest reveal that slips one block behind
+        /// a copied answer at block M still lands, at M + 1, before the order
+        /// closes.
+        #[pallet::constant]
+        type MinBlockWait: Get<BlockNumberFor<Self>>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -620,6 +627,8 @@ pub mod pallet {
         DepositNotAvailable,
         /// `deadline_blocks` must be at least 1 (W3-006).
         DeadlineTooShort,
+        /// `block_wait` is below `MinBlockWait` (W3-001).
+        BlockWaitTooShort,
     }
 
     #[pallet::call]
@@ -1073,6 +1082,11 @@ pub mod pallet {
                 T::MinReward::get() >= T::Currency::minimum_balance(),
                 "MinReward must be at least the existential deposit"
             );
+            // W3-001: an order must be able to take its shortest block wait.
+            assert!(
+                T::MinBlockWait::get() <= T::MaxBlockWait::get(),
+                "MinBlockWait must not exceed MaxBlockWait"
+            );
         }
 
         /// Finalise the orders whose effective expiry is at or before `now`.
@@ -1282,6 +1296,10 @@ pub mod pallet {
             ensure!(
                 deadline_blocks <= T::MaxDeadlineBlocks::get(),
                 Error::<T>::DeadlineTooLong
+            );
+            ensure!(
+                block_wait >= T::MinBlockWait::get(),
+                Error::<T>::BlockWaitTooShort
             );
             ensure!(
                 block_wait <= T::MaxBlockWait::get(),

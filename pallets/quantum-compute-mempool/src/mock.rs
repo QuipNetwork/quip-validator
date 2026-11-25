@@ -187,6 +187,10 @@ parameter_types! {
     /// deposit tests set them (`OrderDepositPerItem::set`).
     pub static OrderDepositPerItem: Balance = 0;
     pub static OrderDepositPerByte: Balance = 0;
+    /// W3-001: the runtimes use 2. Zero by default, so the timing of tests
+    /// that predate it (`block_wait` 0 or 1) is unchanged; the tests of the
+    /// minimum set it.
+    pub static MinBlockWait: u64 = 0;
     pub static ExistentialDeposit: Balance = 1;
     pub static MaxTransformSteps: u64 = 1000;
     pub static VmMemory: u64 = 1024 * 1024;
@@ -220,6 +224,7 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type EscrowPalletId = EscrowPalletId;
     type OrderDepositPerItem = OrderDepositPerItem;
     type OrderDepositPerByte = OrderDepositPerByte;
+    type MinBlockWait = MinBlockWait;
     type ResultTtlBlocks = ResultTtlBlocks;
     type OrderRetentionBlocks = OrderRetentionBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;

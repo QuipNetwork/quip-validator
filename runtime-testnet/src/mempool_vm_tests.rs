@@ -105,7 +105,7 @@ fn real_runtime_wiring_changes_persisted_spins() {
             JobMode::Open,
             RewardResolution::SingleBest,
             10,
-            1,
+            2,
             ResultDelivery::OnChainOnly
         ));
         assert_ok!(QuantumComputeMempool::submit_solution(
