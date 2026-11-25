@@ -20,11 +20,12 @@ const XQBC_HEADER_LEN: usize = 15;
 /// The `HALT` opcode byte.
 const HALT_OPCODE: u8 = 0xFF;
 
-/// Opcode bytes for the hand-assembled shapes below. `InstructionBuilder`
-/// refuses a label nothing jumps to, and that refusal is exactly what makes
-/// the densest shapes unreachable through the builder while remaining
-/// perfectly acceptable to the verifier.
+/// Opcode bytes for the hand-assembled shape below, which is assembled
+/// directly so its block count and byte length are exact.
 const TARGET_OPCODE: u8 = 0x00;
+/// `JUMP` with a two-byte big-endian label: the index of the `TARGET` it
+/// names, counting from 0 in program order.
+const JUMP2_OPCODE: u8 = 0x03;
 const NEXT_OPCODE: u8 = 0x07;
 const RANGE_OPCODE: u8 = 0x08;
 const PUSH1_OPCODE: u8 = 0x11;
@@ -46,42 +47,56 @@ const MAX_BENCH_OUTPUT_SLOTS: u32 = 256;
 /// it and `NEXT` closing it.
 const LOOP_LEVEL_BYTES: usize = 6;
 
-/// Build a valid XQVM program of exactly `target_len` bytes whose verifier
-/// CFG has exactly `blocks` basic blocks, at the deepest loop nesting the
-/// block budget allows (up to `MAX_BENCH_LOOP_DEPTH`).
+/// Body bytes `build_blocks_program` needs for `blocks` blocks: `n` loop
+/// levels at `LOOP_LEVEL_BYTES` each, then `t = blocks - 2n` `TARGET`s
+/// chained by `t - 1` three-byte `JUMP2`s (`6n + 4t - 3`), with `n` as deep as
+/// `MAX_BENCH_LOOP_DEPTH` and the block count allow.
+fn blocks_shape(blocks: usize) -> (usize, usize, usize) {
+    if blocks == 1 {
+        return (0, 0, 0);
+    }
+    let nesting = (MAX_BENCH_LOOP_DEPTH as usize).min((blocks - 1) / 2);
+    let targets = blocks - 2 * nesting;
+    (
+        nesting,
+        targets,
+        LOOP_LEVEL_BYTES * nesting + 4 * targets - 3,
+    )
+}
+
+/// Build a program of exactly `target_len` bytes with exactly `blocks` basic
+/// blocks (as `ControlFlowShape` counts them), the shape the structural gate
+/// does the most work for at that block count.
 ///
-/// `store_program` decodes and then statically verifies, and the two cost
-/// different things:
+/// What `store_program` spends, since QUI-2516 replaced xqvm's full checker
+/// with the structural gate (`crate::structural_gate`):
 ///
-/// * `Program::decode` walks the instruction stream once, so its cost is
-///   driven by byte count: a few nanoseconds per one-byte opcode, whatever
-///   the opcode is.
-/// * `checker::check` builds a control-flow graph and runs its analyses
-///   over it, so its cost -- and, more to the point, its memory -- is
-///   driven by basic-block count: roughly a microsecond and 3 KiB per block
-///   natively. Its loop check then re-walks every loop region's blocks once
-///   per enclosing loop, so on top of that it is linear in block count
-///   times nesting depth, at ~40 ns per block visit.
+/// * `Program::decode`, the canonical re-encode and `ControlFlowShape` each
+///   walk the bytes once: a cost per byte, whatever the opcodes are;
+/// * `LoopNestingPhase` walks the instructions once with a stack of open
+///   loops: per instruction;
+/// * `JumpSpanPhase` checks every jump against the loop body it sits in, with
+///   a binary search over the loop and target offsets: per jump, times the
+///   logarithm of their count. That is the one term that is not linear in
+///   bytes, and jumps are bounded by the block count (each needs a `TARGET`,
+///   and each `TARGET` is a block leader).
 ///
-/// The shape is therefore `n` nested loops around a run of `TARGET`s, with
-/// `n` as deep as `MAX_BENCH_LOOP_DEPTH` and the block budget allow, then
-/// `NOP` padding to the requested length. Every block sits inside every
-/// loop, which is the most work the verifier can be made to do for the
-/// block count -- and since the per-block price is measured at maximum
-/// nesting, it is conservative for every shallower program.
+/// The full checker's control-flow graph -- about 3 KiB and a microsecond per
+/// block natively, and its re-walk of every loop region once per enclosing
+/// loop -- is gone from `store_program`. mythos measured the gate natively
+/// and saw no block-count effect over the byte cost (`audit-evidence/
+/// 2026-11-25-mythos-checker-removal/`).
 ///
-/// Measured natively at 2,048 blocks: a flat `TARGET` sled verifies in
-/// ~2 ms, the same blocks inside 32 nested loops in ~4.7 ms, inside 64 in
-/// ~7.8 ms. Unbounded, the same opcodes are a different story: 2,048 bare
-/// nested `RANGE`/`NEXT` pairs take 255 ms and 16,384 take 20 s, and a
-/// pure `TARGET` sled at `MaxProgramSize` exhausted the runtime allocator
-/// on the reference machine. Those are why blocks and nesting are bounded
-/// and the block count is a separately priced, refunded component.
-///
-/// The verifier accepts the shape because an unreferenced `TARGET` is not
-/// a fault -- it is a no-op at run time and a block boundary at verify
-/// time. The builder rejects it as an unused label, which is why the bytes
-/// are assembled directly and wrapped with `Program::new`.
+/// The shape: `n` nested `RANGE` loops, as deep as `MAX_BENCH_LOOP_DEPTH` and
+/// the block count allow, around a chain `TARGET 0; JUMP2 1; TARGET 1;
+/// JUMP2 2; ...; TARGET t-1` -- every block but the loop leaders carries a
+/// jump, each a forward jump inside the innermost loop body (so the gate
+/// admits it) that `JumpSpanPhase` must search for -- then `NOP` padding and
+/// `HALT`. Each loop level is two leaders (after `RANGE`, after `NEXT`); a
+/// `JUMP2` is followed by its own target, so it adds no leader; the first
+/// `TARGET` shares the leader the last `RANGE` made. So `blocks = 2n + t`.
+/// Under the full checker the shape was a run of unreferenced `TARGET`s, the
+/// most CFG work per block; jumps are now what costs per block.
 fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
     let len = target_len as usize;
     assert!(
@@ -91,32 +106,24 @@ fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
     assert!(blocks >= 1, "every program has at least its entry block");
     let body = len - XQBC_HEADER_LEN - 1;
     let blocks = blocks as usize;
-
-    // The entry block is free: a bare `HALT` is one block in zero body
-    // bytes. Past that, each loop level costs two leaders (after RANGE,
-    // after NEXT) and `LOOP_LEVEL_BYTES`; a TARGET costs one leader and one
-    // byte, except the first, which shares the leader the last RANGE (or
-    // the entry) already made. So `blocks = 2n + t`, `bytes = 6n + t`, and
-    // the nesting is the deepest that both the block count and the byte
-    // budget allow.
-    let (nesting, targets) = if blocks == 1 {
-        (0, 0)
-    } else {
-        assert!(
-            blocks <= body,
-            "{blocks} blocks do not fit in {body} body bytes"
-        );
-        let nesting = (MAX_BENCH_LOOP_DEPTH as usize)
-            .min((blocks - 1) / 2)
-            .min((body - blocks) / (LOOP_LEVEL_BYTES - 2));
-        (nesting, blocks - 2 * nesting)
-    };
+    let (nesting, targets, needed) = blocks_shape(blocks);
+    assert!(
+        needed <= body,
+        "{blocks} blocks need {needed} body bytes; {body} available"
+    );
 
     let mut code = Vec::with_capacity(body + 1);
     for _ in 0..nesting {
         code.extend_from_slice(&[PUSH1_OPCODE, 0, PUSH1_OPCODE, 1, RANGE_OPCODE]);
     }
-    code.extend(core::iter::repeat_n(TARGET_OPCODE, targets));
+    for label in 0..targets {
+        code.push(TARGET_OPCODE);
+        if label + 1 < targets {
+            let next = u16::try_from(label + 1).expect("blocks <= MaxProgramBlocks fit a u16");
+            code.push(JUMP2_OPCODE);
+            code.extend_from_slice(&next.to_be_bytes());
+        }
+    }
     code.extend(core::iter::repeat_n(NEXT_OPCODE, nesting));
     code.resize(body, NOP_OPCODE);
     code.push(HALT_OPCODE);
@@ -138,8 +145,19 @@ fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
         "shape must nest as computed"
     );
     crate::structural_gate(&decoded)
-        .expect("nested loops around unreferenced TARGETs pass the gate");
+        .expect("forward jumps inside the innermost loop body pass the gate");
     bytes
+}
+
+/// The most blocks `build_blocks_program` fits in a `target_len`-byte
+/// program, capped at `blocks`.
+fn fitting_blocks(target_len: u32, blocks: u32) -> u32 {
+    let body = (target_len as usize).saturating_sub(XQBC_HEADER_LEN + 1);
+    let mut b = blocks.max(1);
+    while b > 1 && blocks_shape(b as usize).2 > body {
+        b -= 1;
+    }
+    b
 }
 
 /// Build a valid XQVM program whose encoded byte length equals
@@ -257,17 +275,24 @@ mod benchmarks {
         let _ = T::Currency::set_balance(who, target);
     }
 
-    /// Cost of `store_program` in its two dimensions: `s` bytes to decode
-    /// and `b` basic blocks to verify, the blocks nested as deeply as the
-    /// bounds allow.
+    /// Cost of `store_program` in its two dimensions: `s` bytes to decode,
+    /// re-encode and walk through the structural gate, and `b` basic blocks,
+    /// almost every one carrying a jump the gate's jump-span phase searches
+    /// for (`build_blocks_program`).
     ///
     /// FRAME varies one component with the others at their maximum, so the
     /// `s` series is 2,048 blocks at full nesting plus `NOP` padding (the
-    /// per-byte decode slope) and the `b` series is 64 KiB with a growing
-    /// block count (the per-block verify slope, nesting included). Below
-    /// ~2,200 bytes the maximum block count does not fit and is clamped to
-    /// the body length; that bends the first two of fifty `s` points and
-    /// nothing else.
+    /// per-byte slope) and the `b` series is 64 KiB with a growing block and
+    /// jump count (the per-block slope). Below 8,141 B the maximum block
+    /// count does not fit and is clamped to what does (`fitting_blocks`);
+    /// that bends the first few of fifty `s` points and nothing else.
+    ///
+    /// Whether `b` stays a priced, refunded component: it is kept, because
+    /// jumps -- the gate's one term that is not linear in bytes -- are bounded
+    /// by it. mythos saw no block-count effect natively; if the reference
+    /// machine also fits a negligible per-block slope, `b` can be dropped in a
+    /// later change, which would also drop the `MaxProgramBlocks` pre-charge
+    /// and its refund.
     #[benchmark]
     fn store_program(s: Linear<16, { 65_536 }>, b: Linear<1, MAX_BENCH_BLOCKS>) {
         assert!(
@@ -280,8 +305,7 @@ mod benchmarks {
         );
         let caller: T::AccountId = whitelisted_caller();
         fund::<T>(&caller);
-        let blocks = b.min(s - XQBC_HEADER_LEN as u32 - 1).max(1);
-        let bytecode = build_blocks_program(s, blocks);
+        let bytecode = build_blocks_program(s, fitting_blocks(s, b));
         let bounded: BoundedVec<u8, T::MaxProgramSize> =
             bytecode.try_into().expect("s <= MaxProgramSize");
 

@@ -476,7 +476,9 @@ parameter_types! {
     /// `MaxVmMemory` is now 1 MiB.) It is also far past any real program -- the 196 xquad conformance vectors
     /// at the pinned revision have at most 8 basic blocks (median 1) -- so
     /// the ceiling binds abuse, not use. The bound is priced separately: `store_program` pre-charges
-    /// verification at this many blocks and refunds to the actual count.
+    /// its per-block component -- the structural gate's jump-span searches, one
+    /// per jump, and jumps are bounded by blocks -- at this many blocks and
+    /// refunds to the actual count.
     pub const MaxProgramBlocks: u32 = 2_048;
     /// Maximum static loop nesting in a stored program.
     ///
@@ -902,8 +904,15 @@ parameter_types! {
         )
         .saturating_mul(u64::from(QuantumMaxSolutions::get()));
     // Registration checks up to two programs; the call charges each bound.
+    // Since QUI-2516 a check is a `Programs` lookup and a decode, nothing
+    // more (`validate_programs`): no static verification, and no store,
+    // hold or event. Priced as pallet-xqvm's `execute` at `MaxProgramSize`
+    // with no output slots -- one `Programs` read and a decode of a maximal
+    // program in its worst per-byte shape, plus a one-step VM run this check
+    // does not make -- a conservative bound. It was `store_program`'s weight,
+    // which also priced the verifier and the storage writes.
     pub QuantumProgramValidationWeight: Weight =
-        pallet_xqvm::SubstrateWeight::<Runtime>::store_program(MaxProgramSize::get(), MaxProgramBlocks::get());
+        pallet_xqvm::SubstrateWeight::<Runtime>::execute(MaxProgramSize::get(), 0);
 }
 
 // QUIP-26: rank-weighted TopN has the smallest tail share. Keep the

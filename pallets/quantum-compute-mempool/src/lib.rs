@@ -271,7 +271,8 @@ pub mod pallet {
         type VmWeightPerStep: Get<Weight>;
         /// Worst-case program lookup/decode and VM setup for a batch, including proof.
         type VmProgramLookupWeight: Get<Weight>;
-        /// Worst-case bounded program lookup, decode and static verification cost.
+        /// Worst-case cost of checking one registered program: a bounded
+        /// lookup and a decode (QUI-2516: no static verification).
         type VmProgramValidationWeight: Get<Weight>;
 
         type VM: xqvm::QuantumVm<Self::AccountId, BalanceOf<Self>, Self::Hash>;
