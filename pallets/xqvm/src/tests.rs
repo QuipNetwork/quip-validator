@@ -1963,67 +1963,73 @@ fn audit_signed_all_register_cycle_is_stored_and_faults_without_hanging() {
 
 #[test]
 fn audit_signed_dead_and_live_reads_and_the_stack_peak_fault_at_execute() {
-    use xqvm::{bytecode::codec, Instruction};
+    within_watchdog("the signed dead and live reads and the stack peak", || {
+        use xqvm::{bytecode::codec, Instruction};
 
-    new_test_ext().execute_with(|| {
-        let code = |live: bool| {
-            let mut instructions = Vec::new();
-            if !live {
-                instructions.push(Instruction::Halt {});
-            }
-            instructions.extend([
-                Instruction::Target {},
-                Instruction::Drop { reg: Register(0) },
-                Instruction::Jump2 { label: 1 },
-                Instruction::Target {},
-                Instruction::Load { reg: Register(0) },
-                Instruction::Halt {},
-            ]);
-            raw_program(instructions.iter().flat_map(codec::encode).collect())
-        };
-        // The dead read is never reached: stored, and runs to HALT.
-        let dead = code(false);
-        let hash = program_hash(&dead);
-        assert_ok!(Xqvm::store_program(RuntimeOrigin::signed(1), bounded(dead)));
-        assert_eq!(ProgramOwner::<Test>::get(hash), Some(1));
-        assert_ok!(Xqvm::execute(
-            RuntimeOrigin::signed(1),
-            hash,
-            BoundedVec::default(),
-            0,
-            1_000
-        ));
-        // The live read of the dropped r0: stored, then faults at execute.
-        assert_ok!(Xqvm::remove_program(RuntimeOrigin::signed(1), hash));
-        stored_program_faults_at_execute(code(true), 1_000, Error::<Test>::VmUnsetRegister);
-        assert_ok!(Xqvm::remove_program(
-            RuntimeOrigin::signed(1),
-            program_hash(&code(true))
-        ));
-        for peak in [8192, 8193] {
-            let bytecode = build_program(|b| {
-                for _ in 0..peak {
-                    b.emit_push(1);
+        new_test_ext().execute_with(|| {
+            let code = |live: bool| {
+                let mut instructions = Vec::new();
+                if !live {
+                    instructions.push(Instruction::Halt {});
                 }
-                b.emit_sclr().emit_halt();
-            });
-            if peak == 8192 {
-                let hash = program_hash(&bytecode);
-                assert_ok!(Xqvm::store_program(
-                    RuntimeOrigin::signed(1),
-                    bounded(bytecode)
-                ));
-                assert_ok!(Xqvm::execute(
-                    RuntimeOrigin::signed(1),
-                    hash,
-                    BoundedVec::default(),
-                    0,
-                    20_000
-                ));
-            } else {
-                stored_program_faults_at_execute(bytecode, 20_000, Error::<Test>::VmStackOverflow);
+                instructions.extend([
+                    Instruction::Target {},
+                    Instruction::Drop { reg: Register(0) },
+                    Instruction::Jump2 { label: 1 },
+                    Instruction::Target {},
+                    Instruction::Load { reg: Register(0) },
+                    Instruction::Halt {},
+                ]);
+                raw_program(instructions.iter().flat_map(codec::encode).collect())
+            };
+            // The dead read is never reached: stored, and runs to HALT.
+            let dead = code(false);
+            let hash = program_hash(&dead);
+            assert_ok!(Xqvm::store_program(RuntimeOrigin::signed(1), bounded(dead)));
+            assert_eq!(ProgramOwner::<Test>::get(hash), Some(1));
+            assert_ok!(Xqvm::execute(
+                RuntimeOrigin::signed(1),
+                hash,
+                BoundedVec::default(),
+                0,
+                1_000
+            ));
+            // The live read of the dropped r0: stored, then faults at execute.
+            assert_ok!(Xqvm::remove_program(RuntimeOrigin::signed(1), hash));
+            stored_program_faults_at_execute(code(true), 1_000, Error::<Test>::VmUnsetRegister);
+            assert_ok!(Xqvm::remove_program(
+                RuntimeOrigin::signed(1),
+                program_hash(&code(true))
+            ));
+            for peak in [8192, 8193] {
+                let bytecode = build_program(|b| {
+                    for _ in 0..peak {
+                        b.emit_push(1);
+                    }
+                    b.emit_sclr().emit_halt();
+                });
+                if peak == 8192 {
+                    let hash = program_hash(&bytecode);
+                    assert_ok!(Xqvm::store_program(
+                        RuntimeOrigin::signed(1),
+                        bounded(bytecode)
+                    ));
+                    assert_ok!(Xqvm::execute(
+                        RuntimeOrigin::signed(1),
+                        hash,
+                        BoundedVec::default(),
+                        0,
+                        20_000
+                    ));
+                } else {
+                    stored_program_faults_at_execute(
+                        bytecode,
+                        20_000,
+                        Error::<Test>::VmStackOverflow,
+                    );
+                }
             }
-        }
+        });
     });
 }
 

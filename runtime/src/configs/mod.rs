@@ -691,8 +691,9 @@ parameter_types! {
     /// structural gate (the precondition above), and at the Σ pin of 20 that
     /// then applied, 2 MiB would have passed the floor again; at today's pin
     /// of 24 it does not (table above). The owner kept 1 MiB in favour of margin
-    /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed upper bound is the gate; a real block is
-    /// only a second check. At 1 MiB that check reads: census `k`, the mixed
+    /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed
+    /// upper bound is the gate (not an upper bound until QUI-2548/2549, see
+    /// above); a real block is only a second check. At 1 MiB that check reads: census `k`, the mixed
     /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
     /// 75.012 MiB high-water (41.4 % free) with the worst remark on census d's
     /// plateau (61.012 MiB, 52.3 % free, with the old remark just below the
@@ -1153,14 +1154,15 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 ///
 /// Three components, from census d's shapes:
 /// - **Decode and apply of a large extrinsic.** The worst block is one remark
-///   with a payload just over 2 MiB plus fillers. The decoded call's payload
-///   `Vec` is built twice -- by `LazyExtrinsic::decode`, then again by
-///   `do_apply_extrinsic`'s re-decode -- first sized exactly, then through
-///   codec's doubling ladder from 524,480 B (claude_reviewer's allocation
-///   trace, `alloc-trace-cliff.log`). Step 1: a payload over 2 MiB puts the
-///   exactly sized copies in the 4 MiB order. Step 2: the ladder's rung
-///   4 × 524,480 B = 2 MiB + 768 lands in the 8 MiB order; above 4 MiB +
-///   1.5 KiB the next rung lands in the 16 MiB order. The opaque body and the
+///   with a payload just over 2 MiB plus fillers. The call is decoded twice --
+///   by `LazyExtrinsic::decode`, then again by `do_apply_extrinsic`'s
+///   re-decode -- and each decode grows two buffers in codec's
+///   `decode_vec_with_len` (claude_reviewer's allocation trace,
+///   `alloc-trace-cliff.log`): one ends at exactly the payload length, the
+///   other doubles from 524,480 B. Step 1: a payload over 2 MiB puts the
+///   exactly sized buffers in the 4 MiB order. Step 2: the doubling buffer's
+///   rung 4 × 524,480 B = 2 MiB + 768 lands in the 8 MiB order; above 4 MiB +
+///   1.5 KiB its next rung lands in the 16 MiB order. The opaque body and the
 ///   re-encoded extrinsic already sit in the 4 MiB order. Measured: a payload
 ///   of 2 MiB − 1 or 2 MiB holds 48.97 MiB; 2 MiB + 1 holds 54.97 (+6.0);
 ///   2 MiB + 768 holds 62.97 (+8.0), a plateau to about 2 MiB + 1.2 KiB, then
@@ -1184,9 +1186,15 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 /// on one extrinsic's payload would remove both steps; that is an owner
 /// decision, and a runtime upgrade carries the ~1.8 MiB Wasm.
 ///
-/// **The budget does not cover pallet-revive contract execution or oversized Operational calls (QUI-2548 and QUI-2549); it is not an upper bound until those are resolved.** A signed Operational call such as `set_code` that fails
-/// at dispatch is still included and finalizes, and its payload may reach the
-/// full 5 MiB block length; census d does not yet measure that class.
+/// **The budget does not cover pallet-revive contract execution or oversized
+/// Operational calls (QUI-2548 and QUI-2549); it is not an upper bound until
+/// those are resolved.** A signed Operational call such as `set_code` that
+/// fails at dispatch is still included and finalizes, and its payload may
+/// reach the full 5 MiB block length; census d does not yet measure that
+/// class. The caveat rests on measurement: a block carrying a revive
+/// contract's recursion and a signed `set_code` of 4 MiB or more is admitted
+/// by the builder, and its import fails with "Allocator ran out of space";
+/// `eth_transact` is unmeasured.
 #[doc(hidden)]
 pub const VM_BLOCK_RESIDENCY: u64 = 64 * 1024 * 1024;
 
@@ -1349,6 +1357,11 @@ mod xqvm_weights {
     /// restated here as the contract the constants must satisfy, and raising a
     /// cap past it fails this test rather than silently permitting an
     /// unimportable block.
+    ///
+    /// A green run is not a proof that every block fits: the budget does not
+    /// cover pallet-revive contract execution or oversized Operational calls
+    /// (QUI-2548 and QUI-2549), and is not an upper bound until those are
+    /// resolved (see `VM_BLOCK_RESIDENCY`).
     #[test]
     fn vm_memory_budget_stays_under_the_runtime_heap() {
         /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB
