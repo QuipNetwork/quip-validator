@@ -1,6 +1,15 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![recursion_limit = "256"]
 
+// QUI-2549: benchmark builds open pallet-revive deployment to any signed
+// account (`configs::ReviveDeployOrigin`). A release build must never carry
+// that carve-out.
+#[cfg(all(feature = "runtime-benchmarks", feature = "on-chain-release-build"))]
+compile_error!(
+    "`runtime-benchmarks` must not be combined with `on-chain-release-build`: benchmark \
+     builds open pallet-revive deployment to any signed account (QUI-2549)"
+);
+
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
@@ -634,6 +643,19 @@ mod tests {
             };
             assert!(refused(&created), "eth create: {created:?}");
             assert!(refused(&wrapped), "eth_substrate_call: {wrapped:?}");
+
+            // `dispatch_as_fallback_account` dispatches its inner call as the
+            // outsider's (non-member) fallback account.
+            let fallback = Revive::dispatch_as_fallback_account(
+                signed(),
+                Box::new(instantiate_call(evm_initcode(&[0x00]), 4).into()),
+            );
+            assert_eq!(fallback.map_err(|e| e.error), Err(BadOrigin));
+
+            // The dry-run API reports the same refusal.
+            use pallet_revive::runtime_decl_for_revive_api::ReviveApi as _;
+            let dry_run = <Runtime>::upload_code(outsider.clone(), evm_initcode(&[0x00]), None);
+            assert_eq!(dry_run.map(|_| ()), Err(BadOrigin));
             assert!(!instantiated(&outsider), "no contract was deployed");
         });
     }
