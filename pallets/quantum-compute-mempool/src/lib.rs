@@ -566,7 +566,9 @@ pub mod pallet {
         VmProgramNotFound,
         /// A referenced program cannot be decoded.
         VmBadBytecode,
-        /// A referenced program fails static verification.
+        /// Retired (QUI-2516): registration no longer re-runs the checker; it
+        /// checks only that a referenced program exists and decodes. Kept so
+        /// no error index moves.
         VmVerificationFailed,
         /// The transform must return exactly one integer vector.
         VmOutputType,

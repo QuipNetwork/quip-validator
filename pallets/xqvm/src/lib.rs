@@ -90,26 +90,26 @@ pub mod pallet {
         type MaxProgramSize: Get<u32>;
 
         /// Maximum number of basic blocks a stored program may have, counted
-        /// the way the verifier's CFG builder counts them: see
-        /// [`ControlFlowShape`].
+        /// the way xqvm's CFG builder counts them: see [`ControlFlowShape`].
         ///
-        /// Bounds the verifier's memory and time, which `MaxProgramSize`
-        /// does not: the verifier allocates per basic block, about 3 KiB
-        /// natively, and a block can be a single byte, so a 64 KiB program
-        /// can describe ~65,000 of them and ask for ~200 MiB on a runtime
-        /// heap of 128 MiB. A failed allocation inside Wasm traps the whole
-        /// execution rather than returning a fault this pallet could report,
-        /// which is the same reason `MaxVmMemory` exists for the VM's own
-        /// allocations.
+        /// Bounds what `store_program` allocates before it can report a
+        /// fault, which `MaxProgramSize` does not: a block can be a single
+        /// byte. Decoding records every `TARGET`, and the structural gate's
+        /// jump-span pass records every loop opener, `NEXT` and jump; each of
+        /// those starts a block. A failed allocation inside Wasm traps the
+        /// whole execution rather than returning a fault this pallet could
+        /// report, which is the same reason `MaxVmMemory` exists for the VM's
+        /// own allocations.
         #[pallet::constant]
         type MaxProgramBlocks: Get<u32>;
 
         /// Maximum static loop nesting depth of a stored program.
         ///
-        /// Retains the admission policy for structured nesting. The pinned
-        /// verifier checks exact heights in one traversal, without separate
-        /// loop-body walks. Register-heavy cyclic joins still require
-        /// reference-machine cost calibration (QUI-2353).
+        /// Also the bound on the loop frames a run can hold. The structural
+        /// gate rejects unbalanced nesting and every jump across a loop-body
+        /// boundary (W1-011), so the run-time loop stack equals the lexical
+        /// nesting at every pc. The runtime's W1-002 VM memory bound depends
+        /// on it: raising it needs the census re-run.
         #[pallet::constant]
         type MaxLoopDepth: Get<u32>;
 
@@ -214,33 +214,38 @@ pub mod pallet {
         /// unsupported format version, length mismatch, or CRC-32 mismatch.
         ///
         /// This covers the container only. Faults in the instruction stream
-        /// itself get their own variants below, from the verifier.
+        /// itself get their own variants below, from the structural gate.
         InvalidBytecode,
-        /// Verifier: an instruction is truncated or uses an unknown opcode.
+        /// Structural gate: an instruction is truncated or uses an unknown
+        /// opcode.
         VerifierBadInstruction,
-        /// Verifier: a jump references a target that does not exist.
+        /// Structural gate: a jump references a target that does not exist.
         VerifierUndefinedJumpTarget,
-        /// Verifier: loop opens and closes do not balance, or a loop-context
-        /// read occurs with no active loop.
+        /// Structural gate: loop opens and closes do not balance, or a
+        /// loop-context read occurs with no active loop.
         VerifierLoopImbalance,
-        /// Verifier: a register is read before it is written, on at least one
-        /// path through the program.
+        /// Retired (QUI-2516): only the full checker raised this, and
+        /// `store_program` no longer runs it. The VM reports the fault at
+        /// `execute` as `VmUnsetRegister`. Kept so no error index moves.
         VerifierReadUnsetRegister,
-        /// Verifier: a register is read at a type it was not written as.
+        /// Retired (QUI-2516): only the full checker raised this, and
+        /// `store_program` no longer runs it. The VM reports the fault at
+        /// `execute` as `VmRegisterType`. Kept so no error index moves.
         VerifierRegisterTypeMismatch,
-        /// Verifier: the program can underflow or overflow the value stack, or
-        /// reaches a join point at inconsistent stack depths.
+        /// Retired (QUI-2516): only the full checker raised this, and
+        /// `store_program` no longer runs it. The VM reports the fault at
+        /// `execute` as `VmStackUnderflow` or `VmStackOverflow`. Kept so no
+        /// error index moves.
         VerifierStackFault,
         /// The program has more basic blocks than `MaxProgramBlocks`.
         ///
-        /// Checked before verification, because the verifier's memory is
-        /// what the bound protects and it is spent during verification.
+        /// Checked before the structural gate's passes, whose memory it
+        /// bounds.
         TooManyBlocks,
         /// The program nests loops deeper than `MaxLoopDepth`.
         ///
-        /// Checked before verification for the same reason as
-        /// `TooManyBlocks`: the cost it bounds is spent inside the verifier,
-        /// ahead of any fault the verifier would report.
+        /// Checked before the structural gate's passes. The depth also bounds
+        /// the loop frames a run can hold: see `MaxLoopDepth`.
         LoopNestingTooDeep,
         /// A program with this hash already exists.
         ProgramAlreadyExists,
@@ -278,8 +283,8 @@ pub mod pallet {
         VmRegisterType,
         /// XQVM: a register was read before anything was written to it.
         ///
-        /// The verifier rejects this statically at `store_program`, so
-        /// reaching it at run time means a path it could not prove.
+        /// `store_program` does not check this (QUI-2516); the VM raises it
+        /// when a run reaches the read.
         VmUnsetRegister,
         /// XQVM: an arithmetic operation left the `i64` range.
         ///
@@ -326,9 +331,9 @@ pub mod pallet {
         /// Appended rather than placed beside the other sample faults so
         /// that the indices of the existing variants do not move.
         VmSampleOutOfDomain,
-        /// The verifier exhausted a derived analysis work bound.
-        /// Indicates an analysis defect, not a normal bytecode fault.
-        /// Appended to preserve every existing pallet error index.
+        /// Retired (QUI-2516): only the full checker's analyses raised this,
+        /// and `store_program` no longer runs them. Kept so no error index
+        /// moves.
         VerifierAnalysisBudgetExceeded,
         /// The stored bytes are not the program's canonical encoding (W1-003a):
         /// `Program::decode` recomputes the XQBC header's slot bytes, so bytes
@@ -341,6 +346,11 @@ pub mod pallet {
         /// without its `NEXT`, or a jump into or out of a loop body.
         /// Appended to preserve every existing pallet error index.
         VerifierJumpAcrossLoopBoundary,
+        /// XQVM: a constraint opcode (`ONEHOTR`, `ONEHOTC`, `EXCLUDE`,
+        /// `IMPLIES`, `EQUALITY`, `ATLEAST`, `ATLEASTW`, `REDUCE`) was applied
+        /// to a model whose declared domain is not binary (xqvm 0.6.0).
+        /// Appended to preserve every existing pallet error index.
+        VmNonBinaryModel,
     }
 
     /// Map a structural-gate failure onto a dispatch error.
@@ -440,12 +450,7 @@ pub mod pallet {
             // from a site that does not track which register caused it, so
             // the caller-visible answer is identical.
             E::RegisterType { .. } | E::IncompatibleType(_) => Error::<T>::VmRegisterType,
-            // xqvm 0.6.0: a constraint opcode applied to a model whose
-            // declared domain is not binary. The register holds a model, but
-            // not the kind of model the opcode accepts, which is a register
-            // type fault from the caller's side. Mapped onto the existing
-            // index so this pin changes no metadata.
-            E::NonBinaryModel { .. } => Error::<T>::VmRegisterType,
+            E::NonBinaryModel { .. } => Error::<T>::VmNonBinaryModel,
             E::MemoryLimitExceeded { .. } => Error::<T>::VmMemoryLimitExceeded,
             E::UnsetRegister { .. } => Error::<T>::VmUnsetRegister,
             E::ArithmeticOverflow { .. } => Error::<T>::VmArithmeticOverflow,
@@ -549,28 +554,24 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// Store an XQVM program on-chain.
         ///
-        /// The bytecode is decoded, which checks the XQBC container, and then
-        /// statically verified, which checks the instruction stream. Both must
-        /// pass before anything is written, so a program that is accepted here
-        /// cannot fail `execute` for a reason the verifier covers.
+        /// The bytecode is decoded, which checks the XQBC container, and must
+        /// be the program's canonical encoding. The structural gate then
+        /// bounds its shape (`MaxProgramBlocks`, `MaxLoopDepth`) and runs two
+        /// lexical passes: loop nesting must balance, and no jump may cross a
+        /// loop-body boundary (W1-011). Together they bound the loop frames a
+        /// run can hold by `MaxLoopDepth` (QUI-2516).
         ///
-        /// Verifying at store time rather than at execute time puts the cost
-        /// on the account that introduced the program, once, instead of on
-        /// every account that runs it. It is also what lets `execute` skip
-        /// re-verification later (QUI-1057).
+        /// The gate does not prove register, type or stack properties. A
+        /// stored program can still fault at `execute` for those reasons: the
+        /// VM detects them at run time and the caller pays the pre-charged
+        /// weight. `remove_program` returns the deposit of a program nobody
+        /// can use.
         ///
-        /// Decoding is linear in byte length. After graph indexing, exact
-        /// stack heights require at most N block transfers and E edge checks.
-        /// Sparse register analysis permits 1024*N constant-work events and
-        /// 1024*E coordinate updates; must-init permits 256*N and 256*E.
-        /// Incoming meets are cached and block writes are summarised once.
-        /// These operation bounds do not replace reference-machine timing.
+        /// Decoding and both passes are linear in byte length.
         ///
-        /// The existing byte/block weight model pre-charges at
-        /// `MaxProgramBlocks` and refunds to the measured block count.
-        /// QUI-2353 must calibrate it against the bounded verifier on the
-        /// reference machine, especially register-heavy cyclic joins,
-        /// before this integration can restore program admission.
+        /// The byte/block weight model pre-charges at `MaxProgramBlocks` and
+        /// refunds to the measured block count. QUI-2353 must calibrate it on
+        /// the reference machine before program admission is restored.
         ///
         /// The program is stored keyed by its Blake2-256 hash for
         /// deduplication.
@@ -715,8 +716,8 @@ pub mod pallet {
         /// their worst case and refunded via `PostDispatchInfo`:
         ///
         /// * **Program size.** The call carries only a hash, so the length is
-        ///   unknown until storage is read. Decoding runs a full verifier scan
-        ///   over every instruction, which is linear in the byte length, so
+        ///   unknown until storage is read. Decoding runs xqvm's instruction
+        ///   scan over every instruction, which is linear in the byte length, so
         ///   `MaxProgramSize` is pre-charged and the actual length refunded.
         /// * **Steps.** Pre-charged on the caller's `step_limit`, refunded to
         ///   the steps actually executed.

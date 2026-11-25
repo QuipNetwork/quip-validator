@@ -310,6 +310,50 @@ fn execute_step_limit_exceeded() {
     });
 }
 
+/// xqvm 0.6.0's `NonBinaryModel` has its own dispatch error, appended at the
+/// end of the enum (A4). A constraint opcode on a spin model raises it; on a
+/// binary model of the same size the same opcode does not.
+#[test]
+fn a_constraint_on_a_spin_model_faults_with_vm_non_binary_model() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let program = |spin: bool| {
+            build_program(|b| {
+                b.emit_push(4);
+                if spin {
+                    b.emit(xqvm::Instruction::Sqmx { reg: Register(0) });
+                } else {
+                    b.emit(xqvm::Instruction::Bqmx { reg: Register(0) });
+                }
+                // penalty 1, row 0
+                b.emit_push(1)
+                    .emit_push(0)
+                    .emit(xqvm::Instruction::OneHotR { reg: Register(0) });
+                b.emit_halt();
+            })
+        };
+        stored_program_faults_at_execute(program(true), 1_000, Error::<Test>::VmNonBinaryModel);
+
+        let binary = program(false);
+        let hash = program_hash(&binary);
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(binary)
+        ));
+        let outcome = Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            1_000,
+        );
+        assert_ne!(
+            outcome.map_err(|e| e.error),
+            Err(Error::<Test>::VmNonBinaryModel.into())
+        );
+    });
+}
+
 #[test]
 fn execute_division_by_zero() {
     new_test_ext().execute_with(|| {

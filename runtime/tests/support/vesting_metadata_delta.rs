@@ -406,7 +406,9 @@ fn normalize_mempool(before: &mut Value, after: &mut Value) -> Result<(), String
             "name": "VmVerificationFailed",
             "index": 38,
             "docs": [
-                "A referenced program fails static verification."
+                "Retired (QUI-2516): registration no longer re-runs the checker; it",
+                "checks only that a referenced program exists and decodes. Kept so",
+                "no error index moves.",
             ]
         },
         {
@@ -746,28 +748,24 @@ const BASELINE_MAX_LOOP_DEPTH_DOCS: &[&str] = &[
 const CANDIDATE_STORE_PROGRAM_DOCS: &[&str] = &[
     "Store an XQVM program on-chain.",
     "",
-    "The bytecode is decoded, which checks the XQBC container, and then",
-    "statically verified, which checks the instruction stream. Both must",
-    "pass before anything is written, so a program that is accepted here",
-    "cannot fail `execute` for a reason the verifier covers.",
+    "The bytecode is decoded, which checks the XQBC container, and must",
+    "be the program's canonical encoding. The structural gate then",
+    "bounds its shape (`MaxProgramBlocks`, `MaxLoopDepth`) and runs two",
+    "lexical passes: loop nesting must balance, and no jump may cross a",
+    "loop-body boundary (W1-011). Together they bound the loop frames a",
+    "run can hold by `MaxLoopDepth` (QUI-2516).",
     "",
-    "Verifying at store time rather than at execute time puts the cost",
-    "on the account that introduced the program, once, instead of on",
-    "every account that runs it. It is also what lets `execute` skip",
-    "re-verification later (QUI-1057).",
+    "The gate does not prove register, type or stack properties. A",
+    "stored program can still fault at `execute` for those reasons: the",
+    "VM detects them at run time and the caller pays the pre-charged",
+    "weight. `remove_program` returns the deposit of a program nobody",
+    "can use.",
     "",
-    "Decoding is linear in byte length. After graph indexing, exact",
-    "stack heights require at most N block transfers and E edge checks.",
-    "Sparse register analysis permits 1024*N constant-work events and",
-    "1024*E coordinate updates; must-init permits 256*N and 256*E.",
-    "Incoming meets are cached and block writes are summarised once.",
-    "These operation bounds do not replace reference-machine timing.",
+    "Decoding and both passes are linear in byte length.",
     "",
-    "The existing byte/block weight model pre-charges at",
-    "`MaxProgramBlocks` and refunds to the measured block count.",
-    "QUI-2353 must calibrate it against the bounded verifier on the",
-    "reference machine, especially register-heavy cyclic joins,",
-    "before this integration can restore program admission.",
+    "The byte/block weight model pre-charges at `MaxProgramBlocks` and",
+    "refunds to the measured block count. QUI-2353 must calibrate it on",
+    "the reference machine before program admission is restored.",
     "",
     "The program is stored keyed by its Blake2-256 hash for",
     "deduplication.",
@@ -776,10 +774,169 @@ const CANDIDATE_STORE_PROGRAM_DOCS: &[&str] = &[
 const CANDIDATE_MAX_LOOP_DEPTH_DOCS: &[&str] = &[
     " Maximum static loop nesting depth of a stored program.",
     "",
-    " Retains the admission policy for structured nesting. The pinned",
-    " verifier checks exact heights in one traversal, without separate",
-    " loop-body walks. Register-heavy cyclic joins still require",
-    " reference-machine cost calibration (QUI-2353).",
+    " Also the bound on the loop frames a run can hold. The structural",
+    " gate rejects unbalanced nesting and every jump across a loop-body",
+    " boundary (W1-011), so the run-time loop stack equals the lexical",
+    " nesting at every pc. The runtime's W1-002 VM memory bound depends",
+    " on it: raising it needs the census re-run.",
+];
+
+// QUI-2516 (A4): the structural gate replaces the full checker, so the
+// constant docs that described the verifier's memory say what is bounded now.
+const BASELINE_MAX_PROGRAM_BLOCKS_DOCS: &[&str] = &[
+    " Maximum number of basic blocks a stored program may have, counted",
+    " the way the verifier's CFG builder counts them: see",
+    " [`ControlFlowShape`].",
+    "",
+    " Bounds the verifier's memory and time, which `MaxProgramSize`",
+    " does not: the verifier allocates per basic block, about 3 KiB",
+    " natively, and a block can be a single byte, so a 64 KiB program",
+    " can describe ~65,000 of them and ask for ~200 MiB on a runtime",
+    " heap of 128 MiB. A failed allocation inside Wasm traps the whole",
+    " execution rather than returning a fault this pallet could report,",
+    " which is the same reason `MaxVmMemory` exists for the VM's own",
+    " allocations.",
+];
+
+const CANDIDATE_MAX_PROGRAM_BLOCKS_DOCS: &[&str] = &[
+    " Maximum number of basic blocks a stored program may have, counted",
+    " the way xqvm's CFG builder counts them: see [`ControlFlowShape`].",
+    "",
+    " Bounds what `store_program` allocates before it can report a",
+    " fault, which `MaxProgramSize` does not: a block can be a single",
+    " byte. Decoding records every `TARGET`, and the structural gate's",
+    " jump-span pass records every loop opener, `NEXT` and jump; each of",
+    " those starts a block. A failed allocation inside Wasm traps the",
+    " whole execution rather than returning a fault this pallet could",
+    " report, which is the same reason `MaxVmMemory` exists for the VM's",
+    " own allocations.",
+];
+
+// QUI-2516 (A4): error variants whose docs changed in place. Names and
+// indices are unchanged (append-only, R9 Q4); each pair is checked on both
+// sides and the candidate restored to the baseline before the graph diff.
+const XQVM_ERROR_DOC_DELTAS: &[(&str, &[&str], &[&str])] = &[
+    (
+        "InvalidBytecode",
+        &[
+            "The bytecode is not a well-formed XQBC container: bad magic,",
+            "unsupported format version, length mismatch, or CRC-32 mismatch.",
+            "",
+            "This covers the container only. Faults in the instruction stream",
+            "itself get their own variants below, from the verifier.",
+        ],
+        &[
+            "The bytecode is not a well-formed XQBC container: bad magic,",
+            "unsupported format version, length mismatch, or CRC-32 mismatch.",
+            "",
+            "This covers the container only. Faults in the instruction stream",
+            "itself get their own variants below, from the structural gate.",
+        ],
+    ),
+    (
+        "VerifierBadInstruction",
+        &["Verifier: an instruction is truncated or uses an unknown opcode."],
+        &[
+            "Structural gate: an instruction is truncated or uses an unknown",
+            "opcode.",
+        ],
+    ),
+    (
+        "VerifierUndefinedJumpTarget",
+        &["Verifier: a jump references a target that does not exist."],
+        &["Structural gate: a jump references a target that does not exist."],
+    ),
+    (
+        "VerifierLoopImbalance",
+        &[
+            "Verifier: loop opens and closes do not balance, or a loop-context",
+            "read occurs with no active loop.",
+        ],
+        &[
+            "Structural gate: loop opens and closes do not balance, or a",
+            "loop-context read occurs with no active loop.",
+        ],
+    ),
+    (
+        "VerifierReadUnsetRegister",
+        &[
+            "Verifier: a register is read before it is written, on at least one",
+            "path through the program.",
+        ],
+        &[
+            "Retired (QUI-2516): only the full checker raised this, and",
+            "`store_program` no longer runs it. The VM reports the fault at",
+            "`execute` as `VmUnsetRegister`. Kept so no error index moves.",
+        ],
+    ),
+    (
+        "VerifierRegisterTypeMismatch",
+        &["Verifier: a register is read at a type it was not written as."],
+        &[
+            "Retired (QUI-2516): only the full checker raised this, and",
+            "`store_program` no longer runs it. The VM reports the fault at",
+            "`execute` as `VmRegisterType`. Kept so no error index moves.",
+        ],
+    ),
+    (
+        "VerifierStackFault",
+        &[
+            "Verifier: the program can underflow or overflow the value stack, or",
+            "reaches a join point at inconsistent stack depths.",
+        ],
+        &[
+            "Retired (QUI-2516): only the full checker raised this, and",
+            "`store_program` no longer runs it. The VM reports the fault at",
+            "`execute` as `VmStackUnderflow` or `VmStackOverflow`. Kept so no",
+            "error index moves.",
+        ],
+    ),
+    (
+        "TooManyBlocks",
+        &[
+            "The program has more basic blocks than `MaxProgramBlocks`.",
+            "",
+            "Checked before verification, because the verifier's memory is",
+            "what the bound protects and it is spent during verification.",
+        ],
+        &[
+            "The program has more basic blocks than `MaxProgramBlocks`.",
+            "",
+            "Checked before the structural gate's passes, whose memory it",
+            "bounds.",
+        ],
+    ),
+    (
+        "LoopNestingTooDeep",
+        &[
+            "The program nests loops deeper than `MaxLoopDepth`.",
+            "",
+            "Checked before verification for the same reason as",
+            "`TooManyBlocks`: the cost it bounds is spent inside the verifier,",
+            "ahead of any fault the verifier would report.",
+        ],
+        &[
+            "The program nests loops deeper than `MaxLoopDepth`.",
+            "",
+            "Checked before the structural gate's passes. The depth also bounds",
+            "the loop frames a run can hold: see `MaxLoopDepth`.",
+        ],
+    ),
+    (
+        "VmUnsetRegister",
+        &[
+            "XQVM: a register was read before anything was written to it.",
+            "",
+            "The verifier rejects this statically at `store_program`, so",
+            "reaching it at run time means a path it could not prove.",
+        ],
+        &[
+            "XQVM: a register was read before anything was written to it.",
+            "",
+            "`store_program` does not check this (QUI-2516); the VM raises it",
+            "when a run reaches the read.",
+        ],
+    ),
 ];
 
 // W1-008 part 2: the `execute` dispatchable gained an output-slot cost
@@ -814,8 +971,8 @@ const CANDIDATE_EXECUTE_DOCS: &[&str] = &[
     "their worst case and refunded via `PostDispatchInfo`:",
     "",
     "* **Program size.** The call carries only a hash, so the length is",
-    "  unknown until storage is read. Decoding runs a full verifier scan",
-    "  over every instruction, which is linear in the byte length, so",
+    "  unknown until storage is read. Decoding runs xqvm's instruction",
+    "  scan over every instruction, which is linear in the byte length, so",
     "  `MaxProgramSize` is pre-charged and the actual length refunded.",
     "* **Steps.** Pre-charged on the caller's `step_limit`, refunded to",
     "  the steps actually executed.",
@@ -889,6 +1046,11 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
             CANDIDATE_MAX_LOOP_DEPTH_DOCS,
         ),
         ("execute", BASELINE_EXECUTE_DOCS, CANDIDATE_EXECUTE_DOCS),
+        (
+            "MaxProgramBlocks",
+            BASELINE_MAX_PROGRAM_BLOCKS_DOCS,
+            CANDIDATE_MAX_PROGRAM_BLOCKS_DOCS,
+        ),
     ] {
         if *xqvm_docs(before, name)? != serde_json::json!(baseline) {
             return Err(format!("unexpected baseline Xqvm.{name} docs"));
@@ -900,6 +1062,26 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
             ));
         }
         *docs = serde_json::json!(baseline);
+    }
+    for &(name, baseline_docs, candidate_docs) in XQVM_ERROR_DOC_DELTAS {
+        let before_docs = xqvm_variants(before, "error")?
+            .iter()
+            .find(|variant| variant["name"] == name)
+            .map(|variant| variant["docs"].clone())
+            .ok_or_else(|| format!("missing baseline Xqvm.{name} error"))?;
+        if before_docs != serde_json::json!(baseline_docs) {
+            return Err(format!("unexpected baseline Xqvm.{name} error docs"));
+        }
+        let variant = xqvm_variants(after, "error")?
+            .iter_mut()
+            .find(|variant| variant["name"] == name)
+            .ok_or_else(|| format!("missing Xqvm.{name} error"))?;
+        if variant["docs"] != serde_json::json!(candidate_docs) {
+            return Err(format!(
+                "unexpected required Xqvm.{name} error documentation delta"
+            ));
+        }
+        variant["docs"] = before_docs;
     }
     let baseline = xqvm_variants(before, "error")?;
     if baseline.len() != 37
@@ -914,9 +1096,9 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
         "name": "VerifierAnalysisBudgetExceeded",
         "index": 37,
         "docs": [
-            "The verifier exhausted a derived analysis work bound.",
-            "Indicates an analysis defect, not a normal bytecode fault.",
-            "Appended to preserve every existing pallet error index."
+            "Retired (QUI-2516): only the full checker's analyses raised this,",
+            "and `store_program` no longer runs them. Kept so no error index",
+            "moves.",
         ]
     });
     // W1-003a: a second appended error, index preserved after the budget error.
@@ -942,10 +1124,22 @@ fn normalize_xqvm(before: &mut Value, after: &mut Value) -> Result<(), String> {
             "Appended to preserve every existing pallet error index."
         ]
     });
-    if candidate.len() != 40
+    // xqvm 0.6.0 (A4): a fourth appended error for `NonBinaryModel`.
+    let non_binary_model = serde_json::json!({
+        "name": "VmNonBinaryModel",
+        "index": 40,
+        "docs": [
+            "XQVM: a constraint opcode (`ONEHOTR`, `ONEHOTC`, `EXCLUDE`,",
+            "`IMPLIES`, `EQUALITY`, `ATLEAST`, `ATLEASTW`, `REDUCE`) was applied",
+            "to a model whose declared domain is not binary (xqvm 0.6.0).",
+            "Appended to preserve every existing pallet error index.",
+        ]
+    });
+    if candidate.len() != 41
         || candidate.get(37) != Some(&analysis_budget)
         || candidate.get(38) != Some(&non_canonical)
         || candidate.get(39) != Some(&jump_across_loop)
+        || candidate.get(40) != Some(&non_binary_model)
     {
         return Err("unexpected Xqvm appended-error delta".into());
     }
