@@ -1881,6 +1881,49 @@ fn a_removed_program_can_be_stored_again() {
     });
 }
 
+/// Run `body` on a worker thread under the two-second watchdog. A timeout fails
+/// as a hang. A worker that panicked drops its sender, so the channel
+/// disconnects at once; it is joined and its own panic re-raised, so the test
+/// reports the real assertion instead of a misleading "did not terminate".
+fn within_watchdog(what: &str, body: impl FnOnce() + Send + 'static) {
+    use std::{
+        sync::mpsc::{self, RecvTimeoutError},
+        time::Duration,
+    };
+    let (sender, receiver) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        body();
+        sender.send(()).unwrap();
+    });
+    match receiver.recv_timeout(Duration::from_secs(2)) {
+        Ok(()) => worker.join().expect("the worker finished"),
+        Err(RecvTimeoutError::Timeout) => {
+            panic!("{what}: did not terminate within the two-second watchdog")
+        }
+        Err(RecvTimeoutError::Disconnected) => match worker.join() {
+            Err(payload) => std::panic::resume_unwind(payload),
+            Ok(()) => panic!("{what}: the worker dropped its sender without finishing"),
+        },
+    }
+}
+
+/// The watchdog re-raises a worker's own panic: the test reports the real
+/// assertion, not "did not terminate".
+#[test]
+#[should_panic(expected = "the real assertion")]
+fn within_watchdog_reports_the_worker_panic() {
+    within_watchdog("a panicking worker", || panic!("the real assertion"));
+}
+
+/// The watchdog fails a worker that outlives it as a hang.
+#[test]
+#[should_panic(expected = "did not terminate within the two-second watchdog")]
+fn within_watchdog_fails_a_hang() {
+    within_watchdog("a sleeping worker", || {
+        std::thread::sleep(std::time::Duration::from_secs(3))
+    });
+}
+
 // Audit regressions go through the signed dispatchables: a direct checker or
 // VM call would not prove that an untrusted transaction returns. Under the
 // structural gate (QUI-2516) these programs are stored, and `execute` faults
@@ -1888,11 +1931,8 @@ fn a_removed_program_can_be_stored_again() {
 // at store. The two-second watchdog still guards against a hang on either path.
 #[test]
 fn audit_signed_all_register_cycle_is_stored_and_faults_without_hanging() {
-    use std::{sync::mpsc, time::Duration};
-
     for registers in [255_u16, 256] {
-        let (sender, receiver) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
+        within_watchdog("the signed all-register cycle", move || {
             new_test_ext().execute_with(|| {
                 let bytecode = build_program(|b| {
                     b.emit(xqvm::Instruction::Nop {});
@@ -1917,12 +1957,7 @@ fn audit_signed_all_register_cycle_is_stored_and_faults_without_hanging() {
                     Error::<Test>::VmStackUnderflow,
                 );
             });
-            sender.send(()).unwrap();
         });
-        receiver
-            .recv_timeout(Duration::from_secs(2))
-            .expect("the signed all-register cycle must terminate");
-        worker.join().unwrap();
     }
 }
 
@@ -2005,8 +2040,6 @@ fn audit_signed_dead_and_live_reads_and_the_stack_peak_fault_at_execute() {
 ///   must not initialise the live `LOAD r5`.
 #[test]
 fn audit_programs_are_stored_and_fault_within_budget() {
-    use std::{sync::mpsc, time::Duration};
-
     const JUMPI1: u8 = 0x02;
     const LOAD: u8 = 0x0A;
     const STOW: u8 = 0x0B;
@@ -2048,18 +2081,12 @@ fn audit_programs_are_stored_and_fault_within_budget() {
         ),
     ];
     for (name, code, fault) in cases {
-        let (sender, receiver) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
+        within_watchdog(name, move || {
             new_test_ext().execute_with(|| {
                 System::set_block_number(1);
                 stored_program_faults_at_execute(raw_program(code), MaxStepLimit::get(), fault);
             });
-            sender.send(()).unwrap();
         });
-        receiver
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap_or_else(|_| panic!("{name} must terminate"));
-        worker.join().unwrap_or_else(|_| panic!("{name}"));
     }
 }
 
@@ -2070,10 +2097,7 @@ fn audit_programs_are_stored_and_fault_within_budget() {
 /// two-second watchdog, with the full pre-charge kept.
 #[test]
 fn a_stored_endless_loop_stops_at_max_step_limit_without_hanging() {
-    use std::{sync::mpsc, time::Duration};
-
-    let (sender, receiver) = mpsc::channel();
-    let worker = std::thread::spawn(move || {
+    within_watchdog("an endless stored loop", || {
         new_test_ext().execute_with(|| {
             System::set_block_number(1);
             //   TARGET .0; PUSH1 1; POP; JUMP1 .0
@@ -2084,12 +2108,7 @@ fn a_stored_endless_loop_stops_at_max_step_limit_without_hanging() {
                 Error::<Test>::VmStepLimitExceeded,
             );
         });
-        sender.send(()).unwrap();
     });
-    receiver
-        .recv_timeout(Duration::from_secs(2))
-        .expect("an endless stored loop must stop at the step limit");
-    worker.join().unwrap();
 }
 
 // W1-003a repin gate. A checked-in corpus of canonical program bytes with
