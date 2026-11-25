@@ -235,7 +235,20 @@ const VM_STACK_LIMIT: usize = 8192;
 /// - `NOP`-padded to exactly `MaxProgramSize`, so the stored bytes and the
 ///   decoded program are maximal.
 fn prog_fixed_worst() -> Vec<u8> {
-    fixed_worst_program(0, Pile::None)
+    fixed_worst_program(0, Pile::None, false)
+}
+
+/// Holder (i), R9 §A (QUI-2516): `prog_fixed_worst_jumps` with every holder
+/// class at its maximum at once -- all 256 registers, all 256 OUTPUT clones,
+/// `MaxLoopDepth` open loops and the value stack at `VM_STACK_LIMIT` -- and
+/// then one more `PUSH`, which faults `StackOverflow`. Under the full checker
+/// this was refused (`StackOverflowRisk`); the structural gate stores it. A
+/// fault must not raise the run's high-water mark: census i compares it with
+/// the completed run.
+fn prog_fault_at_peak() -> Vec<u8> {
+    let max_blocks = <quip_testnet_runtime::configs::MaxProgramBlocks as Get<u32>>::get() as usize;
+    let max_depth = <quip_testnet_runtime::configs::MaxLoopDepth as Get<u32>>::get() as usize;
+    fixed_worst_program(max_blocks - 1 - 2 * max_depth, Pile::None, true)
 }
 
 /// xqvm's loop-stack limit (`Vm::LOOP_LIMIT`). Up to xqvm 0.5.0 a back-edge
@@ -276,7 +289,7 @@ fn prog_fixed_worst_jumps() -> Vec<u8> {
     let max_depth = <quip_testnet_runtime::configs::MaxLoopDepth as Get<u32>>::get() as usize;
     // The entry block, plus one block per RANGE and per NEXT of the loops,
     // plus one per jump of the chain.
-    fixed_worst_program(max_blocks - 1 - 2 * max_depth, Pile::None)
+    fixed_worst_program(max_blocks - 1 - 2 * max_depth, Pile::None, false)
 }
 
 /// `prog_fixed_worst_jumps`, plus a loop-frame pile-up to `VM_LOOP_LIMIT`
@@ -284,10 +297,10 @@ fn prog_fixed_worst_jumps() -> Vec<u8> {
 fn prog_fixed_worst_pile(pile: Pile) -> Vec<u8> {
     let max_blocks = <quip_testnet_runtime::configs::MaxProgramBlocks as Get<u32>>::get() as usize;
     let max_depth = <quip_testnet_runtime::configs::MaxLoopDepth as Get<u32>>::get() as usize;
-    fixed_worst_program(max_blocks - 1 - 2 * max_depth - PILE_BLOCKS, pile)
+    fixed_worst_program(max_blocks - 1 - 2 * max_depth - PILE_BLOCKS, pile, false)
 }
 
-fn fixed_worst_program(jumps: usize, pile: Pile) -> Vec<u8> {
+fn fixed_worst_program(jumps: usize, pile: Pile, fault_at_peak: bool) -> Vec<u8> {
     let max_size = <quip_testnet_runtime::configs::MaxProgramSize as Get<u32>>::get() as usize;
     let max_depth = <quip_testnet_runtime::configs::MaxLoopDepth as Get<u32>>::get();
     let build = |pad: usize| {
@@ -303,10 +316,20 @@ fn fixed_worst_program(jumps: usize, pile: Pile) -> Vec<u8> {
         for i in 0..=255u8 {
             b.emit_push(i64::from(i)).emit(I::Input { reg: R(i) });
         }
+        if fault_at_peak {
+            // The OUTPUT clones first, so every holder is live at the fault.
+            for i in 0..=255u8 {
+                b.emit_push(i64::from(i)).emit(I::Output { reg: R(i) });
+            }
+        }
         for _ in 0..max_depth {
             b.emit_push(0).emit_push(1).emit(I::Range {});
         }
         for _ in 0..VM_STACK_LIMIT {
+            b.emit_push(1);
+        }
+        if fault_at_peak {
+            // The 8,193rd value: StackOverflow, with everything still held.
             b.emit_push(1);
         }
         b.emit(I::Sclr {});
@@ -341,8 +364,10 @@ fn fixed_worst_program(jumps: usize, pile: Pile) -> Vec<u8> {
             b.emit_push(254).emit(I::Input { reg: R(254) });
             b.emit_push(255).emit(I::Input { reg: R(255) });
         }
-        for i in 0..=255u8 {
-            b.emit_push(i64::from(i)).emit(I::Output { reg: R(i) });
+        if !fault_at_peak {
+            for i in 0..=255u8 {
+                b.emit_push(i64::from(i)).emit(I::Output { reg: R(i) });
+            }
         }
         for _ in 0..pad {
             b.emit(I::Nop {});
@@ -449,17 +474,91 @@ fn prog_holders_models() -> Vec<u8> {
     encode(b)
 }
 
+/// Holder (ii), R9 §A (QUI-2516): the value stack filled to
+/// `VM_STACK_LIMIT` by a 3-byte loop body (`PUSH1 1; NEXT`) instead of
+/// 8,192 `PUSH` instructions. The full checker refused a loop that grows the
+/// stack (`LoopStackImbalance`); the structural gate stores it, so a program
+/// of a few dozen bytes now reaches the stack's whole doubling history.
+fn prog_stack_loop() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0)
+        .emit_push(VM_STACK_LIMIT as i64)
+        .emit(I::Range {});
+    b.emit_push(1);
+    b.emit(I::Next {});
+    b.emit(I::Halt {});
+    encode(b)
+}
+
+/// Holder (iii), R9 §A (QUI-2516): a type-confused `EQUALITY` or `ATLEASTW`.
+/// calldata `[e]`: r1 an `e`-element vec, used as both indices and
+/// coefficients; r3 an integer where the model belongs. Both opcodes clone
+/// the two vecs before anything else, so each run makes two uncharged
+/// `e`-element copies and then faults: `RegisterType` at the model register,
+/// or, for larger `e`, `MemoryLimitExceeded` at the expansion charge that
+/// precedes it (`typeconf_run` derives which, natively). The full checker
+/// refused it (`RegisterTypeMismatch`); the structural gate stores it.
+fn prog_typeconf(atleastw: bool) -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    b.emit(I::VecI { reg: R(1) });
+    b.emit_push(0).emit(I::Load { reg: R(0) }).emit(I::Range {});
+    b.emit_push(0).emit(I::VecPush { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit_push(7).emit(I::Stow { reg: R(3) });
+    // EQUALITY pops penalty then target; ATLEASTW penalty then k, and k must
+    // be positive to get past its first check.
+    b.emit_push(i64::from(atleastw)).emit_push(1);
+    if atleastw {
+        b.emit(I::AtLeastW {
+            model: R(3),
+            indices: R(1),
+            coeffs: R(1),
+        });
+    } else {
+        b.emit(I::Equality {
+            model: R(3),
+            indices: R(1),
+            coeffs: R(1),
+        });
+    }
+    b.emit(I::Halt {});
+    encode(b)
+}
+
+/// Holder (iii)'s designed outcome and step budget at `e`, from the same run
+/// natively at the chain's memory cap. The fault must be one that follows the
+/// two vec clones -- `RegisterType` at the model register or
+/// `MemoryLimitExceeded` at the expansion charge -- or the run would not
+/// measure what it is there for.
+fn typeconf_run(atleastw: bool, e: u64) -> (u8, u64) {
+    let program = xqvm::Program::decode(&prog_typeconf(atleastw)).expect("decodes");
+    let mut vm = xqvm::Vm::new();
+    vm.set_step_limit(max_steps());
+    vm.set_memory_limit(max_vm_memory());
+    vm.set_calldata(vec![xqvm::RegVal::Int(e as i64)]);
+    let code = match vm.run(&program) {
+        Err(xqvm::Error::RegisterType { .. }) => REGISTER_TYPE_FAULT,
+        Err(xqvm::Error::MemoryLimitExceeded { .. }) => VEC_EQUALITY_FAULT,
+        other => panic!("typeconf atleastw={atleastw} e={e}: {other:?} is not a post-clone fault"),
+    };
+    (code, (vm.steps() * 5 / 4 + 100).min(max_steps()))
+}
+
 /// Charges a holder program makes: 252 registers and 256 OUTPUT clones of
 /// `per` bytes each, plus a margin for the INPUT register.
 fn holders_charge(per: u64) -> u64 {
     (252 + 256) * per + 64
 }
 
-/// The holder runs at emulated cap `l`, each run with 256 output slots:
+/// The holder runs at emulated cap `l`, each with its designed outcome:
 /// - `holders_samples` in every order its 508 holders fit, with
-///   e = chunk/16 + 1;
-/// - `holders_models` in the 256-B order.
-fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<RuntimeCall> {
+///   e = chunk/16 + 1, 256 output slots;
+/// - `holders_models` in the 256-B order, 256 output slots;
+/// - `stack_loop` once (holder ii);
+/// - `typeconf_equality` and `typeconf_atleastw` in every order an
+///   e = chunk/16 + 1 vec fits (holder iii), faulting `RegisterType`.
+fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, Option<u8>)> {
     let mut out = Vec::new();
     // Every order the 508 holders fit: e = chunk/16 + 1 elements, just over
     // half the chunk, charged 8 B each (a sample and its OUTPUT clone).
@@ -470,11 +569,42 @@ fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<RuntimeCall> {
             break;
         }
         let steps = (600 * e + 20_000).saturating_mul(5) / 4;
-        out.push(chain.execute_with_outputs("holders_samples", &[e as i64], steps.min(ms), 256));
+        out.push((
+            format!("holders_samples e={e}"),
+            chain.execute_with_outputs("holders_samples", &[e as i64], steps.min(ms), 256),
+            None,
+        ));
         chunk <<= 1;
     }
     if holders_charge(96) <= l {
-        out.push(chain.execute_with_outputs("holders_models", &[], 20_000, 256));
+        out.push((
+            "holders_models".into(),
+            chain.execute_with_outputs("holders_models", &[], 20_000, 256),
+            None,
+        ));
+    }
+    out.push((
+        "stack_loop".into(),
+        chain.execute("stack_loop", &[], (8 * VM_STACK_LIMIT as u64).min(ms)),
+        None,
+    ));
+    // Each order a vec of e = chunk/16 + 1 elements lands in, up to the cap:
+    // the vec is charged; its two clones are not.
+    let mut chunk = 16u64;
+    loop {
+        let e = chunk / 16 + 1;
+        if 8 * e > l {
+            break;
+        }
+        for (name, atleastw) in [("typeconf_equality", false), ("typeconf_atleastw", true)] {
+            let (code, steps) = typeconf_run(atleastw, e);
+            out.push((
+                format!("{name} e={e}"),
+                chain.execute(name, &[e as i64], steps.min(ms)),
+                Some(code),
+            ));
+        }
+        chunk <<= 1;
     }
     out
 }
@@ -500,7 +630,12 @@ fn outcome(r: &ApplyExtrinsicResult) -> String {
 /// size mismatch; a `vec` run faults in EQUALITY over the built vectors.
 const XQVM_PALLET_INDEX: u8 = 8;
 const SAMPLES_ENERGY_FAULT: u8 = 30;
+/// (`VmMemoryLimitExceeded`; also holder iii's fault at larger vecs.)
 const VEC_EQUALITY_FAULT: u8 = 19;
+/// Holder (iii)'s designed fault: the model register holds an integer.
+const REGISTER_TYPE_FAULT: u8 = 21;
+/// Holder (i)'s designed fault: the 8,193rd value.
+const STACK_OVERFLOW_FAULT: u8 = 16;
 
 /// `r` is the designed outcome: success (`None`) or exactly the xqvm module
 /// error `Some(code)`. Any other result -- an early fault that never built
@@ -552,6 +687,14 @@ fn designed_fault_codes_are_the_pallet_errors() {
         pallet_xqvm::Error::<Runtime>::VmMemoryLimitExceeded.encode(),
         [VEC_EQUALITY_FAULT]
     );
+    assert_eq!(
+        pallet_xqvm::Error::<Runtime>::VmRegisterType.encode(),
+        [REGISTER_TYPE_FAULT]
+    );
+    assert_eq!(
+        pallet_xqvm::Error::<Runtime>::VmStackOverflow.encode(),
+        [STACK_OVERFLOW_FAULT]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +738,10 @@ impl Chain {
             ("fixed_worst_jumps", prog_fixed_worst_jumps()),
             ("holders_samples", prog_holders_samples()),
             ("holders_models", prog_holders_models()),
+            ("fault_at_peak", prog_fault_at_peak()),
+            ("stack_loop", prog_stack_loop()),
+            ("typeconf_equality", prog_typeconf(false)),
+            ("typeconf_atleastw", prog_typeconf(true)),
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
@@ -1719,6 +1866,46 @@ fn i_worst_case_fixed_run() {
             mib(net),
         );
     }
+    // Holders (i) and (ii), R9 §A (QUI-2516): programs the full checker refused
+    // and the structural gate stores. (i) holds every class at its maximum at
+    // once and then faults StackOverflow; (ii) fills the stack from a 3-byte
+    // loop body. Both count toward the fixed-run worst case, and (i) is
+    // printed against the completed `fixed_worst_jumps` run: a fault must not
+    // raise the high-water mark.
+    let completed = worst;
+    for (name, bytes, calldata, outputs, expect) in [
+        (
+            "fault_at_peak",
+            prog_fault_at_peak(),
+            calldata.clone(),
+            MaxOutputSlots::get(),
+            Some(STACK_OVERFLOW_FAULT),
+        ),
+        ("stack_loop", prog_stack_loop(), Vec::new(), 0, None),
+    ] {
+        let program = xqvm::Program::decode(&bytes).expect("decodes");
+        assert_eq!(program.encode(), bytes, "{name}: canonical");
+        assert!(
+            pallet_xqvm::structural_gate(&program).is_ok(),
+            "{name}: the structural gate admits it"
+        );
+        let (block, applied) = chain.author(vec![
+            chain.execute_with_outputs(name, &calldata, ms, outputs)
+        ]);
+        assert_designed_outcome(&applied[0].0, expect, &format!("census i {name}"));
+        let (imported, import) = chain.import(&block);
+        assert!(imported.is_ok(), "{name}: block must import: {imported:?}");
+        let net = import.saturating_sub(empty_import);
+        worst = worst.max(net);
+        println!(
+            "fixed_run {name}: {} B program, outcome {}: author {:.3} MiB, import net \
+             {:.3} MiB ({net} B; the completed fixed runs' worst is {completed} B)",
+            bytes.len(),
+            outcome(&applied[0].0),
+            mib(applied[0].1),
+            mib(net),
+        );
+    }
     // The loop-frame pile-ups that set the worst case under xqvm 0.5.0 are no
     // longer storable: 0.6.0's jump-span phase rejects their back-edge
     // (W1-011), so a program stored under 0.6.0 holds at most MaxLoopDepth
@@ -1816,8 +2003,10 @@ fn k_combined_block_with_holders_at_cap() {
         // (W1-011) a stored program cannot build one.
         let holders = holder_sweep(&chain, l, ms);
         let n_holders = holders.len();
-        vm_calls.extend(holders);
-        expected.extend((0..n_holders).map(|i| (format!("holder run {i}"), None)));
+        for (name, call, expect) in holders {
+            vm_calls.push(call);
+            expected.push((name, expect));
+        }
         let stack_calldata: Vec<i64> = (0..256).collect();
         // Its exact step count, natively, with a margin: a max-step limit
         // would crowd the other runs out of the block by weight.
@@ -2026,8 +2215,10 @@ fn j_sigma_at_emulated_caps() {
         let mut calls: Vec<RuntimeCall> = sweep.into_iter().map(|(_, c, _)| c).collect();
         let holders = holder_sweep(&chain, lp, ms);
         let n_holders = holders.len();
-        calls.extend(holders);
-        expected.extend((0..n_holders).map(|i| (format!("holder run {i}"), None)));
+        for (name, call, expect) in holders {
+            calls.push(call);
+            expected.push((name, expect));
+        }
         let supplied = calls.len();
         let (block, applied) = chain.author(calls);
         assert_eq!(
