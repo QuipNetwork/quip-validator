@@ -526,23 +526,326 @@ fn prog_typeconf(atleastw: bool) -> Vec<u8> {
     encode(b)
 }
 
-/// Holder (iii)'s designed outcome and step budget at `e`, from the same run
-/// natively at the chain's memory cap. The fault must be one that follows the
-/// two vec clones -- `RegisterType` at the model register or
-/// `MemoryLimitExceeded` at the expansion charge -- or the run would not
-/// measure what it is there for.
-fn typeconf_run(atleastw: bool, e: u64) -> (u8, u64) {
-    let program = xqvm::Program::decode(&prog_typeconf(atleastw)).expect("decodes");
+/// xqvm 0.6.0's charge rates the holder bounds use. They are private in
+/// `vm.rs` (`VARIABLE_BYTES` at :351, `VEC_ELEMENT_BYTES` at :358), so they
+/// are restated here and pinned natively by `holder_charge_rates_are_xqvm_s`.
+/// An integer register, a sample element and a model variable each charge
+/// `VARIABLE_BYTES`; an element appended to a `vec<int>` charges
+/// `VEC_ELEMENT_BYTES`, twice its buffer size.
+const VARIABLE_BYTES: u64 = 8;
+const VEC_ELEMENT_BYTES: u64 = 16;
+
+/// How a native run ended, for comparing two runs of the same program.
+#[derive(Debug)]
+struct NativeRun {
+    result: Result<(), xqvm::Error>,
+    used: u64,
+    steps: u64,
+}
+
+impl NativeRun {
+    /// The same run: it ended the same way at the same pc, after the same
+    /// steps, holding the same charge. A `MemoryLimitExceeded` is compared
+    /// without its `limit`, the one field that names the cap.
+    fn same_as(&self, other: &Self) -> bool {
+        fn key(r: &Result<(), xqvm::Error>) -> String {
+            match r {
+                Err(xqvm::Error::MemoryLimitExceeded {
+                    pos,
+                    requested,
+                    used,
+                    ..
+                }) => format!("MemoryLimitExceeded {pos} {requested} {used}"),
+                other => format!("{other:?}"),
+            }
+        }
+        key(&self.result) == key(&other.result)
+            && self.used == other.used
+            && self.steps == other.steps
+    }
+}
+
+/// Run `bytes` natively at memory cap `cap`, with an `execute` call's step
+/// limit, output slots and calldata.
+fn native_run(
+    bytes: &[u8],
+    calldata: &[i64],
+    step_limit: u64,
+    outputs: u32,
+    cap: u64,
+) -> NativeRun {
+    let program = xqvm::Program::decode(bytes).expect("decodes");
     let mut vm = xqvm::Vm::new();
-    vm.set_step_limit(max_steps());
-    vm.set_memory_limit(max_vm_memory());
-    vm.set_calldata(vec![xqvm::RegVal::Int(e as i64)]);
-    let code = match vm.run(&program) {
-        Err(xqvm::Error::RegisterType { .. }) => REGISTER_TYPE_FAULT,
-        Err(xqvm::Error::MemoryLimitExceeded { .. }) => VEC_EQUALITY_FAULT,
-        other => panic!("typeconf atleastw={atleastw} e={e}: {other:?} is not a post-clone fault"),
-    };
-    (code, (vm.steps() * 5 / 4 + 100).min(max_steps()))
+    vm.set_step_limit(step_limit);
+    vm.set_memory_limit(cap);
+    vm.set_output_slots(outputs as usize);
+    vm.set_calldata(calldata.iter().map(|&v| xqvm::RegVal::Int(v)).collect());
+    let result = vm.run(&program);
+    NativeRun {
+        result,
+        used: vm.memory_used(),
+        steps: vm.steps(),
+    }
+}
+
+/// A step limit for a run that took `steps` natively: the same run on chain,
+/// with a quarter's margin, never above `MaxStepLimit`.
+fn step_budget(steps: u64) -> u64 {
+    (steps * 5 / 4 + 100).min(max_steps())
+}
+
+/// The code offset of the first `EQUALITY`/`ATLEASTW` in `bytes`: the
+/// instruction that clones its two vec operands before any charge.
+fn clone_op_pos(bytes: &[u8]) -> usize {
+    let program = xqvm::Program::decode(bytes).expect("decodes");
+    xqvm::InstructionStream::new(program.code())
+        .map(|item| item.expect("decodes"))
+        .find(|(_, _, instr)| matches!(instr, I::Equality { .. } | I::AtLeastW { .. }))
+        .map(|(pos, _, _)| pos)
+        .expect("the program has a clone opcode")
+}
+
+/// A clone holder's fault, NON-MASKING (claude's R8 on A6c/A6d): only a fault
+/// that follows the two vec clones counts -- `RegisterType` on `model`, which
+/// only the clone opcode reads as a model, or `MemoryLimitExceeded` at the
+/// clone opcode's own pc (its growth or expansion charge). An earlier fault,
+/// such as `MemoryLimitExceeded` at the `VECPUSH` that builds the vec, never
+/// made the clones and panics here instead of passing as the designed code.
+fn post_clone_code(r: &Result<(), xqvm::Error>, model: u8, op_pos: usize, what: &str) -> u8 {
+    match r {
+        Err(xqvm::Error::RegisterType { reg, .. }) if *reg == model => REGISTER_TYPE_FAULT,
+        Err(xqvm::Error::MemoryLimitExceeded { pos, .. }) if *pos == op_pos => VEC_EQUALITY_FAULT,
+        other => panic!("{what}: {other:?} is not a fault after the clones at pc {op_pos}"),
+    }
+}
+
+/// `bytes` with its code cut at `pos` and a `HALT` there: the run up to an
+/// instruction, without it. (Loops left open are fine: `HALT` ends the run.)
+fn truncate_at(bytes: &[u8], pos: usize) -> Vec<u8> {
+    let program = xqvm::Program::decode(bytes).expect("decodes");
+    let mut code = program.code()[..pos].to_vec();
+    code.push(0xFF); // HALT
+    xqvm::Program::new(code).encode()
+}
+
+/// Whether `r` is a fault after the clones at `op_pos` (see
+/// [`post_clone_code`]), without panicking.
+fn is_post_clone(r: &Result<(), xqvm::Error>, model: u8, op_pos: usize) -> bool {
+    matches!(r, Err(xqvm::Error::RegisterType { reg, .. }) if *reg == model)
+        || matches!(r, Err(xqvm::Error::MemoryLimitExceeded { pos, .. }) if *pos == op_pos)
+}
+
+/// The rates above, measured: an `INPUT` of an integer charges
+/// `VARIABLE_BYTES`, each `VECPUSH` `VEC_ELEMENT_BYTES`, and a `BSMX` of `n`
+/// elements `n * VARIABLE_BYTES`. If xqvm changes a rate, every holder bound
+/// built on it is wrong, and this fails first.
+#[test]
+fn holder_charge_rates_are_xqvm_s() {
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    b.emit(I::Halt {});
+    let input = native_run(&encode(b), &[5], max_steps(), 0, max_vm_memory());
+    assert_eq!((input.result.is_ok(), input.used), (true, VARIABLE_BYTES));
+    let vec = native_run(&prog_vec(), &[5, 0], max_steps(), 0, max_vm_memory());
+    assert_eq!(
+        (vec.result.is_ok(), vec.used),
+        (true, 2 * VARIABLE_BYTES + 5 * VEC_ELEMENT_BYTES)
+    );
+    let mut b = InstructionBuilder::new();
+    b.emit_push(5).emit(I::Bsmx { reg: R(1) });
+    b.emit(I::Halt {});
+    let sample = native_run(&encode(b), &[], max_steps(), 0, max_vm_memory());
+    assert_eq!(
+        (sample.result.is_ok(), sample.used),
+        (true, 5 * VARIABLE_BYTES)
+    );
+}
+
+/// A6 follow-up, shape 1: `ATLEASTW`'s success path with slack variables.
+/// calldata `[e]`: r1 is `e` zeros (indices into a size-1 binary model) and r2
+/// is `e` ones (weights), with k = 1, so the excess `e - 1` adds
+/// bit_length(e - 1) slacks. Besides the two up-front vec clones, the success
+/// path collects the indices (`Vec<usize>`) and clones the weights again
+/// (`all_coeffs`), then pushes the slacks onto both, and each first push on an
+/// exact-capacity vec reallocates it at double size. All of that is
+/// uncharged; the quadratic expansion charge bounds `e` to a few hundred.
+fn prog_atleastw_slack() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    b.emit(I::VecI { reg: R(1) });
+    b.emit(I::VecI { reg: R(2) });
+    b.emit_push(0).emit(I::Load { reg: R(0) }).emit(I::Range {});
+    b.emit_push(0).emit(I::VecPush { reg: R(1) });
+    b.emit_push(1).emit(I::VecPush { reg: R(2) });
+    b.emit(I::Next {});
+    b.emit_push(1).emit(I::Bqmx { reg: R(3) });
+    // k = 1, then penalty = 1
+    b.emit_push(1).emit_push(1);
+    b.emit(I::AtLeastW {
+        model: R(3),
+        indices: R(1),
+        coeffs: R(2),
+    });
+    b.emit(I::Halt {});
+    encode(b)
+}
+
+/// A6 follow-up, shape 2: holder iii inside a sample-holder run. calldata
+/// `[e]`: r4..r254 each an `e`-element sample and 256 OUTPUT clones of r4,
+/// as in `holders_samples`, then r255 an `e`-element vec and the
+/// type-confused `EQUALITY`/`ATLEASTW` over it, so its two clones are made
+/// while every holder's chunk is live.
+fn prog_holders_typeconf(atleastw: bool) -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    holders_head(&mut b);
+    for i in 4..=254u8 {
+        b.emit(I::Load { reg: R(3) }).emit(I::Bsmx { reg: R(i) });
+    }
+    for s in 0..256u16 {
+        b.emit_push(i64::from(s)).emit(I::Output { reg: R(4) });
+    }
+    b.emit(I::VecI { reg: R(255) });
+    b.emit_push(0).emit(I::Load { reg: R(3) }).emit(I::Range {});
+    b.emit_push(0).emit(I::VecPush { reg: R(255) });
+    b.emit(I::Next {});
+    b.emit_push(7).emit(I::Stow { reg: R(2) });
+    b.emit_push(i64::from(atleastw)).emit_push(1);
+    if atleastw {
+        b.emit(I::AtLeastW {
+            model: R(2),
+            indices: R(255),
+            coeffs: R(255),
+        });
+    } else {
+        b.emit(I::Equality {
+            model: R(2),
+            indices: R(255),
+            coeffs: R(255),
+        });
+    }
+    b.emit(I::Halt {});
+    encode(b)
+}
+
+/// Mixed-family holder `mix_clone` (claude's R8 on A6c/A6d, shape 1 of its
+/// (d)). calldata `[n, k, e]`: r4..r(3+k) each an `n`-element sample, then r1
+/// an `e`-element vec and the type-confused `EQUALITY r3(int), r1, r1`, so one
+/// run holds the samples, the vec and its two clones in the same order -- one
+/// block more per order than the single-family runs.
+fn prog_mix_clone() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    let done = b.label();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    b.emit_push(1).emit(I::Input { reg: R(2) });
+    b.emit_push(2).emit(I::Input { reg: R(255) });
+    for k in 1..=251u8 {
+        b.emit(I::Load { reg: R(2) })
+            .emit_push(i64::from(k))
+            .emit(I::Lt {})
+            .emit_jump_if(done);
+        b.emit(I::Load { reg: R(0) })
+            .emit(I::Bsmx { reg: R(3 + k) });
+    }
+    b.place(done).expect("label");
+    b.emit(I::VecI { reg: R(1) });
+    b.emit_push(0)
+        .emit(I::Load { reg: R(255) })
+        .emit(I::Range {});
+    b.emit_push(0).emit(I::VecPush { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit_push(7).emit(I::Stow { reg: R(3) });
+    b.emit_push(0).emit_push(1);
+    b.emit(I::Equality {
+        model: R(3),
+        indices: R(1),
+        coeffs: R(1),
+    });
+    b.emit(I::Halt {});
+    encode(b)
+}
+
+/// Mixed-family holder `models_mix` (claude's R8 on A6c/A6d, shape 2 of its
+/// (d)). calldata `[n]`: `holders_models`' 252 size-2 models and 256 OUTPUT
+/// clones (1,016 BTreeMap nodes in the 256-B order), then r1 a size-`n` model
+/// with `n` linear coefficients written in `linear_anchored`'s order, spending
+/// the rest of the cap in the same run. Succeeds.
+fn prog_models_mix() -> Vec<u8> {
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(0) });
+    for i in 4..=255u8 {
+        b.emit_push(2).emit(I::Bqmx { reg: R(i) });
+        b.emit_push(0).emit_push(1).emit(I::SetLine { reg: R(i) });
+        b.emit_push(0)
+            .emit_push(1)
+            .emit_push(1)
+            .emit(I::SetQuad { reg: R(i) });
+    }
+    for s in 0..256u16 {
+        let r = 4 + u8::try_from(s % 252).expect("fits");
+        b.emit_push(i64::from(s)).emit(I::Output { reg: R(r) });
+    }
+    b.emit(I::Load { reg: R(0) }).emit(I::Bqmx { reg: R(1) });
+    b.emit_push(0).emit_push(5).emit(I::Range {});
+    b.emit(I::Lidx { reg: R(2) })
+        .emit(I::Load { reg: R(2) })
+        .emit_push(1)
+        .emit(I::SetLine { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit_push(0)
+        .emit(I::Load { reg: R(0) })
+        .emit_push(5)
+        .emit(I::Sub {})
+        .emit(I::Range {});
+    b.emit(I::Lidx { reg: R(2) })
+        .emit(I::Load { reg: R(0) })
+        .emit(I::Dec {})
+        .emit(I::Load { reg: R(2) })
+        .emit(I::Sub {})
+        .emit_push(1)
+        .emit(I::SetLine { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit(I::Halt {});
+    encode(b)
+}
+
+/// Mixed-family holder `holders_iter` (claude's follow-up R8 on A6c/A6d).
+/// calldata `[e]`: r1 an `e`-element vec; r0 and r4..r255 `e`-element samples
+/// (253); 256 OUTPUT clones of r4; then `MaxLoopDepth` nested `ITER r1` over
+/// [0, e), each copying `e` elements into its frame; then, innermost, the
+/// type-confused `EQUALITY r2(int), r1, r1` and its two clones. Every holder
+/// slot a run has -- registers, OUTPUT slots, loop frames -- in one order.
+fn prog_holders_iter() -> Vec<u8> {
+    let depth = <quip_protocol_runtime::configs::MaxLoopDepth as Get<u32>>::get();
+    let mut b = InstructionBuilder::new();
+    b.emit_push(0).emit(I::Input { reg: R(3) });
+    b.emit(I::VecI { reg: R(1) });
+    b.emit_push(0).emit(I::Load { reg: R(3) }).emit(I::Range {});
+    b.emit_push(0).emit(I::VecPush { reg: R(1) });
+    b.emit(I::Next {});
+    b.emit(I::Load { reg: R(3) }).emit(I::Bsmx { reg: R(0) });
+    for i in 4..=255u8 {
+        b.emit(I::Load { reg: R(3) }).emit(I::Bsmx { reg: R(i) });
+    }
+    for s in 0..256u16 {
+        b.emit_push(i64::from(s)).emit(I::Output { reg: R(4) });
+    }
+    b.emit_push(7).emit(I::Stow { reg: R(2) });
+    for _ in 0..depth {
+        b.emit_push(0)
+            .emit(I::Load { reg: R(3) })
+            .emit(I::Iter { reg: R(1) });
+    }
+    b.emit_push(0).emit_push(1);
+    b.emit(I::Equality {
+        model: R(2),
+        indices: R(1),
+        coeffs: R(1),
+    });
+    for _ in 0..depth {
+        b.emit(I::Next {});
+    }
+    b.emit(I::Halt {});
+    encode(b)
 }
 
 /// Charges a holder program makes: 252 registers and 256 OUTPUT clones of
@@ -551,60 +854,193 @@ fn holders_charge(per: u64) -> u64 {
     (252 + 256) * per + 64
 }
 
-/// The holder runs at emulated cap `l`, each with its designed outcome:
+/// The holder runs at emulated cap `l`, each with its designed outcome. Every
+/// run is bounded by its real charge (the rates above) and built through
+/// [`Chain::legal_call`], which checks natively that a chain whose real cap is
+/// `l` makes the same run; the emulating chain's 1 MiB cap would otherwise
+/// admit runs no chain at `l` can make (claude's R8 on A6c/A6d: the 20.88·L'
+/// that holder iii measured at 256 KiB was such an artifact).
 /// - `holders_samples` in every order its 508 holders fit, with
-///   e = chunk/16 + 1, 256 output slots;
-/// - `holders_models` in the 256-B order, 256 output slots;
-/// - `stack_loop` once (holder ii);
-/// - `typeconf_equality` and `typeconf_atleastw` in every order an
-///   e = chunk/16 + 1 vec fits (holder iii), faulting `RegisterType`.
+///   e = chunk/16 + 1, 256 output slots; succeeds;
+/// - `holders_models` in the 256-B order, 256 output slots; succeeds;
+/// - `stack_loop` once (holder ii); succeeds;
+/// - `typeconf_equality` and `typeconf_atleastw` (holder iii) in every order
+///   an e = chunk/16 + 1 vec fits at 16 B an element, faulting after their
+///   clones ([`post_clone_code`]);
+/// - `holders_typeconf_equality` and `holders_typeconf_atleastw` in every
+///   order the sample holders and the vec fit: holder iii's clones made while
+///   every holder is live (A6 shape 2); faulting after the clones;
+/// - `atleastw_slack` in every order until the run stops succeeding at a real
+///   cap of `l`, so it reaches the success path's uncharged temporaries
+///   (A6 shape 1, kimi's R8 on A6c/A6d); succeeds;
+/// - `mix_clone` in every order c <= l/2: samples, a vec and its two clones in
+///   one run (claude's R8 on A6c/A6d); faulting after the clones;
+/// - `models_mix` once: the model holders and an anchored model spending the
+///   rest of `l` in one run (claude's R8 on A6c/A6d); succeeds;
+/// - `holders_iter` in every order its holders fit: every holder slot a run
+///   has (253 samples, 256 OUTPUT clones, `MaxLoopDepth` ITER frames) plus a
+///   vec and its two clones in one order (claude's follow-up R8); faulting
+///   after the clones.
+///
+/// Clone holders go through [`Chain::legal_clone_call`] instead, which
+/// compares the run up to the clone opcode across caps.
 fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, Option<u8>)> {
     let mut out = Vec::new();
+    let ok = |out: &mut Vec<(String, RuntimeCall, Option<u8>)>,
+              name: String,
+              (call, r): (RuntimeCall, Result<(), xqvm::Error>)| {
+        assert!(r.is_ok(), "{name}: designed to succeed, got {r:?}");
+        out.push((name, call, None));
+    };
     // Every order the 508 holders fit: e = chunk/16 + 1 elements, just over
     // half the chunk, charged 8 B each (a sample and its OUTPUT clone).
     let mut chunk = 8u64;
     loop {
         let e = chunk / 16 + 1;
-        if holders_charge(8 * e) > l {
+        if holders_charge(VARIABLE_BYTES * e) > l {
             break;
         }
-        let steps = (600 * e + 20_000).saturating_mul(5) / 4;
-        out.push((
+        let steps = ((600 * e + 20_000).saturating_mul(5) / 4).min(ms);
+        ok(
+            &mut out,
             format!("holders_samples e={e}"),
-            chain.execute_with_outputs("holders_samples", &[e as i64], steps.min(ms), 256),
-            None,
-        ));
+            chain.legal_call("holders_samples", &[e as i64], steps, 256, l),
+        );
         chunk <<= 1;
     }
     if holders_charge(96) <= l {
-        out.push((
+        ok(
+            &mut out,
             "holders_models".into(),
-            chain.execute_with_outputs("holders_models", &[], 20_000, 256),
-            None,
-        ));
+            chain.legal_call("holders_models", &[], 20_000, 256, l),
+        );
     }
-    out.push((
+    ok(
+        &mut out,
         "stack_loop".into(),
-        chain.execute("stack_loop", &[], (8 * VM_STACK_LIMIT as u64).min(ms)),
-        None,
-    ));
-    // Each order a vec of e = chunk/16 + 1 elements lands in, up to the cap:
-    // the vec is charged; its two clones are not.
+        chain.legal_call("stack_loop", &[], (8 * VM_STACK_LIMIT as u64).min(ms), 0, l),
+    );
+    // Holder iii, each order a vec of e = chunk/16 + 1 elements lands in: the
+    // INPUT and STOW integers plus the vec at 16 B an element must fit; its
+    // two clones are uncharged.
     let mut chunk = 16u64;
     loop {
         let e = chunk / 16 + 1;
-        if 8 * e > l {
+        if VEC_ELEMENT_BYTES * e + 2 * VARIABLE_BYTES > l {
             break;
         }
         for (name, atleastw) in [("typeconf_equality", false), ("typeconf_atleastw", true)] {
-            let (code, steps) = typeconf_run(atleastw, e);
-            out.push((
-                format!("{name} e={e}"),
-                chain.execute(name, &[e as i64], steps.min(ms)),
-                Some(code),
-            ));
+            let probe = native_run(
+                &prog_typeconf(atleastw),
+                &[e as i64],
+                ms,
+                0,
+                max_vm_memory(),
+            );
+            let steps = step_budget(probe.steps).min(ms);
+            let (call, code) = chain.legal_clone_call(name, &[e as i64], steps, 0, l, 3);
+            out.push((format!("{name} e={e}"), call, Some(code)));
         }
         chunk <<= 1;
+    }
+    // A6 shape 2: holder iii while the sample holders are live, in every order
+    // they and the vec fit: INPUT and STOW integers, 251 samples and 256
+    // OUTPUT clones of e elements, and the vec.
+    let mut chunk = 8u64;
+    loop {
+        let e = chunk / 16 + 1;
+        if (251 + 256) * VARIABLE_BYTES * e + VEC_ELEMENT_BYTES * e + 2 * VARIABLE_BYTES > l {
+            break;
+        }
+        for (name, atleastw) in [
+            ("holders_typeconf_equality", false),
+            ("holders_typeconf_atleastw", true),
+        ] {
+            let bytes = prog_holders_typeconf(atleastw);
+            let probe = native_run(&bytes, &[e as i64], ms, 256, max_vm_memory());
+            let steps = step_budget(probe.steps).min(ms);
+            let (call, code) = chain.legal_clone_call(name, &[e as i64], steps, 256, l, 2);
+            out.push((format!("{name} e={e}"), call, Some(code)));
+        }
+        chunk <<= 1;
+    }
+    // A6 shape 1: ATLEASTW's success path, in every order its vecs reach
+    // while the run still succeeds at a real cap of `l` (the quadratic
+    // expansion charge ends it at a few hundred elements).
+    let mut chunk = 16u64;
+    loop {
+        let e = chunk / 16 + 1;
+        let probe = native_run(&prog_atleastw_slack(), &[e as i64], ms, 0, l);
+        if probe.result.is_err() {
+            println!(
+                "atleastw_slack at l={l}: e={e} no longer succeeds ({:?}); sweep ends",
+                probe.result
+            );
+            break;
+        }
+        let steps = step_budget(probe.steps).min(ms);
+        let (call, r) = chain.legal_call("atleastw_slack", &[e as i64], steps, 0, l);
+        assert!(
+            r.is_ok(),
+            "atleastw_slack e={e}: designed to succeed, got {r:?}"
+        );
+        out.push((format!("atleastw_slack e={e}"), call, None));
+        chunk <<= 1;
+    }
+    // mix_clone, each order c <= l/2: k samples of n = c/16 + 1 elements and a
+    // vec of e = c/16 + 1, after the three INPUT and one STOW integers.
+    let mut chunk = 32u64;
+    loop {
+        let n = chunk / 16 + 1;
+        let e = chunk / 16 + 1;
+        let fixed = 4 * VARIABLE_BYTES + VEC_ELEMENT_BYTES * e;
+        if fixed > l {
+            break;
+        }
+        let k = ((l - fixed) / (VARIABLE_BYTES * n)).min(251);
+        let calldata = [n as i64, k as i64, e as i64];
+        let probe = native_run(&prog_mix_clone(), &calldata, ms, 0, max_vm_memory());
+        let steps = step_budget(probe.steps).min(ms);
+        let (call, code) = chain.legal_clone_call("mix_clone", &calldata, steps, 0, l, 3);
+        out.push((
+            format!("mix_clone c={chunk} n={n} k={k} e={e}"),
+            call,
+            Some(code),
+        ));
+        chunk <<= 1;
+    }
+    // holders_iter, each order: the INPUT and STOW integers, the vec at 16 B
+    // an element, 253 samples, 256 OUTPUT clones and `MaxLoopDepth` ITER
+    // frames of e elements at 8 B each.
+    let depth = u64::from(<quip_protocol_runtime::configs::MaxLoopDepth as Get<u32>>::get());
+    let mut chunk = 16u64;
+    loop {
+        let e = chunk / 16 + 1;
+        let charge =
+            2 * VARIABLE_BYTES + VEC_ELEMENT_BYTES * e + (253 + 256 + depth) * VARIABLE_BYTES * e;
+        if charge > l {
+            break;
+        }
+        let probe = native_run(&prog_holders_iter(), &[e as i64], ms, 256, max_vm_memory());
+        let steps = step_budget(probe.steps).min(ms);
+        let (call, code) = chain.legal_clone_call("holders_iter", &[e as i64], steps, 256, l, 2);
+        out.push((format!("holders_iter c={chunk} e={e}"), call, Some(code)));
+        chunk <<= 1;
+    }
+    // models_mix once: the 508 model holders (96 B each), the INPUT integer
+    // and an anchored model of n variables at 40 B each (a variable and a
+    // linear entry), within `l`.
+    let holders = 508 * 96 + VARIABLE_BYTES;
+    if holders + 256 < l {
+        let n = (l - holders - 256) / 40;
+        let probe = native_run(&prog_models_mix(), &[n as i64], ms, 256, l);
+        let steps = step_budget(probe.steps).min(ms);
+        let (call, r) = chain.legal_call("models_mix", &[n as i64], steps, 256, l);
+        assert!(
+            r.is_ok(),
+            "models_mix n={n}: designed to succeed, got {r:?}"
+        );
+        out.push((format!("models_mix n={n}"), call, None));
     }
     out
 }
@@ -709,7 +1145,7 @@ struct Chain {
     genesis: Storage,
     genesis_hash: H256,
     attacker: HybridPair,
-    programs: Vec<(&'static str, H256)>,
+    programs: Vec<(&'static str, H256, Vec<u8>)>,
 }
 
 impl Chain {
@@ -742,6 +1178,12 @@ impl Chain {
             ("stack_loop", prog_stack_loop()),
             ("typeconf_equality", prog_typeconf(false)),
             ("typeconf_atleastw", prog_typeconf(true)),
+            ("atleastw_slack", prog_atleastw_slack()),
+            ("holders_typeconf_equality", prog_holders_typeconf(false)),
+            ("holders_typeconf_atleastw", prog_holders_typeconf(true)),
+            ("mix_clone", prog_mix_clone()),
+            ("models_mix", prog_models_mix()),
+            ("holders_iter", prog_holders_iter()),
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
@@ -758,7 +1200,7 @@ impl Chain {
             let hash = BlakeTwo256::hash(&bytes);
             let key = pallet_xqvm::Programs::<Runtime>::hashed_key_for(hash);
             genesis.top.insert(key, bytes.encode());
-            programs.push((name, hash));
+            programs.push((name, hash, bytes));
         }
         let genesis_hash = TestExternalities::new(genesis.clone())
             .execute_with(|| frame_system::BlockHash::<Runtime>::get(0));
@@ -774,9 +1216,139 @@ impl Chain {
     fn program(&self, name: &str) -> H256 {
         self.programs
             .iter()
-            .find(|(n, _)| *n == name)
+            .find(|(n, _, _)| *n == name)
             .expect("known")
             .1
+    }
+
+    /// The `execute` call for a run sized for an emulated cap `l`, after
+    /// checking natively that a chain whose REAL cap is `l` makes the same run
+    /// (claude's R8 on A6c/A6d). The emulating chain's cap is the compiled
+    /// `MaxVmMemory`, so a run that fits only under it -- one that would fault
+    /// earlier at a real cap of `l` -- would put into the block what no chain
+    /// at `l` can, and Σ at `l` would count it. Both native runs use the call's
+    /// step limit, output slots and calldata; they must be the same run
+    /// ([`NativeRun::same_as`]) holding at most `l`. Returns the call and the
+    /// native result, for the caller's designed-outcome check.
+    fn legal_call(
+        &self,
+        name: &str,
+        calldata: &[i64],
+        step_limit: u64,
+        output_slots: u32,
+        l: u64,
+    ) -> (RuntimeCall, Result<(), xqvm::Error>) {
+        let bytes = &self
+            .programs
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .expect("known")
+            .2;
+        let chain_cap = native_run(bytes, calldata, step_limit, output_slots, max_vm_memory());
+        let real_cap = native_run(bytes, calldata, step_limit, output_slots, l);
+        assert!(
+            chain_cap.used <= l && chain_cap.same_as(&real_cap),
+            "{name} {calldata:?} is not a run a chain at a real cap of {l} B makes: \
+             at the chain cap {chain_cap:?}, at {l} B {real_cap:?}"
+        );
+        (
+            self.execute_with_outputs(name, calldata, step_limit, output_slots),
+            chain_cap.result,
+        )
+    }
+
+    /// [`Chain::legal_call`] for a clone holder: a run whose last instruction
+    /// is the type-confused `EQUALITY`/`ATLEASTW` on `model`, made to fault
+    /// after its two clones. The whole run cannot be compared across caps --
+    /// the opcode's growth and expansion charges come after the clones and
+    /// allocate nothing, but one that fails at a real cap of `l` can pass at
+    /// the emulating 1 MiB cap and fault on the step charge or the model type
+    /// instead -- so the check is split at the opcode:
+    /// - the run up to it ([`truncate_at`]) is the same run at both caps,
+    ///   holding at most `l`, so the heap the clones are made into is one a
+    ///   chain at `l` reaches;
+    /// - the whole run faults after the clones at both caps
+    ///   ([`post_clone_code`], non-masking).
+    ///
+    /// Returns the call and its designed fault code at the chain cap.
+    fn legal_clone_call(
+        &self,
+        name: &str,
+        calldata: &[i64],
+        step_limit: u64,
+        output_slots: u32,
+        l: u64,
+        model: u8,
+    ) -> (RuntimeCall, u8) {
+        let bytes = &self
+            .programs
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .expect("known")
+            .2;
+        let op = clone_op_pos(bytes);
+        let prefix = truncate_at(bytes, op);
+        let pre_chain = native_run(&prefix, calldata, step_limit, output_slots, max_vm_memory());
+        let pre_real = native_run(&prefix, calldata, step_limit, output_slots, l);
+        assert!(
+            pre_chain.result.is_ok() && pre_chain.used <= l && pre_chain.same_as(&pre_real),
+            "{name} {calldata:?}: the run up to the clones at pc {op} is not one a chain at a \
+             real cap of {l} B makes: at the chain cap {pre_chain:?}, at {l} B {pre_real:?}"
+        );
+        let real = native_run(bytes, calldata, step_limit, output_slots, l);
+        assert!(
+            is_post_clone(&real.result, model, op),
+            "{name} {calldata:?} at a real cap of {l} B: {:?} is not a fault after the clones \
+             at pc {op}",
+            real.result
+        );
+        let full = native_run(bytes, calldata, step_limit, output_slots, max_vm_memory());
+        let code = post_clone_code(&full.result, model, op, &format!("{name} {calldata:?}"));
+        (
+            self.execute_with_outputs(name, calldata, step_limit, output_slots),
+            code,
+        )
+    }
+
+    /// `call` with its program swapped for `halt`, keeping its calldata,
+    /// output slots and step limit, so the extrinsic encodes to the same
+    /// length. Calls other than `execute` are kept as they are.
+    fn as_halt(&self, call: &RuntimeCall) -> RuntimeCall {
+        match call {
+            RuntimeCall::Xqvm(pallet_xqvm::Call::execute {
+                calldata,
+                output_slots,
+                step_limit,
+                ..
+            }) => pallet_xqvm::Call::<Runtime>::execute {
+                program_hash: self.program("halt"),
+                calldata: calldata.clone(),
+                output_slots: *output_slots,
+                step_limit: *step_limit,
+            }
+            .into(),
+            other => other.clone(),
+        }
+    }
+
+    /// The same-count control for a block of `calls`: the same extrinsics,
+    /// each `execute` turned into a `halt` run ([`Chain::as_halt`]). Returns
+    /// its importer high-water net of the empty block (`empty_import`): the
+    /// block-level share -- decoding, per-extrinsic overhead and a decoded
+    /// block `Vec` crossing a capacity doubling -- that a Σ measured against an
+    /// empty block also contains.
+    fn control_import(&self, calls: &[RuntimeCall], empty_import: u32) -> u32 {
+        let control: Vec<RuntimeCall> = calls.iter().map(|c| self.as_halt(c)).collect();
+        let supplied = control.len();
+        let (block, applied) = self.author_fast(control);
+        assert_eq!(
+            applied.len(),
+            supplied,
+            "the builder includes every control run"
+        );
+        let (imported, heap) = self.import(&block);
+        assert!(imported.is_ok(), "the control block imports");
+        heap.saturating_sub(empty_import)
     }
 
     fn state(&self) -> TestExternalities {
@@ -1360,34 +1932,21 @@ fn order_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, u64)
         let charged = 8 * n * count;
         assert!(charged <= l);
         let steps_needed = ((n + 8) * (count + 2) + 4 * 256 + 1_000).min(ms);
-        out.push((
-            format!("samples/o{order}"),
-            chain.execute("samples", &[n as i64, count as i64, 1], steps_needed),
-            charged,
-        ));
+        let (call, _) =
+            chain.legal_call("samples", &[n as i64, count as i64, 1], steps_needed, 0, l);
+        out.push((format!("samples/o{order}"), call, charged));
         chunk <<= 1;
         order += 1;
     }
-    out.push((
-        "linear".into(),
-        chain.execute("linear", &[(l / 40) as i64], ms),
-        40 * (l / 40),
-    ));
-    out.push((
-        "linear_anchored".into(),
-        chain.execute("linear_anchored", &[(l / 40) as i64], ms),
-        40 * (l / 40),
-    ));
-    out.push((
-        "quad".into(),
-        chain.execute("quad", &[(l / 56) as i64], ms),
-        56 * (l / 56),
-    ));
-    out.push((
-        "vec+equality".into(),
-        chain.execute("vec", &[(l / 32 + 1) as i64, 1], ms),
-        16 * (l / 32 + 1),
-    ));
+    for (name, per) in [("linear", 40), ("linear_anchored", 40), ("quad", 56)] {
+        let (call, _) = chain.legal_call(name, &[(l / per) as i64], ms, 0, l);
+        out.push((name.into(), call, per * (l / per)));
+    }
+    // Non-masking: its designed `MemoryLimitExceeded` must come from the
+    // EQUALITY after the clones, not from the VECPUSH that builds the vec.
+    let (call, r) = chain.legal_call("vec", &[(l / 32 + 1) as i64, 1], ms, 0, l);
+    post_clone_code(&r, 3, clone_op_pos(&prog_vec()), "vec+equality");
+    out.push(("vec+equality".into(), call, 16 * (l / 32 + 1)));
     out
 }
 
@@ -1962,6 +2521,12 @@ fn i_worst_case_fixed_run() {
 /// it, which is why the budget test requires power-of-two caps -- and that
 /// every block imports and leaves at least a quarter of the heap free, after
 /// printing every number.
+///
+/// **This test defines the pin**: Σ vs the empty block at the shipped cap must
+/// not exceed `VM_SIGMA_ORDERS_PER_L` (STOP). It also prints the block's
+/// same-count control ([`Chain::control_import`], the block-level share) and Σ
+/// net of it (the VM's share, a lower bound), and STOPs if that net exceeds
+/// the pin at either cap.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn k_combined_block_with_holders_at_cap() {
@@ -2035,6 +2600,7 @@ fn k_combined_block_with_holders_at_cap() {
             256,
         ));
         expected.push(("stack run (fixed_worst_jumps)".into(), None));
+        let control = chain.control_import(&vm_calls, empty_import);
         let (vm_block, vm_applied) = chain.author_fast(vm_calls.clone());
         assert_eq!(vm_applied.len(), vm_calls.len(), "every VM run is included");
         for (r, (name, expect)) in vm_applied.iter().zip(&expected) {
@@ -2048,10 +2614,18 @@ fn k_combined_block_with_holders_at_cap() {
         );
         let vm_net = vm_heap.saturating_sub(empty_import);
         let ratio = f64::from(vm_net) / l as f64;
+        let ctl = f64::from(control) / l as f64;
+        let net_ctl = f64::from(vm_net.saturating_sub(control)) / l as f64;
         println!(
-            "Σ+holders@L={}KiB: {n_sweep} sweep + {n_holders} holder + 1 stack runs, importer net {:.3} MiB = {ratio:.4}·L (pinned {k}), import ok",
+            "Σ+holders@L={}KiB: {n_sweep} sweep + {n_holders} holder + 1 stack runs, importer net {:.3} MiB = {ratio:.4}·L vs empty; same-count control {ctl:.4}·L; net vs control {net_ctl:.4}·L (pinned {k}), import ok",
             l / KIB,
             mib(vm_net),
+        );
+        assert!(
+            net_ctl <= k,
+            "Σ at L={} KiB net of a same-count control (a lower bound) is {net_ctl:.4}·L, over the \
+             pinned {k} -- STOP and report",
+            l / KIB
         );
         sigma.push((l, ratio));
         for (order, calls) in [
@@ -2191,14 +2765,24 @@ fn l_store_program_verify_peak() {
 }
 
 /// Σ_orders at emulated caps (W1-002 R8 items 10, 19 and the xqvm 0.6.0
-/// repin): census c's mixed order sweep plus the holder runs (register and
-/// OUTPUT holders, the stack loop, and one `EQUALITY` and one `ATLEASTW`
-/// vec-clone run per order), at L' = 256 KiB, 512 KiB and 1 MiB, each within
-/// the pinned Σ multiple (`VM_SIGMA_ORDERS_PER_L`). The clone runs set the
-/// pin: 20.88·L' at 256 KiB, pinned at 21 (QUI-2546). Up to xqvm 0.5.0 this
-/// test measured `ITER` loop-frame pile-ups (28.65·L' at 256 KiB); 0.6.0's
-/// jump-span phase (W1-011) rejects them at `store_program`, which census i
-/// asserts.
+/// repin), a SCALE CHECK: census c's mixed order sweep plus every holder run
+/// ([`holder_sweep`]), at L' = 256 KiB, 512 KiB and 1 MiB. Census k at the
+/// shipped cap is what defines the pin.
+///
+/// Three figures per cap (claude's and the architect's R8 on A6c/A6d):
+/// - Σ vs the empty block. At a small L' this includes allocations that do
+///   not scale with L' -- the fixed run and block-level overhead -- divided
+///   by L'. At 256 KiB the block's 84th-to-85th extrinsic crosses a doubling
+///   of a decoded-block buffer (about 0.56 MiB, about 2·L'), which is
+///   `VM_BLOCK_RESIDENCY`'s, not the VM's. So over the pin it is REPORTED for
+///   investigation, not a STOP.
+/// - The same-count control ([`Chain::control_import`]): the block-level share.
+/// - Σ net of that control: the VM's share, a LOWER bound (the VM runs reuse
+///   chunks the control's runs freed). Over the pin it is conclusive: STOP.
+///
+/// Up to xqvm 0.5.0 this test measured `ITER` loop-frame pile-ups (28.65·L'
+/// at 256 KiB); 0.6.0's jump-span phase (W1-011) rejects them at
+/// `store_program`, which census i asserts.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn j_sigma_at_emulated_caps() {
@@ -2208,6 +2792,7 @@ fn j_sigma_at_emulated_caps() {
     let (_, empty_import) = chain.import(&empty);
     let k = quip_protocol_runtime::configs::VM_SIGMA_ORDERS_PER_L as f64;
     let mut worst = 0f64;
+    let mut worst_net = 0f64;
     for lp in [256 * KIB, 512 * KIB, MIB] {
         let sweep = order_sweep(&chain, lp, ms);
         // Each run's label and designed outcome, as in census k: a run that
@@ -2225,6 +2810,7 @@ fn j_sigma_at_emulated_caps() {
             expected.push((name, expect));
         }
         let supplied = calls.len();
+        let control = chain.control_import(&calls, empty_import);
         let (block, applied) = chain.author(calls);
         assert_eq!(
             applied.len(),
@@ -2246,17 +2832,29 @@ fn j_sigma_at_emulated_caps() {
         );
         let net = heap.saturating_sub(empty_import);
         let ratio = f64::from(net) / lp as f64;
+        let ctl = f64::from(control) / lp as f64;
+        let vm = f64::from(heap.saturating_sub(empty_import).saturating_sub(control)) / lp as f64;
         println!(
             "sweep + {n_holders} holder runs at L'={} KiB: {supplied} xts, \
-             import net {:.3} MiB = {ratio:.2} x L' (pinned Σ multiple {k})",
+             import net {:.3} MiB = {ratio:.2} x L' vs empty; same-count control \
+             {ctl:.2} x L'; net vs control {vm:.2} x L' (pinned Σ multiple {k})",
             lp / KIB,
             mib(net),
         );
+        if ratio > k {
+            println!(
+                "REPORT AND INVESTIGATE: Σ vs empty at L'={} KiB is {ratio:.2} x L' > {k}",
+                lp / KIB
+            );
+        }
         worst = worst.max(ratio);
+        worst_net = worst_net.max(vm);
     }
+    println!("census j worst: {worst:.2} x L' vs empty, {worst_net:.2} x L' net vs control");
     assert!(
-        worst <= k,
-        "the Σ_orders term is exceeded ({worst:.2} x L' > {k}) -- STOP and report"
+        worst_net <= k,
+        "the VM's Σ, net of a same-count control (a lower bound), exceeds the pin \
+         ({worst_net:.2} x L' > {k}) -- STOP and report"
     );
 }
 
