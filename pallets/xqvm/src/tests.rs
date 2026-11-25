@@ -37,6 +37,37 @@ fn program_hash(bytes: &[u8]) -> <Test as frame_system::Config>::Hash {
     <<Test as frame_system::Config>::Hashing as Hash>::hash(bytes)
 }
 
+/// QUI-2516: the structural gate accepts a program the VM faults on.
+/// `store_program` stores it and holds the deposit; `execute` then fails with
+/// `fault`, keeps the full pre-charge (an error carries no `actual_weight`)
+/// and changes nothing.
+fn stored_program_faults_at_execute(bytecode: Vec<u8>, step_limit: u64, fault: Error<Test>) {
+    let hash = program_hash(&bytecode);
+    let size = bytecode.len() as u32;
+    let held_before = held(1);
+    assert_ok!(Xqvm::store_program(
+        RuntimeOrigin::signed(1),
+        bounded(bytecode)
+    ));
+    assert!(Programs::<Test>::contains_key(hash));
+    assert_eq!(held(1) - held_before, Xqvm::deposit_for(size));
+    let execute = || {
+        Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            step_limit,
+        )
+    };
+    assert_noop!(execute(), fault);
+    let error = execute().unwrap_err();
+    assert_eq!(
+        error.post_info.actual_weight, None,
+        "a fault keeps the full pre-charge"
+    );
+}
+
 // ── store_program ────────────────────────────────────────────────────────
 
 #[test]
@@ -382,38 +413,33 @@ fn execute_too_many_output_slots() {
 // ── static verification at store time ────────────────────────────────────
 
 #[test]
-fn store_rejects_stack_underflow() {
+fn a_stack_underflow_is_stored_and_faults_at_execute() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
-        // ADD with nothing on the stack. The XQBC container is perfectly well
-        // formed -- correct magic, version, length and CRC -- so this was
-        // stored happily before the verifier ran, and only faulted when
-        // somebody executed it.
+        // ADD with nothing on the stack. The full checker refused it at store
+        // (`VerifierStackFault`); under the structural gate it is stored and
+        // faults when executed, with the caller paying (QUI-2516).
         let bytecode = build_program(|b| {
             b.emit_add().emit_halt();
         });
 
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierStackFault
-        );
+        stored_program_faults_at_execute(bytecode, 1_000, Error::<Test>::VmStackUnderflow);
     });
 }
 
 #[test]
-fn store_rejects_read_of_unset_register() {
+fn a_read_of_an_unset_register_is_stored_and_faults_at_execute() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
+        // The full checker refused this at store (`VerifierReadUnsetRegister`);
+        // the structural gate leaves it to the VM (QUI-2516).
         let bytecode = build_program(|b| {
             b.emit_load(Register(3)).emit_halt();
         });
 
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierReadUnsetRegister
-        );
+        stored_program_faults_at_execute(bytecode, 1_000, Error::<Test>::VmUnsetRegister);
     });
 }
 
@@ -566,7 +592,7 @@ fn store_rejects_an_unclosed_loop() {
 }
 
 #[test]
-fn store_rejects_a_register_read_at_the_wrong_type() {
+fn a_register_read_at_the_wrong_type_is_stored_and_faults_at_execute() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
@@ -581,10 +607,9 @@ fn store_rejects_a_register_read_at_the_wrong_type() {
                 .emit_halt();
         });
 
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-            Error::<Test>::VerifierRegisterTypeMismatch
-        );
+        // Refused at store by the full checker (`VerifierRegisterTypeMismatch`);
+        // the structural gate leaves it to the VM (QUI-2516).
+        stored_program_faults_at_execute(bytecode, 1_000, Error::<Test>::VmRegisterType);
     });
 }
 
@@ -700,6 +725,197 @@ fn store_rejects_loops_nested_past_the_depth_bound() {
             Error::<Test>::LoopNestingTooDeep
         );
         assert!(!Programs::<Test>::contains_key(&hash));
+    });
+}
+
+/// The structural gate refuses each fault its two phases can emit, at store
+/// (R9 §A). An unknown opcode, a jump with no `TARGET`, a cross-boundary jump
+/// and an unclosed loop have their own tests above.
+#[test]
+fn structural_gate_rejects_each_emittable_fault_at_store() {
+    use xqvm::{bytecode::codec, Instruction};
+
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let encode = |instructions: &[Instruction]| {
+            raw_program(instructions.iter().flat_map(codec::encode).collect())
+        };
+        let cases = [
+            (
+                "truncated PUSH1",
+                raw_program(vec![PUSH1]),
+                Error::<Test>::VerifierBadInstruction,
+            ),
+            (
+                "NEXT with no open loop",
+                raw_program(vec![NEXT, HALT]),
+                Error::<Test>::VerifierLoopImbalance,
+            ),
+            (
+                "LIDX outside a loop",
+                encode(&[Instruction::Lidx { reg: Register(0) }, Instruction::Halt {}]),
+                Error::<Test>::VerifierLoopImbalance,
+            ),
+            (
+                "LVAL outside a loop",
+                encode(&[Instruction::LVal { reg: Register(0) }, Instruction::Halt {}]),
+                Error::<Test>::VerifierLoopImbalance,
+            ),
+            (
+                "JUMP1 to label 5 with one TARGET",
+                raw_program(vec![TARGET, JUMP1, 5, HALT]),
+                Error::<Test>::VerifierUndefinedJumpTarget,
+            ),
+        ];
+        for (name, bytecode, error) in cases {
+            let hash = program_hash(&bytecode);
+            assert_eq!(
+                Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode))
+                    .map_err(|e| e.error),
+                Err(error.into()),
+                "{name}"
+            );
+            assert!(!Programs::<Test>::contains_key(hash), "{name}");
+        }
+    });
+}
+
+/// `LoopNestingPhase` runs before `JumpSpanPhase` (R9 §A). The jump to an
+/// undefined label comes first in the stream and the unmatched `NEXT` after
+/// it, so only that phase order reports the loop fault.
+#[test]
+fn structural_gate_runs_loop_nesting_before_jump_span() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let bytecode = raw_program(vec![JUMP1, 5, NEXT, HALT]);
+        assert_noop!(
+            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
+            Error::<Test>::VerifierLoopImbalance
+        );
+    });
+}
+
+/// `ControlFlowShape`'s loop depth equals the deepest nesting
+/// `LoopNestingPhase` tracks, for every program the gate accepts (R9 §A):
+/// both push on `RANGE` and `ITER` and pop on `NEXT`. That is what lets
+/// `MaxLoopDepth`, checked on the shape, bound the loop frames a run holds.
+/// Covers `RANGE` and `ITER` openers, nesting and sequence, and the 32/33
+/// boundary at store.
+#[test]
+fn control_flow_shape_depth_agrees_with_loop_nesting() {
+    const ITER: u8 = 0x09;
+    let opener = |iter: bool| if iter { vec![ITER, 0] } else { vec![RANGE] };
+    let nested = |depth: u32, pattern: fn(u32) -> bool| {
+        let mut code = Vec::new();
+        for level in 0..depth {
+            code.extend(opener(pattern(level)));
+        }
+        code.extend(vec![NEXT; depth as usize]);
+        code.push(HALT);
+        code
+    };
+    // The same push/pop `LoopNestingPhase` performs, as a reference.
+    let max_height = |code: &[u8]| {
+        use xqvm::{Instruction, InstructionStream};
+        let (mut height, mut max) = (0u32, 0u32);
+        let mut stream = InstructionStream::new(code);
+        while let Some(Ok((_, _, instruction))) = stream.next_instruction() {
+            match instruction {
+                Instruction::Range {} | Instruction::Iter { .. } => {
+                    height += 1;
+                    max = max.max(height);
+                }
+                Instruction::Next {} => height -= 1,
+                _ => {}
+            }
+        }
+        max
+    };
+    let patterns: [fn(u32) -> bool; 3] = [|_| false, |_| true, |level| level % 2 == 1];
+
+    let mut corpus = Vec::new();
+    for depth in 1..=MaxLoopDepth::get() + 1 {
+        for pattern in patterns {
+            corpus.push(nested(depth, pattern));
+        }
+    }
+    // Loops in sequence: depth is the deepest, not the count.
+    let mut sequential = Vec::new();
+    for iter in [false, true, false] {
+        sequential.extend(opener(iter));
+        sequential.extend(opener(!iter));
+        sequential.extend([NEXT, NEXT]);
+    }
+    sequential.push(HALT);
+    corpus.push(sequential);
+
+    for code in &corpus {
+        let program = Program::new(code.clone());
+        assert!(
+            xqvm::checker::Checker::new()
+                .with_phase(xqvm::checker::LoopNestingPhase)
+                .run(&program)
+                .is_ok(),
+            "{code:02x?}"
+        );
+        assert_eq!(
+            ControlFlowShape::of(code).loop_depth,
+            max_height(code),
+            "{code:02x?}"
+        );
+    }
+
+    // The boundary through `store_program`, for both opener kinds.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for pattern in patterns {
+            let at_bound = raw_program(nested(MaxLoopDepth::get(), pattern));
+            assert_ok!(Xqvm::store_program(
+                RuntimeOrigin::signed(1),
+                bounded(at_bound)
+            ));
+            assert_noop!(
+                Xqvm::store_program(
+                    RuntimeOrigin::signed(1),
+                    bounded(raw_program(nested(MaxLoopDepth::get() + 1, pattern)))
+                ),
+                Error::<Test>::LoopNestingTooDeep
+            );
+        }
+    });
+}
+
+/// xqcp-compiled programs stay accepted under the structural gate (plan A2).
+/// The bytes are xquad tag `v0.6.0` (34f2b6a) `xqcp/tests/fixtures/*/*.xqasm`,
+/// the compiler's checked-in output for the maxcut and tsp problems,
+/// assembled by that tag's `xqasm::assemble_source` and encoded as XQBC.
+/// The full checker accepts them too, so the gate is not what admits them.
+#[test]
+fn xqcp_compiled_programs_are_stored() {
+    let corpus: [(&str, &str); 6] = [
+        ("maxcut_encoder", "585142430102010000004e903a5cb411000e0011010e0153011103230b020a00400411000a0208060a0a0a1103221c51010b0b2a1c51010b0c2a51010b0d0a0b0a0d2762040a0c0a0d2762040a0b0a0c0a0d11022265040711000f04ff"),
+        ("maxcut_decoder", "585142430102010000001d6cba2b3611000e0011010e014b0211000a0108060a0a0a600050020711000f02ff"),
+        ("maxcut_verifier", "58514243010302000000383c04ddd711000e0011010e0111020e0311010b0211000a0308060a0a0a60011c1100301b110130380a02370b02077f00010b0411000f0411010f02ff"),
+        ("tsp_encoder", "585142430102010000008f75f5911c11000e0011010e010a00250b020a0240040a000a00660411000a002b08060a0a0a2a0a000a0a212b08060b0a0a0a0b5b51010b0f11000a0008060c0a0c2a0a00240b0d0a0a0a00220a0c200a0b0a00220a0d200a0f65040a0b0a00220a0c200a0a0a00220a0d200a0f650407070711000a0008060a0a0a116470040711000a000806140a14116471040711000f04ff"),
+        ("tsp_decoder", "585142430102010000001f8433bde211000e0011010e014b0211000a0108060a0a0a1101680050020711000f02ff"),
+        ("tsp_verifier", "5851424301030200000046d79c00c611000e0011010e0111020e0311010b0211000a0308060a0a0a69011101300a02370b020711000a0308060a0a0a6a011101300a02370b02077f00010b0411000f0411010f02ff"),
+    ];
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for (name, hex) in corpus {
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+                .collect();
+            let program = Program::decode(&bytes).expect("decodes");
+            assert!(xqvm::checker::check(&program).is_ok(), "{name}");
+            let hash = program_hash(&bytes);
+            assert_ok!(Xqvm::store_program(
+                RuntimeOrigin::signed(1),
+                bounded(bytes)
+            ));
+            assert!(Programs::<Test>::contains_key(hash), "{name}");
+        }
     });
 }
 
@@ -1605,10 +1821,13 @@ fn a_removed_program_can_be_stored_again() {
     });
 }
 
-// Audit acceptance goes through the signed dispatchable: rejecting after a
-// direct verifier call would not prove that an untrusted transaction returns.
+// Audit regressions go through the signed dispatchables: a direct checker or
+// VM call would not prove that an untrusted transaction returns. Under the
+// structural gate (QUI-2516) these programs are stored, and `execute` faults
+// within its step budget with the caller paying; the full checker refused them
+// at store. The two-second watchdog still guards against a hang on either path.
 #[test]
-fn audit_signed_store_rejects_all_register_cycle_without_hanging() {
+fn audit_signed_all_register_cycle_is_stored_and_faults_without_hanging() {
     use std::{sync::mpsc, time::Duration};
 
     for registers in [255_u16, 256] {
@@ -1631,27 +1850,24 @@ fn audit_signed_store_rejects_all_register_cycle_without_hanging() {
                 let shape = ControlFlowShape::of(program.code());
                 assert!(shape.blocks <= MaxProgramBlocks::get());
                 assert!(shape.loop_depth <= MaxLoopDepth::get());
-                let hash = program_hash(&bytecode);
-                assert_noop!(
-                    Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-                    Error::<Test>::VerifierStackFault,
+                // BSMX pops its size, so the first one underflows.
+                stored_program_faults_at_execute(
+                    bytecode,
+                    MaxStepLimit::get(),
+                    Error::<Test>::VmStackUnderflow,
                 );
-                assert!(!Programs::<Test>::contains_key(hash));
-                assert!(!ProgramOwner::<Test>::contains_key(hash));
-                assert!(!crate::ProgramDeposit::<Test>::contains_key(hash));
-                assert_eq!(Balances::free_balance(1), INITIAL_BALANCE);
             });
             sender.send(()).unwrap();
         });
         receiver
             .recv_timeout(Duration::from_secs(2))
-            .expect("signed all-register-cycle rejection must terminate");
+            .expect("the signed all-register cycle must terminate");
         worker.join().unwrap();
     }
 }
 
 #[test]
-fn audit_signed_store_distinguishes_dead_reads_and_rejects_hidden_peak() {
+fn audit_signed_dead_and_live_reads_and_the_stack_peak_fault_at_execute() {
     use xqvm::{bytecode::codec, Instruction};
 
     new_test_ext().execute_with(|| {
@@ -1670,14 +1886,25 @@ fn audit_signed_store_distinguishes_dead_reads_and_rejects_hidden_peak() {
             ]);
             raw_program(instructions.iter().flat_map(codec::encode).collect())
         };
+        // The dead read is never reached: stored, and runs to HALT.
         let dead = code(false);
         let hash = program_hash(&dead);
         assert_ok!(Xqvm::store_program(RuntimeOrigin::signed(1), bounded(dead)));
         assert_eq!(ProgramOwner::<Test>::get(hash), Some(1));
-        assert_noop!(
-            Xqvm::store_program(RuntimeOrigin::signed(1), bounded(code(true))),
-            Error::<Test>::VerifierReadUnsetRegister,
-        );
+        assert_ok!(Xqvm::execute(
+            RuntimeOrigin::signed(1),
+            hash,
+            BoundedVec::default(),
+            0,
+            1_000
+        ));
+        // The live read of the dropped r0: stored, then faults at execute.
+        assert_ok!(Xqvm::remove_program(RuntimeOrigin::signed(1), hash));
+        stored_program_faults_at_execute(code(true), 1_000, Error::<Test>::VmUnsetRegister);
+        assert_ok!(Xqvm::remove_program(
+            RuntimeOrigin::signed(1),
+            program_hash(&code(true))
+        ));
         for peak in [8192, 8193] {
             let bytecode = build_program(|b| {
                 for _ in 0..peak {
@@ -1686,15 +1913,20 @@ fn audit_signed_store_distinguishes_dead_reads_and_rejects_hidden_peak() {
                 b.emit_sclr().emit_halt();
             });
             if peak == 8192 {
+                let hash = program_hash(&bytecode);
                 assert_ok!(Xqvm::store_program(
                     RuntimeOrigin::signed(1),
                     bounded(bytecode)
                 ));
+                assert_ok!(Xqvm::execute(
+                    RuntimeOrigin::signed(1),
+                    hash,
+                    BoundedVec::default(),
+                    0,
+                    20_000
+                ));
             } else {
-                assert_noop!(
-                    Xqvm::store_program(RuntimeOrigin::signed(1), bounded(bytecode)),
-                    Error::<Test>::VerifierStackFault,
-                );
+                stored_program_faults_at_execute(bytecode, 20_000, Error::<Test>::VmStackOverflow);
             }
         }
     });

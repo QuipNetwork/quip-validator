@@ -28,6 +28,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::{Hash as _, Saturating};
 
+    use xqvm::checker::{Checker, JumpSpanPhase, LoopNestingPhase};
     use xqvm::{Program, RegVal, Vm};
 
     /// The storage layout this code expects: `Programs`, `ProgramOwner` and
@@ -342,27 +343,34 @@ pub mod pallet {
         VerifierJumpAcrossLoopBoundary,
     }
 
-    /// Map a static-verification failure onto a dispatch error.
+    /// Map a structural-gate failure onto a dispatch error.
     ///
-    /// Exhaustive on purpose: a new `CheckerError` variant upstream should
-    /// stop this compiling rather than be absorbed by a catch-all, the same
-    /// discipline `map_vm_error` applies to runtime faults.
-    fn map_verifier_error<T: Config>(e: &xqvm::CheckerError) -> Error<T> {
-        use xqvm::CheckerError as V;
+    /// Exhaustive on purpose, with no catch-all: a new `CheckerError`
+    /// variant upstream should stop this compiling rather than be absorbed,
+    /// the same discipline `map_vm_error` applies to run-time faults.
+    ///
+    /// `LoopNestingPhase` and `JumpSpanPhase` emit only the first six
+    /// variants below. The other seven come from the CFG phases the gate no
+    /// longer runs; each keeps the dispatch error it had before, so a client
+    /// matching on an error index never sees a reused slot.
+    fn map_structural_error<T: Config>(e: &xqvm::CheckerError) -> Error<T> {
+        use xqvm::CheckerError as C;
         match e {
-            V::AnalysisBudgetExceeded => Error::<T>::VerifierAnalysisBudgetExceeded,
-            V::TruncatedInstruction { .. } | V::BadOpcode { .. } => {
+            // Emitted by the two phases.
+            C::TruncatedInstruction { .. } | C::BadOpcode { .. } => {
                 Error::<T>::VerifierBadInstruction
             }
-            V::UndefinedJumpTarget { .. } => Error::<T>::VerifierUndefinedJumpTarget,
-            V::NoActiveLoop { .. } | V::UnmatchedLoop { .. } => Error::<T>::VerifierLoopImbalance,
-            V::JumpAcrossLoopBoundary { .. } => Error::<T>::VerifierJumpAcrossLoopBoundary,
-            V::ReadUnsetRegister { .. } => Error::<T>::VerifierReadUnsetRegister,
-            V::RegisterTypeMismatch { .. } => Error::<T>::VerifierRegisterTypeMismatch,
-            V::StackUnderflow { .. }
-            | V::StackOverflowRisk { .. }
-            | V::LoopStackImbalance { .. }
-            | V::StackDepthMismatch { .. } => Error::<T>::VerifierStackFault,
+            C::NoActiveLoop { .. } | C::UnmatchedLoop { .. } => Error::<T>::VerifierLoopImbalance,
+            C::UndefinedJumpTarget { .. } => Error::<T>::VerifierUndefinedJumpTarget,
+            C::JumpAcrossLoopBoundary { .. } => Error::<T>::VerifierJumpAcrossLoopBoundary,
+            // Only the CFG phases emit these; mapped to their former slots.
+            C::AnalysisBudgetExceeded => Error::<T>::VerifierAnalysisBudgetExceeded,
+            C::ReadUnsetRegister { .. } => Error::<T>::VerifierReadUnsetRegister,
+            C::RegisterTypeMismatch { .. } => Error::<T>::VerifierRegisterTypeMismatch,
+            C::StackUnderflow { .. }
+            | C::StackOverflowRisk { .. }
+            | C::LoopStackImbalance { .. }
+            | C::StackDepthMismatch { .. } => Error::<T>::VerifierStackFault,
         }
     }
 
@@ -370,7 +378,7 @@ pub mod pallet {
     #[test]
     fn analysis_budget_failure_has_a_distinct_dispatch_error() {
         assert!(matches!(
-            map_verifier_error::<crate::mock::Test>(&xqvm::CheckerError::AnalysisBudgetExceeded),
+            map_structural_error::<crate::mock::Test>(&xqvm::CheckerError::AnalysisBudgetExceeded),
             Error::<crate::mock::Test>::VerifierAnalysisBudgetExceeded
         ));
     }
@@ -401,7 +409,7 @@ pub mod pallet {
             },
         ] {
             assert!(matches!(
-                map_verifier_error::<crate::mock::Test>(&error),
+                map_structural_error::<crate::mock::Test>(&error),
                 Error::<crate::mock::Test>::VerifierStackFault
             ));
         }
@@ -457,25 +465,27 @@ pub mod pallet {
         }
     }
 
-    /// The static control-flow shape of an instruction stream, as the
-    /// verifier will see it.
+    /// The static control-flow shape of an instruction stream.
     ///
-    /// `blocks` counts basic-block leaders exactly as the verifier's CFG
-    /// builder does: the entry, every `TARGET`, and the position after every
-    /// jump, `RANGE`, `ITER` and `NEXT` -- a set, so a `TARGET` right after
-    /// a jump is one block, not two. Counting only `TARGET`s, as this pallet
-    /// first did, left a single `TARGET` followed by two thousand `JUMP`s at
-    /// "one block" while the verifier saw two thousand.
+    /// `blocks` counts basic-block leaders exactly as xqvm's CFG builder
+    /// does: the entry, every `TARGET`, and the position after every jump,
+    /// `RANGE`, `ITER` and `NEXT` -- a set, so a `TARGET` right after a jump
+    /// is one block, not two. Counting only `TARGET`s, as this pallet first
+    /// did, left a single `TARGET` followed by two thousand `JUMP`s at "one
+    /// block" while the CFG had two thousand.
     ///
     /// `loop_depth` is the deepest static nesting of `RANGE`/`ITER` openers
-    /// before their `NEXT`. An unmatched `NEXT` does not go negative; the
-    /// verifier rejects it, and this is a cost model, not a validator.
+    /// before their `NEXT`. It only counts: an unmatched `NEXT` does not go
+    /// negative and an unclosed opener is not reported. Balance is
+    /// `LoopNestingPhase`'s job at `store_program`. For every program that
+    /// phase accepts, this depth equals its deepest nesting
+    /// (`control_flow_shape_depth_agrees_with_loop_nesting`).
     ///
-    /// One linear pass with the same decoder the verifier uses, so it costs
-    /// what decoding costs and is covered by the per-byte weight term.
+    /// One linear pass with xqvm's instruction decoder, so it costs what
+    /// decoding costs and is covered by the per-byte weight term.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct ControlFlowShape {
-        /// Basic blocks in the verifier's CFG.
+        /// Basic blocks in xqvm's CFG.
         pub blocks: u32,
         /// Deepest static loop nesting.
         pub loop_depth: u32,
@@ -496,9 +506,9 @@ pub mod pallet {
 
             let mut stream = InstructionStream::new(code);
             while let Some(item) = stream.next_instruction() {
-                // A structural fault ends the walk; the verifier will report
-                // it. Everything counted so far still bounds the work the
-                // verifier does before it gets there.
+                // A structural fault ends the walk; the structural gate
+                // reports it. Everything counted so far still bounds the work
+                // the gate does before it gets there.
                 let Ok((_, _, instr)) = item else { break };
                 match instr {
                     Instruction::Target {} => {
@@ -574,12 +584,10 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
-            // Container first, then the shape bounds, then the instruction
-            // stream. The shape is one linear walk over the bytes -- already
-            // priced by the per-byte term -- and it has to come before
-            // `verify`, because verification is what spends the memory and
-            // time the bounds protect, and it spends them before it reports
-            // any fault.
+            // Container first, then the shape bounds, then the structural
+            // check. The shape is one linear walk over the bytes -- already
+            // priced by the per-byte term -- and it bounds what the two
+            // structural passes below allocate before they report any fault.
             let program = Program::decode(&bytecode).map_err(|_| Error::<T>::InvalidBytecode)?;
             // W1-003a: the stored bytes must be the program's own canonical
             // encoding. `decode` validates the CRC and length but ignores the
@@ -602,7 +610,19 @@ pub mod pallet {
                 Error::<T>::LoopNestingTooDeep
             );
             let blocks = shape.blocks;
-            xqvm::checker::check(&program).map_err(|e| map_verifier_error::<T>(&e))?;
+            // QUI-2516: the structural gate, not the full checker. Loop
+            // nesting must balance (`RANGE`/`ITER` against `NEXT`, `LIDX` and
+            // `LVAL` only inside a loop) and no jump may cross a loop-body
+            // boundary (W1-011). Together they make the run-time loop stack
+            // equal the lexical nesting at every pc, so `MaxLoopDepth` bounds
+            // the loop frames a run can hold. Both passes are lexical and
+            // linear. Register, stack and type properties are left to the VM,
+            // which faults on them at `execute` with the caller paying.
+            Checker::new()
+                .with_phase(LoopNestingPhase)
+                .with_phase(JumpSpanPhase)
+                .run(&program)
+                .map_err(|e| map_structural_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);
             ensure!(
