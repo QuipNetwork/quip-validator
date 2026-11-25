@@ -1459,7 +1459,7 @@ fn xquad_conformance_fixture() -> std::path::PathBuf {
     std::path::Path::new(manifest)
         .parent()
         .expect("xqvm crate dir")
-        .join("tests/fixtures/kimi-spine-control.bin")
+        .join("tests/fixtures/work-guard-spine.bin")
 }
 
 #[test]
@@ -1470,9 +1470,11 @@ fn e_largest_legitimate_run() {
 
     // --- Synthetic model-building run ---
     // This is a generated workload, not a conformance vector. The checked-in
-    // `kimi-spine-control.bin` is a raw control-flow STRESS stream (no XQBC
-    // header; wrapping it fails verification with StackDepthMismatch), not a
-    // runnable program -- decoding it as XQBC panics on BadMagic. So the
+    // `work-guard-spine.bin` (xqvm 0.6.0's name for the former
+    // `kimi-spine-control.bin`, same sha256 3ffb4e71...) is a raw control-flow
+    // STRESS stream (no XQBC header; wrapped, both the full checker and the
+    // structural gate refuse it with JumpAcrossLoopBoundary), not a runnable
+    // program -- decoding it as XQBC panics on BadMagic. So the
     // synthetic run is the seeded `linear` program, which builds an
     // n-variable model and sets n linear coefficients: it verifies, is
     // canonical, and runs to completion on chain.
@@ -1496,9 +1498,9 @@ fn e_largest_legitimate_run() {
         mib(applied[0].1),
     );
 
-    // Fixture guard: the checked-in kimi-spine-control.bin must be present (fail
+    // Fixture guard: the checked-in work-guard-spine.bin must be present (fail
     // loud if missing) and is the control-flow stress vector it claims to be --
-    // raw code the verifier rejects when wrapped, never a runnable program.
+    // raw code the structural gate refuses when wrapped, never a runnable program.
     let fixture = xquad_conformance_fixture();
     let fixture_bytes = std::fs::read(&fixture)
         .unwrap_or_else(|e| panic!("conformance fixture {} unreadable: {e}", fixture.display()));
@@ -1506,10 +1508,13 @@ fn e_largest_legitimate_run() {
         !fixture_bytes.is_empty(),
         "conformance fixture must be non-empty"
     );
-    assert!(
-        pallet_xqvm::structural_gate(&xqvm::Program::new(fixture_bytes)).is_err(),
-        "kimi-spine-control.bin is a control-flow stress stream: wrapping it must be \
-         rejected by the verifier, not run as a program"
+    assert_eq!(
+        pallet_xqvm::structural_gate(&xqvm::Program::new(fixture_bytes))
+            .err()
+            .map(|e| e.variant_name()),
+        Some("JumpAcrossLoopBoundary"),
+        "work-guard-spine.bin is a control-flow stress stream: wrapping it must be \
+         refused by the structural gate, not run as a program"
     );
 
     // --- Largest legitimate mempool transform, through the REAL transform path ---
