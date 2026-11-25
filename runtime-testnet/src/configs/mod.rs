@@ -635,11 +635,16 @@ parameter_types! {
     /// 87.7 MiB (31.5 % free). The budget test sums the PINNED terms, and that
     /// sum is the gate: 24 × 1 + 1 (fixed-run allowance) + 64 + 4 =
     /// **93 MiB**, 27.3 % free; with the 25 % floor (32 MiB),
-    /// **125 MiB ≤ 128 MiB**, a margin of 3 MiB. The terms over-count a real
-    /// block rather than under-count it: census `k`'s combined block, the VM
-    /// holders plus the worst remark and fillers, peaks at 75.012 MiB, against
-    /// 84.4 MiB for its measured Σ, fixed-run and residency terms summed (Σ vs
-    /// the empty block and census d both contain the block-level share). 16 MiB (the
+    /// **125 MiB ≤ 128 MiB**, a margin of 3 MiB. For census `k`'s combined
+    /// block, the summed measured terms (84.4) exceed its real high-water
+    /// (75.0), because Σ vs empty and census d both contain the block-level
+    /// share; this is a property of that block, not a bound.
+    ///
+    /// **The budget does not cover pallet-revive contract execution or
+    /// oversized Operational calls (QUI-2548 and QUI-2549); it is not an upper
+    /// bound until those are resolved.**
+    ///
+    /// 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
     /// a block only its author could import.
     ///
@@ -1148,15 +1153,20 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 ///
 /// Three components, from census d's shapes:
 /// - **Decode and apply of a large extrinsic.** The worst block is one remark
-///   with a payload just over 2 MiB plus fillers. Several copies of the
-///   payload -- the encoded block, the opaque body, the decoded call, the
-///   signed-payload and storage encodings -- each land in an allocator order,
-///   and the payload crossing 2 MiB moves them from the 2 MiB to the 4 MiB
-///   order in two measured steps: a payload of 2 MiB − 1 or 2 MiB holds
-///   48.97 MiB; 2 MiB + 1 holds 54.97 (+6.0); 2 MiB + 768 holds 62.97
-///   (+8.0), a plateau to about 2 MiB + 1.2 KiB, then falling slowly as fewer
-///   fillers fit (56.20 MiB at the largest remark the builder admits). The
-///   same block trapped at apply holds 59.47 MiB of the 62.97.
+///   with a payload just over 2 MiB plus fillers. The decoded call's payload
+///   `Vec` is built twice -- by `LazyExtrinsic::decode`, then again by
+///   `do_apply_extrinsic`'s re-decode -- first sized exactly, then through
+///   codec's doubling ladder from 524,480 B (claude_reviewer's allocation
+///   trace, `alloc-trace-cliff.log`). Step 1: a payload over 2 MiB puts the
+///   exactly sized copies in the 4 MiB order. Step 2: the ladder's rung
+///   4 × 524,480 B = 2 MiB + 768 lands in the 8 MiB order; above 4 MiB +
+///   1.5 KiB the next rung lands in the 16 MiB order. The opaque body and the
+///   re-encoded extrinsic already sit in the 4 MiB order. Measured: a payload
+///   of 2 MiB − 1 or 2 MiB holds 48.97 MiB; 2 MiB + 1 holds 54.97 (+6.0);
+///   2 MiB + 768 holds 62.97 (+8.0), a plateau to about 2 MiB + 1.2 KiB, then
+///   falling slowly as fewer fillers fit (56.20 MiB at the largest remark the
+///   builder admits). The same block trapped at the last apply (no finalize)
+///   holds 59.47 MiB of the 62.97.
 /// - **The finalize re-read of `ExtrinsicData`.** `frame_system::finalize`
 ///   reads every extrinsic's stored bytes back to compute the extrinsics root.
 /// - **The extrinsics-root encoding.** `ordered_root` `encode()`s those bytes
@@ -1164,15 +1174,19 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 ///   `[T]::size_hint` and grows by doubling; the freed rungs stay in their
 ///   orders. With the re-read, finalize adds 3.5 MiB to the worst block and up
 ///   to 23.5 MiB to a block of small fillers (34.4–35.0 MiB valid; 7.7–23.0
-///   MiB trapped).
+///   MiB trapped at the last apply).
 ///
 /// Method: census d measures valid blocks only. A block that traps at apply or
-/// at `final_checks` measures decode alone and must never be this term's
-/// worst case; census d keeps a trapped copy of each shape as a decode-only
-/// control. (Until A6h this term was 45 MiB, from a trapped block whose
+/// at `final_checks` never finalizes and must never be this term's worst
+/// case; census d keeps a copy of each shape trapped at the last apply (no
+/// finalize) as a control. (Until A6h this term was 45 MiB, from a trapped block whose
 /// remark payload sat about 1.7 KB under the 2 MiB cliff.) A cap below 2 MiB
 /// on one extrinsic's payload would remove both steps; that is an owner
 /// decision, and a runtime upgrade carries the ~1.8 MiB Wasm.
+///
+/// **The budget does not cover pallet-revive contract execution or oversized Operational calls (QUI-2548 and QUI-2549); it is not an upper bound until those are resolved.** A signed Operational call such as `set_code` that fails
+/// at dispatch is still included and finalizes, and its payload may reach the
+/// full 5 MiB block length; census d does not yet measure that class.
 #[doc(hidden)]
 pub const VM_BLOCK_RESIDENCY: u64 = 64 * 1024 * 1024;
 

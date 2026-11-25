@@ -2032,12 +2032,11 @@ fn c_block_order_sweep_at_emulated_caps() {
 // 4. Block residency: valid blocks, imported through finalize (A6h).
 //
 // Until A6h this section measured hand-built or nonce-repeating blocks that
-// the importer rejects at apply or at `final_checks`. Those measure the
-// decode footprint only, and missed what `finalize` allocates (the
-// `ExtrinsicData` re-read and the extrinsics-root encoding), several MiB at
-// a full block. Census d now measures blocks the builder admitted, imported
-// through finalize, and keeps a trapped copy of each only as a decode-only
-// control.
+// the importer rejects at apply or at `final_checks`. Those never finalize,
+// and missed what `finalize` allocates (the `ExtrinsicData` re-read and the
+// extrinsics-root encoding), several MiB at a full block. Census d now
+// measures blocks the builder admitted, imported through finalize, and keeps
+// a copy of each trapped at the last apply (no finalize) only as a control.
 // ---------------------------------------------------------------------------
 
 /// The body length the importer actually holds per extrinsic: `OpaqueExtrinsic`
@@ -2059,13 +2058,14 @@ fn opaque_body_len(xt: &UncheckedExtrinsic) -> usize {
 /// of margin fits under it.
 ///
 /// Why valid blocks: until A6h this test built blocks that repeat a nonce and
-/// trap at apply. Those measure decode only. `frame_system::finalize` re-reads
+/// trap at apply, so they never finalize. `frame_system::finalize` re-reads
 /// every `ExtrinsicData` entry and `extrinsics_data_root` encodes them as one
 /// `Vec<Vec<u8>>` through a buffer that grows by doubling, so a block that
 /// finalizes holds several MiB more. **A trapping block must never be this
 /// term's worst case;** each shape below keeps a trapped copy (its last two
-/// extrinsics swapped, so the last one's nonce fails at apply) only as a
-/// decode-only control, and prints the difference as the finalize share.
+/// extrinsics swapped, so the last one's nonce fails at apply) -- trapped at
+/// the last apply (no finalize) -- only as a control, and prints the
+/// difference as the finalize share.
 ///
 /// Shapes, all bounded by the builder (length and weight):
 /// - fillers whose opaque body sits at each rounding boundary, from the
@@ -2125,7 +2125,7 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
         let net = heap.saturating_sub(empty_import);
         println!(
             "(d) {label}: supplied {supplied}, included {}, encoded {:.3} MiB | VALID net {:.3} MiB \
-             | trapped control (decode only) {:.3} MiB | finalize share {:.3} MiB",
+             | trapped at the last apply (no finalize) {:.3} MiB | finalize share {:.3} MiB",
             applied.len(),
             block.encode().len() as f64 / MIB as f64,
             mib(net),
