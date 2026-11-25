@@ -583,16 +583,17 @@ fn store_accepts_a_loop_closer_in_dead_code() {
     });
 }
 
-/// `execute` does not re-verify: it decodes whatever `Programs` holds and
-/// runs it. In pallet-xqvm the jump-span check (W1-011) is enforced only at
-/// `store_program` (the mempool re-runs the verifier when it registers a job
-/// spec), so a program stored before the xqvm 0.6.0 verifier -- simulated
-/// here by writing `Programs` directly -- still piles up loop frames past
-/// `MaxLoopDepth`. The runtime's VM memory pins (`VM_FIXED_RUN_MEASURED`,
+/// `execute` does not re-check: it decodes whatever `Programs` holds and
+/// runs it. The structural gate, with its jump-span check (W1-011), runs only
+/// at `store_program` (the mempool's spec registration checks only that each
+/// program exists and decodes), so a program stored before xqvm 0.6.0 --
+/// simulated here by writing `Programs` directly -- still piles up loop frames
+/// past `MaxLoopDepth`. The runtime's VM memory pins (`VM_FIXED_RUN_MEASURED`,
 /// `VM_SIGMA_ORDERS_PER_L`) and its "at most `MaxLoopDepth` frames" claims
-/// hold only on a chain whose every stored program passes the 0.6.0
-/// verifier; this test is what those docs point to. If `execute` ever
-/// re-verifies, this test fails and the precondition can be dropped.
+/// hold only on a chain whose every stored program passes the structural gate
+/// (!132 release blocker 5); this test is what those docs point to. If
+/// `execute` ever re-checks, this test fails and the precondition can be
+/// dropped.
 #[test]
 fn execute_does_not_re_verify_a_stored_program() {
     new_test_ext().execute_with(|| {

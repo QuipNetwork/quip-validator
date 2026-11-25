@@ -1950,7 +1950,8 @@ fn i_worst_case_fixed_run() {
 
 /// Σ_orders evidence (W1-002 R8 items 10, 15, 19 and the xqvm 0.6.0 repin):
 /// census g's combined block, with the register, OUTPUT and stack holder runs
-/// added to the mixed sweep, both swept to every reachable order
+/// and the `EQUALITY`/`ATLEASTW` vec-clone runs (holder iii, QUI-2546) added to
+/// the mixed sweep, both swept to every reachable order
 /// (next_pow2(L)). (Under xqvm 0.5.0 it also carried one `ITER` loop-frame
 /// pile-up per order; 0.6.0 makes those unstorable.) At the shipped cap (1 MiB,
 /// a power of two) and, for comparison, at an emulated 768 KiB: a
@@ -2137,14 +2138,15 @@ fn prog_verify_worst(len: usize, blocks: usize, nesting: usize) -> Vec<u8> {
     bytes
 }
 
-/// Non-VM term check (W1-002 R8 item 15): `store_program` decodes AND
-/// verifies, and the verifier's memory grows with basic blocks (the
-/// `MaxProgramBlocks` docs estimate ~17 MiB in Wasm at 2,048). The budget's
-/// non-VM term is sized on `submit_proof` (3.27 MiB, census f). Measures
-/// author and importer heap of one `store_program` at `MaxProgramSize` and
-/// `MaxProgramBlocks`, for the benchmark's nested shape and census i's
-/// programs. Verification runs before the duplicate check, so a program
-/// already seeded at genesis still spends the full verify.
+/// Non-VM term check (W1-002 R8 item 15): `store_program` decodes the program
+/// and runs the structural gate over it (block and depth count, loop nesting,
+/// jump span). Under xqvm's full checker this peaked at 3.76 MiB, because the
+/// checker's CFG grows with basic blocks; the gate measures 1.36 MiB. The
+/// budget's non-VM term is sized on `submit_proof` (3.27 MiB, census f).
+/// Measures author and importer heap of one `store_program` at
+/// `MaxProgramSize` and `MaxProgramBlocks`, for the benchmark's nested shape
+/// and census i's programs. The gate runs before the duplicate check, so a
+/// program already seeded at genesis still spends the full check.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn l_store_program_verify_peak() {
@@ -2189,11 +2191,14 @@ fn l_store_program_verify_peak() {
 }
 
 /// Σ_orders at emulated caps (W1-002 R8 items 10, 19 and the xqvm 0.6.0
-/// repin): census c's mixed order sweep plus the register and OUTPUT holder
-/// runs, at L' = 256 KiB, 512 KiB and 1 MiB, each within the pinned Σ multiple
-/// (`VM_SIGMA_ORDERS_PER_L`). Up to xqvm 0.5.0 this test measured `ITER`
-/// loop-frame pile-ups (28.65·L' at 256 KiB); 0.6.0's jump-span phase
-/// (W1-011) rejects them at `store_program`, which census i asserts.
+/// repin): census c's mixed order sweep plus the holder runs (register and
+/// OUTPUT holders, the stack loop, and one `EQUALITY` and one `ATLEASTW`
+/// vec-clone run per order), at L' = 256 KiB, 512 KiB and 1 MiB, each within
+/// the pinned Σ multiple (`VM_SIGMA_ORDERS_PER_L`). The clone runs set the
+/// pin: 20.88·L' at 256 KiB, pinned at 21 (QUI-2546). Up to xqvm 0.5.0 this
+/// test measured `ITER` loop-frame pile-ups (28.65·L' at 256 KiB); 0.6.0's
+/// jump-span phase (W1-011) rejects them at `store_program`, which census i
+/// asserts.
 #[test]
 #[ignore = "V-A step-0 evidence/measurement harness: slow, run manually"]
 fn j_sigma_at_emulated_caps() {
