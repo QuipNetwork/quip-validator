@@ -47,8 +47,10 @@ fn container_roundtrip_and_corruption_detection() {
     );
 }
 
-/// The static verification gate of `store_program`: a well-formed program
-/// passes, a program reading an unset register is rejected.
+/// xqvm's full checker, as a dependency smoke test: a well-formed program
+/// passes, a program reading an unset register is rejected. Since QUI-2516
+/// this is not `store_program`'s gate -- that is `pallet_xqvm::structural_gate`
+/// (loop nesting and jump span), and an unset read faults at `execute`.
 #[test]
 fn verifier_accepts_good_and_rejects_bad_programs() {
     let good = encode_program(|b| {

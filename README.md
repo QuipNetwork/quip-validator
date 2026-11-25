@@ -522,17 +522,25 @@ inherit the same workspace dependency. The lockfile and resolved graph must
 contain exactly one XQVM package, to prevent QUIP-19/O8 version drift.
 
 0.6.0 renames the bytecode verifier to a checker (`xqvm::checker::check`,
-`CheckerError`). `store_program` still runs the full check at this pin; the
-structural gate that replaces it is QUI-2516. The release also adds a run-time
-fault, `NonBinaryModel`, for a constraint opcode applied to a model that is not
-declared binary; the pallet reports it as `VmRegisterType`. Program admission
-stays behind the runtime-121 pause, and the verification weights still need the
-reference-machine pass tracked by QUI-2353.
+`CheckerError`). Since QUI-2516, `store_program` runs the structural gate
+(`pallet_xqvm::structural_gate`) instead of the full check: every instruction
+decodes, every jump names an existing `TARGET`, loop nesting balances, and no
+jump crosses a loop-body boundary (W1-011). Register, type and stack faults
+are the VM's at `execute`, where the caller pays. The release also adds a
+run-time fault, `NonBinaryModel`, for a constraint opcode applied to a model
+that is not declared binary; the pallet reports it as `VmNonBinaryModel`.
+
+On main, program admission stays behind the runtime-121 pause (`e40cfba`);
+this branch predates it, and integration keeps it. The `store_program` weight
+still needs the reference-machine pass tracked by QUI-2353; dependency-only
+changes do not trigger the pallet source staleness warning.
 
 The dependency fixes QUIP-02/16/17 and O3/O7; its newer instruction and fault
-handling also closes the version drift behind QUIP-19/O8. Signed
-`store_program` regressions cover the all-register cycle, unreachable reads and
-transient stack peaks, including the 8192/8193 boundary. The two-second cycle
+handling also closes the version drift behind QUIP-19/O8. Signed regressions
+store the audit programs -- the all-register cycle, unreachable reads and
+transient stack peaks, including the 8192/8193 boundary -- and show that
+`execute` faults within its step budget with the caller paying; the W1-011
+jump across a loop boundary is still refused at store. The two-second
 watchdog catches nontermination; it is not a benchmark or a weight estimate.
 
 The on-chain xqvm conformance suite resolves the locked Cargo package graph.

@@ -46,8 +46,9 @@ pub trait QuantumVm<AccountId, Balance, Hash> {
 }
 
 /// Source of immutable, content-addressed program bytes. Implementations must
-/// bound byte size and control-flow shape (basic blocks, loop depth) before
-/// admitting bytes to storage, and supply weights covering lookup and decode.
+/// bound byte size and control-flow shape (basic blocks, loop depth) and run
+/// the structural gate (loop nesting and jump-span, W1-011) before admitting
+/// bytes to storage, and supply weights covering lookup and decode.
 /// Runtime wiring reads pallet-xqvm storage; the mempool owns no program storage.
 pub trait ProgramLookup<Hash> {
     fn program(hash: &Hash) -> Option<Vec<u8>>;
