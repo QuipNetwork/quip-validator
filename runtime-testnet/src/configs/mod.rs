@@ -385,6 +385,55 @@ parameter_types! {
 
 impl pallet_evm_chain_id::Config for Runtime {}
 
+parameter_types! {
+    /// The account that owns pallet-revive code and deposits deployed through
+    /// Root (QUI-2549), e.g. a council motion via `dispatch_as_root`.
+    ///
+    /// Keyless: the low 20 bytes of `keccak256("quip/revive-root-deployer")`,
+    /// padded with `0xEE`. No one holds a secp256k1 key for a hash-chosen
+    /// address, and no sr25519 key ends in twelve `0xEE` bytes. The `0xEE`
+    /// padding makes it an "eth-derived" account, which pallet-revive treats as
+    /// mapped (`AccountId32Mapper::is_mapped`): a keyless account could not
+    /// sign `map_account`, and revive refuses an unmapped deployer
+    /// (`AccountUnmapped`). **Governance must fund it before a Root deploy**;
+    /// unfunded, the deploy fails on its storage deposit.
+    pub ReviveRootDeployer: AccountId = {
+        let hash = sp_core::hashing::keccak_256(b"quip/revive-root-deployer");
+        let mut bytes = [0xEE_u8; 32];
+        bytes[..20].copy_from_slice(&hash[12..]);
+        AccountId::new(bytes)
+    };
+}
+
+/// Who may upload or instantiate pallet-revive code (QUI-2549, owner decision
+/// `dec_20261125_185005_b31add86`): Root, owning deposits as
+/// [`ReviveRootDeployer`], or a Foundation member's own signed extrinsic, owning
+/// them itself. Every deploy path reaches this check -- `upload_code`,
+/// `instantiate`, `instantiate_with_code`, `eth_instantiate_with_code` (the
+/// `eth_transact` create path, whose origin becomes the signer),
+/// `eth_substrate_call` and `dispatch_as_fallback_account` (both dispatch their
+/// inner call signed), and the dry-run APIs.
+///
+/// **One path does not:** a contract instantiating another contract
+/// (pallet-revive's own `InstantiateOrigin` note). At a fresh genesis no
+/// contract exists, and only this origin can deploy one, so **a
+/// Foundation-deployed contract must not `CREATE`/`CREATE2` arbitrary code**:
+/// one that does reopens deployment to anyone who calls it, and with it the
+/// contract-recursion memory shape the VM budget does not cover.
+///
+/// Benchmark builds keep `EnsureSigned`: pallet-revive's benchmarks dispatch as
+/// `RawOrigin::Signed(whitelisted_caller())`. `runtime-benchmarks` is enabled
+/// only by the `benchmark-weights` CI job; the shipped Wasm and the release
+/// image build without it, and a normal-build test pins the restriction.
+#[cfg(not(feature = "runtime-benchmarks"))]
+pub type ReviveDeployOrigin = frame_support::traits::EitherOf<
+    frame_system::EnsureRootWithSuccess<AccountId, ReviveRootDeployer>,
+    frame_system::EnsureSignedBy<crate::FoundationMembership, AccountId>,
+>;
+/// Benchmark builds only: see the non-benchmark definition.
+#[cfg(feature = "runtime-benchmarks")]
+pub type ReviveDeployOrigin = frame_system::EnsureSigned<AccountId>;
+
 impl pallet_revive::Config for Runtime {
     type Time = Timestamp;
     type Balance = Balance;
@@ -403,8 +452,11 @@ impl pallet_revive::Config for Runtime {
     type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
     type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;
     type AllowEVMBytecode = ConstBool<true>;
-    type UploadOrigin = frame_system::EnsureSigned<AccountId>;
-    type InstantiateOrigin = frame_system::EnsureSigned<AccountId>;
+    // QUI-2549: deployment is restricted to Root and Foundation members; see
+    // `ReviveDeployOrigin` for every path it covers and the one it cannot
+    // (a contract instantiating another contract).
+    type UploadOrigin = ReviveDeployOrigin;
+    type InstantiateOrigin = ReviveDeployOrigin;
     type RuntimeMemory = ConstU32<{ 128 * 1024 * 1024 }>;
     type PVFMemory = ConstU32<{ 512 * 1024 * 1024 }>;
     type ChainId = pallet_evm_chain_id::ChainId<Runtime>;
@@ -640,9 +692,10 @@ parameter_types! {
     /// (75.0), because Σ vs empty and census d both contain the block-level
     /// share; this is a property of that block, not a bound.
     ///
-    /// **The budget does not cover pallet-revive contract execution or
-    /// oversized Operational calls (QUI-2548 and QUI-2549); it is not an upper
-    /// bound until those are resolved.**
+    /// **The budget does not cover oversized Operational calls (QUI-2548); it
+    /// is not an upper bound until that is resolved.** pallet-revive contract
+    /// execution, which the budget does not measure either, is closed by origin
+    /// (QUI-2549, see [`VM_BLOCK_RESIDENCY`]).
     ///
     /// 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
@@ -692,7 +745,7 @@ parameter_types! {
     /// then applied, 2 MiB would have passed the floor again; at today's pin
     /// of 24 it does not (table above). The owner kept 1 MiB in favour of margin
     /// (decision of 2026-11-22, dec_20261122_225113_7840c1d4). The summed
-    /// upper bound is the gate (not an upper bound until QUI-2548/2549, see
+    /// upper bound is the gate (not an upper bound until QUI-2548, see
     /// above); a real block is only a second check. At 1 MiB that check reads: census `k`, the mixed
     /// sweep plus the holder runs plus the ~2 MiB remark and fillers,
     /// 75.012 MiB high-water (41.4 % free) with the worst remark on census d's
@@ -1186,15 +1239,23 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 /// on one extrinsic's payload would remove both steps; that is an owner
 /// decision, and a runtime upgrade carries the ~1.8 MiB Wasm.
 ///
-/// **The budget does not cover pallet-revive contract execution or oversized
-/// Operational calls (QUI-2548 and QUI-2549); it is not an upper bound until
-/// those are resolved.** A signed Operational call such as `set_code` that
-/// fails at dispatch is still included and finalizes, and its payload may
-/// reach the full 5 MiB block length; census d does not yet measure that
-/// class. The caveat rests on measurement: a block carrying a revive
-/// contract's recursion and a signed `set_code` of 4 MiB or more is admitted
-/// by the builder, and its import fails with "Allocator ran out of space";
-/// `eth_transact` is unmeasured.
+/// **The budget does not cover oversized Operational calls (QUI-2548); it is
+/// not an upper bound until that is resolved.** A signed Operational call such
+/// as `set_code` that fails at dispatch is still included and finalizes, and
+/// its payload may reach the full 5 MiB block length; census d does not yet
+/// measure that class.
+///
+/// **pallet-revive contract execution is closed by origin (QUI-2549):** only
+/// Root and Foundation members may upload or instantiate code
+/// ([`ReviveDeployOrigin`]), and a fresh genesis holds no contracts. The
+/// budget has no revive term; the closure rests on measurement: a block
+/// carrying a revive contract's recursion and a signed `set_code` of 4 MiB or
+/// more was admitted by the builder and its import failed with "Allocator ran
+/// out of space" (`eth_transact` is unmeasured). **Opening deployment requires
+/// a measured revive term plus limits.** The gate has one bypass by design: a
+/// contract instantiating another contract. So a Foundation-deployed contract
+/// must not `CREATE`/`CREATE2` arbitrary code; one that does makes the
+/// recursion shape reachable again.
 #[doc(hidden)]
 pub const VM_BLOCK_RESIDENCY: u64 = 64 * 1024 * 1024;
 
@@ -1359,9 +1420,9 @@ mod xqvm_weights {
     /// unimportable block.
     ///
     /// A green run is not a proof that every block fits: the budget does not
-    /// cover pallet-revive contract execution or oversized Operational calls
-    /// (QUI-2548 and QUI-2549), and is not an upper bound until those are
-    /// resolved (see `VM_BLOCK_RESIDENCY`).
+    /// cover oversized Operational calls (QUI-2548) and is not an upper bound
+    /// until that is resolved; pallet-revive contract execution is closed by
+    /// origin instead (QUI-2549). See `VM_BLOCK_RESIDENCY`.
     #[test]
     fn vm_memory_budget_stays_under_the_runtime_heap() {
         /// `sc_executor::DEFAULT_HEAP_ALLOC_PAGES`, in bytes: 2048 64 KiB

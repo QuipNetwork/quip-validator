@@ -492,6 +492,204 @@ mod tests {
         });
     }
 
+    // QUI-2549: pallet-revive deployment is restricted to Root and Foundation
+    // members (`configs::ReviveDeployOrigin`). These run in the normal build,
+    // which pins the restriction against the `runtime-benchmarks` carve-out.
+    use frame_support::{
+        assert_ok, dispatch::DispatchResultWithPostInfo, traits::UnfilteredDispatchable,
+        weights::Weight,
+    };
+
+    /// claude_reviewer's EVM initcode wrapper (`z_revive_evm3`): copy the
+    /// runtime code that follows a 12-byte prefix, and return it.
+    fn evm_initcode(runtime: &[u8]) -> Vec<u8> {
+        let len = u8::try_from(runtime.len()).expect("short runtime code");
+        let mut code = vec![
+            0x60, len, 0x60, 0x0C, 0x60, 0x00, 0x39, 0x60, len, 0x60, 0x00, 0xF3,
+        ];
+        code.extend_from_slice(runtime);
+        code
+    }
+
+    /// claude_reviewer's recursion contract (`z_revive_evm3`, "mem 1 MiB +
+    /// self-recursion"): touch memory at 1 MiB, then call itself with all
+    /// remaining gas. The shape whose import the VM budget does not cover.
+    fn recursion_contract() -> Vec<u8> {
+        let mut runtime = vec![0x60_u8, 0x01, 0x62, 0x0F, 0xFF, 0xFF, 0x53];
+        runtime.extend_from_slice(&[
+            0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x30, 0x5A, 0xF1,
+        ]);
+        runtime.push(0x00);
+        evm_initcode(&runtime)
+    }
+
+    fn revive_ext() -> sp_io::TestExternalities {
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+        ext.execute_with(|| System::set_block_number(1));
+        ext
+    }
+
+    fn funded(who: &AccountId) {
+        use frame_support::traits::fungible::Mutate;
+        let _ = <Balances as Mutate<AccountId>>::set_balance(who, 1_000_000 * UNIT);
+    }
+
+    fn signer(seed: &str) -> AccountId {
+        account_id_from_public(&HybridPair::from_string(seed, None).unwrap().public())
+    }
+
+    fn instantiate_call(code: Vec<u8>, salt: u8) -> pallet_revive::Call<Runtime> {
+        pallet_revive::Call::<Runtime>::instantiate_with_code {
+            value: 0,
+            weight_limit: Weight::from_parts(10_000_000_000, 10 * 1024 * 1024),
+            storage_deposit_limit: 1_000 * UNIT,
+            code,
+            data: vec![],
+            salt: Some([salt; 32]),
+        }
+    }
+
+    fn instantiated(deployer: &AccountId) -> bool {
+        use pallet_revive::AddressMapper;
+        let address = <Runtime as pallet_revive::Config>::AddressMapper::to_address(deployer);
+        System::events().iter().any(|record| {
+            matches!(
+                &record.event,
+                RuntimeEvent::Revive(pallet_revive::Event::Instantiated { deployer: d, .. })
+                    if *d == address
+            )
+        })
+    }
+
+    /// A signed account outside the Foundation cannot deploy through any path:
+    /// `upload_code`, `instantiate_with_code` (claude_reviewer's recursion
+    /// contract among them), `instantiate` of an existing hash, the Ethereum
+    /// create path (`eth_instantiate_with_code`, what `eth_transact` with no
+    /// `to` becomes) and `eth_substrate_call` wrapping a deploy.
+    #[test]
+    fn revive_deployment_is_refused_to_non_members_on_every_path() {
+        use frame_support::{assert_err_ignore_postinfo, assert_noop};
+        use sp_runtime::DispatchError::BadOrigin;
+        revive_ext().execute_with(|| {
+            let outsider = signer("//Alice");
+            funded(&outsider);
+            assert_ok!(Revive::map_account(RuntimeOrigin::signed(outsider.clone())));
+            let signed = || RuntimeOrigin::signed(outsider.clone());
+
+            assert_noop!(
+                Revive::upload_code(signed(), evm_initcode(&[0x00]), 1_000 * UNIT),
+                BadOrigin
+            );
+            for (salt, code) in [(1, evm_initcode(&[0x00])), (2, recursion_contract())] {
+                let call = instantiate_call(code, salt);
+                assert_err_ignore_postinfo!(call.dispatch_bypass_filter(signed()), BadOrigin);
+            }
+            assert_err_ignore_postinfo!(
+                Revive::instantiate(
+                    signed(),
+                    0,
+                    Weight::from_parts(10_000_000_000, 10 * 1024 * 1024),
+                    1_000 * UNIT,
+                    sp_core::H256::repeat_byte(7),
+                    vec![],
+                    None,
+                ),
+                BadOrigin
+            );
+
+            // The Ethereum paths: `eth_transact` is converted to these calls
+            // with the `EthTransaction` origin, which becomes the signer.
+            let eth = || {
+                RuntimeOrigin::from(pallet_revive::Origin::<Runtime>::EthTransaction(
+                    outsider.clone(),
+                ))
+            };
+            let created = Revive::eth_instantiate_with_code(
+                eth(),
+                0u32.into(),
+                Weight::from_parts(10_000_000_000, 10 * 1024 * 1024),
+                u64::MAX.into(),
+                recursion_contract(),
+                vec![],
+                vec![],
+                0u32.into(),
+                0,
+            );
+            let wrapped = Revive::eth_substrate_call(
+                eth(),
+                Box::new(instantiate_call(evm_initcode(&[0x00]), 3).into()),
+                vec![],
+            );
+            let refused = |result: &DispatchResultWithPostInfo| {
+                result.as_ref().err().map(|e| e.error) == Some(BadOrigin)
+                    || System::events().iter().any(|record| {
+                        matches!(
+                            &record.event,
+                            RuntimeEvent::Revive(pallet_revive::Event::EthExtrinsicRevert {
+                                dispatch_error: BadOrigin
+                            })
+                        )
+                    })
+            };
+            assert!(refused(&created), "eth create: {created:?}");
+            assert!(refused(&wrapped), "eth_substrate_call: {wrapped:?}");
+            assert!(!instantiated(&outsider), "no contract was deployed");
+        });
+    }
+
+    /// A Foundation member deploys from its own signed extrinsic and owns the
+    /// contract.
+    #[test]
+    fn revive_deployment_is_open_to_foundation_members() {
+        revive_ext().execute_with(|| {
+            let member = signer("//Bob");
+            funded(&member);
+            pallet_membership::Members::<Runtime, pallet_membership::Instance1>::put(
+                frame_support::BoundedVec::try_from(vec![member.clone()]).unwrap(),
+            );
+            assert_ok!(Revive::map_account(RuntimeOrigin::signed(member.clone())));
+            assert_ok!(instantiate_call(evm_initcode(&[0x00]), 1)
+                .dispatch_bypass_filter(RuntimeOrigin::signed(member.clone())));
+            assert!(instantiated(&member));
+        });
+    }
+
+    /// Root -- a council motion through `dispatch_as_root` -- deploys as the
+    /// keyless `ReviveRootDeployer`: refused cleanly while it is unfunded (the
+    /// storage deposit cannot be held), and accepted once governance funds it.
+    #[test]
+    fn revive_root_deploys_as_the_funded_root_deployer() {
+        revive_ext().execute_with(|| {
+            let council: RuntimeOrigin = pallet_collective::RawOrigin::<
+                AccountId,
+                pallet_collective::Instance1,
+            >::Members(4, 6)
+            .into();
+            let deployer = configs::ReviveRootDeployer::get();
+            let root_deploy = |salt: u8| {
+                assert_ok!(ValidatorAdmission::dispatch_as_root(
+                    council.clone(),
+                    Box::new(instantiate_call(evm_initcode(&[0x00]), salt).into()),
+                ));
+                match System::events().last().map(|r| r.event.clone()) {
+                    Some(RuntimeEvent::ValidatorAdmission(
+                        pallet_validator_admission::Event::RootDispatched { result },
+                    )) => result,
+                    other => panic!("expected RootDispatched, got {other:?}"),
+                }
+            };
+            assert!(
+                root_deploy(1).is_err(),
+                "an unfunded Root deployer cannot deploy"
+            );
+            assert!(!instantiated(&deployer));
+            funded(&deployer);
+            assert_eq!(root_deploy(2), Ok(()));
+            assert!(instantiated(&deployer));
+        });
+    }
+
     /// Confirms the runtime's `CanonicalDefaultIsingSpecId` resolves to the
     /// same hash that the pallet's mock test pins. SDKs and downstream docs
     /// embed this hash; a mock-vs-runtime divergence would silently break
