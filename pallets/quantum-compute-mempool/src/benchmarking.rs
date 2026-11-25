@@ -346,6 +346,19 @@ fn fill_proposer_index<T: Config>(proposer: &T::AccountId, order_id: u64) {
     ProposerOrders::<T>::insert(proposer, bounded::<_, T::MaxOrdersPerProposer>(ids));
 }
 
+/// A full `ProposerOrders` index for `proposer` that contains `order_id`; the
+/// fillers count down from `u64::MAX`, so they never name a real order. A slot
+/// release then scans the whole bound.
+fn full_index_containing<T: Config>(proposer: &T::AccountId, order_id: u64) {
+    let mut ids = vec![order_id];
+    let mut filler = u64::MAX;
+    while ids.len() < T::MaxOrdersPerProposer::get() as usize {
+        ids.push(filler);
+        filler = filler.saturating_sub(1);
+    }
+    ProposerOrders::<T>::insert(proposer, bounded::<_, T::MaxOrdersPerProposer>(ids));
+}
+
 // Shared maximal settlement setup; lifecycle variants are measured separately.
 fn setup_claim_reward<T: Config>() -> (T::AccountId, T::AccountId, Vec<T::AccountId>, u64) {
     let caller: T::AccountId = whitelisted_caller();
@@ -939,16 +952,9 @@ mod benchmarks {
     /// a maximum-length endpoint, including the `OrderResults` write.
     #[benchmark]
     fn finalise_expired_orders(k: Linear<0, { types::MAX_FINALISED_ORDERS_PER_BLOCK }>) {
-        let proposer: T::AccountId = whitelisted_caller();
         let winner_count = types::MAX_REWARD_WINNERS;
         let reward = benchmark_reward::<T>().saturating_mul(winner_count.saturated_into());
-        fund_account::<T>(
-            &proposer,
-            reward
-                .saturating_mul(k.saturating_add(1).saturated_into())
-                .saturating_mul(2u32.saturated_into()),
-        );
-        let spec_id = register_spec_for::<T>(&proposer);
+        let spec_id = register_spec_for::<T>(&account("builder", 0, 0));
         let winners: Vec<T::AccountId> = (0..winner_count)
             .map(|index| account("winner", index, 0))
             .collect();
@@ -958,7 +964,16 @@ mod benchmarks {
         let bid_miner = winners.first().expect("winner set is nonempty").clone();
 
         let mut order_ids = Vec::new();
-        for _ in 0..k {
+        for i in 0..k {
+            // One funded, non-whitelisted proposer per order (cold account and
+            // index), each with a full `ProposerOrders` index.
+            let proposer: T::AccountId = account("proposer", i, 0);
+            fund_account::<T>(
+                &proposer,
+                reward
+                    .saturating_mul(2u32.saturated_into())
+                    .saturating_add(benchmark_funding::<T>()),
+            );
             let order_id = NextOrderId::<T>::get();
             assert!(QuantumComputeMempool::<T>::propose_job(
                 RawOrigin::Signed(proposer.clone()).into(),
@@ -1005,6 +1020,7 @@ mod benchmarks {
                     entry.num_valid = T::MaxSolutions::get();
                 });
             }
+            full_index_containing::<T>(&proposer, order_id);
             order_ids.push(order_id);
         }
 
@@ -1126,17 +1142,18 @@ mod benchmarks {
     /// `finalise_expired_orders`, which measures solved orders.
     #[benchmark]
     fn auto_close_unsolved(k: Linear<0, { types::MAX_FINALISED_ORDERS_PER_BLOCK }>) {
-        let proposer: T::AccountId = whitelisted_caller();
-        // Reward plus a maximum-size order's storage deposit, per order.
-        fund_account::<T>(
-            &proposer,
-            benchmark_funding::<T>()
-                .saturating_mul(2u32.saturated_into())
-                .saturating_mul(k.saturating_add(1).saturated_into()),
-        );
-        let spec_id = register_spec_for::<T>(&proposer);
+        let spec_id = register_spec_for::<T>(&account("builder", 0, 0));
+        let mut proposers = Vec::new();
         let mut order_ids = Vec::new();
-        for _ in 0..k {
+        for i in 0..k {
+            // One funded, non-whitelisted proposer per order, so each refund
+            // and slot release touches a cold account and index (B4d).
+            let proposer: T::AccountId = account("proposer", i, 0);
+            // Reward plus a maximum-size order's storage deposit.
+            fund_account::<T>(
+                &proposer,
+                benchmark_funding::<T>().saturating_mul(2u32.saturated_into()),
+            );
             let order_id = NextOrderId::<T>::get();
             assert!(QuantumComputeMempool::<T>::propose_job(
                 RawOrigin::Signed(proposer.clone()).into(),
@@ -1150,16 +1167,10 @@ mod benchmarks {
                 types::ResultDelivery::OnChainOnly,
             )
             .is_ok());
+            full_index_containing::<T>(&proposer, order_id);
+            proposers.push(proposer);
             order_ids.push(order_id);
         }
-        // A full index, so each slot release scans the whole bound.
-        let mut index = order_ids.clone();
-        let mut filler = u64::MAX;
-        while index.len() < T::MaxOrdersPerProposer::get() as usize {
-            index.push(filler);
-            filler = filler.saturating_sub(1);
-        }
-        ProposerOrders::<T>::insert(&proposer, bounded::<_, T::MaxOrdersPerProposer>(index));
         // The state `finalise_order` leaves before the auto-close.
         let orders: Vec<_> = order_ids
             .iter()
@@ -1180,7 +1191,7 @@ mod benchmarks {
             }
         }
 
-        for &id in &order_ids {
+        for (&id, proposer) in order_ids.iter().zip(&proposers) {
             assert_eq!(
                 JobOrders::<T>::get(id).expect("order exists").status,
                 types::OrderStatus::Closed
@@ -1189,7 +1200,9 @@ mod benchmarks {
                 T::Currency::total_balance(&QuantumComputeMempool::<T>::escrow_account(id))
                     .is_zero()
             );
-            assert!(!ProposerOrders::<T>::get(&proposer).contains(&id));
+            let index = ProposerOrders::<T>::get(proposer);
+            assert!(!index.contains(&id));
+            assert_eq!(index.len() as u32, T::MaxOrdersPerProposer::get() - 1);
         }
     }
 
