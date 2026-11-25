@@ -503,6 +503,9 @@ pub mod pallet {
                 .saturating_add(T::RewardPayment::weight())
                 // `BlockSubmitters` cleared above (W3-009).
                 .saturating_add(T::DbWeight::get().writes(1))
+                // `on_finalize` reads the winner's `Miners` entry before paying
+                // (decision 13, W3-009).
+                .saturating_add(T::DbWeight::get().reads(1))
         }
 
         fn integrity_test() {
@@ -532,7 +535,14 @@ pub mod pallet {
                 return;
             };
 
-            let reward = T::RewardPayment::pay(&record.miner, Self::block_reward());
+            // Decision 13 (W3-009): a miner that deregistered after its proof
+            // was accepted is not paid. The block reward stays in the Ising
+            // pot; the round still closes below, with a reward of zero.
+            let reward = if Miners::<T>::contains_key(&record.miner) {
+                T::RewardPayment::pay(&record.miner, Self::block_reward())
+            } else {
+                Zero::zero()
+            };
 
             if let Some(mut miner) = Miners::<T>::get(&record.miner) {
                 miner.proofs_won = miner.proofs_won.saturating_add(1);

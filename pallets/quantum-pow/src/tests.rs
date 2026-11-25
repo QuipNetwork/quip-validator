@@ -3728,3 +3728,51 @@ fn one_proof_per_miner_per_block_leaves_room_for_other_miners() {
         ));
     });
 }
+
+/// W3-009, decision 13: a miner that deregistered after its proof was accepted
+/// is not paid at `on_finalize`. The block reward stays in the Ising pot, the
+/// round still closes (difficulty and `LastProofBlock` move as for a paid
+/// win), and the QBlock and `BlockWinner` record a reward of zero.
+#[test]
+fn on_finalize_does_not_pay_a_deregistered_winner() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(1),
+            proof_for(1, &nodes, &edges, topology_hash, &[0]),
+        ));
+        assert_ok!(QuantumPow::deregister_miner(RuntimeOrigin::signed(1)));
+        let free = Balances::free_balance(1);
+        let issuance = Balances::total_issuance();
+        let pot = Balances::free_balance(EmissionController::pot(0));
+        let n = System::block_number();
+
+        QuantumPow::on_finalize(n);
+
+        assert_eq!(
+            Balances::free_balance(1),
+            free,
+            "a deregistered miner is not paid"
+        );
+        assert_eq!(
+            Balances::free_balance(EmissionController::pot(0)),
+            pot,
+            "the reward stays in the pot"
+        );
+        assert_eq!(Balances::total_issuance(), issuance);
+        assert!(BlockBestProof::<Test>::get().is_none());
+        assert_eq!(LastProofBlock::<Test>::get(), n, "the round still closes");
+        assert_eq!(QBlocks::<Test>::get(n).expect("a QBlock").reward, 0);
+        assert!(System::events().iter().any(|record| matches!(
+            record.event,
+            RuntimeEvent::QuantumPow(crate::Event::BlockWinner {
+                miner: 1,
+                reward: 0,
+                ..
+            })
+        )));
+        assert!(Miners::<Test>::get(1).is_none());
+    });
+}
