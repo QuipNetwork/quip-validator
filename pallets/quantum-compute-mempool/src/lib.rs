@@ -1398,8 +1398,7 @@ pub mod pallet {
             } else {
                 0
             };
-            let bytes = order
-                .encoded_size()
+            let bytes = Self::max_order_size(order)
                 .saturating_add(ranking)
                 .saturating_add(payees)
                 .saturating_add(u64::max_encoded_len())
@@ -1407,6 +1406,34 @@ pub mod pallet {
             let bytes: BalanceOf<T> = u32::try_from(bytes).unwrap_or(u32::MAX).into();
             T::OrderDepositPerItem::get()
                 .saturating_add(T::OrderDepositPerByte::get().saturating_mul(bytes))
+        }
+
+        /// The most bytes `order`'s `JobOrders` record can reach before it is
+        /// pruned (W3-006, B4a2). Of its fields only `first_solution_at` grows
+        /// after proposal (`None` -> `Some`, on the first accepted solution).
+        /// `status` is a fieldless enum, `solution_count`, `created_at` and
+        /// `timing` are fixed-width, and the rest are never written after
+        /// proposal. The exhaustive pattern below makes a new field a compile
+        /// error until it is accounted for here.
+        pub fn max_order_size(order: &JobOrderOf<T>) -> usize {
+            let types::JobOrder {
+                spec_id: _,
+                proposer: _,
+                ising_params: _,
+                reward: _,
+                mode: _,
+                resolution: _,
+                timing: _,
+                delivery: _,
+                status: _,
+                created_at: _,
+                first_solution_at,
+                solution_count: _,
+            } = order;
+            order
+                .encoded_size()
+                .saturating_sub(first_solution_at.encoded_size())
+                .saturating_add(Option::<BlockNumberFor<T>>::max_encoded_len())
         }
 
         /// VM lookup/decode is precharged at its bound; only executed steps

@@ -4370,6 +4370,42 @@ mod w3_006_deposit {
         });
     }
 
+    /// B4a2 (kimi R8): the deposit covers the record as it is after it has
+    /// grown -- here, `first_solution_at` set by the first accepted solution
+    /// -- plus the counted side state at its bound.
+    #[test]
+    fn deposit_covers_the_order_after_a_solution_sets_first_solution_at() {
+        new_test_ext().execute_with(|| {
+            set_rates();
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
+            let id = propose_single_best(1, 1, 1);
+            let proposed_size = JobOrders::<Test>::get(id).unwrap().encoded_size();
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
+            let order = JobOrders::<Test>::get(id).unwrap();
+            assert!(order.first_solution_at.is_some());
+            assert!(order.encoded_size() > proposed_size, "the record grew");
+
+            let payee = u64::max_encoded_len()
+                + AccountId::max_encoded_len()
+                + crate::types::WinnerPayee::max_encoded_len();
+            let side = crate::TopSolversOf::<Test>::max_encoded_len()
+                .max(crate::FrontRunnerOf::<Test>::max_encoded_len())
+                + payee * crate::types::MAX_SOLVERS_PER_OPEN_ORDER as usize
+                + u64::max_encoded_len();
+            let needed = 10 + (order.encoded_size() + side) as u128;
+            let deposit = OrderDeposit::<Test>::get(id).unwrap();
+            assert!(deposit >= needed, "deposit {deposit} < needed {needed}");
+            assert_eq!(Balances::reserved_balance(1), deposit);
+        });
+    }
+
     /// `OrderResults` is priced only for `CallbackWithPoll`: the same order
     /// with a polled callback costs exactly that state's bound more.
     #[test]
