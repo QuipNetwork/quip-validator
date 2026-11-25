@@ -1048,19 +1048,26 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 /// - **Census `k`, at the shipped 1 MiB cap, defines the pin: 20.99·L** vs
 ///   the empty block (20.9910). Its real combined block peaks at 61.012 MiB,
 ///   52.3 % of the heap free.
-/// - That matches the analytic per-order ceiling, **20.52·L at 1 MiB**, plus
-///   the fixed run's share (0.45 MiB, ≈ 0.45·L): ≈ 20.97, within 0.02. The
-///   ceiling (claude_reviewer's R8 on A6c/A6d) sums, per allocator order, the
-///   most chunks one legal run can hold there: the freeing-bump allocator
+/// - The analytic per-order ceiling (claude_reviewer's R8 on A6c..A6f) is
+///   **20.54·L at 1 MiB** (20.82 / 20.65·L' at 256 / 512 KiB), an upper
+///   bound on the VM's per-order share: it sums, per allocator order, the
+///   most chunks one legal run can hold there (the freeing-bump allocator
 ///   never splits, coalesces or moves chunks between orders, so each order
-///   keeps the high-water mark of any run.
+///   keeps the high-water mark of any run). With the fixed run's share
+///   (0.45 MiB, ≈ 0.45·L) that is ≈ 20.99·L. Census `k` brackets the VM's
+///   share rather than isolating it: 20.99 vs the empty block also counts
+///   block-level allocations, and 19.22 net of the same-count control is a
+///   lower bound. The measurement is consistent with the ceiling; how close
+///   the two figures are is not evidence that either is tight.
 /// - Census `j` is a scale check at emulated caps: 23.59 / 20.53 / 20.99·L'
 ///   at 256 KiB / 512 KiB / 1 MiB vs the empty block. At a small L' that
 ///   includes allocations that do not scale with L' -- the fixed run and
-///   block-level overhead -- divided by L'. At 256 KiB the block's 84th-to-85th
-///   extrinsic (any extrinsic, a `halt` run included) crosses a doubling of a
-///   decoded-block buffer, about 0.56 MiB (about 2·L'), which
-///   [`VM_BLOCK_RESIDENCY`] covers. Net of a same-count `halt` control block,
+///   block-level overhead -- divided by L'. The step of about 0.56 MiB
+///   (about 2·L') at 256 KiB, which any added extrinsic causes, a `halt` run
+///   included, is a block-level allocation made when the block finalizes (at
+///   256 KiB the 85th extrinsic crosses an allocator doubling; the same block
+///   trapped at apply does not show it), not VM growth. Net of a same-count
+///   `halt` control block,
 ///   a lower bound on the VM's share, `j` measures 16.99 / 17.16 / 19.26.
 /// - **Gates.** STOP if census `k` at the shipped cap exceeds the pin vs the
 ///   empty block, or if any census `j`/`k` figure net of the same-count
@@ -1072,15 +1079,28 @@ pub const VM_FIXED_RUN_MEASURED: u64 = 474_784;
 ///
 /// The ceiling's assumptions; each is a RE-MEASURE TRIGGER:
 /// 1. every xqvm buffer is at most twice its charge, except `BTreeMap` leaves;
-/// 2. at most two uncharged temporaries are live per run (the
-///    `EQUALITY`/`ATLEAST`/`ATLEASTW` clones, QUI-2546; charging or borrowing
-///    them tightens this);
+/// 2. uncharged temporaries: at most two are live per run in any allocator
+///    order above 4 KiB -- the `EQUALITY`/`ATLEAST`/`ATLEASTW` pre-charge
+///    clones (QUI-2546). A successful `ATLEAST`/`ATLEASTW` with slack
+///    variables holds up to five at once (the two clones, the `usize`
+///    indices, the coefficient copy and a reallocation transient), but only
+///    after its expansion charge, 24·N² + 8·N bytes for N = n + slacks, has
+///    passed. So N ≤ √(L/24) (209 at 1 MiB), every such buffer is at most
+///    16·N + 8 bytes, and for L ≤ 1 MiB they land in orders ≤ 4 KiB. The
+///    ceiling counts them as three extra chunks in every such order:
+///    +0.024·L at 1 MiB, +0.048·L' at 256 KiB. Charging or borrowing these
+///    temporaries tightens this; changing the expansion charge re-derives it;
 /// 3. a run's holder slots are 256 registers, 256 OUTPUT slots and
 ///    `MaxLoopDepth` (32) ITER frames, so raising `MaxOutputSlots` or
 ///    `MaxLoopDepth` requires a re-measure;
 /// 4. no on-chain input can carry a model (the `LVAL` exclusion; the calldata
 ///    tripwire test below);
-/// 5. the cap is a power of two (asserted below).
+/// 5. the cap is a power of two (asserted below);
+/// 6. the importer's allocator is the freeing-bump one this model describes
+///    (power-of-two orders, an 8-byte header, no splitting or coalescing); a
+///    polkadot-sdk repin that changes the executor's allocator, or a
+///    runtime-side allocator, invalidates the per-order sum and re-runs the
+///    census.
 ///
 /// Any new xqvm opcode or allocation path -- any xqvm repin -- re-runs the
 /// census.

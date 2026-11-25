@@ -967,6 +967,7 @@ fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, Opt
     // A6 shape 1: ATLEASTW's success path, in every order its vecs reach
     // while the run still succeeds at a real cap of `l` (the quadratic
     // expansion charge ends it at a few hundred elements).
+    let mut slack_runs = 0usize;
     let mut chunk = 16u64;
     loop {
         let e = chunk / 16 + 1;
@@ -978,6 +979,24 @@ fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, Opt
             );
             break;
         }
+        // The run took the slack path (claude's R8 on A6c..A6f): weights of
+        // one and k = 1 leave an excess of e - 1, so bit_length(e - 1) slack
+        // variables, and `memory_used` must be exactly the INPUT integer, the
+        // two vecs, the size-1 model's variable, the slack variables and the
+        // expansion charge over N = e + slacks terms (24·N² + 8·N).
+        let slacks = u64::from(u64::BITS - (e - 1).leading_zeros());
+        let n_terms = e + slacks;
+        let expected_used = VARIABLE_BYTES
+            + 2 * VEC_ELEMENT_BYTES * e
+            + VARIABLE_BYTES
+            + VARIABLE_BYTES * slacks
+            + 24 * n_terms * n_terms
+            + 8 * n_terms;
+        assert!(
+            slacks >= 1 && probe.used == expected_used,
+            "atleastw_slack e={e}: {slacks} slacks, memory_used {} (expected {expected_used})",
+            probe.used
+        );
         let steps = step_budget(probe.steps).min(ms);
         let (call, r) = chain.legal_call("atleastw_slack", &[e as i64], steps, 0, l);
         assert!(
@@ -985,8 +1004,13 @@ fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, Opt
             "atleastw_slack e={e}: designed to succeed, got {r:?}"
         );
         out.push((format!("atleastw_slack e={e}"), call, None));
+        slack_runs += 1;
         chunk <<= 1;
     }
+    assert!(
+        slack_runs >= 4,
+        "atleastw_slack at l={l}: only {slack_runs} orders reach the success path (want >= 4)"
+    );
     // mix_clone, each order c <= l/2: k samples of n = c/16 + 1 elements and a
     // vec of e = c/16 + 1, after the three INPUT and one STOW integers.
     let mut chunk = 32u64;
@@ -1041,6 +1065,8 @@ fn holder_sweep(chain: &Chain, l: u64, ms: u64) -> Vec<(String, RuntimeCall, Opt
             "models_mix n={n}: designed to succeed, got {r:?}"
         );
         out.push((format!("models_mix n={n}"), call, None));
+    } else {
+        panic!("models_mix: its 508 holders ({holders} B) do not fit under l = {l} B");
     }
     out
 }
@@ -1334,9 +1360,10 @@ impl Chain {
     /// The same-count control for a block of `calls`: the same extrinsics,
     /// each `execute` turned into a `halt` run ([`Chain::as_halt`]). Returns
     /// its importer high-water net of the empty block (`empty_import`): the
-    /// block-level share -- decoding, per-extrinsic overhead and a decoded
-    /// block `Vec` crossing a capacity doubling -- that a Σ measured against an
-    /// empty block also contains.
+    /// block-level share -- decoding, per-extrinsic overhead and what the block
+    /// allocates when it finalizes, including the allocator doubling the 85th
+    /// extrinsic crosses at 256 KiB -- that a Σ measured against an empty
+    /// block also contains.
     fn control_import(&self, calls: &[RuntimeCall], empty_import: u32) -> u32 {
         let control: Vec<RuntimeCall> = calls.iter().map(|c| self.as_halt(c)).collect();
         let supplied = control.len();
@@ -2643,7 +2670,44 @@ fn k_combined_block_with_holders_at_cap() {
             }),
         ] {
             let supplied = calls.len();
-            let (block, applied) = chain.author_fast(calls);
+            let (block, applied) = chain.author_fast(calls.clone());
+            // Full inclusion of what is measured (kimi's R8 on A6c..A6f, with
+            // claude_reviewer's correction). The fillers are oversupplied on
+            // purpose, so `applied.len() == supplied` is false by design. What
+            // must hold: the big remark and every VM run -- the first
+            // `1 + vm_calls.len()` calls in both orders -- are in the block,
+            // in order (the builder includes in supplied order and only skips
+            // rejects), and the fillers reach the block limit. Otherwise a
+            // weight change could shrink the measured block and still pass.
+            let head = 1 + vm_calls.len();
+            let included: Vec<RuntimeCall> = block.extrinsics[1..]
+                .iter()
+                .map(|xt| xt.0.function.clone())
+                .collect();
+            assert!(
+                included.len() > head && included[..head] == calls[..head],
+                "[{order}] L={} KiB: the big remark and every VM run are included",
+                l / KIB
+            );
+            assert!(
+                applied.len() < supplied,
+                "[{order}] L={} KiB: the fillers reach the block limit",
+                l / KIB
+            );
+            // Each VM run's designed outcome in this block, as in the VM-only
+            // block. Extrinsic 0 is the timestamp inherent; `applied[i]` is
+            // extrinsic i + 1.
+            let vm_results = match order {
+                "remark-first" => &applied[1..head],
+                _ => &applied[..head - 1],
+            };
+            for (r, (name, expect)) in vm_results.iter().zip(&expected) {
+                assert_designed_outcome(
+                    r,
+                    *expect,
+                    &format!("census k [{order}] {name} at L={} KiB", l / KIB),
+                );
+            }
             let (imported, heap) = chain.import(&block);
             println!(
                 "COMBINED+HOLDERS@L={}KiB [{order}]: supplied {supplied}, included {}, encoded {:.2} MiB; \
@@ -2772,13 +2836,18 @@ fn l_store_program_verify_peak() {
 /// Three figures per cap (claude's and the architect's R8 on A6c/A6d):
 /// - Σ vs the empty block. At a small L' this includes allocations that do
 ///   not scale with L' -- the fixed run and block-level overhead -- divided
-///   by L'. At 256 KiB the block's 84th-to-85th extrinsic crosses a doubling
-///   of a decoded-block buffer (about 0.56 MiB, about 2·L'), which is
-///   `VM_BLOCK_RESIDENCY`'s, not the VM's. So over the pin it is REPORTED for
-///   investigation, not a STOP.
+///   by L'. Its step of about 0.56 MiB (about 2·L') at 256 KiB is a block-level allocation made when the block finalizes (at 256 KiB the 85th extrinsic crosses an allocator doubling; the same block trapped at apply does not show it), not VM growth.
+///   So over the pin it is REPORTED for investigation, not a STOP.
 /// - The same-count control ([`Chain::control_import`]): the block-level share.
 /// - Σ net of that control: the VM's share, a LOWER bound (the VM runs reuse
 ///   chunks the control's runs freed). Over the pin it is conclusive: STOP.
+///
+/// Two kinds of STOP, and both are needed: the legality checks
+/// ([`Chain::legal_call`], [`Chain::legal_clone_call`]) are the STOP for a
+/// run's SHAPE -- a run no chain at a real cap of L' makes panics there,
+/// before it is measured -- and the Σ gates above are the STOP for SIZE. The
+/// Σ gates alone do not stop an illegal run: one that adds about 2·L' only
+/// reaches the vs-empty figure, which reports.
 ///
 /// Up to xqvm 0.5.0 this test measured `ITER` loop-frame pile-ups (28.65·L'
 /// at 256 KiB); 0.6.0's jump-span phase (W1-011) rejects them at
