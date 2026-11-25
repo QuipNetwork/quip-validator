@@ -124,6 +124,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W3-006): the order deposit (reserve, `OrderDeposit`) added by hand to the measured counts (+1 read, +2 writes); regenerate (benchmark-weights job).
 	fn propose_job(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -134,8 +135,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(330_380, 0).saturating_mul(n.into()))
 			// Standard Error: 498
 			.saturating_add(Weight::from_parts(105_763, 0).saturating_mul(e.into()))
-			.saturating_add(T::DbWeight::get().reads(4_u64))
-			.saturating_add(T::DbWeight::get().writes(7_u64))
+			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().writes(9_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -193,6 +194,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W3-006): the order deposit (reserve, `OrderDeposit`) added by hand to the measured counts (+1 read, +2 writes); regenerate (benchmark-weights job).
 	fn propose_job_with_payee_requirement(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -203,8 +205,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(Weight::from_parts(331_891, 0).saturating_mul(n.into()))
 			// Standard Error: 498
 			.saturating_add(Weight::from_parts(105_754, 0).saturating_mul(e.into()))
-			.saturating_add(T::DbWeight::get().reads(4_u64))
-			.saturating_add(T::DbWeight::get().writes(8_u64))
+			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().writes(10_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -454,6 +456,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:8)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
 	/// The range of component `k` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W3-006): the order deposit release (`OrderDeposit` take, unreserve) per order added by hand to the measured counts (+2 reads, +2 writes per k); regenerate (benchmark-weights job).
 	fn prune_closed_orders(k: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `439 + k * (649298 ±0)`
@@ -463,9 +466,9 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			// Standard Error: 825_058
 			.saturating_add(Weight::from_parts(527_998_882, 0).saturating_mul(k.into()))
 			.saturating_add(T::DbWeight::get().reads(3_u64))
-			.saturating_add(T::DbWeight::get().reads((99_u64).saturating_mul(k.into())))
+			.saturating_add(T::DbWeight::get().reads((101_u64).saturating_mul(k.into())))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
-			.saturating_add(T::DbWeight::get().writes((103_u64).saturating_mul(k.into())))
+			.saturating_add(T::DbWeight::get().writes((105_u64).saturating_mul(k.into())))
 			.saturating_add(Weight::from_parts(0, 3285536).saturating_mul(k.into()))
 	}
 }
@@ -523,6 +526,7 @@ impl WeightInfo for () {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W3-006): the order deposit (reserve, `OrderDeposit`) added by hand to the measured counts (+1 read, +2 writes); regenerate (benchmark-weights job).
 	fn propose_job(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -533,8 +537,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(330_380, 0).saturating_mul(n.into()))
 			// Standard Error: 498
 			.saturating_add(Weight::from_parts(105_763, 0).saturating_mul(e.into()))
-			.saturating_add(RocksDbWeight::get().reads(4_u64))
-			.saturating_add(RocksDbWeight::get().writes(7_u64))
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(9_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -592,6 +596,7 @@ impl WeightInfo for () {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `b` is `[1, 16]`.
 	/// The range of component `t` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W3-006): the order deposit (reserve, `OrderDeposit`) added by hand to the measured counts (+1 read, +2 writes); regenerate (benchmark-weights job).
 	fn propose_job_with_payee_requirement(n: u32, e: u32, _b: u32, _t: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `180`
@@ -602,8 +607,8 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(331_891, 0).saturating_mul(n.into()))
 			// Standard Error: 498
 			.saturating_add(Weight::from_parts(105_754, 0).saturating_mul(e.into()))
-			.saturating_add(RocksDbWeight::get().reads(4_u64))
-			.saturating_add(RocksDbWeight::get().writes(8_u64))
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(10_u64))
 	}
 	/// Storage: `QuantumComputeMempool::Solvers` (r:1 w:1)
 	/// Proof: `QuantumComputeMempool::Solvers` (`max_values`: None, `max_size`: Some(109), added: 2584, mode: `MaxEncodedLen`)
@@ -853,6 +858,7 @@ impl WeightInfo for () {
 	/// Storage: `QuantumComputeMempool::OpenOrders` (r:0 w:8)
 	/// Proof: `QuantumComputeMempool::OpenOrders` (`max_values`: None, `max_size`: Some(24), added: 2499, mode: `MaxEncodedLen`)
 	/// The range of component `k` is `[0, 8]`.
+	// BENCHMARK-PLACEHOLDER(W3-006): the order deposit release (`OrderDeposit` take, unreserve) per order added by hand to the measured counts (+2 reads, +2 writes per k); regenerate (benchmark-weights job).
 	fn prune_closed_orders(k: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `439 + k * (649298 ±0)`
@@ -862,9 +868,9 @@ impl WeightInfo for () {
 			// Standard Error: 825_058
 			.saturating_add(Weight::from_parts(527_998_882, 0).saturating_mul(k.into()))
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
-			.saturating_add(RocksDbWeight::get().reads((99_u64).saturating_mul(k.into())))
+			.saturating_add(RocksDbWeight::get().reads((101_u64).saturating_mul(k.into())))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
-			.saturating_add(RocksDbWeight::get().writes((103_u64).saturating_mul(k.into())))
+			.saturating_add(RocksDbWeight::get().writes((105_u64).saturating_mul(k.into())))
 			.saturating_add(Weight::from_parts(0, 3285536).saturating_mul(k.into()))
 	}
 }

@@ -252,6 +252,168 @@ fn mempool_constants(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
         .ok_or_else(|| "missing mempool constants".into())
 }
 
+// W3-006 (job-order storage deposit). Exact deltas, each appended last: the
+// constants `OrderDepositPerItem` and `OrderDepositPerByte` (the same type and
+// value as pallet-revive's `DepositPerItem`/`DepositPerByte`; the runtime wires
+// both pallets to the stored-program rates), the `OrderDeposit` map after
+// `OrderResults` (same hashers and key, the balance value), the
+// `DepositNotAvailable` error and the `OrderDepositReleased` event. Runs before
+// every other mempool normaliser, each of which expects its own delta last.
+const ORDER_DEPOSIT_PER_ITEM_DOCS: &[&str] = &[
+    " Per-order part of a job order's storage deposit (W3-006): reserved",
+    " from the proposer at `propose_job` and released when the order is",
+    " pruned. The runtime uses the same rate as stored programs.",
+];
+const ORDER_DEPOSIT_PER_BYTE_DOCS: &[&str] = &[
+    " Per-byte part of a job order's storage deposit (W3-006), charged on",
+    " the order and on the per-order state kept until it is pruned, at",
+    " that state's bounded maximum.",
+];
+const ORDER_DEPOSIT_DOCS: &[&str] = &[
+    " The storage deposit reserved from each order's proposer (W3-006):",
+    " unreserved, exactly this amount, when the order is pruned.",
+];
+const DEPOSIT_NOT_AVAILABLE_DOCS: &[&str] =
+    &["The proposer cannot reserve the order's storage deposit (W3-006)."];
+const ORDER_DEPOSIT_RELEASED_DOCS: &[&str] = &[
+    "The order was pruned and its storage deposit unreserved (W3-006):",
+    "`amount` is what was actually returned to the proposer.",
+];
+
+fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
+    metadata["pallets"]
+        .as_array()?
+        .iter()
+        .find(|p| p["name"] == "Revive")?["constants"]
+        .as_array()?
+        .iter()
+        .find(|c| c["name"] == name)
+        .cloned()
+}
+
+fn normalize_order_deposit(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let has = |list: &[Value], name: &str| list.iter().any(|v| v["name"] == name);
+    if has(mempool_constants(before)?, "OrderDepositPerItem")
+        || has(mempool_constants(before)?, "OrderDepositPerByte")
+        || has(mempool_storage_entries(before)?, "OrderDeposit")
+        || has(mempool_variants(before, "error")?, "DepositNotAvailable")
+        || has(mempool_variants(before, "event")?, "OrderDepositReleased")
+    {
+        return Err("unexpected baseline mempool order deposit".into());
+    }
+    let types = after.clone();
+
+    // Constants: the last two, equal in type and value to revive's.
+    let per_item =
+        revive_constant(&types, "DepositPerItem").ok_or("missing Revive.DepositPerItem")?;
+    let per_byte =
+        revive_constant(&types, "DepositPerByte").ok_or("missing Revive.DepositPerByte")?;
+    let constants = mempool_constants(after)?;
+    let n = constants.len();
+    let want = serde_json::json!([
+        {
+            "deprecation_info": "NotDeprecated",
+            "docs": ORDER_DEPOSIT_PER_ITEM_DOCS,
+            "name": "OrderDepositPerItem",
+            "ty": per_item["ty"].clone(),
+            "value": per_item["value"].clone(),
+        },
+        {
+            "deprecation_info": "NotDeprecated",
+            "docs": ORDER_DEPOSIT_PER_BYTE_DOCS,
+            "name": "OrderDepositPerByte",
+            "ty": per_byte["ty"].clone(),
+            "value": per_byte["value"].clone(),
+        }
+    ]);
+    if n < 2 || constants.get(n - 2..) != want.as_array().map(Vec::as_slice) {
+        return Err(format!(
+            "missing or incorrect required mempool order-deposit constants: {}",
+            serde_json::to_string(&constants.get(n.saturating_sub(2)..)).unwrap_or_default()
+        ));
+    }
+    constants.truncate(n - 2);
+
+    // Storage: the last entry, after `OrderResults`.
+    let entries = mempool_storage_entries(after)?;
+    let results = entries
+        .iter()
+        .find(|e| e["name"] == "OrderResults")
+        .cloned()
+        .ok_or("missing candidate OrderResults")?;
+    let want = serde_json::json!({
+        "default": [0],
+        "deprecation_info": "NotDeprecated",
+        "docs": ORDER_DEPOSIT_DOCS,
+        "modifier": "Optional",
+        "name": "OrderDeposit",
+        "ty": {"Map": {
+            "hashers": results["ty"]["Map"]["hashers"].clone(),
+            "key": results["ty"]["Map"]["key"].clone(),
+            "value": per_item["ty"].clone(),
+        }},
+    });
+    let len = entries.len();
+    if len < 2 || entries[len - 2]["name"] != "OrderResults" || entries[len - 1] != want {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool OrderDeposit: {}",
+            serde_json::to_string(&entries.last()).unwrap_or_default()
+        ));
+    }
+    entries.pop();
+
+    // Error: the last variant, directly after W1-012's `DuplicateAnswer`.
+    let errors = mempool_variants(after, "error")?;
+    let want = serde_json::json!({
+        "docs": DEPOSIT_NOT_AVAILABLE_DOCS,
+        "index": errors.len().saturating_sub(1),
+        "name": "DepositNotAvailable",
+    });
+    let len = errors.len();
+    if len < 2 || errors[len - 2]["name"] != "DuplicateAnswer" || errors.last() != Some(&want) {
+        return Err(format!(
+            "missing or incorrect required mempool DepositNotAvailable: {}",
+            serde_json::to_string(&errors.last()).unwrap_or_default()
+        ));
+    }
+    errors.pop();
+
+    // Event: the last variant, directly after W1-006's `EscrowReleased`, its
+    // field types those of `RewardReclaimed`.
+    let events = mempool_variants(after, "event")?;
+    let template = events
+        .iter()
+        .find(|v| v["name"] == "RewardReclaimed")
+        .ok_or("missing RewardReclaimed event")?
+        .clone();
+    let field = |name: &str| -> Value {
+        template["fields"]
+            .as_array()
+            .and_then(|fields| fields.iter().find(|f| f["name"] == name))
+            .map(|f| f["type"].clone())
+            .unwrap_or(Value::Null)
+    };
+    let want = serde_json::json!({
+        "docs": ORDER_DEPOSIT_RELEASED_DOCS,
+        "fields": [
+            {"name": "order_id", "type": field("order_id"), "typeName": "u64"},
+            {"name": "proposer", "type": field("proposer"), "typeName": "T::AccountId"},
+            {"name": "amount", "type": field("amount"), "typeName": "BalanceOf<T>"}
+        ],
+        "index": events.len().saturating_sub(1),
+        "name": "OrderDepositReleased",
+    });
+    let len = events.len();
+    if len < 2 || events[len - 2]["name"] != "EscrowReleased" || events.last() != Some(&want) {
+        return Err(format!(
+            "missing or incorrect required mempool OrderDepositReleased: {}",
+            serde_json::to_string(&events.last()).unwrap_or_default()
+        ));
+    }
+    events.pop();
+    Ok(())
+}
+
 fn normalize_audit_retention(before: &mut Value, after: &mut Value) -> Result<(), String> {
     let names = ["OrdersPrunableAt", "NextPruneBucket"];
     if mempool_storage_entries(before)?
@@ -1932,6 +2094,8 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
             ));
         }
     }
+    // First: W3-006 appends after every other mempool delta.
+    normalize_order_deposit(&mut left, &mut right)?;
     normalize_audit_retention(&mut left, &mut right)?;
     normalize_audit_expiry_storage(&mut left, &mut right)?;
     // Before normalize_reward_escrow, which expects RewardNotSpendable last.
@@ -2603,6 +2767,68 @@ mod tests {
             check(&before, &wrong_type).is_err(),
             "accepted a different value type"
         );
+    }
+
+    #[test]
+    fn requires_exact_mempool_order_deposit() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        for name in ["OrderDepositPerItem", "OrderDepositPerByte"] {
+            for field in ["name", "ty", "value", "docs", "deprecation_info"] {
+                let mut wrong = after.clone();
+                mempool_constants(&mut wrong)
+                    .unwrap()
+                    .iter_mut()
+                    .find(|c| c["name"] == name)
+                    .unwrap()[field] = Value::from("mutated");
+                cases.push((format!("{name}.{field}"), wrong));
+            }
+        }
+        for field in [
+            "name",
+            "modifier",
+            "default",
+            "docs",
+            "deprecation_info",
+            "ty",
+        ] {
+            let mut wrong = after.clone();
+            mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == "OrderDeposit")
+                .unwrap()[field] = Value::from("mutated");
+            cases.push((format!("OrderDeposit.{field}"), wrong));
+        }
+        let mut missing = after.clone();
+        mempool_storage_entries(&mut missing)
+            .unwrap()
+            .retain(|e| e["name"] != "OrderDeposit");
+        cases.push(("missing OrderDeposit".into(), missing));
+        for (kind, name) in [
+            ("error", "DepositNotAvailable"),
+            ("event", "OrderDepositReleased"),
+        ] {
+            for field in ["docs", "name", "index"] {
+                let mut wrong = after.clone();
+                mempool_variants(&mut wrong, kind)
+                    .unwrap()
+                    .iter_mut()
+                    .find(|v| v["name"] == name)
+                    .unwrap()[field] = Value::from(999);
+                cases.push((format!("{name}.{field}"), wrong));
+            }
+            // Out of position: swapped with its predecessor.
+            let mut misplaced = after.clone();
+            let variants = mempool_variants(&mut misplaced, kind).unwrap();
+            let len = variants.len();
+            variants.swap(len - 1, len - 2);
+            cases.push((format!("misplaced {name}"), misplaced));
+        }
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

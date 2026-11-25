@@ -283,6 +283,18 @@ pub mod pallet {
         #[pallet::constant]
         type EscrowPalletId: Get<PalletId>;
 
+        /// Per-order part of a job order's storage deposit (W3-006): reserved
+        /// from the proposer at `propose_job` and released when the order is
+        /// pruned. The runtime uses the same rate as stored programs.
+        #[pallet::constant]
+        type OrderDepositPerItem: Get<BalanceOf<Self>>;
+
+        /// Per-byte part of a job order's storage deposit (W3-006), charged on
+        /// the order and on the per-order state kept until it is pruned, at
+        /// that state's bounded maximum.
+        #[pallet::constant]
+        type OrderDepositPerByte: Get<BalanceOf<Self>>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -420,6 +432,11 @@ pub mod pallet {
     // TTL-based explicit purging.
     pub type OrderResults<T: Config> = StorageMap<_, Blake2_128Concat, u64, StoredResultOf<T>>;
 
+    /// The storage deposit reserved from each order's proposer (W3-006):
+    /// unreserved, exactly this amount, when the order is pruned.
+    #[pallet::storage]
+    pub type OrderDeposit<T: Config> = StorageMap<_, Blake2_128Concat, u64, BalanceOf<T>>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -516,6 +533,13 @@ pub mod pallet {
             escrow: T::AccountId,
             to_proposer: BalanceOf<T>,
         },
+        /// The order was pruned and its storage deposit unreserved (W3-006):
+        /// `amount` is what was actually returned to the proposer.
+        OrderDepositReleased {
+            order_id: u64,
+            proposer: T::AccountId,
+            amount: BalanceOf<T>,
+        },
     }
 
     #[pallet::error]
@@ -592,6 +616,8 @@ pub mod pallet {
         /// Another solver already submitted the same answer for this order
         /// (identical, globally flipped, or differing only in isolated spins).
         DuplicateAnswer,
+        /// The proposer cannot reserve the order's storage deposit (W3-006).
+        DepositNotAvailable,
     }
 
     #[pallet::call]
@@ -1306,26 +1332,30 @@ pub mod pallet {
             NextOrderId::<T>::put(order_id.saturating_add(1));
 
             let created_at = frame_system::Pallet::<T>::block_number();
-            JobOrders::<T>::insert(
-                order_id,
-                JobOrderOf::<T> {
-                    spec_id,
-                    proposer: proposer.clone(),
-                    ising_params,
-                    reward,
-                    mode,
-                    resolution,
-                    timing: types::OrderTiming {
-                        deadline_blocks,
-                        block_wait,
-                    },
-                    delivery,
-                    status: types::OrderStatus::Opened,
-                    created_at,
-                    first_solution_at: None,
-                    solution_count: 0,
+            let order = JobOrderOf::<T> {
+                spec_id,
+                proposer: proposer.clone(),
+                ising_params,
+                reward,
+                mode,
+                resolution,
+                timing: types::OrderTiming {
+                    deadline_blocks,
+                    block_wait,
                 },
-            );
+                delivery,
+                status: types::OrderStatus::Opened,
+                created_at,
+                first_solution_at: None,
+                solution_count: 0,
+            };
+            // W3-006: the proposer pays for the storage the order keeps until
+            // it is pruned. Released, exactly, in `prune_closed_orders`.
+            let deposit = Self::order_deposit(&order);
+            T::Currency::reserve(&proposer, deposit)
+                .map_err(|_| Error::<T>::DepositNotAvailable)?;
+            OrderDeposit::<T>::insert(order_id, deposit);
+            JobOrders::<T>::insert(order_id, order);
             OpenOrders::<T>::insert(order_id, ());
             Self::schedule_expiry(order_id, created_at.saturating_add(deadline_blocks));
             ProposerOrders::<T>::insert(&proposer, proposer_orders);
@@ -1344,6 +1374,39 @@ pub mod pallet {
                 block_wait,
             });
             Ok(order_id)
+        }
+
+        /// A job order's storage deposit (W3-006, design §B4 v2): one item plus
+        /// every byte of the order and of the per-order state kept until it is
+        /// pruned, each at its bounded maximum -- the ranking
+        /// (`OrderTopSolvers`, or `OrderFrontRunner`, whichever is larger), up
+        /// to `MAX_SOLVERS_PER_OPEN_ORDER` `OrderPayees` entries (key and
+        /// value), `OrderPayeeRequirements`, and `OrderResults` for a
+        /// `CallbackWithPoll` order.
+        pub fn order_deposit(order: &JobOrderOf<T>) -> BalanceOf<T> {
+            let ranking =
+                TopSolversOf::<T>::max_encoded_len().max(FrontRunnerOf::<T>::max_encoded_len());
+            let payee = u64::max_encoded_len()
+                .saturating_add(T::AccountId::max_encoded_len())
+                .saturating_add(types::WinnerPayee::max_encoded_len());
+            let payees = payee.saturating_mul(types::MAX_SOLVERS_PER_OPEN_ORDER as usize);
+            let results = if matches!(
+                order.delivery,
+                types::ResultDelivery::CallbackWithPoll { .. }
+            ) {
+                StoredResultOf::<T>::max_encoded_len()
+            } else {
+                0
+            };
+            let bytes = order
+                .encoded_size()
+                .saturating_add(ranking)
+                .saturating_add(payees)
+                .saturating_add(u64::max_encoded_len())
+                .saturating_add(results);
+            let bytes: BalanceOf<T> = u32::try_from(bytes).unwrap_or(u32::MAX).into();
+            T::OrderDepositPerItem::get()
+                .saturating_add(T::OrderDepositPerByte::get().saturating_mul(bytes))
         }
 
         /// VM lookup/decode is precharged at its bound; only executed steps
@@ -1909,9 +1972,19 @@ pub mod pallet {
                 for order_id in ids {
                     OrdersPrunableAt::<T>::remove(bucket, order_id);
                     // Fail closed if an inconsistent queue entry names an unpaid order.
-                    if JobOrders::<T>::get(order_id)
-                        .is_some_and(|order| order.status == types::OrderStatus::Closed)
+                    if let Some(order) = JobOrders::<T>::get(order_id)
+                        .filter(|order| order.status == types::OrderStatus::Closed)
                     {
+                        // W3-006: the deposit covered the record until now.
+                        // `take` releases it exactly once.
+                        if let Some(deposit) = OrderDeposit::<T>::take(order_id) {
+                            let missing = T::Currency::unreserve(&order.proposer, deposit);
+                            Self::deposit_event(Event::OrderDepositReleased {
+                                order_id,
+                                proposer: order.proposer,
+                                amount: deposit.saturating_sub(missing),
+                            });
+                        }
                         JobOrders::<T>::remove(order_id);
                         Self::prune_solutions(order_id);
                         let _ = OrderPayees::<T>::clear_prefix(

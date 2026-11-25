@@ -182,6 +182,11 @@ impl pallet_balances::Config for Test {
 }
 
 parameter_types! {
+    /// W3-006: job-order storage-deposit rates. Zero by default, so the
+    /// balance arithmetic of tests that predate the deposit is unchanged; the
+    /// deposit tests set them (`OrderDepositPerItem::set`).
+    pub static OrderDepositPerItem: Balance = 0;
+    pub static OrderDepositPerByte: Balance = 0;
     pub static ExistentialDeposit: Balance = 1;
     pub static MaxTransformSteps: u64 = 1000;
     pub static VmMemory: u64 = 1024 * 1024;
@@ -213,6 +218,8 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type MaxBlockWait = MaxBlockWait;
     type MinReward = MinReward;
     type EscrowPalletId = EscrowPalletId;
+    type OrderDepositPerItem = OrderDepositPerItem;
+    type OrderDepositPerByte = OrderDepositPerByte;
     type ResultTtlBlocks = ResultTtlBlocks;
     type OrderRetentionBlocks = OrderRetentionBlocks;
     type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;

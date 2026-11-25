@@ -1496,10 +1496,13 @@ mod tests {
                 .partial_fee;
             assert!(expected_fee > 0);
             assert_ok!(Executive::apply_extrinsic(xt).unwrap());
+            // W3-006: the order's storage deposit stays reserved until prune.
+            let deposit = pallet_quantum_compute_mempool::OrderDeposit::<Runtime>::get(0).unwrap_or(0);
+            assert!(deposit > 0);
             assert_eq!(Balances::free_balance(&caller), initial - expected_fee);
             assert_eq!(Balances::free_balance(&winner), initial - EXISTENTIAL_DEPOSIT + reward);
-            assert_eq!(Balances::free_balance(&proposer), initial - reward);
-            assert_eq!(Balances::reserved_balance(&proposer), 0);
+            assert_eq!(Balances::free_balance(&proposer), initial - reward - deposit);
+            assert_eq!(Balances::reserved_balance(&proposer), deposit);
             assert!(!Solvers::<Runtime>::contains_key(&caller));
             assert_eq!(Solvers::<Runtime>::get(&winner).unwrap().rewards_earned, reward);
             assert_eq!(JobOrders::<Runtime>::get(0).unwrap().status,
@@ -1630,7 +1633,9 @@ mod tests {
             let error: sp_runtime::DispatchError = sp_runtime::TokenError::Frozen.into();
             assert_eq!(Executive::apply_extrinsic(xt).unwrap(), Err(error));
 
-            assert_eq!(Balances::free_balance(&proposer), initial - reward);
+            // W3-006: the order's storage deposit is reserved, not free.
+            let deposit = pallet_quantum_compute_mempool::OrderDeposit::<Runtime>::get(0).unwrap_or(0);
+            assert_eq!(Balances::free_balance(&proposer), initial - reward - deposit);
             assert_eq!(Balances::free_balance(&escrow), reward);
             for (winner, solver_before) in winners.iter().zip(&solvers_before) {
                 assert_eq!(Balances::free_balance(winner), initial - EXISTENTIAL_DEPOSIT);
@@ -1666,7 +1671,7 @@ mod tests {
             assert_eq!(Balances::free_balance(&caller), initial - failed_fee - retry_fee);
             assert_eq!(Balances::free_balance(&escrow), 0);
             assert!(!System::account_exists(&escrow));
-            assert_eq!(Balances::free_balance(&proposer), initial - reward);
+            assert_eq!(Balances::free_balance(&proposer), initial - reward - deposit);
             for (winner, payout) in winners.iter().zip([UNIT + 1, UNIT]) {
                 assert_eq!(Balances::free_balance(winner), initial - EXISTENTIAL_DEPOSIT + payout);
                 assert_eq!(Solvers::<Runtime>::get(winner).unwrap().rewards_earned, payout);
@@ -1719,6 +1724,14 @@ mod tests {
             let escrow = QuantumComputeMempool::escrow_account(0);
             assert_eq!(Balances::free_balance(&escrow), reward);
             // The proposer empties its account after posting and is reaped.
+            // W3-006: a reserved order deposit keeps the proposer alive, so the
+            // test first takes it (slash) to reach the reaped state.
+            let deposit =
+                pallet_quantum_compute_mempool::OrderDeposit::<Runtime>::get(0).unwrap_or(0);
+            let _ =
+                <Balances as frame_support::traits::ReservableCurrency<AccountId>>::slash_reserved(
+                    &proposer, deposit,
+                );
             <Balances as Currency<AccountId>>::make_free_balance_be(&proposer, 0);
             assert!(!System::account_exists(&proposer));
             System::set_block_number(2);
@@ -1863,8 +1876,14 @@ mod tests {
                     assert_ok!(result);
                     assert_eq!(NextOrderId::<Runtime>::get(), 1);
                     // W1-006: the reward is in the order's escrow account; the
-                    // caller's reserve is only its solver deposit.
-                    assert_eq!(Balances::reserved_balance(&caller), EXISTENTIAL_DEPOSIT);
+                    // caller's reserve is its solver deposit plus the order's
+                    // storage deposit (W3-006).
+                    assert_eq!(
+                        Balances::reserved_balance(&caller),
+                        EXISTENTIAL_DEPOSIT
+                            + pallet_quantum_compute_mempool::OrderDeposit::<Runtime>::get(0)
+                                .unwrap_or(0)
+                    );
                     assert_eq!(
                         Balances::free_balance(QuantumComputeMempool::escrow_account(0)),
                         UNIT

@@ -1063,6 +1063,9 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type VmProgramValidationWeight = QuantumProgramValidationWeight;
     type VM = pallet_quantum_compute_mempool::xqvm::XqvmAdapter<Runtime>;
     type EscrowPalletId = QuantumEscrowPalletId;
+    // W3-006: job orders pay storage at the same rates as stored programs.
+    type OrderDepositPerItem = StorageDepositPerItem;
+    type OrderDepositPerByte = StorageDepositPerByte;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
 }
 

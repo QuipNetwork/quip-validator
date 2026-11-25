@@ -4302,3 +4302,128 @@ mod w1_012 {
         });
     }
 }
+
+/// W3-006 (design §B4 v2) -- the job-order storage deposit.
+mod w3_006_deposit {
+    use super::*;
+    use crate::OrderDeposit;
+    use codec::{Encode, MaxEncodedLen};
+    use frame_support::traits::Currency;
+
+    fn set_rates() {
+        OrderDepositPerItem::set(10);
+        OrderDepositPerByte::set(1);
+    }
+
+    fn released(order_id: u64) -> Vec<(AccountId, u128)> {
+        System::events()
+            .into_iter()
+            .filter_map(|record| match record.event {
+                RuntimeEvent::QuantumComputeMempool(crate::Event::OrderDepositReleased {
+                    order_id: id,
+                    proposer,
+                    amount,
+                }) if id == order_id => Some((proposer, amount)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The deposit is reserved at `propose_job`, is still held after the order
+    /// closes (it covers the record through the retention window), and is
+    /// released exactly once when the order is pruned, with the amount in the
+    /// event.
+    #[test]
+    fn reserved_at_propose_and_released_once_at_prune() {
+        new_test_ext().execute_with(|| {
+            set_rates();
+            let reserved = Balances::reserved_balance(1);
+            let id = propose_single_best(1, 1, 1);
+            let deposit = OrderDeposit::<Test>::get(id).expect("a deposit");
+            let order = JobOrders::<Test>::get(id).unwrap();
+            assert_eq!(deposit, QuantumComputeMempool::order_deposit(&order));
+            assert!(
+                deposit > 10 + order.encoded_size() as u128,
+                "the state bound is priced"
+            );
+            assert_eq!(Balances::reserved_balance(1), reserved + deposit);
+
+            run_to_block(2);
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+            assert_eq!(
+                Balances::reserved_balance(1),
+                reserved + deposit,
+                "still held after close"
+            );
+            assert!(released(id).is_empty());
+
+            run_to_block(22);
+            assert!(JobOrders::<Test>::get(id).is_none(), "pruned");
+            assert!(OrderDeposit::<Test>::get(id).is_none());
+            assert_eq!(Balances::reserved_balance(1), reserved);
+            assert_eq!(released(id), vec![(1, deposit)]);
+            run_to_block(30);
+            assert_eq!(released(id).len(), 1, "released once");
+        });
+    }
+
+    /// `OrderResults` is priced only for `CallbackWithPoll`: the same order
+    /// with a polled callback costs exactly that state's bound more.
+    #[test]
+    fn callback_with_poll_prices_the_stored_result() {
+        new_test_ext().execute_with(|| {
+            set_rates();
+            let id = propose_single_best(1, 1, 1);
+            let mut order = JobOrders::<Test>::get(id).unwrap();
+            let endpoint: BoundedVec<u8, _> = bounded(b"https://example.invalid".to_vec());
+            order.delivery = ResultDelivery::Callback {
+                endpoint: endpoint.clone(),
+            };
+            let callback = QuantumComputeMempool::order_deposit(&order);
+            order.delivery = ResultDelivery::CallbackWithPoll { endpoint };
+            let polled = QuantumComputeMempool::order_deposit(&order);
+            assert_eq!(
+                polled - callback,
+                crate::StoredResultOf::<Test>::max_encoded_len() as u128
+            );
+        });
+    }
+
+    /// A proposer funded with exactly reward + deposit + ED can propose; one
+    /// unit less cannot reserve the deposit.
+    #[test]
+    fn exact_funding_covers_reward_deposit_and_ed() {
+        new_test_ext().execute_with(|| {
+            set_rates();
+            ExistentialDeposit::set(10);
+            // The deposit of the same order, measured from a funded proposer;
+            // account ids have one encoded size, so it is the same for 77/78.
+            let deposit = OrderDeposit::<Test>::get(propose_single_best(1, 1, 1)).unwrap();
+            let need = 100 + deposit + 10;
+            Balances::make_free_balance_be(&77, need);
+            propose_single_best(77, 1, 1);
+            assert_eq!(Balances::free_balance(77), 10);
+            assert_eq!(Balances::reserved_balance(77), deposit);
+
+            Balances::make_free_balance_be(&78, need - 1);
+            let spec_id = JobSpecs::<Test>::iter_keys().next().unwrap();
+            assert_noop!(
+                QuantumComputeMempool::propose_job(
+                    RuntimeOrigin::signed(78),
+                    spec_id,
+                    sample_params(),
+                    100,
+                    JobMode::Open,
+                    RewardResolution::SingleBest,
+                    1,
+                    1,
+                    ResultDelivery::OnChainOnly,
+                ),
+                crate::Error::<Test>::DepositNotAvailable
+            );
+        });
+    }
+}
