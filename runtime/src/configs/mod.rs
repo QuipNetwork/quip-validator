@@ -732,13 +732,22 @@ parameter_types! {
     /// (Normal 3.5 MiB, Operational 3.75 MiB): no admitted extrinsic carries a
     /// payload past the 4 MiB allocator order, and census d measures the
     /// Operational class (a signed `set_code`, included though it fails at
-    /// dispatch) up to its limit. So the pinned sum is an upper bound on the
-    /// importer heap for the classes the census measures -- VM runs (Σ and the
-    /// fixed run), the largest non-VM dispatch, and the residency of every
-    /// block the builder admits, Normal and Operational -- under the
-    /// structural-gate precondition below. It has no revive term:
-    /// pallet-revive contract execution is closed by origin instead (QUI-2549,
-    /// see [`VM_BLOCK_RESIDENCY`]).
+    /// dispatch) up to its limit. An unsigned `eth_transact`, whose decode and
+    /// signer recovery hold further copies of its payload, is capped at
+    /// [`crate::MAX_ETH_TRANSACT_PAYLOAD`] before anything decodes it (A10b),
+    /// and census d measures it up to the cap: at most 49.50 MiB, under the
+    /// remark family's 61.97. The other extrinsic classes are small or already
+    /// in a measured family: Mandatory is the timestamp inherent only;
+    /// unsigned election pages are bounded by `MinerMaxLength` (128 KiB);
+    /// equivocation reports carry fixed-size proofs; signed Normal calls with
+    /// a free-length argument (`set_keys`'s proof, signed election pages) are
+    /// the remark family. So the pinned sum is an upper bound on the importer
+    /// heap for those classes -- VM runs (Σ and the fixed run), the largest
+    /// non-VM dispatch, and the residency of every block the builder admits,
+    /// Normal, Operational and `eth_transact` -- under the structural-gate
+    /// precondition below. It has no revive term: pallet-revive contract
+    /// execution is closed by origin instead (QUI-2549, see
+    /// [`VM_BLOCK_RESIDENCY`]).
     ///
     /// 16 MiB (the
     /// original value) put the budget past 128 MiB: five `execute` calls built
@@ -1297,6 +1306,17 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 /// the previous 5 MiB length that shape, with a 4,196,352-B `set_code` (the
 /// 8 MiB order), was admitted by the builder and its import failed with
 /// "Allocator ran out of space".
+///
+/// **`eth_transact` is capped before its decode (A10b).** An unsigned
+/// `eth_transact` holds more than a remark of the same body: the RLP-decoded
+/// input, the signer recovery's re-encode, `into_call`'s copy and the stored
+/// encoded transaction. Uncapped, a valid block with one 2 MiB + 768 B
+/// `eth_transact` and fillers held 65.975 MiB (claude_reviewer's A10 R8), above
+/// this term. The runtime now refuses a payload over
+/// [`crate::MAX_ETH_TRANSACT_PAYLOAD`] (1,180,672 B) before decoding it, and
+/// census d measures the family up to the cap with the same fillers: calls of
+/// 256 KiB to the cap hold 36.75–49.49 MiB (2.0–4.0 MiB above a remark of the
+/// same body), the largest PVM instantiate 49.50 MiB.
 ///
 /// **pallet-revive contract execution is closed by origin (QUI-2549):** only
 /// Root and Foundation members may upload or instantiate code

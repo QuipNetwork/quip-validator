@@ -29,7 +29,9 @@ use codec::{Decode, Encode};
 use frame_support::{dispatch::DispatchClass, traits::Get, BoundedVec};
 use quip_testnet_runtime::{
     native_tx_extension, Address, Block, Header, Nonce, Runtime, RuntimeCall, RuntimeGenesisConfig,
-    Signature, SignedPayload, TxExtension, UncheckedExtrinsic, SLOT_DURATION, UNIT, WASM_BINARY,
+    Signature, SignedPayload, TxExtension, UncheckedExtrinsic, ETH_TRANSACT_PAYLOAD_TOO_LARGE,
+    MAX_ETH_TRANSACT_PAYLOAD, REVIVE_BLOB_BYTES, REVIVE_CALLDATA_BYTES, SLOT_DURATION, UNIT,
+    WASM_BINARY,
 };
 use quip_transaction_crypto::{account_id_from_public, HybridPair, HybridTxSignature};
 use sc_executor::WasmExecutor;
@@ -2076,6 +2078,163 @@ fn largest_admitted_alone(
     lo
 }
 
+/// One item of a block built by [`author_items`]: a call the attacker signs
+/// at its live nonce, or a ready extrinsic (an unsigned `eth_transact`).
+enum Item {
+    Signed(RuntimeCall),
+    Raw(UncheckedExtrinsic),
+}
+
+/// Author a block mixing signed calls and ready extrinsics, as the builder
+/// does: an extrinsic that fails to apply is skipped (claude_reviewer's
+/// `author_items`, A10 R8). Returns the block and each item's apply result.
+fn author_items(chain: &Chain, items: Vec<Item>) -> (Block, Vec<ApplyExtrinsicResult>) {
+    let who = account_id_from_public(&chain.attacker.public());
+    let mut sign_state = chain.state();
+    let mut state = chain.state();
+    chain.call(
+        &mut state,
+        "Core_initialize_block",
+        &chain.header(1).encode(),
+    );
+    let mut xts = vec![Chain::timestamp(1)];
+    let (ts, _) = chain.apply_in_transaction(&mut state, &xts[0], false);
+    assert_eq!(ts, Ok(Ok(())), "timestamp");
+    let mut results = Vec::new();
+    let mut skipped = 0usize;
+    for item in items {
+        let xt = match item {
+            Item::Signed(call) => {
+                let nonce =
+                    state.execute_with(|| frame_system::Pallet::<Runtime>::account_nonce(&who));
+                chain.sign_in(&mut sign_state, call, nonce)
+            }
+            Item::Raw(xt) => xt,
+        };
+        let (r, _) = chain.apply_in_transaction(&mut state, &xt, false);
+        let failed = r.is_err();
+        results.push(r);
+        if failed {
+            skipped += 1;
+            if skipped > MAX_SKIPPED_TRANSACTIONS {
+                break;
+            }
+        } else {
+            xts.push(xt);
+        }
+    }
+    drop(sign_state);
+    let (out, _) = chain.measured(&mut state, "BlockBuilder_finalize_block", &[]);
+    let header = Header::decode(&mut &out.expect("finalize")[..]).expect("header");
+    (
+        Block {
+            header,
+            extrinsics: xts,
+        },
+        results,
+    )
+}
+
+/// An unsigned `eth_transact` carrying `payload`.
+fn eth_bare(payload: Vec<u8>) -> UncheckedExtrinsic {
+    generic::UncheckedExtrinsic::<Address, RuntimeCall, Signature, TxExtension>::new_bare(
+        pallet_revive::Call::<Runtime>::eth_transact { payload }.into(),
+    )
+    .into()
+}
+
+/// The signed RLP payload of a legacy transaction from `eth` on `chain`.
+fn eth_payload(
+    chain: &Chain,
+    eth: &pallet_revive::evm::Account,
+    to: Option<sp_core::H160>,
+    input: Vec<u8>,
+    gas: sp_core::U256,
+) -> Vec<u8> {
+    use pallet_revive::evm::{Bytes, TransactionLegacyUnsigned, TransactionUnsigned};
+    let (chain_id, base_fee) = chain.state().execute_with(|| {
+        (
+            <<Runtime as pallet_revive::Config>::ChainId as Get<u64>>::get(),
+            pallet_revive::Pallet::<Runtime>::evm_base_fee(),
+        )
+    });
+    let tx = TransactionLegacyUnsigned {
+        chain_id: Some(sp_core::U256::from(chain_id)),
+        gas,
+        gas_price: base_fee,
+        input: Bytes(input),
+        nonce: sp_core::U256::zero(),
+        to,
+        value: sp_core::U256::zero(),
+        ..Default::default()
+    };
+    eth.sign_transaction(TransactionUnsigned::TransactionLegacyUnsigned(tx))
+        .signed_payload()
+}
+
+/// A call to an account with no code whose payload is exactly `len` bytes.
+fn eth_call_payload_of_len(
+    chain: &Chain,
+    eth: &pallet_revive::evm::Account,
+    len: usize,
+    gas: sp_core::U256,
+) -> Vec<u8> {
+    let to = Some(sp_core::H160::repeat_byte(0x11));
+    let mut input = len - 512;
+    for _ in 0..8 {
+        let p = eth_payload(chain, eth, to, vec![0x5a; input], gas);
+        if p.len() == len {
+            return p;
+        }
+        input = input + len - p.len();
+    }
+    panic!("no input gives a {len}-B payload");
+}
+
+/// The input of the largest instantiate revive accepts at dispatch: a PVM blob
+/// header naming exactly `REVIVE_BLOB_BYTES`, then `REVIVE_CALLDATA_BYTES` of
+/// constructor data.
+fn largest_pvm_instantiate_input() -> Vec<u8> {
+    let blob = REVIVE_BLOB_BYTES as usize;
+    let mut input = vec![0u8; blob + REVIVE_CALLDATA_BYTES as usize];
+    input[..4].copy_from_slice(b"PVM\0");
+    input[5..13].copy_from_slice(&(blob as u64).to_le_bytes());
+    input
+}
+
+/// A10b (QUI-2548 follow-up): an `eth_transact` over
+/// `MAX_ETH_TRANSACT_PAYLOAD` is invalid in every block. The builder's apply
+/// refuses it with `Custom(ETH_TRANSACT_PAYLOAD_TOO_LARGE)` -- the same
+/// `Checkable::check` an importer's `apply_extrinsic` runs -- so it is never
+/// included, and a block carrying it anyway does not import, while the same
+/// block without it does. (The executor reports a Wasm trap without the
+/// runtime's panic message, so the import failure itself is not attributed
+/// by its text.) The payload is not even RLP: the cap is checked before any
+/// decode.
+#[test]
+fn a_block_with_an_oversize_eth_transact_fails_import() {
+    use sp_runtime::transaction_validity::InvalidTransaction;
+    let chain = Chain::new();
+    let cap = MAX_ETH_TRANSACT_PAYLOAD as usize;
+    let oversize = eth_bare(vec![0xffu8; cap + 1]);
+    let (block, results) = author_items(&chain, vec![Item::Raw(oversize.clone())]);
+    assert_eq!(
+        block.extrinsics.len(),
+        1,
+        "the builder includes only the timestamp"
+    );
+    assert_eq!(
+        results[0],
+        Err(InvalidTransaction::Custom(ETH_TRANSACT_PAYLOAD_TOO_LARGE).into())
+    );
+    let (without, _) = chain.import(&block);
+    assert!(without.is_ok(), "the block without it imports: {without:?}");
+    let mut carrying = block.clone();
+    carrying.extrinsics.push(oversize);
+    let (imported, _) = chain.import(&carrying);
+    assert!(imported.is_err(), "a block carrying it must not import");
+}
+
 fn set_code_call(p: usize) -> RuntimeCall {
     frame_system::Call::<Runtime>::set_code { code: vec![0u8; p] }.into()
 }
@@ -2319,7 +2478,114 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
         "the largest admitted signed set_code is measured"
     );
 
+    // A10b: the `eth_transact` family, up to `MAX_ETH_TRANSACT_PAYLOAD`, valid
+    // through finalize, each with the same fillers as a remark of the same
+    // opaque body (measured above through `measure`, the control). Calls go
+    // to an account with no code (the input is not read, so it dispatches);
+    // the largest instantiate is included whatever its outcome (revive's
+    // `eth_*` calls report a failed execution in the receipt, not as a
+    // dispatch error). The remark family must stay the worst.
+    let eth = pallet_revive::evm::Account::default();
+    let fund: RuntimeCall = pallet_balances::Call::<Runtime>::transfer_keep_alive {
+        dest: Address::Id(eth.substrate_account()),
+        value: 10_000 * UNIT,
+    }
+    .into();
+    let cap = MAX_ETH_TRANSACT_PAYLOAD as usize;
+    let admitted = |payload: Vec<u8>| {
+        let (_, results) = author_items(
+            &chain,
+            vec![Item::Signed(fund.clone()), Item::Raw(eth_bare(payload))],
+        );
+        matches!(results.get(1), Some(Ok(_)))
+    };
+    let gas = [
+        100_000_000u64,
+        1_000_000_000,
+        10_000_000_000,
+        100_000_000_000,
+    ]
+    .into_iter()
+    .map(sp_core::U256::from)
+    .find(|&gas| admitted(eth_call_payload_of_len(&chain, &eth, cap, gas)))
+    .expect("some gas limit admits a payload at the cap");
+    let mut shapes: Vec<(String, Vec<u8>)> =
+        [256 * KIB as usize, 512 * KIB as usize, MIB as usize, cap]
+            .into_iter()
+            .map(|len| {
+                (
+                    format!("call payload {len} B"),
+                    eth_call_payload_of_len(&chain, &eth, len, gas),
+                )
+            })
+            .collect();
+    let instantiate = eth_payload(&chain, &eth, None, largest_pvm_instantiate_input(), gas);
+    assert!(
+        instantiate.len() <= cap,
+        "the largest instantiate fits the cap"
+    );
+    shapes.push((
+        format!("largest PVM instantiate, payload {} B", instantiate.len()),
+        instantiate,
+    ));
+    let mut eth_worst = (0u32, String::new());
+    for (label, payload) in shapes {
+        let xt = eth_bare(payload);
+        let body = opaque_body_len(&xt);
+        let mut items = vec![Item::Signed(fund.clone()), Item::Raw(xt.clone())];
+        items.extend((0..max_len / filler_wire + 16).map(|_| Item::Signed(remark(filler))));
+        let (block, results) = author_items(&chain, items);
+        assert!(
+            matches!(results.get(1), Some(Ok(_)))
+                && block.extrinsics.get(2).map(Encode::encode) == Some(xt.encode()),
+            "(d) eth_transact {label}: included"
+        );
+        let (ok, heap) = chain.import(&block);
+        assert!(
+            ok.is_ok(),
+            "(d) eth_transact {label}: the valid block imports: {ok:?}"
+        );
+        let net = heap.saturating_sub(empty_import);
+        println!(
+            "(d) eth_transact {label}: body {body} B, dispatch {:?}, included {}, encoded {:.3} MiB \
+             | VALID net {:.3} MiB",
+            results[1],
+            block.extrinsics.len() - 1,
+            block.encode().len() as f64 / MIB as f64,
+            mib(net),
+        );
+        if net > eth_worst.0 {
+            eth_worst = (net, label.clone());
+        }
+        let mut control = vec![remark(body.saturating_sub(body0))];
+        control.extend((0..max_len / filler_wire + 16).map(|_| remark(filler)));
+        measure(
+            format!("remark {body} B (control for eth_transact {label}) + 2049-B fillers"),
+            control,
+            1,
+            false,
+        );
+    }
+
     let (worst_net, worst_label) = worst;
+    println!(
+        "(d) eth_transact worst {:.3} MiB ({}); remark family worst {:.3} MiB",
+        mib(eth_worst.0),
+        eth_worst.1,
+        mib(worst_net)
+    );
+    assert!(
+        eth_worst.0 < worst_net,
+        "an eth_transact shape ({}) holds {:.3} MiB, not below the remark family's {:.3} MiB",
+        eth_worst.1,
+        mib(eth_worst.0),
+        mib(worst_net)
+    );
+    assert!(
+        mib(eth_worst.0) <= 62.0,
+        "an eth_transact shape holds {:.3} MiB, above 62 MiB -- report before committing",
+        mib(eth_worst.0)
+    );
     let pinned = quip_testnet_runtime::configs::VM_BLOCK_RESIDENCY;
     println!(
         "RESIDENCY (valid blocks, through finalize): worst {:.3} MiB ({worst_label}); \

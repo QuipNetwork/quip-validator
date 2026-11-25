@@ -411,12 +411,55 @@ pub fn native_tx_extension(era: generic::Era, nonce: Nonce, tip: Balance) -> TxE
     tx_extension(era, nonce, tip, Default::default())
 }
 
-/// Builds the normal transaction extensions used by an Ethereum transaction
-/// after Revive has recovered and validated its secp256k1 signer.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct EthExtraImpl;
+/// pallet-revive's dispatch-time limits that bound a legitimate
+/// `eth_transact` (QUI-2548 follow-up, A10b). Revive keeps them in a private
+/// module (`limits.rs` at the pinned SDK), so they are restated here and
+/// pinned to revive's dispatch behaviour by the test
+/// `revive_limits_restated_here_match_dispatch`:
+/// - `BLOB_BYTES` (`limits.rs:113`): the largest contract blob an instantiate
+///   may carry (`BlobTooLarge` above it);
+/// - `CALLDATA_BYTES` (`limits.rs:71`): the largest call or constructor data
+///   code is run with (`CallDataTooLarge` above it).
+pub const REVIVE_BLOB_BYTES: u32 = 1024 * 1024;
+pub const REVIVE_CALLDATA_BYTES: u32 = 128 * 1024;
+/// RLP framing and signature around an Ethereum transaction's input: the
+/// type byte, the list and input headers (at most 5 bytes each), six integer
+/// fields (chain id, nonce, the gas prices, gas, value; at most 33 bytes
+/// each), `to` (21) and the signature (at most 99): 334 bytes at most, so
+/// 1 KiB leaves about 690 bytes for an access list.
+pub const ETH_TRANSACT_RLP_OVERHEAD: u32 = 1024;
+/// The largest `eth_transact` payload this runtime accepts (A10b):
+/// revive's largest instantiate input (a `BLOB_BYTES` blob plus
+/// `CALLDATA_BYTES` of constructor data -- revive's own
+/// `MAX_TRANSACTION_PAYLOAD_SIZE`) plus the RLP framing, 1,180,672 bytes.
+///
+/// Enforced before the payload is RLP-decoded (see [`EthExtraImpl`]), because
+/// the decode and signer recovery hold several further copies of the input: a
+/// valid block with one 2 MiB + 768 B `eth_transact` and fillers held
+/// 65.975 MiB in the importer, above `VM_BLOCK_RESIDENCY` (claude_reviewer's
+/// A10 R8). Below the 2 MiB allocator order those copies stay small.
+///
+/// Nothing that can succeed at dispatch with code involved is larger: a call
+/// into code is limited to `CALLDATA_BYTES` of input, a PVM instantiate to a
+/// `BLOB_BYTES` blob plus `CALLDATA_BYTES` of data, and an EVM instantiate to
+/// 49,152 bytes of init code (EIP-3860). Two kinds of transaction above the cap
+/// are refused that dispatch would have accepted: a value transfer to an
+/// account with no code carrying more input than the cap (the input is not
+/// read), and an `eth_substrate_call` (`to` = the runtime-pallets address)
+/// wrapping a call larger than the cap, which can be submitted natively.
+pub const MAX_ETH_TRANSACT_PAYLOAD: u32 =
+    REVIVE_BLOB_BYTES + REVIVE_CALLDATA_BYTES + ETH_TRANSACT_RLP_OVERHEAD;
+/// `InvalidTransaction::Custom` code for an `eth_transact` payload over
+/// [`MAX_ETH_TRANSACT_PAYLOAD`]. Custom rather than `ExhaustsResources`: the
+/// payload is invalid in every block, not too large for this one, and block
+/// authors treat `ExhaustsResources` as a sign the block is full.
+pub const ETH_TRANSACT_PAYLOAD_TOO_LARGE: u8 = 1;
 
-impl EthExtra for EthExtraImpl {
+/// Revive's own conversion of an `eth_transact` into a checked extrinsic,
+/// unchanged; [`EthExtraImpl`] wraps it with the payload cap.
+struct ReviveEthExtra;
+
+impl EthExtra for ReviveEthExtra {
     type Config = Runtime;
     type Extension = TxExtension;
 
@@ -427,6 +470,40 @@ impl EthExtra for EthExtraImpl {
             tip,
             pallet_revive::evm::tx_extension::SetOrigin::<Runtime>::new_from_eth_transaction(),
         )
+    }
+}
+
+/// Builds the normal transaction extensions used by an Ethereum transaction
+/// after Revive has recovered and validated its secp256k1 signer, and refuses
+/// a payload over [`MAX_ETH_TRANSACT_PAYLOAD`] before anything decodes it.
+/// `Checkable::check` calls this for every unsigned `eth_transact`, so the cap
+/// holds in pool validation and in block import alike.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EthExtraImpl;
+
+impl EthExtra for EthExtraImpl {
+    type Config = Runtime;
+    type Extension = TxExtension;
+
+    fn get_eth_extension(nonce: u32, tip: Balance) -> Self::Extension {
+        <ReviveEthExtra as EthExtra>::get_eth_extension(nonce, tip)
+    }
+
+    fn try_into_checked_extrinsic(
+        payload: &[u8],
+        encoded_len: usize,
+    ) -> Result<
+        generic::CheckedExtrinsic<AccountId, RuntimeCall, TxExtension>,
+        sp_runtime::transaction_validity::InvalidTransaction,
+    > {
+        if payload.len() > MAX_ETH_TRANSACT_PAYLOAD as usize {
+            return Err(
+                sp_runtime::transaction_validity::InvalidTransaction::Custom(
+                    ETH_TRANSACT_PAYLOAD_TOO_LARGE,
+                ),
+            );
+        }
+        <ReviveEthExtra as EthExtra>::try_into_checked_extrinsic(payload, encoded_len)
     }
 }
 
@@ -671,6 +748,195 @@ mod tests {
                 assert!(wasm.len() > 1024 * 1024, "the real runtime Wasm");
                 assert_eq!(xt.0.function.get_dispatch_info().class, DispatchClass::Operational);
                 assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+            });
+        }
+    }
+
+    // A10b (QUI-2548 follow-up): the `eth_transact` payload cap.
+    mod eth_transact_cap {
+        use super::*;
+        use frame_support::assert_err_ignore_postinfo;
+        use pallet_revive::evm::{
+            Account as EthAccount, Bytes, TransactionLegacyUnsigned, TransactionUnsigned,
+        };
+        use sp_core::{H160, U256};
+        use sp_runtime::transaction_validity::{TransactionSource, TransactionValidity};
+
+        const CAP: usize = MAX_ETH_TRANSACT_PAYLOAD as usize;
+
+        fn validate(xt: UncheckedExtrinsic) -> TransactionValidity {
+            Executive::validate_transaction(TransactionSource::External, xt, System::block_hash(0))
+        }
+
+        fn bare(payload: Vec<u8>) -> UncheckedExtrinsic {
+            generic::UncheckedExtrinsic::<Address, RuntimeCall, Signature, TxExtension>::new_bare(
+                pallet_revive::Call::<Runtime>::eth_transact { payload }.into(),
+            )
+            .into()
+        }
+
+        /// The signed RLP payload of a legacy transaction from `eth`.
+        fn payload(eth: &EthAccount, to: Option<H160>, input: Vec<u8>, gas: U256) -> Vec<u8> {
+            use frame_support::traits::Get as _;
+            let tx = TransactionLegacyUnsigned {
+                chain_id: Some(U256::from(
+                    <Runtime as pallet_revive::Config>::ChainId::get(),
+                )),
+                gas,
+                gas_price: pallet_revive::Pallet::<Runtime>::evm_base_fee(),
+                input: Bytes(input),
+                nonce: U256::zero(),
+                to,
+                value: U256::zero(),
+                ..Default::default()
+            };
+            eth.sign_transaction(TransactionUnsigned::TransactionLegacyUnsigned(tx))
+                .signed_payload()
+        }
+
+        /// A signed call to an account with no code whose payload is exactly
+        /// `len` bytes: the input is sized from the measured framing, which can
+        /// move by a byte with the signature's leading zeros.
+        fn call_of_len(eth: &EthAccount, len: usize, gas: U256) -> Vec<u8> {
+            let to = Some(H160::repeat_byte(0x11));
+            let mut input = len - 512;
+            for _ in 0..8 {
+                let p = payload(eth, to, vec![0x5a; input], gas);
+                if p.len() == len {
+                    return p;
+                }
+                input = input + len - p.len();
+            }
+            panic!("no input gives a {len}-B payload");
+        }
+
+        fn eth_ext(eth: &EthAccount) -> sp_io::TestExternalities {
+            let mut ext = revive_ext();
+            ext.execute_with(|| funded(&eth.substrate_account()));
+            ext
+        }
+
+        /// A gas limit the fee checks accept for a payload at the cap.
+        fn gas_for_cap(eth: &EthAccount) -> U256 {
+            [
+                100_000_000u64,
+                1_000_000_000,
+                10_000_000_000,
+                100_000_000_000,
+            ]
+            .into_iter()
+            .map(U256::from)
+            .find(|&gas| validate(bare(call_of_len(eth, CAP, gas))).is_ok())
+            .expect("some gas limit admits a payload at the cap")
+        }
+
+        #[test]
+        fn the_cap_is_revives_largest_instantiate_plus_framing() {
+            assert_eq!(REVIVE_BLOB_BYTES + REVIVE_CALLDATA_BYTES, 1_179_648);
+            assert_eq!(MAX_ETH_TRANSACT_PAYLOAD, 1_180_672);
+        }
+
+        /// `cap - 1` and `cap` are admitted; `cap + 1` is refused with
+        /// `Custom(ETH_TRANSACT_PAYLOAD_TOO_LARGE)`, and before any decode: a
+        /// payload that is not even RLP gets the same refusal at `cap + 1`, and
+        /// a decode failure (`Call`) at `cap`.
+        #[test]
+        fn eth_transact_payload_cap_is_enforced_at_validation() {
+            let eth = EthAccount::default();
+            eth_ext(&eth).execute_with(|| {
+                let gas = gas_for_cap(&eth);
+                for len in [CAP - 1, CAP] {
+                    let xt = bare(call_of_len(&eth, len, gas));
+                    assert!(validate(xt.clone()).is_ok(), "{len} B: {:?}", validate(xt));
+                }
+                let too_large = InvalidTransaction::Custom(ETH_TRANSACT_PAYLOAD_TOO_LARGE).into();
+                assert_eq!(
+                    validate(bare(call_of_len(&eth, CAP + 1, gas))),
+                    Err(too_large)
+                );
+                assert_eq!(validate(bare(vec![0xff; CAP + 1])), Err(too_large));
+                assert_eq!(
+                    validate(bare(vec![0xff; CAP])),
+                    Err(InvalidTransaction::Call.into())
+                );
+            });
+        }
+
+        /// The largest instantiate revive accepts at dispatch -- a PVM blob of
+        /// exactly `BLOB_BYTES` (a header naming that length) plus
+        /// `CALLDATA_BYTES` of constructor data -- is still admitted.
+        #[test]
+        fn largest_legitimate_instantiate_is_admitted() {
+            let eth = EthAccount::default();
+            eth_ext(&eth).execute_with(|| {
+                let gas = gas_for_cap(&eth);
+                let blob = REVIVE_BLOB_BYTES as usize;
+                let mut input = vec![0u8; blob + REVIVE_CALLDATA_BYTES as usize];
+                input[..4].copy_from_slice(b"PVM\0");
+                input[5..13].copy_from_slice(&(blob as u64).to_le_bytes());
+                let p = payload(&eth, None, input, gas);
+                assert!(p.len() <= CAP && p.len() > CAP - 1024, "{} B", p.len());
+                let xt = bare(p);
+                assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+            });
+        }
+
+        /// Pins the restated limits to revive's dispatch: a blob one byte over
+        /// `REVIVE_BLOB_BYTES` is `BlobTooLarge` and one at it is not, and call
+        /// data one byte over `REVIVE_CALLDATA_BYTES` is `CallDataTooLarge`
+        /// and at it is not.
+        #[test]
+        fn revive_limits_restated_here_match_dispatch() {
+            use pallet_revive::Error;
+            revive_ext().execute_with(|| {
+                let deployer = configs::ReviveRootDeployer::get();
+                funded(&deployer);
+                let blob = |len: usize| {
+                    let mut code = vec![0u8; len];
+                    code[..4].copy_from_slice(b"PVM\0");
+                    code
+                };
+                let upload =
+                    |len| Revive::upload_code(RuntimeOrigin::root(), blob(len), 1_000_000 * UNIT);
+                assert_eq!(
+                    upload(REVIVE_BLOB_BYTES as usize + 1),
+                    Err(Error::<Runtime>::BlobTooLarge.into())
+                );
+                assert_ne!(
+                    upload(REVIVE_BLOB_BYTES as usize),
+                    Err(Error::<Runtime>::BlobTooLarge.into())
+                );
+
+                assert_ok!(instantiate_call(evm_initcode(&[0x00]), 9)
+                    .dispatch_bypass_filter(RuntimeOrigin::root()));
+                let contract = System::events()
+                    .iter()
+                    .find_map(|record| match &record.event {
+                        RuntimeEvent::Revive(pallet_revive::Event::Instantiated {
+                            contract,
+                            ..
+                        }) => Some(*contract),
+                        _ => None,
+                    })
+                    .expect("the contract is instantiated");
+                let caller = signer("//Alice");
+                funded(&caller);
+                assert_ok!(Revive::map_account(RuntimeOrigin::signed(caller.clone())));
+                let call = |len: usize| {
+                    Revive::call(
+                        RuntimeOrigin::signed(caller.clone()),
+                        contract,
+                        0,
+                        Weight::from_parts(10_000_000_000, 10 * 1024 * 1024),
+                        1_000 * UNIT,
+                        vec![0u8; len],
+                    )
+                };
+                assert_err_ignore_postinfo!(
+                    call(REVIVE_CALLDATA_BYTES as usize + 1),
+                    Error::<Runtime>::CallDataTooLarge
+                );
+                assert_ok!(call(REVIVE_CALLDATA_BYTES as usize));
             });
         }
     }
