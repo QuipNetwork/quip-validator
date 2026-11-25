@@ -734,9 +734,9 @@ parameter_types! {
     /// Operational class (a signed `set_code`, included though it fails at
     /// dispatch) up to its limit. An unsigned `eth_transact`, whose decode and
     /// signer recovery hold further copies of its payload, is capped at
-    /// [`crate::MAX_ETH_TRANSACT_PAYLOAD`] before anything decodes it (A10b),
-    /// and census d measures it up to the cap: at most 49.50 MiB, under the
-    /// remark family's 61.97. The other extrinsic classes are small or already
+    /// [`crate::MAX_ETH_TRANSACT_PAYLOAD`] before the runtime decodes it (pool
+    /// validation, block building and import; A10b, A10c), and census d
+    /// measures it up to the cap, under the remark family's 61.97 MiB. The other extrinsic classes are small or already
     /// in a measured family: Mandatory is the timestamp inherent only;
     /// unsigned election pages are bounded by `MinerMaxLength` (128 KiB);
     /// equivocation reports carry fixed-size proofs; signed Normal calls with
@@ -1307,16 +1307,18 @@ pub const VM_SIGMA_ORDERS_PER_L: u64 = 24;
 /// 8 MiB order), was admitted by the builder and its import failed with
 /// "Allocator ran out of space".
 ///
-/// **`eth_transact` is capped before its decode (A10b).** An unsigned
-/// `eth_transact` holds more than a remark of the same body: the RLP-decoded
-/// input, the signer recovery's re-encode, `into_call`'s copy and the stored
-/// encoded transaction. Uncapped, a valid block with one 2 MiB + 768 B
-/// `eth_transact` and fillers held 65.975 MiB (claude_reviewer's A10 R8), above
-/// this term. The runtime now refuses a payload over
-/// [`crate::MAX_ETH_TRANSACT_PAYLOAD`] (1,180,672 B) before decoding it, and
+/// **`eth_transact` is capped before the runtime decodes it (A10b, A10c).** An
+/// unsigned `eth_transact` holds more than a remark of the same body: the
+/// RLP-decoded input, the signer recovery's re-encode, `into_call`'s copy and
+/// the stored encoded transaction. Uncapped, a valid block with one 2 MiB +
+/// 768 B `eth_transact` and fillers held 65.975 MiB (claude_reviewer's A10 R8),
+/// above this term. The runtime now refuses a payload over
+/// [`crate::MAX_ETH_TRANSACT_PAYLOAD`] (1,245,184 B) before decoding it, and
 /// census d measures the family up to the cap with the same fillers: calls of
-/// 256 KiB to the cap hold 36.75–49.49 MiB (2.0–4.0 MiB above a remark of the
-/// same body), the largest PVM instantiate 49.50 MiB.
+/// 256 KiB to the cap hold 36.75–49.25 MiB (1.0–4.0 MiB above a remark of the
+/// same body); the largest PVM instantiate (reverted under A9, not deployed)
+/// holds 49.50 MiB as a legacy transaction and 49.33 MiB as an EIP-1559 one
+/// whose access list fills the rest of the cap.
 ///
 /// **pallet-revive contract execution is closed by origin (QUI-2549):** only
 /// Root and Foundation members may upload or instantiate code

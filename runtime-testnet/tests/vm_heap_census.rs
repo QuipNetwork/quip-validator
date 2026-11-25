@@ -2172,6 +2172,52 @@ fn eth_payload(
         .signed_payload()
 }
 
+/// The signed RLP payload of an EIP-1559 transaction from `eth` on `chain`,
+/// carrying `access_list` (part of the signed RLP).
+fn eth_payload_1559(
+    chain: &Chain,
+    eth: &pallet_revive::evm::Account,
+    to: Option<sp_core::H160>,
+    input: Vec<u8>,
+    access_list: pallet_revive::evm::AccessList,
+    gas: sp_core::U256,
+) -> Vec<u8> {
+    use pallet_revive::evm::{Bytes, Transaction1559Unsigned, TransactionUnsigned};
+    let (chain_id, base_fee) = chain.state().execute_with(|| {
+        (
+            <<Runtime as pallet_revive::Config>::ChainId as Get<u64>>::get(),
+            pallet_revive::Pallet::<Runtime>::evm_base_fee(),
+        )
+    });
+    let tx = Transaction1559Unsigned {
+        chain_id: sp_core::U256::from(chain_id),
+        gas,
+        gas_price: base_fee,
+        max_fee_per_gas: base_fee,
+        max_priority_fee_per_gas: sp_core::U256::zero(),
+        input: Bytes(input),
+        nonce: sp_core::U256::zero(),
+        to,
+        value: sp_core::U256::zero(),
+        access_list,
+        ..Default::default()
+    };
+    eth.sign_transaction(TransactionUnsigned::Transaction1559Unsigned(tx))
+        .signed_payload()
+}
+
+/// `addresses` entries of `keys` storage keys each.
+fn eth_access_list(addresses: u8, keys: u8) -> pallet_revive::evm::AccessList {
+    (0..addresses)
+        .map(|a| pallet_revive::evm::AccessListEntry {
+            address: sp_core::H160::repeat_byte(a.wrapping_add(1)),
+            storage_keys: (0..keys)
+                .map(|k| H256::repeat_byte(k.wrapping_add(1)))
+                .collect(),
+        })
+        .collect()
+}
+
 /// A call to an account with no code whose payload is exactly `len` bytes.
 fn eth_call_payload_of_len(
     chain: &Chain,
@@ -2481,10 +2527,11 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
     // A10b: the `eth_transact` family, up to `MAX_ETH_TRANSACT_PAYLOAD`, valid
     // through finalize, each with the same fillers as a remark of the same
     // opaque body (measured above through `measure`, the control). Calls go
-    // to an account with no code (the input is not read, so it dispatches);
-    // the largest instantiate is included whatever its outcome (revive's
-    // `eth_*` calls report a failed execution in the receipt, not as a
-    // dispatch error). The remark family must stay the worst.
+    // to an account with no code (the input is not read, so it dispatches).
+    // The largest instantiates -- legacy, and EIP-1559 with an access list
+    // filling the rest of the cap (A10c) -- are reverted under A9 (refused by
+    // origin; `with_ethereum_context` returns `Ok` with a revert), not deployed,
+    // and included. The remark family must stay the worst.
     let eth = pallet_revive::evm::Account::default();
     let fund: RuntimeCall = pallet_balances::Call::<Runtime>::transfer_keep_alive {
         dest: Address::Id(eth.substrate_account()),
@@ -2525,8 +2572,34 @@ fn d_encoded_block_residency_and_largest_extrinsic() {
         "the largest instantiate fits the cap"
     );
     shapes.push((
-        format!("largest PVM instantiate, payload {} B", instantiate.len()),
+        format!(
+            "largest PVM instantiate (legacy; reverted under A9, not deployed), payload {} B",
+            instantiate.len()
+        ),
         instantiate,
+    ));
+    // The largest instantiate with the largest access list that still fits.
+    let typed = (1..=255u8)
+        .rev()
+        .map(|keys| {
+            eth_payload_1559(
+                &chain,
+                &eth,
+                None,
+                largest_pvm_instantiate_input(),
+                eth_access_list(40, keys),
+                gas,
+            )
+        })
+        .find(|payload| payload.len() <= cap)
+        .expect("some access list fits");
+    shapes.push((
+        format!(
+            "largest PVM instantiate (EIP-1559, access list to the cap; reverted under A9, not \
+             deployed), payload {} B",
+            typed.len()
+        ),
+        typed,
     ));
     let mut eth_worst = (0u32, String::new());
     for (label, payload) in shapes {

@@ -422,31 +422,46 @@ pub fn native_tx_extension(era: generic::Era, nonce: Nonce, tip: Balance) -> TxE
 ///   code is run with (`CallDataTooLarge` above it).
 pub const REVIVE_BLOB_BYTES: u32 = 1024 * 1024;
 pub const REVIVE_CALLDATA_BYTES: u32 = 128 * 1024;
-/// RLP framing and signature around an Ethereum transaction's input: the
-/// type byte, the list and input headers (at most 5 bytes each), six integer
-/// fields (chain id, nonce, the gas prices, gas, value; at most 33 bytes
-/// each), `to` (21) and the signature (at most 99): 334 bytes at most, so
-/// 1 KiB leaves about 690 bytes for an access list.
-pub const ETH_TRANSACT_RLP_OVERHEAD: u32 = 1024;
-/// The largest `eth_transact` payload this runtime accepts (A10b):
+/// Room around an Ethereum transaction's input (A10c): the RLP framing and
+/// signature -- the type byte, the list and input headers (at most 5 bytes
+/// each), six integer fields (chain id, nonce, the gas prices, gas, value; at
+/// most 33 bytes each), `to` (21) and the signature (at most 99), 334 bytes at
+/// most -- plus an EIP-2930/EIP-1559 access list, which is part of the signed
+/// RLP: 64 KiB in all, so about 65,200 bytes for the list, roughly 1,950
+/// storage keys (33 bytes each, plus 21 bytes and a header per address).
+pub const ETH_TRANSACT_RLP_OVERHEAD: u32 = 64 * 1024;
+/// The largest `eth_transact` payload this runtime accepts (A10b, A10c):
 /// revive's largest instantiate input (a `BLOB_BYTES` blob plus
 /// `CALLDATA_BYTES` of constructor data -- revive's own
-/// `MAX_TRANSACTION_PAYLOAD_SIZE`) plus the RLP framing, 1,180,672 bytes.
+/// `MAX_TRANSACTION_PAYLOAD_SIZE`) plus [`ETH_TRANSACT_RLP_OVERHEAD`],
+/// 1,245,184 bytes.
 ///
-/// Enforced before the payload is RLP-decoded (see [`EthExtraImpl`]), because
-/// the decode and signer recovery hold several further copies of the input: a
-/// valid block with one 2 MiB + 768 B `eth_transact` and fillers held
-/// 65.975 MiB in the importer, above `VM_BLOCK_RESIDENCY` (claude_reviewer's
-/// A10 R8). Below the 2 MiB allocator order those copies stay small.
+/// Enforced before the runtime decodes the payload -- in pool validation,
+/// block building and block import, the Wasm paths (see [`EthExtraImpl`]) --
+/// because that decode and the signer recovery hold several further copies of
+/// the input: a valid block with one 2 MiB + 768 B `eth_transact` and fillers
+/// held 65.975 MiB in the importer, above `VM_BLOCK_RESIDENCY`
+/// (claude_reviewer's A10 R8). Below the 2 MiB allocator order those copies
+/// stay small. (The off-chain `eth-rpc` sidecar decodes a raw transaction
+/// natively for its chain-id check before submitting it,
+/// `revive/rpc/src/lib.rs:204` at the pinned SDK: an RPC operator's concern,
+/// outside the importer's Wasm budget, and not patched here.)
 ///
 /// Nothing that can succeed at dispatch with code involved is larger: a call
 /// into code is limited to `CALLDATA_BYTES` of input, a PVM instantiate to a
 /// `BLOB_BYTES` blob plus `CALLDATA_BYTES` of data, and an EVM instantiate to
-/// 49,152 bytes of init code (EIP-3860). Two kinds of transaction above the cap
-/// are refused that dispatch would have accepted: a value transfer to an
-/// account with no code carrying more input than the cap (the input is not
-/// read), and an `eth_substrate_call` (`to` = the runtime-pallets address)
-/// wrapping a call larger than the cap, which can be submitted natively.
+/// 49,152 bytes of init code (EIP-3860). Three kinds of transaction above the
+/// cap are refused that dispatch would have accepted, as chain policy:
+/// - a value transfer to an account with no code carrying more input than the
+///   cap (the input is not read);
+/// - an `eth_substrate_call` (`to` = the runtime-pallets address) wrapping a
+///   call larger than the cap, which can be submitted natively;
+/// - a maximal instantiate whose access list is over about 64 KiB (roughly
+///   1,950 storage keys). This is a size policy, not a gas one: revive prices
+///   neither access-list entries (no EIP-2930 per-entry gas; they cost only the
+///   length fee) nor blocks by gas (`evm_block_gas_limit` is `u64::MAX`), and
+///   under Ethereum's EIP-2930 prices (2,400 per address, 1,900 per key) such
+///   a list is about 3.7M gas, well inside an Ethereum block.
 pub const MAX_ETH_TRANSACT_PAYLOAD: u32 =
     REVIVE_BLOB_BYTES + REVIVE_CALLDATA_BYTES + ETH_TRANSACT_RLP_OVERHEAD;
 /// `InvalidTransaction::Custom` code for an `eth_transact` payload over
@@ -475,9 +490,9 @@ impl EthExtra for ReviveEthExtra {
 
 /// Builds the normal transaction extensions used by an Ethereum transaction
 /// after Revive has recovered and validated its secp256k1 signer, and refuses
-/// a payload over [`MAX_ETH_TRANSACT_PAYLOAD`] before anything decodes it.
+/// a payload over [`MAX_ETH_TRANSACT_PAYLOAD`] before the runtime decodes it.
 /// `Checkable::check` calls this for every unsigned `eth_transact`, so the cap
-/// holds in pool validation and in block import alike.
+/// holds in pool validation, block building and block import alike.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EthExtraImpl;
 
@@ -833,7 +848,7 @@ mod tests {
         #[test]
         fn the_cap_is_revives_largest_instantiate_plus_framing() {
             assert_eq!(REVIVE_BLOB_BYTES + REVIVE_CALLDATA_BYTES, 1_179_648);
-            assert_eq!(MAX_ETH_TRANSACT_PAYLOAD, 1_180_672);
+            assert_eq!(MAX_ETH_TRANSACT_PAYLOAD, 1_245_184);
         }
 
         /// `cap - 1` and `cap` are admitted; `cap + 1` is refused with
@@ -862,6 +877,56 @@ mod tests {
             });
         }
 
+        /// The input of the largest instantiate revive accepts at dispatch: a
+        /// PVM blob header naming exactly `BLOB_BYTES`, then `CALLDATA_BYTES`
+        /// of constructor data.
+        fn max_instantiate_input() -> Vec<u8> {
+            let blob = REVIVE_BLOB_BYTES as usize;
+            let mut input = vec![0u8; blob + REVIVE_CALLDATA_BYTES as usize];
+            input[..4].copy_from_slice(b"PVM\0");
+            input[5..13].copy_from_slice(&(blob as u64).to_le_bytes());
+            input
+        }
+
+        /// `addresses` entries of `keys` storage keys each.
+        fn access_list(addresses: u8, keys: u8) -> pallet_revive::evm::AccessList {
+            (0..addresses)
+                .map(|a| pallet_revive::evm::AccessListEntry {
+                    address: H160::repeat_byte(a + 1),
+                    storage_keys: (0..keys)
+                        .map(|k| sp_core::H256::repeat_byte(k + 1))
+                        .collect(),
+                })
+                .collect()
+        }
+
+        /// The signed RLP payload of an EIP-1559 transaction from `eth`.
+        fn payload_1559(
+            eth: &EthAccount,
+            to: Option<H160>,
+            input: Vec<u8>,
+            access_list: pallet_revive::evm::AccessList,
+            gas: U256,
+        ) -> Vec<u8> {
+            use frame_support::traits::Get as _;
+            let base_fee = pallet_revive::Pallet::<Runtime>::evm_base_fee();
+            let tx = pallet_revive::evm::Transaction1559Unsigned {
+                chain_id: U256::from(<Runtime as pallet_revive::Config>::ChainId::get()),
+                gas,
+                gas_price: base_fee,
+                max_fee_per_gas: base_fee,
+                max_priority_fee_per_gas: U256::zero(),
+                input: Bytes(input),
+                nonce: U256::zero(),
+                to,
+                value: U256::zero(),
+                access_list,
+                ..Default::default()
+            };
+            eth.sign_transaction(TransactionUnsigned::Transaction1559Unsigned(tx))
+                .signed_payload()
+        }
+
         /// The largest instantiate revive accepts at dispatch -- a PVM blob of
         /// exactly `BLOB_BYTES` (a header naming that length) plus
         /// `CALLDATA_BYTES` of constructor data -- is still admitted.
@@ -870,14 +935,47 @@ mod tests {
             let eth = EthAccount::default();
             eth_ext(&eth).execute_with(|| {
                 let gas = gas_for_cap(&eth);
-                let blob = REVIVE_BLOB_BYTES as usize;
-                let mut input = vec![0u8; blob + REVIVE_CALLDATA_BYTES as usize];
-                input[..4].copy_from_slice(b"PVM\0");
-                input[5..13].copy_from_slice(&(blob as u64).to_le_bytes());
-                let p = payload(&eth, None, input, gas);
-                assert!(p.len() <= CAP && p.len() > CAP - 1024, "{} B", p.len());
+                let p = payload(&eth, None, max_instantiate_input(), gas);
+                assert!(p.len() <= CAP, "{} B", p.len());
                 let xt = bare(p);
                 assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+            });
+        }
+
+        /// A10c (kimi's R8): the access list is in the signed RLP, so a typed
+        /// (EIP-1559) maximal instantiate with a realistic access list -- 20
+        /// addresses with 5 storage keys each -- is admitted, and a typed
+        /// transaction one byte over the cap is refused like any other.
+        #[test]
+        fn typed_transactions_with_an_access_list_meet_the_cap() {
+            let eth = EthAccount::default();
+            eth_ext(&eth).execute_with(|| {
+                let gas = gas_for_cap(&eth);
+                let p = payload_1559(&eth, None, max_instantiate_input(), access_list(20, 5), gas);
+                assert!(p.len() <= CAP, "{} B", p.len());
+                let xt = bare(p);
+                assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+
+                // A typed call carrying the same access list, sized to exactly
+                // the cap and one byte over it.
+                let to = Some(H160::repeat_byte(0x11));
+                let of_len = |len: usize| {
+                    let mut input = len - 8 * 1024;
+                    for _ in 0..8 {
+                        let p = payload_1559(&eth, to, vec![0x5a; input], access_list(20, 5), gas);
+                        if p.len() == len {
+                            return p;
+                        }
+                        input = input + len - p.len();
+                    }
+                    panic!("no input gives a {len}-B typed payload");
+                };
+                let at_cap = bare(of_len(CAP));
+                assert!(validate(at_cap.clone()).is_ok(), "{:?}", validate(at_cap));
+                assert_eq!(
+                    validate(bare(of_len(CAP + 1))),
+                    Err(InvalidTransaction::Custom(ETH_TRANSACT_PAYLOAD_TOO_LARGE).into())
+                );
             });
         }
 
