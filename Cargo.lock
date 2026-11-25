@@ -15839,7 +15839,8 @@ dependencies = [
 [[package]]
 name = "xqvm"
 version = "0.6.0"
-source = "git+https://gitlab.com/quip.network/xquad.git?rev=ade13e6e6876ee49e9a6159ef6493842c78bc22d#ade13e6e6876ee49e9a6159ef6493842c78bc22d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8aa94423ce78cf54936a8b463a00c07152b7f66c76859dba93abcab36e13b3a3"
 dependencies = [
  "crc32fast",
  "hashbrown 0.15.5",

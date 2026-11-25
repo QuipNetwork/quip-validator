@@ -72,7 +72,7 @@ impl<T: crate::Config> QuantumVm<T::AccountId, crate::BalanceOf<T>, T::Hash> for
                 T::ProgramSource::program(hash).ok_or(crate::Error::<T>::VmProgramNotFound)?;
             let program =
                 ::xqvm::Program::decode(&bytes).map_err(|_| crate::Error::<T>::VmBadBytecode)?;
-            ::xqvm::verifier::verify(&program)
+            ::xqvm::checker::check(&program)
                 .map_err(|_| crate::Error::<T>::VmVerificationFailed)?;
         }
         Ok(())

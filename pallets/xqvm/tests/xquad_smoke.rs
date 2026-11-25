@@ -7,7 +7,7 @@
 //! the drift reaches the pallet.
 //!
 //! Linking this target also recompiles `pallet_xqvm` itself, whose
-//! deliberately exhaustive matches over `xqvm::VerifierError` and
+//! deliberately exhaustive matches over `xqvm::CheckerError` and
 //! `xqvm::Error` turn any new upstream error variant into a compile error.
 //!
 //! Run with: `cargo test -p pallet-xqvm --test xquad_smoke`
@@ -56,7 +56,7 @@ fn verifier_accepts_good_and_rejects_bad_programs() {
     });
     let good = Program::decode(&good).expect("container is valid");
     assert!(
-        xqvm::verifier::verify(&good).is_ok(),
+        xqvm::checker::check(&good).is_ok(),
         "verifier must accept a well-formed program"
     );
 
@@ -65,7 +65,7 @@ fn verifier_accepts_good_and_rejects_bad_programs() {
     });
     let bad = Program::decode(&bad).expect("container is valid");
     assert!(
-        xqvm::verifier::verify(&bad).is_err(),
+        xqvm::checker::check(&bad).is_err(),
         "verifier must reject a read of an unset register"
     );
 }

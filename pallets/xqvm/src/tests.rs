@@ -473,6 +473,31 @@ fn store_rejects_a_jump_across_a_loop_boundary() {
     });
 }
 
+/// xqvm 0.6.0 (`864d14f`): a loop closer in a block nothing reaches is not
+/// an analysis failure. The `NEXT` below sits after a `HALT` in a block no
+/// jump targets, so it has no CFG node; the audit pin (`ade13e6`) looked the
+/// closer up anyway and refused this valid program with
+/// `AnalysisBudgetExceeded`. Upstream pins the same program in
+/// `xqvm/tests/checker_regressions.rs`
+/// (`dead_loop_closer_after_halt_does_not_reject_a_live_program`).
+#[test]
+fn store_accepts_a_loop_closer_in_dead_code() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        //   PUSH1 0; PUSH1 1; RANGE; HALT; JUMP1 .0; TARGET .0; HALT; NEXT; HALT
+        let bytecode = raw_program(vec![
+            PUSH1, 0, PUSH1, 1, RANGE, HALT, JUMP1, 0, TARGET, HALT, NEXT, HALT,
+        ]);
+        let hash = program_hash(&bytecode);
+
+        assert_ok!(Xqvm::store_program(
+            RuntimeOrigin::signed(1),
+            bounded(bytecode)
+        ));
+        assert!(Programs::<Test>::contains_key(hash));
+    });
+}
+
 /// `execute` does not re-verify: it decodes whatever `Programs` holds and
 /// runs it. In pallet-xqvm the jump-span check (W1-011) is enforced only at
 /// `store_program` (the mempool re-runs the verifier when it registers a job

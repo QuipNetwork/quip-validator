@@ -344,11 +344,11 @@ pub mod pallet {
 
     /// Map a static-verification failure onto a dispatch error.
     ///
-    /// Exhaustive on purpose: a new `VerifierError` variant upstream should
+    /// Exhaustive on purpose: a new `CheckerError` variant upstream should
     /// stop this compiling rather than be absorbed by a catch-all, the same
     /// discipline `map_vm_error` applies to runtime faults.
-    fn map_verifier_error<T: Config>(e: &xqvm::VerifierError) -> Error<T> {
-        use xqvm::VerifierError as V;
+    fn map_verifier_error<T: Config>(e: &xqvm::CheckerError) -> Error<T> {
+        use xqvm::CheckerError as V;
         match e {
             V::AnalysisBudgetExceeded => Error::<T>::VerifierAnalysisBudgetExceeded,
             V::TruncatedInstruction { .. } | V::BadOpcode { .. } => {
@@ -370,7 +370,7 @@ pub mod pallet {
     #[test]
     fn analysis_budget_failure_has_a_distinct_dispatch_error() {
         assert!(matches!(
-            map_verifier_error::<crate::mock::Test>(&xqvm::VerifierError::AnalysisBudgetExceeded),
+            map_verifier_error::<crate::mock::Test>(&xqvm::CheckerError::AnalysisBudgetExceeded),
             Error::<crate::mock::Test>::VerifierAnalysisBudgetExceeded
         ));
     }
@@ -378,7 +378,7 @@ pub mod pallet {
     #[cfg(test)]
     #[test]
     fn first_witness_stack_diagnostics_preserve_the_dispatch_error() {
-        use xqvm::VerifierError as V;
+        use xqvm::CheckerError as V;
 
         // The upstream FIFO policy can change which stack fault is reported.
         // Offsets and depths remain upstream details; the dispatch ABI groups
@@ -432,6 +432,12 @@ pub mod pallet {
             // from a site that does not track which register caused it, so
             // the caller-visible answer is identical.
             E::RegisterType { .. } | E::IncompatibleType(_) => Error::<T>::VmRegisterType,
+            // xqvm 0.6.0: a constraint opcode applied to a model whose
+            // declared domain is not binary. The register holds a model, but
+            // not the kind of model the opcode accepts, which is a register
+            // type fault from the caller's side. Mapped onto the existing
+            // index so this pin changes no metadata.
+            E::NonBinaryModel { .. } => Error::<T>::VmRegisterType,
             E::MemoryLimitExceeded { .. } => Error::<T>::VmMemoryLimitExceeded,
             E::UnsetRegister { .. } => Error::<T>::VmUnsetRegister,
             E::ArithmeticOverflow { .. } => Error::<T>::VmArithmeticOverflow,
@@ -596,7 +602,7 @@ pub mod pallet {
                 Error::<T>::LoopNestingTooDeep
             );
             let blocks = shape.blocks;
-            xqvm::verifier::verify(&program).map_err(|e| map_verifier_error::<T>(&e))?;
+            xqvm::checker::check(&program).map_err(|e| map_verifier_error::<T>(&e))?;
 
             let hash = T::Hashing::hash(&bytecode);
             ensure!(

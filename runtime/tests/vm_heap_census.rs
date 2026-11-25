@@ -266,7 +266,7 @@ enum Pile {
 const PILE_BLOCKS: usize = 4;
 
 /// `prog_fixed_worst` plus a chain of `TARGET; JUMP next` pairs that uses every
-/// basic block `MaxProgramBlocks` leaves over, so decode's `verifier::scan`
+/// basic block `MaxProgramBlocks` leaves over, so decode's `checker::scan`
 /// builds its largest `targets` (the kept jump table) and `jump_refs`
 /// alongside everything else. A `JUMP` followed by a `TARGET` is ONE leader
 /// in both the pallet's `ControlFlowShape` and the verifier's dataflow, so an
@@ -598,7 +598,7 @@ impl Chain {
         ] {
             let program = xqvm::Program::decode(&bytes).expect("decodes");
             assert_eq!(program.encode(), bytes, "{name}: canonical");
-            let verdict = xqvm::verifier::verify(&program);
+            let verdict = xqvm::checker::check(&program);
             println!(
                 "program {name}: {} bytes, verifier {}",
                 bytes.len(),
@@ -1478,7 +1478,7 @@ fn e_largest_legitimate_run() {
     // canonical, and runs to completion on chain.
     let synthetic = prog_linear();
     assert!(
-        xqvm::verifier::verify(&xqvm::Program::decode(&synthetic).expect("linear decodes")).is_ok(),
+        xqvm::checker::check(&xqvm::Program::decode(&synthetic).expect("linear decodes")).is_ok(),
         "the synthetic program must verify"
     );
     let n: i64 = 4096;
@@ -1506,7 +1506,7 @@ fn e_largest_legitimate_run() {
         "conformance fixture must be non-empty"
     );
     assert!(
-        xqvm::verifier::verify(&xqvm::Program::new(fixture_bytes)).is_err(),
+        xqvm::checker::check(&xqvm::Program::new(fixture_bytes)).is_err(),
         "kimi-spine-control.bin is a control-flow stress stream: wrapping it must be \
          rejected by the verifier, not run as a program"
     );
@@ -1636,7 +1636,7 @@ fn i_worst_case_fixed_run() {
         );
         assert_eq!(program.encode(), bytes, "{name}: canonical");
         assert!(
-            xqvm::verifier::verify(&program).is_ok(),
+            xqvm::checker::check(&program).is_ok(),
             "{name}: the verifier admits it"
         );
         let shape = pallet_xqvm::ControlFlowShape::of(program.code());
@@ -1727,7 +1727,7 @@ fn i_worst_case_fixed_run() {
     ] {
         let program = xqvm::Program::decode(&bytes).expect("decodes");
         assert_eq!(
-            xqvm::verifier::verify(&program)
+            xqvm::checker::check(&program)
                 .err()
                 .map(|e| e.variant_name()),
             Some("JumpAcrossLoopBoundary"),

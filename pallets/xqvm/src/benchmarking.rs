@@ -56,7 +56,7 @@ const LOOP_LEVEL_BYTES: usize = 6;
 /// * `Program::decode` walks the instruction stream once, so its cost is
 ///   driven by byte count: a few nanoseconds per one-byte opcode, whatever
 ///   the opcode is.
-/// * `verifier::verify` builds a control-flow graph and runs its analyses
+/// * `checker::check` builds a control-flow graph and runs its analyses
 ///   over it, so its cost -- and, more to the point, its memory -- is
 ///   driven by basic-block count: roughly a microsecond and 3 KiB per block
 ///   natively. Its loop check then re-walks every loop region's blocks once
@@ -137,7 +137,7 @@ fn build_blocks_program(target_len: u32, blocks: u32) -> Vec<u8> {
         shape.loop_depth as usize, nesting,
         "shape must nest as computed"
     );
-    xqvm::verifier::verify(&decoded).expect("nested loops around unreferenced TARGETs verify");
+    xqvm::checker::check(&decoded).expect("nested loops around unreferenced TARGETs verify");
     bytes
 }
 
@@ -293,7 +293,7 @@ mod benchmarks {
     ///
     /// The program is `HALT` followed by `s - XQBC_HEADER_LEN - 1` NOPs, so
     /// the VM stops at step 1 while `Program::decode` still walks all `s`
-    /// bytes. Decoding rebuilds the jump table through `verifier::scan`,
+    /// bytes. Decoding rebuilds the jump table through `checker::scan`,
     /// which is linear in instruction count; NOPs are one byte each, so this
     /// is the worst case per byte.
     #[benchmark]
