@@ -1932,6 +1932,106 @@ fn audit_signed_dead_and_live_reads_and_the_stack_peak_fault_at_execute() {
     });
 }
 
+/// The remaining audit programs that the full checker refused, under the
+/// structural gate (QUI-2516): each is stored, and `execute` faults within
+/// its step budget with the caller keeping the full pre-charge. None hangs:
+/// a two-second watchdog guards the signed path. QUIP-02, QUIP-16 and O7 are
+/// the two `audit_signed_*` tests above. Sources:
+/// - QUIP-17: xquad `v0.6.0` vectors `control-flow/decreasing_depth_cycle_underflows`
+///   and `decreasing_depth_cycle_in_loop_underflows` (expected `STACK_UNDERFLOW`);
+/// - W1-003: the auditor's 24-byte register-meet program,
+///   `JUMPI1 .1; STOW r0; TARGET; TARGET; TARGET; JUMPI1 .0`;
+/// - W1-014 / O3: the auditor's 12-byte dead-block program, whose dead `STOW r5`
+///   must not initialise the live `LOAD r5`.
+#[test]
+fn audit_programs_are_stored_and_fault_within_budget() {
+    use std::{sync::mpsc, time::Duration};
+
+    const JUMPI1: u8 = 0x02;
+    const LOAD: u8 = 0x0A;
+    const STOW: u8 = 0x0B;
+    const POP: u8 = 0x10;
+    let sixteen_pushes = [PUSH1, 1].repeat(16);
+    let mut cycle = sixteen_pushes.clone();
+    cycle.extend([TARGET, POP, JUMP1, 0, HALT]);
+    let mut cycle_in_loop = sixteen_pushes;
+    cycle_in_loop.extend([
+        PUSH1, 0, PUSH1, 1, RANGE, NOP, TARGET, POP, JUMP1, 0, NEXT, HALT,
+    ]);
+    let register_meet = vec![JUMPI1, 1, STOW, 0, TARGET, TARGET, TARGET, JUMPI1, 0];
+    assert_eq!(raw_program(register_meet.clone()).len(), 24);
+    let dead_block = vec![
+        JUMP1, 0, STOW, 5, HALT, TARGET, LOAD, 5, POP, JUMP1, 0, HALT,
+    ];
+    assert_eq!(dead_block.len(), 12);
+
+    let cases = [
+        (
+            "QUIP-17 decreasing depth cycle",
+            cycle,
+            Error::<Test>::VmStackUnderflow,
+        ),
+        (
+            "QUIP-17 decreasing depth cycle in a loop",
+            cycle_in_loop,
+            Error::<Test>::VmStackUnderflow,
+        ),
+        (
+            "W1-003 register meet",
+            register_meet,
+            Error::<Test>::VmStackUnderflow,
+        ),
+        (
+            "W1-014 dead block write",
+            dead_block,
+            Error::<Test>::VmUnsetRegister,
+        ),
+    ];
+    for (name, code, fault) in cases {
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            new_test_ext().execute_with(|| {
+                System::set_block_number(1);
+                stored_program_faults_at_execute(raw_program(code), MaxStepLimit::get(), fault);
+            });
+            sender.send(()).unwrap();
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or_else(|_| panic!("{name} must terminate"));
+        worker.join().unwrap_or_else(|_| panic!("{name}"));
+    }
+}
+
+/// A stored program that never halts runs to the caller's step limit and
+/// stops there (claude R8 on A2): the converted all-register cycle faults at
+/// its first `BSMX`, so it no longer shows that a long run ends. This one
+/// spends all of `MaxStepLimit` and returns `VmStepLimitExceeded` inside the
+/// two-second watchdog, with the full pre-charge kept.
+#[test]
+fn a_stored_endless_loop_stops_at_max_step_limit_without_hanging() {
+    use std::{sync::mpsc, time::Duration};
+
+    let (sender, receiver) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            //   TARGET .0; PUSH1 1; POP; JUMP1 .0
+            let code = vec![TARGET, PUSH1, 1, 0x10, JUMP1, 0];
+            stored_program_faults_at_execute(
+                raw_program(code),
+                MaxStepLimit::get(),
+                Error::<Test>::VmStepLimitExceeded,
+            );
+        });
+        sender.send(()).unwrap();
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("an endless stored loop must stop at the step limit");
+    worker.join().unwrap();
+}
+
 // W1-003a repin gate. A checked-in corpus of canonical program bytes with
 // their pinned identity hashes. The corpus is synthetic, not historical: no
 // programs exist on chain to draw from (`store_program` is filtered on runtime
