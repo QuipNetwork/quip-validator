@@ -1219,17 +1219,30 @@ mod benchmarks {
     /// B5a2 (R8 on B5a): the mock's `MinBlockWait` is 0, so the suite above
     /// would not notice a setup proposing below the runtimes' minimum of 2
     /// (`benchmark-preflight` and `benchmark-weights` run at 2). Run every
-    /// registered benchmark again at 2.
+    /// registered benchmark again at 2, the `extra` ones included (B5a3,
+    /// kimi's R8 on B5a2).
     #[cfg(test)]
     #[test]
     fn every_benchmark_runs_at_the_runtime_min_block_wait() {
         use crate::mock::{new_test_ext, MinBlockWait, Test};
         use frame_benchmarking::Benchmarking;
-        let names: Vec<Vec<u8>> = <Pallet<Test> as Benchmarking>::benchmarks(false)
+        let names: Vec<Vec<u8>> = <Pallet<Test> as Benchmarking>::benchmarks(true)
             .into_iter()
             .map(|benchmark| benchmark.name)
             .collect();
         assert!(names.len() > 10, "the benchmarks are listed");
+        // The `extra` benchmarks, so the inventory cannot silently shrink.
+        for extra in [
+            &b"submit_solution_replacement"[..],
+            b"submit_solution_clear_payee",
+            b"claim_reward_dust",
+        ] {
+            assert!(
+                names.iter().any(|name| name.as_slice() == extra),
+                "{} is run",
+                String::from_utf8_lossy(extra)
+            );
+        }
         let mut failed = Vec::new();
         for name in names {
             new_test_ext().execute_with(|| {
