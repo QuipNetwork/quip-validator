@@ -447,16 +447,20 @@ pub const ETH_TRANSACT_RLP_OVERHEAD: u32 = 64 * 1024;
 /// `revive/rpc/src/lib.rs:204` at the pinned SDK: an RPC operator's concern,
 /// outside the importer's Wasm budget, and not patched here.)
 ///
-/// Nothing that can succeed at dispatch with code involved is larger: a call
-/// into code is limited to `CALLDATA_BYTES` of input, a PVM instantiate to a
-/// `BLOB_BYTES` blob plus `CALLDATA_BYTES` of data, and an EVM instantiate to
-/// 49,152 bytes of init code (EIP-3860). Three kinds of transaction above the
-/// cap are refused that dispatch would have accepted, as chain policy:
+/// No *input* that can succeed at dispatch with code involved is larger: a
+/// call into code is limited to `CALLDATA_BYTES` of input, a PVM instantiate
+/// to a `BLOB_BYTES` blob plus `CALLDATA_BYTES` of data, and an EVM
+/// instantiate to 49,152 bytes of init code (EIP-3860). The cap bounds the
+/// whole signed RLP, though -- the input plus the framing and any access
+/// list -- so three kinds of transaction above it are refused that dispatch
+/// would have accepted, as chain policy:
 /// - a value transfer to an account with no code carrying more input than the
 ///   cap (the input is not read);
 /// - an `eth_substrate_call` (`to` = the runtime-pallets address) wrapping a
 ///   call larger than the cap, which can be submitted natively;
-/// - a maximal instantiate whose access list is over about 64 KiB (roughly
+/// - any typed (EIP-2930 or EIP-1559) transaction whose access list pushes its
+///   total RLP over the cap: an ordinary call with a large enough list, as
+///   well as a maximal instantiate with a list over about 64 KiB (roughly
 ///   1,950 storage keys). This is a size policy, not a gas one: revive prices
 ///   neither access-list entries (no EIP-2930 per-entry gas; they cost only the
 ///   length fee) nor blocks by gas (`evm_block_gas_limit` is `u64::MAX`), and
