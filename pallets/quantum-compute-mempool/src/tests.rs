@@ -588,16 +588,18 @@ fn claim_reward_rejects_unsolved_expired_order() {
             ResultDelivery::OnChainOnly,
         ));
         run_to_block(2);
+        // W3-006: an unsolved order is refunded and closed at expiry, so there
+        // is nothing left to claim.
         assert_noop!(
             QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), 0),
-            crate::Error::<Test>::NoSolutionsAccepted
+            crate::Error::<Test>::AlreadyClaimed
         );
         assert_eq!(
             JobOrders::<Test>::get(0).unwrap().status,
-            crate::types::OrderStatus::Expired
+            crate::types::OrderStatus::Closed
         );
         assert!(!OpenOrders::<Test>::contains_key(0));
-        assert_eq!(escrow_balance(0), 100);
+        assert_eq!(escrow_balance(0), 0);
     });
 }
 
@@ -888,10 +890,12 @@ fn reclaim_order_returns_reserved_reward_when_no_solutions() {
         ));
 
         run_to_block(2);
-        assert_ok!(QuantumComputeMempool::reclaim_order(
-            RuntimeOrigin::signed(1),
-            0
-        ));
+        // W3-006: the refund happens at expiry; `reclaim_order` finds the
+        // order already closed.
+        assert_noop!(
+            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), 0),
+            crate::Error::<Test>::AlreadyClaimed
+        );
 
         let order = JobOrders::<Test>::get(0).unwrap();
         assert_eq!(order.status, crate::types::OrderStatus::Closed);
@@ -1694,9 +1698,10 @@ fn on_initialize_expires_order_at_hard_deadline_without_a_touching_extrinsic() {
         assert!(OpenOrders::<Test>::contains_key(order_id));
 
         run_to_block(3);
+        // W3-006: unsolved, so finalisation also closes it.
         assert_eq!(
             JobOrders::<Test>::get(order_id).unwrap().status,
-            OrderStatus::Expired
+            OrderStatus::Closed
         );
         assert!(!OpenOrders::<Test>::contains_key(order_id));
         assert_eq!(bucket_ids(3), Vec::<u64>::new());
@@ -1759,14 +1764,14 @@ fn on_initialize_finalises_at_most_the_per_block_cap_and_carries_overflow() {
         assert_eq!(bucket_ids(2).len(), 9);
 
         run_to_block(2);
-        assert_eq!(status_count(&ids, OrderStatus::Expired), 8);
+        assert_eq!(status_count(&ids, OrderStatus::Closed), 8);
         assert_eq!(status_count(&ids, OrderStatus::Opened), 1);
         assert_eq!(bucket_ids(2).len(), 1);
         assert_eq!(crate::OldestExpiryBucket::<Test>::get(), 2);
         assert_eq!(NextExpiryBucket::<Test>::get(), 3);
 
         run_to_block(3);
-        assert_eq!(status_count(&ids, OrderStatus::Expired), 9);
+        assert_eq!(status_count(&ids, OrderStatus::Closed), 9);
         assert_eq!(bucket_ids(2), Vec::<u64>::new());
         assert_eq!(NextExpiryBucket::<Test>::get(), 4);
     });
@@ -1798,7 +1803,7 @@ fn on_initialize_visits_at_most_eight_buckets_per_block_and_resumes() {
         assert_eq!(NextExpiryBucket::<Test>::get(), 22);
         assert_eq!(
             JobOrders::<Test>::get(order_id).unwrap().status,
-            OrderStatus::Expired
+            OrderStatus::Closed
         );
     });
 }
@@ -1820,10 +1825,16 @@ fn reclaim_order_waits_for_finalisation_under_backlog() {
         );
 
         run_to_block(3);
-        assert_ok!(QuantumComputeMempool::reclaim_order(
-            RuntimeOrigin::signed(proposer),
-            lagging
-        ));
+        // W3-006: finalisation refunded and closed it; nothing to reclaim.
+        assert_eq!(
+            JobOrders::<Test>::get(lagging).unwrap().status,
+            OrderStatus::Closed
+        );
+        assert_eq!(escrow_balance(lagging), 0);
+        assert_noop!(
+            QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(proposer), lagging),
+            crate::Error::<Test>::AlreadyClaimed
+        );
     });
 }
 
@@ -1944,7 +1955,7 @@ fn expiry_without_solutions_emits_no_result_ready() {
 
         assert_eq!(
             JobOrders::<Test>::get(0).unwrap().status,
-            OrderStatus::Expired
+            OrderStatus::Closed
         );
         assert!(QuantumComputeMempool::result_for_order(0).is_none());
         assert!(!System::events().into_iter().any(|record| matches!(
@@ -2331,8 +2342,19 @@ fn best_anchoring_does_not_waive_diversity_or_count_requirements() {
 fn outstanding_index_frees_slots_only_after_successful_closure() {
     new_test_ext().execute_with(|| {
         assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
+        // Solved orders: they stay `Expired` until settled (W3-006 closes
+        // only unsolved orders at expiry).
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
         for _ in 0..MaxOrdersPerProposer::get() {
-            propose_single_best(1, 1, 1);
+            let id = propose_single_best(1, 1, 1);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
         }
         let spec = JobSpecs::<Test>::iter_keys().next().unwrap();
         assert_noop!(
@@ -2358,8 +2380,8 @@ fn outstanding_index_frees_slots_only_after_successful_closure() {
             QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(4), 0),
             crate::Error::<Test>::NotProposer
         );
-        assert_ok!(QuantumComputeMempool::reclaim_order(
-            RuntimeOrigin::signed(1),
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
             0
         ));
         assert!(!crate::ProposerOrders::<Test>::get(1).contains(&0));
@@ -2391,12 +2413,8 @@ fn proposer_can_complete_more_than_a_lifetime_cap() {
                     RuntimeOrigin::signed(4),
                     id
                 ));
-            } else {
-                assert_ok!(QuantumComputeMempool::reclaim_order(
-                    RuntimeOrigin::signed(1),
-                    id
-                ));
             }
+            // W3-006: an unsolved order was closed at expiry, without a call.
             assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
             assert!(!crate::ProposerOrders::<Test>::contains_key(1));
             assert_eq!(
@@ -2414,65 +2432,49 @@ fn proposer_can_complete_more_than_a_lifetime_cap() {
 
 #[test]
 fn missing_reserve_cannot_close_or_release_a_slot() {
-    for solved in [false, true] {
-        new_test_ext().execute_with(|| {
-            assert_ok!(QuantumComputeMempool::register_solver(
-                RuntimeOrigin::signed(2),
-                MinerType::Cpu
-            ));
-            let id = propose_single_best(1, 1, 1);
-            if solved {
-                assert_ok!(QuantumComputeMempool::submit_solution(
-                    RuntimeOrigin::signed(2),
-                    id,
-                    sample_solution()
-                ));
-            }
-            run_to_block(2);
-            // An escrow that no longer holds the full reward (here, slashed by
-            // 1) must fail closed: nothing is paid and the order stays open.
-            let escrow = QuantumComputeMempool::escrow_account(id);
-            let _ = <Balances as frame_support::traits::Currency<AccountId>>::slash(&escrow, 1);
-            if solved {
-                assert_noop!(
-                    QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), id),
-                    crate::Error::<Test>::RewardReserveMissing
-                );
-            } else {
-                assert_noop!(
-                    QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), id),
-                    crate::Error::<Test>::RewardReserveMissing
-                );
-            }
-            assert_eq!(escrow_balance(id), 99);
-            assert!(crate::ProposerOrders::<Test>::get(1).contains(&id));
-            assert_eq!(
-                JobOrders::<Test>::get(id).unwrap().status,
-                OrderStatus::Expired
-            );
-            assert_ok!(
-                <Balances as frame_support::traits::Currency<AccountId>>::transfer(
-                    &4,
-                    &escrow,
-                    1,
-                    frame_support::traits::ExistenceRequirement::AllowDeath
-                )
-            );
-            if solved {
-                assert_ok!(QuantumComputeMempool::claim_reward(
-                    RuntimeOrigin::signed(4),
-                    id
-                ));
-            } else {
-                assert_ok!(QuantumComputeMempool::reclaim_order(
-                    RuntimeOrigin::signed(1),
-                    id
-                ));
-            }
-            assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
-            assert!(!crate::ProposerOrders::<Test>::contains_key(1));
-        });
-    }
+    // Solved orders only: the unsolved case fails inside finalisation instead
+    // (W3-006): `unsolved_refund_failure_leaves_the_order_expired_for_reclaim`.
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let id = propose_single_best(1, 1, 1);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            id,
+            sample_solution()
+        ));
+        run_to_block(2);
+        // An escrow that no longer holds the full reward (here, slashed by
+        // 1) must fail closed: nothing is paid and the order stays open.
+        let escrow = QuantumComputeMempool::escrow_account(id);
+        let _ = <Balances as frame_support::traits::Currency<AccountId>>::slash(&escrow, 1);
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(4), id),
+            crate::Error::<Test>::RewardReserveMissing
+        );
+        assert_eq!(escrow_balance(id), 99);
+        assert!(crate::ProposerOrders::<Test>::get(1).contains(&id));
+        assert_eq!(
+            JobOrders::<Test>::get(id).unwrap().status,
+            OrderStatus::Expired
+        );
+        assert_ok!(
+            <Balances as frame_support::traits::Currency<AccountId>>::transfer(
+                &4,
+                &escrow,
+                1,
+                frame_support::traits::ExistenceRequirement::AllowDeath
+            )
+        );
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
+            id
+        ));
+        assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
+        assert!(!crate::ProposerOrders::<Test>::contains_key(1));
+    });
 }
 
 fn payee(chain_id: u64, byte: u8) -> crate::types::WinnerPayee {
@@ -2787,7 +2789,9 @@ fn closure_preserves_other_slots_and_deletes_only_the_last_index_key() {
                 MinerType::Cpu
             ));
             let first = propose_single_best(1, 1, 1);
-            let second = propose_single_best(1, 1, 1);
+            // W3-006: unsolved orders close at expiry, so stagger them to
+            // observe each closure.
+            let second = propose_single_best(1, if solved { 1 } else { 2 }, 1);
             if solved {
                 for id in [first, second] {
                     assert_ok!(QuantumComputeMempool::submit_solution(
@@ -2796,6 +2800,14 @@ fn closure_preserves_other_slots_and_deletes_only_the_last_index_key() {
                         sample_solution()
                     ));
                 }
+            }
+            if !solved {
+                run_to_block(2);
+                assert_eq!(crate::ProposerOrders::<Test>::get(1).as_slice(), &[second]);
+                run_to_block(3);
+                assert!(!crate::ProposerOrders::<Test>::contains_key(1));
+                assert!(crate::ProposerOrders::<Test>::get(1).is_empty());
+                return;
             }
             run_to_block(2);
             let index_before = crate::ProposerOrders::<Test>::get(1);
@@ -2806,17 +2818,10 @@ fn closure_preserves_other_slots_and_deletes_only_the_last_index_key() {
             assert!(crate::ProposerOrders::<Test>::contains_key(1));
             assert_eq!(crate::ProposerOrders::<Test>::get(1), index_before);
             for id in [first, second] {
-                if solved {
-                    assert_ok!(QuantumComputeMempool::claim_reward(
-                        RuntimeOrigin::signed(4),
-                        id
-                    ));
-                } else {
-                    assert_ok!(QuantumComputeMempool::reclaim_order(
-                        RuntimeOrigin::signed(1),
-                        id
-                    ));
-                }
+                assert_ok!(QuantumComputeMempool::claim_reward(
+                    RuntimeOrigin::signed(4),
+                    id
+                ));
                 if id == first {
                     assert!(crate::ProposerOrders::<Test>::contains_key(1));
                     assert_eq!(crate::ProposerOrders::<Test>::get(1).as_slice(), &[second]);
@@ -3250,21 +3255,21 @@ fn overflowing_expiry_head_and_later_bucket_both_progress_within_budget() {
         }
         let later = propose_single_best(4, 2, 1);
         run_to_block(2);
-        assert_eq!(status_count(&head, OrderStatus::Expired), 8);
-        let before = status_count(&head, OrderStatus::Expired);
+        assert_eq!(status_count(&head, OrderStatus::Closed), 8);
+        let before = status_count(&head, OrderStatus::Closed);
         run_to_block(3);
         assert_eq!(
             JobOrders::<Test>::get(later).unwrap().status,
-            OrderStatus::Expired,
+            OrderStatus::Closed,
             "later due bucket must receive work before the head drains"
         );
-        let after = status_count(&head, OrderStatus::Expired);
+        let after = status_count(&head, OrderStatus::Closed);
         assert!(after >= before + 4 && after < head.len());
         assert!(after - before < crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
         let mut previous = after;
         for now in 4..=10 {
             run_to_block(now);
-            let current = status_count(&head, OrderStatus::Expired);
+            let current = status_count(&head, OrderStatus::Closed);
             assert!(current - previous <= crate::types::MAX_FINALISED_ORDERS_PER_BLOCK as usize);
             assert!(
                 current > previous || current == head.len(),
@@ -3285,10 +3290,10 @@ fn small_expiry_buckets_keep_fifo_order_with_the_same_total_budget() {
         // A skipped hook models catching up to two due buckets at once.
         System::set_block_number(3);
         QuantumComputeMempool::on_initialize(3);
-        assert_eq!(status_count(&early, OrderStatus::Expired), 3);
-        assert_eq!(status_count(&later, OrderStatus::Expired), 5);
+        assert_eq!(status_count(&early, OrderStatus::Closed), 3);
+        assert_eq!(status_count(&later, OrderStatus::Closed), 5);
         run_to_block(4);
-        assert_eq!(status_count(&later, OrderStatus::Expired), 6);
+        assert_eq!(status_count(&later, OrderStatus::Closed), 6);
     });
 }
 
@@ -3297,16 +3302,20 @@ fn small_expiry_buckets_keep_fifo_order_with_the_same_total_budget() {
 #[test]
 fn closed_orders_are_retained_then_pruned_without_touching_unpaid_orders() {
     new_test_ext().execute_with(|| {
+        // Six unsolved orders close at expiry (W3-006); the seventh is solved
+        // and stays unpaid until claimed.
         for _ in 0..7 {
             propose_single_best(1, 1, 1);
         }
-        run_to_block(2);
-        for id in 0..6 {
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(1),
-                id
-            ));
-        }
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            6,
+            sample_solution()
+        ));
         run_to_block(21);
         assert_eq!(JobOrders::<Test>::iter_keys().count(), 7);
         // Only the unclosed seventh order still holds its reward.
@@ -3321,8 +3330,8 @@ fn closed_orders_are_retained_then_pruned_without_touching_unpaid_orders() {
             QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), 0),
             crate::Error::<Test>::OrderNotFound
         );
-        assert_ok!(QuantumComputeMempool::reclaim_order(
-            RuntimeOrigin::signed(1),
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
             6
         ));
         assert_eq!(Balances::reserved_balance(1), 0);
@@ -3333,15 +3342,27 @@ fn closed_orders_are_retained_then_pruned_without_touching_unpaid_orders() {
 #[test]
 fn retention_sweep_limits_work_and_resumes_the_bucket() {
     new_test_ext().execute_with(|| {
+        // Solved orders, so all nine close in the same block and share one
+        // pruning bucket (unsolved ones would close at expiry, W3-006).
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
         for _ in 0..8 {
             propose_single_best(1, 1, 1);
         }
         propose_single_best(4, 1, 1);
+        for id in 0..9 {
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
+        }
         run_to_block(3);
         for id in 0..9 {
-            let proposer = JobOrders::<Test>::get(id).unwrap().proposer;
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(proposer),
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
                 id
             ));
         }
@@ -3419,7 +3440,18 @@ fn retention_sweep_preserves_poll_ttl_then_removes_all_auxiliary_records() {
 #[test]
 fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry() {
     new_test_ext().execute_with(|| {
+        // Solved and unclaimed, so unpaid (an unsolved order is refunded and
+        // queued at expiry, W3-006).
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
         let id = propose_single_best(1, 1, 1);
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            id,
+            sample_solution()
+        ));
         run_to_block(2);
         crate::OrdersPrunableAt::<Test>::insert(12, id, ());
         crate::NextPruneBucket::<Test>::put(0);
@@ -3441,8 +3473,8 @@ fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry()
             OrderStatus::Expired
         );
         assert_eq!(escrow_balance(id), 100);
-        assert_ok!(QuantumComputeMempool::reclaim_order(
-            RuntimeOrigin::signed(1),
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(4),
             id
         ));
     });
@@ -3514,17 +3546,16 @@ fn the_retention_sweep_charges_the_provider_and_the_floor_at_the_visited_shape()
         assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(u64::from(max)));
     });
     // The most orders across the most buckets: one closed order per bucket.
+    // Unsolved orders close themselves at expiry (W3-006), so one proposed
+    // per block closes, and schedules its pruning, one block apart.
     new_test_ext().execute_with(|| {
-        for _ in 0..max {
+        for id in 0..u64::from(max) {
+            run_to_block(1 + id);
             propose_single_best(1, 1, 1);
         }
-        for id in 0..u64::from(max) {
-            run_to_block(2 + id);
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(1),
-                id
-            ));
-        }
+        run_to_block(1 + u64::from(max));
+        assert!((0..u64::from(max))
+            .all(|id| JobOrders::<Test>::get(id).unwrap().status == OrderStatus::Closed));
         let first = 2 + <Test as crate::Config>::OrderRetentionBlocks::get();
         let last = first + u64::from(max) - 1;
         assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(first));
@@ -3649,11 +3680,8 @@ mod w1_006 {
             let id = propose_single_best(1, 1, 1);
             let after_posting = Balances::free_balance(1);
             assert_eq!(escrow_balance(id), 100);
+            // W3-006: refunded by finalisation at expiry, with no call.
             run_to_block(2);
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(1),
-                id
-            ));
             assert_eq!(Balances::free_balance(1), after_posting + 100);
             assert_eq!(escrow_balance(id), 0);
             assert!(!escrow_exists(id));
@@ -3663,7 +3691,19 @@ mod w1_006 {
     #[test]
     fn escrow_holds_exactly_the_reward_until_close_and_nothing_after() {
         new_test_ext().execute_with(|| {
+            // Solved, so they stay `Expired` until claimed (W3-006).
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
             let ids: Vec<u64> = (0..3).map(|_| propose_single_best(1, 1, 1)).collect();
+            for &id in &ids {
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    id,
+                    sample_solution()
+                ));
+            }
             let check = || {
                 for &id in &ids {
                     let order = JobOrders::<Test>::get(id).unwrap();
@@ -3681,8 +3721,8 @@ mod w1_006 {
                 .iter()
                 .all(|&id| JobOrders::<Test>::get(id).unwrap().status == OrderStatus::Expired));
             check(); // all Expired, unclaimed
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(1),
+            assert_ok!(QuantumComputeMempool::claim_reward(
+                RuntimeOrigin::signed(4),
                 ids[1]
             ));
             check(); // one Closed
@@ -4349,10 +4389,11 @@ mod w3_006_deposit {
             assert_eq!(Balances::reserved_balance(1), reserved + deposit);
 
             run_to_block(2);
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(1),
-                id
-            ));
+            // Closed (refunded) at expiry, W3-006.
+            assert_eq!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Closed
+            );
             assert_eq!(
                 Balances::reserved_balance(1),
                 reserved + deposit,
@@ -4460,6 +4501,175 @@ mod w3_006_deposit {
                 ),
                 crate::Error::<Test>::DepositNotAvailable
             );
+        });
+    }
+}
+
+/// W3-006 (design §B4 v2 item 2) -- unsolved orders close at expiry.
+mod w3_006_auto_close {
+    use super::*;
+    use crate::weights::WeightInfo as _;
+
+    fn mempool_events() -> Vec<crate::Event<Test>> {
+        System::events()
+            .into_iter()
+            .filter_map(|record| match record.event {
+                RuntimeEvent::QuantumComputeMempool(event) => Some(event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// No call needed: finalisation refunds the escrow, closes the order,
+    /// releases the slot, queues pruning, and emits `reclaim_order`'s events;
+    /// the retention sweep then deletes it.
+    #[test]
+    fn unsolved_order_is_refunded_closed_and_pruned_with_no_call() {
+        new_test_ext().execute_with(|| {
+            let id = propose_single_best(1, 1, 1);
+            let after_posting = Balances::free_balance(1);
+            let escrow = QuantumComputeMempool::escrow_account(id);
+            System::reset_events();
+            run_to_block(2);
+
+            let order = JobOrders::<Test>::get(id).unwrap();
+            assert_eq!(order.status, OrderStatus::Closed);
+            assert_eq!(Balances::free_balance(1), after_posting + 100);
+            assert_eq!(escrow_balance(id), 0);
+            assert!(!OpenOrders::<Test>::contains_key(id));
+            assert!(!crate::ProposerOrders::<Test>::contains_key(1));
+            let prune_at = 2 + OrderRetentionBlocks::get();
+            assert!(crate::OrdersPrunableAt::<Test>::contains_key(prune_at, id));
+            let events = mempool_events();
+            let tail = &events[events.len() - 4..];
+            assert_eq!(
+                tail,
+                &[
+                    crate::Event::OrderExpired { order_id: id },
+                    crate::Event::EscrowReleased {
+                        order_id: id,
+                        escrow,
+                        to_proposer: 100
+                    },
+                    crate::Event::RewardReclaimed {
+                        order_id: id,
+                        proposer: 1,
+                        amount: 100
+                    },
+                    crate::Event::OrderClosed {
+                        order_id: id,
+                        successful: false
+                    },
+                ]
+            );
+            assert_noop!(
+                QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), id),
+                crate::Error::<Test>::AlreadyClaimed
+            );
+
+            run_to_block(prune_at);
+            assert!(JobOrders::<Test>::get(id).is_none(), "pruned with no call");
+        });
+    }
+
+    /// A solved order is left `Expired` with its reward in escrow, for the
+    /// permissionless `claim_reward` (design §B4 v2 item 4).
+    #[test]
+    fn solved_order_is_not_auto_closed() {
+        new_test_ext().execute_with(|| {
+            assert_ok!(QuantumComputeMempool::register_solver(
+                RuntimeOrigin::signed(2),
+                MinerType::Cpu
+            ));
+            let id = propose_single_best(1, 1, 1);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
+            System::reset_events();
+            run_to_block(2);
+            assert_eq!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Expired
+            );
+            assert_eq!(escrow_balance(id), 100);
+            assert!(crate::ProposerOrders::<Test>::get(1).contains(&id));
+            assert!(!mempool_events()
+                .iter()
+                .any(|e| matches!(e, crate::Event::RewardReclaimed { .. })));
+        });
+    }
+
+    /// Transfer first: when the escrow cannot pay the refund (inconsistent
+    /// storage), nothing is closed. The order stays `Expired`, holding its slot
+    /// and unqueued, and `reclaim_order` remains the manual fallback. The
+    /// failure is `defensive!`, which panics in debug builds; the state is
+    /// checked in release (the workspace gate runs `--release`).
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "unsolved order refund failed")
+    )]
+    fn unsolved_refund_failure_leaves_the_order_expired_for_reclaim() {
+        new_test_ext().execute_with(|| {
+            let id = propose_single_best(1, 1, 1);
+            let escrow = QuantumComputeMempool::escrow_account(id);
+            let _ = <Balances as frame_support::traits::Currency<AccountId>>::slash(&escrow, 1);
+            System::reset_events();
+            run_to_block(2);
+
+            assert_eq!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Expired
+            );
+            assert_eq!(escrow_balance(id), 99);
+            assert!(crate::ProposerOrders::<Test>::get(1).contains(&id));
+            assert_eq!(crate::OrdersPrunableAt::<Test>::iter().count(), 0);
+            assert!(!mempool_events().iter().any(|e| matches!(
+                e,
+                crate::Event::EscrowReleased { .. }
+                    | crate::Event::RewardReclaimed { .. }
+                    | crate::Event::OrderClosed { .. }
+            )));
+            assert_noop!(
+                QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), id),
+                crate::Error::<Test>::RewardReserveMissing
+            );
+            assert_ok!(
+                <Balances as frame_support::traits::Currency<AccountId>>::transfer(
+                    &4,
+                    &escrow,
+                    1,
+                    frame_support::traits::ExistenceRequirement::AllowDeath
+                )
+            );
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+            assert_eq!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Closed
+            );
+            assert!(!crate::ProposerOrders::<Test>::contains_key(1));
+        });
+    }
+
+    /// `on_initialize` charges the auto-close allowance (transfer,
+    /// `ProposerOrders` mutate, pruning insert) on every finalised order, on
+    /// top of the measured finalisation and solution pruning.
+    #[test]
+    fn on_initialize_charges_the_auto_close_per_finalised_order() {
+        new_test_ext().execute_with(|| {
+            let ids = propose_nine_orders_expiring_at_block_2();
+            System::set_block_number(2);
+            let charged = QuantumComputeMempool::on_initialize(2);
+            assert_eq!(status_count(&ids, OrderStatus::Closed), 8);
+            let floor = <<Test as crate::Config>::WeightInfo>::finalise_expired_orders(8)
+                .saturating_add(crate::weights::solution_pruning_weight::<Test>().saturating_mul(8))
+                .saturating_add(crate::weights::auto_close_weight::<Test>().saturating_mul(8));
+            assert!(charged.all_gte(floor), "charged {charged:?} < {floor:?}");
         });
     }
 }

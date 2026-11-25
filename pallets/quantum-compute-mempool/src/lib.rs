@@ -1072,6 +1072,10 @@ pub mod pallet {
                 .saturating_add(
                     weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
                 )
+                // W3-006: any finalised order may be auto-closed.
+                .saturating_add(
+                    weights::auto_close_weight::<T>().saturating_mul(u64::from(finalised)),
+                )
                 .saturating_add(<T as Config>::WeightInfo::prune_closed_orders(pruned).max(
                     weights::closed_order_pruning_weight::<T>(pruned, prune_buckets),
                 ))
@@ -1936,6 +1940,10 @@ pub mod pallet {
         /// accepted solution `ResultReady` with each winner's allocation, and
         /// for `CallbackWithPoll` the `OrderResults` payload. Payment stays in
         /// `claim_reward`.
+        ///
+        /// An order with no accepted solution is closed here (W3-006, design
+        /// §B4 v2 item 2), so it is pruned without anyone calling
+        /// `reclaim_order`: see `auto_close_unsolved`.
         fn finalise_order(order_id: u64) {
             let Some(mut order) = JobOrders::<T>::get(order_id) else {
                 return;
@@ -1950,6 +1958,7 @@ pub mod pallet {
             Self::deposit_event(Event::OrderExpired { order_id });
 
             if order.solution_count == 0 {
+                Self::auto_close_unsolved(order_id, order);
                 return;
             }
             match Self::compute_payouts(order_id, &order) {
@@ -1965,6 +1974,42 @@ pub mod pallet {
                 }
             }
             Self::prune_solutions(order_id);
+        }
+
+        /// Refund and close an expired order with no accepted solution, as
+        /// `reclaim_order` would, with the same events. **Transfer first:**
+        /// only once the escrow has paid the proposer is the order `Closed`,
+        /// its slot released and its pruning scheduled. If the transfer fails
+        /// (storage is inconsistent: the escrow holds the reward from proposal
+        /// on), the order stays `Expired` and `reclaim_order` remains the
+        /// manual fallback.
+        fn auto_close_unsolved(order_id: u64, mut order: JobOrderOf<T>) {
+            let escrow = Self::escrow_account(order_id);
+            // The whole reward (>= MinReward >= ED) goes back and reaps the escrow.
+            if let Err(err) =
+                T::Currency::transfer(&escrow, &order.proposer, order.reward, AllowDeath)
+            {
+                frame_support::defensive!("finalise_order: unsolved order refund failed", err);
+                return;
+            }
+            Self::deposit_event(Event::EscrowReleased {
+                order_id,
+                escrow,
+                to_proposer: order.reward,
+            });
+            order.status = types::OrderStatus::Closed;
+            JobOrders::<T>::insert(order_id, &order);
+            Self::release_proposer_slot(&order.proposer, order_id);
+            Self::schedule_order_pruning(order_id);
+            Self::deposit_event(Event::RewardReclaimed {
+                order_id,
+                proposer: order.proposer,
+                amount: order.reward,
+            });
+            Self::deposit_event(Event::OrderClosed {
+                order_id,
+                successful: false,
+            });
         }
 
         fn schedule_order_pruning(order_id: u64) {

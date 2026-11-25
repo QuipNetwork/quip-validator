@@ -865,7 +865,15 @@ mod benchmarks {
         fill_proposer_index::<T>(&proposer, order_id);
         let now = frame_system::Pallet::<T>::block_number().saturating_add(1u32.into());
         frame_system::Pallet::<T>::set_block_number(now);
-        QuantumComputeMempool::<T>::on_initialize(now);
+        // W3-006: finalisation now closes an unsolved order itself, so
+        // `reclaim_order` settles only one that finalisation left `Expired` (a
+        // failed refund). Put the order in that state directly. B4c's lazy path
+        // (an `Opened` order past expiry) supersedes this.
+        JobOrders::<T>::mutate(order_id, |maybe_order| {
+            maybe_order.as_mut().expect("benchmark order exists").status =
+                types::OrderStatus::Expired;
+        });
+        OpenOrders::<T>::remove(order_id);
 
         #[extrinsic_call]
         QuantumComputeMempool::reclaim_order(RawOrigin::Signed(proposer.clone()), order_id);

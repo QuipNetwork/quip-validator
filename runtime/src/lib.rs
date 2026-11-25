@@ -1939,7 +1939,7 @@ mod tests {
                     UNIT,
                     JobMode::Open,
                     RewardResolution::SingleBest,
-                    1,
+                    10,
                     1,
                     ResultDelivery::OnChainOnly,
                 )
@@ -1951,17 +1951,19 @@ mod tests {
                 propose(),
                 pallet_quantum_compute_mempool::Error::<Runtime>::OrderLimitReached
             );
-            for block in 2..=6 {
+            // Outstanding (open) orders hold their slots until they close.
+            for block in 2..=10 {
                 System::set_block_number(block);
                 QuantumComputeMempool::on_initialize(block);
             }
             assert_eq!(ProposerOrders::<Runtime>::get(&proposer).len(), 32);
-            assert_ok!(QuantumComputeMempool::reclaim_order(
-                RuntimeOrigin::signed(proposer.clone()),
-                0
-            ));
+            // W3-006: unsolved, so each closes at expiry (block 11), at most 8
+            // finalisations per block, and frees exactly its own slot.
+            System::set_block_number(11);
+            QuantumComputeMempool::on_initialize(11);
+            assert_eq!(ProposerOrders::<Runtime>::get(&proposer).len(), 24);
             assert_ok!(propose());
-            assert_eq!(ProposerOrders::<Runtime>::get(&proposer).len(), 32);
+            assert_eq!(ProposerOrders::<Runtime>::get(&proposer).len(), 25);
         });
     }
 
