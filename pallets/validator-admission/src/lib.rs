@@ -255,7 +255,20 @@ pub mod pallet {
         /// The Foundation's filtered Root path, including runtime upgrades.
         /// The event carries inner failure; outer success alone is not proof of execution.
         #[pallet::call_index(3)]
-        #[pallet::weight((T::WeightInfo::dispatch_as_root().saturating_add(T::RootCallFilterWeight::get()).saturating_add(call.get_dispatch_info().call_weight), call.get_dispatch_info().class))]
+        // The inner call's dispatch info is read once (W3-003): read once for
+        // the weight and again for the class, every nesting level doubles the
+        // work, so a call nesting `d` levels costs 2^d evaluations of its
+        // leaf's weight -- in fee estimation and pool validation, before the
+        // root-call depth limit applies at dispatch.
+        #[pallet::weight({
+            let inner = call.get_dispatch_info();
+            (
+                T::WeightInfo::dispatch_as_root()
+                    .saturating_add(T::RootCallFilterWeight::get())
+                    .saturating_add(inner.call_weight),
+                inner.class,
+            )
+        })]
         pub fn dispatch_as_root(
             origin: OriginFor<T>,
             call: Box<T::GovernanceCall>,

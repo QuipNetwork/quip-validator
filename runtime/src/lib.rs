@@ -600,6 +600,61 @@ mod tests {
         ensure_shipped(b"\0asm\x01\0\0\0");
     }
 
+    /// W3-003: fee estimation and pool validation of a deeply nested
+    /// `dispatch_as_root` must return promptly. Each level reads its inner
+    /// call's dispatch info; read twice per level, 60 levels cost 2^60
+    /// evaluations of the leaf's weight, and `query_info` and
+    /// `validate_transaction` never return. Both run before dispatch, so the
+    /// Foundation-origin check and the root-call depth limit do not help.
+    #[test]
+    fn deeply_nested_dispatch_as_root_is_estimated_and_validated_promptly() {
+        use sp_runtime::transaction_validity::TransactionSource;
+        use std::{
+            sync::mpsc::{self, RecvTimeoutError},
+            time::Duration,
+        };
+        let (sender_tx, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut ext = sp_io::TestExternalities::new(
+                RuntimeGenesisConfig::default().build_storage().unwrap(),
+            );
+            ext.execute_with(|| {
+                System::set_block_number(1);
+                let sender = HybridPair::from_string("//Alice", None).unwrap();
+                let account_id = account_id_from_public(&sender.public());
+                let nested = (0..60).fold(
+                    RuntimeCall::System(SystemCall::remark { remark: vec![] }),
+                    |call, _| {
+                        pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
+                            call: Box::new(call),
+                        }
+                        .into()
+                    },
+                );
+                let xt = signed_test_extrinsic(&sender, account_id.into(), nested, 0);
+                let len = xt.encode().len() as u32;
+                let _ = TransactionPayment::query_info(xt.clone(), len);
+                let _ = Executive::validate_transaction(
+                    TransactionSource::External,
+                    xt,
+                    System::block_hash(0),
+                );
+            });
+            sender_tx.send(()).unwrap();
+        });
+        match receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(()) => worker.join().expect("the worker finished"),
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "query_info / validate_transaction of a 60-deep dispatch_as_root did not \
+                 return within 10 s"
+            ),
+            Err(RecvTimeoutError::Disconnected) => match worker.join() {
+                Err(payload) => std::panic::resume_unwind(payload),
+                Ok(()) => panic!("the worker dropped its sender without finishing"),
+            },
+        }
+    }
+
     #[test]
     fn hybrid_signed_extrinsic_checks_successfully() {
         let mut ext =
