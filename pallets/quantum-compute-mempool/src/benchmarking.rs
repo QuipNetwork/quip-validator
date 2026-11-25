@@ -12,7 +12,7 @@ use frame_support::{
     BoundedVec,
 };
 use frame_system::RawOrigin;
-use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating, Zero};
+use sp_runtime::traits::{Hash as _, One, SaturatedConversion, Saturating, Zero};
 
 fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
 where
@@ -865,8 +865,10 @@ mod benchmarks {
             &proposer,
             benchmark_reward::<T>(),
             types::RewardResolution::SingleBest,
+            // B5a2: block_wait at MinBlockWait (2 in the runtimes). Unsolved,
+            // so it closes on the hard deadline at C + 1 as before.
             1u32.into(),
-            1u32.into(),
+            T::MinBlockWait::get(),
             types::ResultDelivery::OnChainOnly,
         );
         JobOrders::<T>::mutate(order_id, |maybe_order| {
@@ -921,8 +923,11 @@ mod benchmarks {
                 miner_types: None,
             },
             types::RewardResolution::SingleBest,
-            2u32.into(),
+            // B5a2: block_wait at MinBlockWait (2 in the runtimes) and at least
+            // 1. Solved at C, it closes at C + 1 (min(C + 1, C + w)), where
+            // `on_initialize(2)` finalises it as before.
             1u32.into(),
+            T::MinBlockWait::get().max(One::one()),
             types::ResultDelivery::CallbackWithPoll {
                 endpoint: bounded(b"https://solver.example/poll".to_vec()),
             },
@@ -985,8 +990,11 @@ mod benchmarks {
                     miner_types: None,
                 },
                 types::RewardResolution::TopNWeighted { n: winner_count },
+                // B5a2: block_wait at MinBlockWait (2 in the runtimes) and at
+                // least 1: every winner submits at C, so the order must stay
+                // open after the first. It closes at C + 1 (min(C + 1, C + w)).
                 1u32.into(),
-                1u32.into(),
+                T::MinBlockWait::get().max(One::one()),
                 types::ResultDelivery::CallbackWithPoll {
                     endpoint: bounded(vec![b'x'; <ConstU32<256> as Get<u32>>::get() as usize]),
                 },
@@ -1162,8 +1170,10 @@ mod benchmarks {
                 benchmark_reward::<T>(),
                 types::JobMode::Open,
                 types::RewardResolution::SingleBest,
+                // B5a2: block_wait at MinBlockWait (2 in the runtimes). Unsolved,
+                // so it closes on the hard deadline at C + 1 as before.
                 1u32.into(),
-                1u32.into(),
+                T::MinBlockWait::get(),
                 types::ResultDelivery::OnChainOnly,
             )
             .is_ok());
@@ -1204,6 +1214,32 @@ mod benchmarks {
             assert!(!index.contains(&id));
             assert_eq!(index.len() as u32, T::MaxOrdersPerProposer::get() - 1);
         }
+    }
+
+    /// B5a2 (R8 on B5a): the mock's `MinBlockWait` is 0, so the suite above
+    /// would not notice a setup proposing below the runtimes' minimum of 2
+    /// (`benchmark-preflight` and `benchmark-weights` run at 2). Run every
+    /// registered benchmark again at 2.
+    #[cfg(test)]
+    #[test]
+    fn every_benchmark_runs_at_the_runtime_min_block_wait() {
+        use crate::mock::{new_test_ext, MinBlockWait, Test};
+        use frame_benchmarking::Benchmarking;
+        let names: Vec<Vec<u8>> = <Pallet<Test> as Benchmarking>::benchmarks(false)
+            .into_iter()
+            .map(|benchmark| benchmark.name)
+            .collect();
+        assert!(names.len() > 10, "the benchmarks are listed");
+        let mut failed = Vec::new();
+        for name in names {
+            new_test_ext().execute_with(|| {
+                MinBlockWait::set(2);
+                if let Err(error) = Pallet::<Test>::test_bench_by_name(&name) {
+                    failed.push((String::from_utf8_lossy(&name).into_owned(), error));
+                }
+            });
+        }
+        assert!(failed.is_empty(), "at MinBlockWait 2: {failed:?}");
     }
 
     /// The mock's ED of 1 makes `ED - 1` zero, so a "dust" assertion holds
