@@ -4668,7 +4668,9 @@ mod w3_006_auto_close {
             assert_eq!(status_count(&ids, OrderStatus::Closed), 8);
             let floor = <<Test as crate::Config>::WeightInfo>::finalise_expired_orders(8)
                 .saturating_add(crate::weights::solution_pruning_weight::<Test>().saturating_mul(8))
-                .saturating_add(crate::weights::auto_close_weight::<Test>().saturating_mul(8));
+                .saturating_add(<<Test as crate::Config>::WeightInfo>::auto_close_unsolved(
+                    8,
+                ));
             assert!(charged.all_gte(floor), "charged {charged:?} < {floor:?}");
         });
     }

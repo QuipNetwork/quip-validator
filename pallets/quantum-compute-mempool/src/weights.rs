@@ -40,17 +40,6 @@ pub fn schedule_order_pruning_weight<T: crate::Config>() -> Weight {
     Weight::from_parts(50_000_000, 10_000).saturating_add(T::DbWeight::get().reads_writes(2, 2))
 }
 
-/// Unmeasured allowance for auto-closing one unsolved order in
-/// `finalise_order` (W3-006, design §B4 v2 item 2), charged on every finalised
-/// order: the escrow -> proposer transfer (both accounts), the `JobOrders`
-/// re-write, the `ProposerOrders` mutate, and the pruning schedule.
-pub fn auto_close_weight<T: crate::Config>() -> Weight {
-    let proposer_orders = crate::ProposerOrdersOf::<T>::max_encoded_len() as u64;
-    Weight::from_parts(100_000_000, 16_000 + proposer_orders)
-        .saturating_add(T::DbWeight::get().reads_writes(3, 4))
-        .saturating_add(schedule_order_pruning_weight::<T>())
-}
-
 /// Conservative unmeasured cleanup bound, including empty-bucket traversal.
 pub fn closed_order_pruning_weight<T: crate::Config>(orders: u32, buckets: u64) -> Weight {
     closed_order_pruning_weight_with(T::DbWeight::get(), orders, buckets)
@@ -343,6 +332,7 @@ pub trait WeightInfo {
     fn purge_result() -> Weight;
     fn finalise_expired_orders(k: u32) -> Weight;
     fn prune_closed_orders(k: u32) -> Weight;
+    fn auto_close_unsolved(k: u32) -> Weight;
 }
 
 pub struct SubstrateWeight<T>(PhantomData<T>);
@@ -392,6 +382,9 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             k,
         )
     }
+    fn auto_close_unsolved(k: u32) -> Weight {
+        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::auto_close_unsolved(k)
+    }
 }
 impl WeightInfo for () {
     fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
@@ -436,5 +429,8 @@ impl WeightInfo for () {
             RocksDbWeight::get(),
             k,
         )
+    }
+    fn auto_close_unsolved(k: u32) -> Weight {
+        <() as BenchmarkWeightInfo>::auto_close_unsolved(k)
     }
 }

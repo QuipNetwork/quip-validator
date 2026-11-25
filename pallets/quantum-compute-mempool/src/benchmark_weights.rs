@@ -68,6 +68,7 @@ pub trait WeightInfo {
 	fn purge_result() -> Weight;
 	fn finalise_expired_orders(k: u32, ) -> Weight;
 	fn prune_closed_orders(k: u32, ) -> Weight;
+	fn auto_close_unsolved(k: u32, ) -> Weight;
 }
 
 /// Weights for `pallet_quantum_compute_mempool` using the Substrate node and recommended hardware.
@@ -471,6 +472,18 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().writes((105_u64).saturating_mul(k.into())))
 			.saturating_add(Weight::from_parts(0, 3285536).saturating_mul(k.into()))
 	}
+	/// UNMEASURED: handwritten allowance for `finalise_order`'s auto-close of `k`
+	/// unsolved orders (W3-006, design §B4 v2 item 2): per order the escrow ->
+	/// proposer transfer (both accounts), the `JobOrders` re-write, the
+	/// `ProposerOrders` mutate and the pruning schedule (`OrdersPrunableAt`,
+	/// `NextPruneBucket`). Measured by the `auto_close_unsolved` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-006): the unsolved-order auto-close, added by hand; regenerate (benchmark-weights job).
+	fn auto_close_unsolved(k: u32, ) -> Weight {
+		Weight::from_parts(0, 0)
+			.saturating_add(Weight::from_parts(150_000_000, 30_000).saturating_mul(k.into()))
+			.saturating_add(T::DbWeight::get().reads((5_u64).saturating_mul(k.into())))
+			.saturating_add(T::DbWeight::get().writes((6_u64).saturating_mul(k.into())))
+	}
 }
 
 // For backwards compatibility and tests.
@@ -872,5 +885,17 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 			.saturating_add(RocksDbWeight::get().writes((105_u64).saturating_mul(k.into())))
 			.saturating_add(Weight::from_parts(0, 3285536).saturating_mul(k.into()))
+	}
+	/// UNMEASURED: handwritten allowance for `finalise_order`'s auto-close of `k`
+	/// unsolved orders (W3-006, design §B4 v2 item 2): per order the escrow ->
+	/// proposer transfer (both accounts), the `JobOrders` re-write, the
+	/// `ProposerOrders` mutate and the pruning schedule (`OrdersPrunableAt`,
+	/// `NextPruneBucket`). Measured by the `auto_close_unsolved` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-006): the unsolved-order auto-close, added by hand; regenerate (benchmark-weights job).
+	fn auto_close_unsolved(k: u32, ) -> Weight {
+		Weight::from_parts(0, 0)
+			.saturating_add(Weight::from_parts(150_000_000, 30_000).saturating_mul(k.into()))
+			.saturating_add(RocksDbWeight::get().reads((5_u64).saturating_mul(k.into())))
+			.saturating_add(RocksDbWeight::get().writes((6_u64).saturating_mul(k.into())))
 	}
 }

@@ -1073,9 +1073,7 @@ pub mod pallet {
                     weights::solution_pruning_weight::<T>().saturating_mul(u64::from(finalised)),
                 )
                 // W3-006: any finalised order may be auto-closed.
-                .saturating_add(
-                    weights::auto_close_weight::<T>().saturating_mul(u64::from(finalised)),
-                )
+                .saturating_add(<T as Config>::WeightInfo::auto_close_unsolved(finalised))
                 .saturating_add(<T as Config>::WeightInfo::prune_closed_orders(pruned).max(
                     weights::closed_order_pruning_weight::<T>(pruned, prune_buckets),
                 ))
@@ -1983,7 +1981,7 @@ pub mod pallet {
         /// (storage is inconsistent: the escrow holds the reward from proposal
         /// on), the order stays `Expired` and `reclaim_order` remains the
         /// manual fallback.
-        fn auto_close_unsolved(order_id: u64, mut order: JobOrderOf<T>) {
+        pub(crate) fn auto_close_unsolved(order_id: u64, mut order: JobOrderOf<T>) {
             let escrow = Self::escrow_account(order_id);
             // The whole reward (>= MinReward >= ED) goes back and reaps the escrow.
             if let Err(err) =

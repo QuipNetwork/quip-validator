@@ -1119,6 +1119,80 @@ mod benchmarks {
         assert!(!NextPruneBucket::<T>::exists());
     }
 
+    /// W3-006 (design §B4 v2 item 2): `finalise_order`'s auto-close of `k`
+    /// unsolved, maximum-size orders -- the escrow refund, the `JobOrders`
+    /// re-write, the slot release from a full `ProposerOrders` index and the
+    /// pruning schedule. `on_initialize` charges it on top of
+    /// `finalise_expired_orders`, which measures solved orders.
+    #[benchmark]
+    fn auto_close_unsolved(k: Linear<0, { types::MAX_FINALISED_ORDERS_PER_BLOCK }>) {
+        let proposer: T::AccountId = whitelisted_caller();
+        // Reward plus a maximum-size order's storage deposit, per order.
+        fund_account::<T>(
+            &proposer,
+            benchmark_funding::<T>()
+                .saturating_mul(2u32.saturated_into())
+                .saturating_mul(k.saturating_add(1).saturated_into()),
+        );
+        let spec_id = register_spec_for::<T>(&proposer);
+        let mut order_ids = Vec::new();
+        for _ in 0..k {
+            let order_id = NextOrderId::<T>::get();
+            assert!(QuantumComputeMempool::<T>::propose_job(
+                RawOrigin::Signed(proposer.clone()).into(),
+                spec_id,
+                params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None),
+                benchmark_reward::<T>(),
+                types::JobMode::Open,
+                types::RewardResolution::SingleBest,
+                1u32.into(),
+                1u32.into(),
+                types::ResultDelivery::OnChainOnly,
+            )
+            .is_ok());
+            order_ids.push(order_id);
+        }
+        // A full index, so each slot release scans the whole bound.
+        let mut index = order_ids.clone();
+        let mut filler = u64::MAX;
+        while index.len() < T::MaxOrdersPerProposer::get() as usize {
+            index.push(filler);
+            filler = filler.saturating_sub(1);
+        }
+        ProposerOrders::<T>::insert(&proposer, bounded::<_, T::MaxOrdersPerProposer>(index));
+        // The state `finalise_order` leaves before the auto-close.
+        let orders: Vec<_> = order_ids
+            .iter()
+            .map(|&id| {
+                OpenOrders::<T>::remove(id);
+                JobOrders::<T>::mutate(id, |maybe_order| {
+                    let order = maybe_order.as_mut().expect("benchmark order exists");
+                    order.status = types::OrderStatus::Expired;
+                    (id, order.clone())
+                })
+            })
+            .collect();
+
+        #[block]
+        {
+            for (id, order) in orders {
+                QuantumComputeMempool::<T>::auto_close_unsolved(id, order);
+            }
+        }
+
+        for &id in &order_ids {
+            assert_eq!(
+                JobOrders::<T>::get(id).expect("order exists").status,
+                types::OrderStatus::Closed
+            );
+            assert!(
+                T::Currency::total_balance(&QuantumComputeMempool::<T>::escrow_account(id))
+                    .is_zero()
+            );
+            assert!(!ProposerOrders::<T>::get(&proposer).contains(&id));
+        }
+    }
+
     /// The mock's ED of 1 makes `ED - 1` zero, so a "dust" assertion holds
     /// vacuously there. Run the dust benchmark with an ED above one, as the
     /// runtime has (benchmark-preflight runs it at the production ED).
