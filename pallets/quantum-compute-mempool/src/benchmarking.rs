@@ -80,19 +80,87 @@ fn sample_solution<T: Config>() -> SolutionsOf<T> {
     bounded(vec![bounded(vec![1, 1])])
 }
 
+/// A deterministic xorshift64 (W1-010's property-test generator).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+
+    fn shuffle<X>(&mut self, items: &mut [X]) {
+        for index in (1..items.len()).rev() {
+            items.swap(index, self.below(index as u64 + 1) as usize);
+        }
+    }
+}
+
+/// The worst topology a proposer can choose for `TopologyIndex::new` (A13):
+/// `node_count` scattered u32 ids in shuffled order, and `edge_count`
+/// distinct edges -- a shuffled spanning path, then random pairs -- in
+/// shuffled order. Dense ids `0..n` with ring edges cost ~1.42-1.57x less
+/// natively, all of it in the index's id map. Past the `n(n-1)/2` distinct
+/// pairs the edges repeat (every pair, shuffled, cycled). Seeded from the
+/// components, so a benchmark point is reproducible.
+fn scattered_topology(node_count: u32, edge_count: u32) -> (Vec<u32>, Vec<(u32, u32)>) {
+    let mut rng =
+        Rng(0x5EED_A13A_0000_0000 ^ (u64::from(node_count) << 32) ^ u64::from(edge_count) | 1);
+    let mut ids = alloc::collections::BTreeSet::new();
+    while ids.len() < node_count as usize {
+        ids.insert((rng.next() >> 16) as u32);
+    }
+    let mut nodes: Vec<u32> = ids.into_iter().collect();
+    rng.shuffle(&mut nodes);
+
+    let n = u64::from(node_count);
+    let pairs = n * (n - 1) / 2;
+    let wanted = u64::from(edge_count);
+    let mut edges: Vec<(u32, u32)> = Vec::with_capacity(edge_count as usize);
+    if wanted >= pairs {
+        // Every distinct pair, shuffled, then cycled to `edge_count`.
+        let mut all = Vec::with_capacity(pairs as usize);
+        for a in 0..nodes.len() {
+            for b in a + 1..nodes.len() {
+                all.push((nodes[a], nodes[b]));
+            }
+        }
+        rng.shuffle(&mut all);
+        edges.extend(all.iter().cycle().take(edge_count as usize).copied());
+    } else {
+        let mut seen = alloc::collections::BTreeSet::new();
+        for pair in nodes.windows(2) {
+            if edges.len() == edge_count as usize {
+                break;
+            }
+            seen.insert((pair[0].min(pair[1]), pair[0].max(pair[1])));
+            edges.push((pair[0], pair[1]));
+        }
+        while edges.len() < edge_count as usize {
+            let a = nodes[rng.below(n) as usize];
+            let b = nodes[rng.below(n) as usize];
+            if a != b && seen.insert((a.min(b), a.max(b))) {
+                edges.push((a, b));
+            }
+        }
+        rng.shuffle(&mut edges);
+    }
+    (nodes, edges)
+}
+
 fn params_with_dimensions<T: Config>(
     node_count: u32,
     edge_count: u32,
     min_solutions: Option<u32>,
 ) -> IsingParamsOf<T> {
     assert!(node_count >= 2);
-    let nodes: Vec<u32> = (0..node_count).collect();
-    let edges: Vec<(u32, u32)> = (0..edge_count)
-        .map(|index| {
-            let source = index % node_count;
-            (source, (source + 1) % node_count)
-        })
-        .collect();
+    let (nodes, edges) = scattered_topology(node_count, edge_count);
 
     types::IsingParams {
         nodes: bounded(nodes),
@@ -540,12 +608,9 @@ mod benchmarks {
         let proposer: T::AccountId = whitelisted_caller();
         let solver: T::AccountId = account("solver", 0, 0);
         register_solver_for::<T>(&solver);
-        // Only distinct answers count (W1-004); cap at what n spins can hold.
-        let min_solutions = s
-            .saturating_sub(1)
-            .max(1)
-            .min(achievable_distinct(n, s))
-            .max(1);
+        // Only distinct answers count (W1-004): require every row that n
+        // spins can make distinct, as the quantum-pow benchmark does.
+        let min_solutions = achievable_distinct(n, s);
         let order_id = propose_order_for::<T>(
             &proposer,
             params_with_dimensions::<T>(n, e, Some(min_solutions)),
@@ -626,12 +691,9 @@ mod benchmarks {
         let proposer: T::AccountId = whitelisted_caller();
         let solver: T::AccountId = account("solver", 0, 0);
         register_solver_for::<T>(&solver);
-        // Only distinct answers count (W1-004); cap at what n spins can hold.
-        let min_solutions = s
-            .saturating_sub(1)
-            .max(1)
-            .min(achievable_distinct(n, s))
-            .max(1);
+        // Only distinct answers count (W1-004): require every row that n
+        // spins can make distinct, as the quantum-pow benchmark does.
+        let min_solutions = achievable_distinct(n, s);
         let order_id = propose_order_for::<T>(
             &proposer,
             params_with_dimensions::<T>(n, e, Some(min_solutions)),
@@ -1068,4 +1130,46 @@ mod benchmarks {
         crate::mock::new_test_ext(),
         crate::mock::Test
     );
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::*;
+    use alloc::collections::BTreeSet;
+
+    /// `scattered_topology` (A13): `n` distinct ids, not in increasing
+    /// order (checked where a sorted shuffle is negligible); exactly `e` edges over those ids without self-loops,
+    /// `min(e, n(n-1)/2)` of them distinct; the same output for the same
+    /// components.
+    #[test]
+    fn the_scattered_topology_has_the_requested_shape() {
+        for (n, e) in [
+            (2u32, 1u32),
+            (2, 5),
+            (3, 3),
+            (3, 7),
+            (40, 300),
+            (500, 4_000),
+        ] {
+            let (nodes, edges) = scattered_topology(n, e);
+            let ids: BTreeSet<u32> = nodes.iter().copied().collect();
+            assert_eq!((nodes.len(), ids.len()), (n as usize, n as usize));
+            if n >= 40 {
+                assert!(nodes.windows(2).any(|pair| pair[0] > pair[1]), "shuffled");
+            }
+            assert_eq!(edges.len(), e as usize);
+            assert!(edges
+                .iter()
+                .all(|&(a, b)| a != b && ids.contains(&a) && ids.contains(&b)));
+            let distinct: BTreeSet<(u32, u32)> =
+                edges.iter().map(|&(a, b)| (a.min(b), a.max(b))).collect();
+            let pairs = u64::from(n) * u64::from(n - 1) / 2;
+            assert_eq!(
+                distinct.len() as u64,
+                u64::from(e).min(pairs),
+                "{n} nodes, {e} edges"
+            );
+            assert_eq!(scattered_topology(n, e), (nodes, edges));
+        }
+    }
 }
