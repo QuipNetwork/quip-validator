@@ -2509,9 +2509,11 @@ pub mod pallet {
         ///   value -- the stored-program rate, as for job orders; and
         /// - `reward / MaxCommitmentsPerOrder` (owner decision, B5c3): the
         ///   divisor is the commitment slot cap, so filling every slot of an
-        ///   order locks `reward - (reward % MaxCommitmentsPerOrder)` -- the
-        ///   reward, short by at most `MaxCommitmentsPerOrder - 1` planck of
-        ///   integer division -- and an unrevealed slot burns a share of it.
+        ///   order locks at least `reward - (reward % MaxCommitmentsPerOrder)`
+        ///   -- exactly that when the floor binds (the reward, short by at
+        ///   most `MaxCommitmentsPerOrder - 1` planck of integer division);
+        ///   on a small reward the storage deposit binds and every slot locks
+        ///   that instead -- and an unrevealed slot burns its deposit.
         pub fn commitment_deposit(reward: BalanceOf<T>) -> BalanceOf<T> {
             let bytes = 16usize
                 .saturating_add(u64::max_encoded_len())
