@@ -354,6 +354,7 @@ pub trait WeightInfo {
     fn auto_close_unsolved(k: u32) -> Weight;
     fn commit_answer() -> Weight;
     fn forfeit_commitments(c: u32) -> Weight;
+    fn reveal_solution(n: u32, e: u32, s: u32) -> Weight;
 }
 
 pub struct SubstrateWeight<T>(PhantomData<T>);
@@ -412,6 +413,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     fn forfeit_commitments(c: u32) -> Weight {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::forfeit_commitments(c)
     }
+    fn reveal_solution(n: u32, e: u32, s: u32) -> Weight {
+        with_submit_solution_proof_floor(
+            <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::reveal_solution(
+                n, e, s,
+            ),
+        )
+    }
 }
 impl WeightInfo for () {
     fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
@@ -465,5 +473,8 @@ impl WeightInfo for () {
     }
     fn forfeit_commitments(c: u32) -> Weight {
         <() as BenchmarkWeightInfo>::forfeit_commitments(c)
+    }
+    fn reveal_solution(n: u32, e: u32, s: u32) -> Weight {
+        with_submit_solution_proof_floor(<() as BenchmarkWeightInfo>::reveal_solution(n, e, s))
     }
 }

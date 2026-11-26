@@ -291,6 +291,121 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5d (reveal). Exact deltas, each appended last: the
+// `reveal_solution` call (index 11: order id, `submit_solution`'s solutions
+// type, the `Option<WinnerPayee>` of `SolutionPayeeSet`, a `[u8; 32]` salt)
+// and the `CommitmentNotFound`/`RevealTooEarly`/`CommitmentMismatch` errors.
+// Runs first: the newest delta.
+const REVEAL_SOLUTION_DOCS: &[&str] = &[
+    "Reveal a committed answer and submit it (W3-001, design §B5 v2).",
+    "",
+    "`solutions`, `payee` and `salt` must reproduce the solver's",
+    "commitment ([`Pallet::answer_commitment`]), made in an earlier",
+    "block. The commitment is consumed -- deleted, its deposit",
+    "returned -- and the solutions are submitted as `submit_solution`",
+    "would, but ranked at the commitment's block (`effective_at`). If the",
+    "submission is refused, nothing changes: the commitment, its count",
+    "and its deposit stay as they were.",
+];
+const REVEAL_ERRORS: &[(&str, &[&str])] = &[
+    (
+        "CommitmentNotFound",
+        &["The solver has no outstanding commitment on this order (W3-001)."],
+    ),
+    (
+        "RevealTooEarly",
+        &[
+            "A commitment can be revealed only in a later block than it was",
+            "made in (W3-001).",
+        ],
+    ),
+    (
+        "CommitmentMismatch",
+        &[
+            "The revealed solutions, payee and salt do not match the commitment",
+            "(W3-001).",
+        ],
+    ),
+];
+
+fn normalize_reveal(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    if mempool_variants(before, "calls")?
+        .iter()
+        .any(|v| v["name"] == "reveal_solution")
+    {
+        return Err("unexpected baseline mempool reveal_solution".into());
+    }
+    let types = after.clone();
+    let calls = mempool_variants(after, "calls")?.clone();
+    let events = mempool_variants(after, "event")?.clone();
+    let field_ty = |variants: &[Value], variant: &str, field: &str| -> Value {
+        variants
+            .iter()
+            .find(|v| v["name"] == variant)
+            .and_then(|v| v["fields"].as_array())
+            .and_then(|fields| fields.iter().find(|f| f["name"] == field))
+            .map(|f| f["type"].clone())
+            .unwrap_or(Value::Null)
+    };
+    let order_id_ty = field_ty(&calls, "claim_reward", "order_id");
+    let solutions_ty = field_ty(&calls, "submit_solution", "solutions");
+    let payee_ty = field_ty(&events, "SolutionPayeeSet", "payee");
+    let salt_ty = calls
+        .last()
+        .and_then(|v| v["fields"].as_array())
+        .and_then(|fields| fields.iter().find(|f| f["name"] == "salt"))
+        .map(|f| f["type"].clone())
+        .unwrap_or(Value::Null);
+    let salt_def = registry_type(&types, &salt_ty).unwrap_or(Value::Null);
+    let salt_ok = salt_def["def"]["array"]["len"] == 32
+        && is_primitive(&types, &salt_def["def"]["array"]["type"], "u8");
+    let want = serde_json::json!({
+        "docs": REVEAL_SOLUTION_DOCS,
+        "fields": [
+            {"name": "order_id", "type": order_id_ty, "typeName": "u64"},
+            {"name": "solutions", "type": solutions_ty, "typeName": "SolutionsOf<T>"},
+            {"name": "payee", "type": payee_ty, "typeName": "Option<types::WinnerPayee>"},
+            {"name": "salt", "type": salt_ty, "typeName": "[u8; 32]"},
+        ],
+        "index": 11,
+        "name": "reveal_solution",
+    });
+    let calls = mempool_variants(after, "calls")?;
+    let len = calls.len();
+    if len < 2
+        || calls[len - 2]["name"] != "commit_answer"
+        || calls.last() != Some(&want)
+        || !salt_ok
+    {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool reveal_solution call: {}",
+            serde_json::to_string(&calls.last()).unwrap_or_default()
+        ));
+    }
+    calls.pop();
+
+    let errors = mempool_variants(after, "error")?;
+    let len = errors.len();
+    let want: Vec<Value> = REVEAL_ERRORS
+        .iter()
+        .enumerate()
+        .map(|(i, (name, docs))| {
+            serde_json::json!({"docs": docs, "index": len - 3 + i, "name": name})
+        })
+        .collect();
+    if len < 4
+        || errors[len - 4]["name"] != "CommitmentDepositNotAvailable"
+        || errors[len - 3..] != want[..]
+    {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool reveal errors: {}",
+            serde_json::to_string(&errors.get(len.saturating_sub(3)..)).unwrap_or_default()
+        ));
+    }
+    errors.truncate(len - 3);
+    Ok(())
+}
+
 // W3-001 B5c (answer commitments). Exact deltas, each appended last: the
 // `commit_answer` call (index 10), the `MaxCommitmentsPerOrder` constant
 // (u32, 64), the `AnswerCommitments` (order, solver) -> `AnswerCommitment`
@@ -2657,6 +2772,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     // First: W3-001 then W3-006 append after every other mempool delta,
     // newest first.
+    normalize_reveal(&mut left, &mut right)?;
     normalize_commitments(&mut left, &mut right)?;
     normalize_ordering_key(&mut left, &mut right)?;
     normalize_min_block_wait(&mut left, &mut right)?;
@@ -3344,6 +3460,69 @@ mod tests {
             .iter_mut()
             .filter(|ty| ty["type"]["path"] == path)
             .collect()
+    }
+
+    #[test]
+    fn requires_exact_mempool_reveal() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        let call = |metadata: &mut Value| -> Value {
+            mempool_variants(metadata, "calls")
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == "reveal_solution")
+                .cloned()
+                .unwrap()
+        };
+        for field in ["docs", "index", "name"] {
+            let mut wrong = after.clone();
+            mempool_variants(&mut wrong, "calls")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "reveal_solution")
+                .unwrap()[field] = Value::from(999);
+            cases.push((format!("reveal_solution.{field}"), wrong));
+        }
+        let fields = call(&mut after.clone())["fields"].as_array().unwrap().len();
+        for index in 0..fields {
+            let mut wrong = after.clone();
+            mempool_variants(&mut wrong, "calls")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "reveal_solution")
+                .unwrap()["fields"][index]["typeName"] = Value::from("mutated");
+            cases.push((format!("reveal_solution field {index}"), wrong));
+        }
+        let mut dropped = after.clone();
+        mempool_variants(&mut dropped, "calls")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "reveal_solution")
+            .unwrap()["fields"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        cases.push(("reveal_solution without salt".into(), dropped));
+        let mut misplaced = after.clone();
+        let calls = mempool_variants(&mut misplaced, "calls").unwrap();
+        let len = calls.len();
+        calls.swap(len - 1, len - 2);
+        cases.push(("misplaced reveal_solution".into(), misplaced));
+        for name in ["CommitmentNotFound", "RevealTooEarly", "CommitmentMismatch"] {
+            for field in ["docs", "index", "name"] {
+                let mut wrong = after.clone();
+                mempool_variants(&mut wrong, "error")
+                    .unwrap()
+                    .iter_mut()
+                    .find(|v| v["name"] == name)
+                    .unwrap()[field] = Value::from(999);
+                cases.push((format!("{name}.{field}"), wrong));
+            }
+        }
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

@@ -1281,6 +1281,95 @@ mod benchmarks {
         assert!(failed.is_empty(), "at MinBlockWait 2: {failed:?}");
     }
 
+    /// W3-001 B5d: a reveal -- `submit_solution_with_payee`'s worst case (a
+    /// full ranking and answer index), plus reading the commitment, hashing
+    /// the submitted solutions for the preimage and consuming the commitment
+    /// (its deposit unreserved).
+    #[benchmark]
+    fn reveal_solution(
+        n: Linear<2, { T::MaxNodes::get() }>,
+        e: Linear<1, { T::MaxEdges::get() }>,
+        s: Linear<1, { T::MaxSolutions::get() }>,
+    ) {
+        let proposer: T::AccountId = whitelisted_caller();
+        let solver: T::AccountId = account("solver", 0, 0);
+        register_solver_for::<T>(&solver);
+        let min_solutions = s
+            .saturating_sub(1)
+            .max(1)
+            .min(achievable_distinct(n, s))
+            .max(1);
+        let order_id = propose_order_for::<T>(
+            &proposer,
+            params_with_dimensions::<T>(n, e, Some(min_solutions)),
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::TopNEqual {
+                n: types::MAX_REWARD_WINNERS,
+            },
+            types::ResultDelivery::OnChainOnly,
+        );
+        let ranked: TopSolversOf<T> = bounded(
+            (0..types::MAX_REWARD_WINNERS)
+                .map(|index| types::RankedSolver {
+                    solver: account("ranked-solver", index, 0),
+                    energy_milli: 1_000_000_000_i64.saturating_add(i64::from(index)),
+                    answer: synthetic_answer(index),
+                    effective_at: Zero::zero(),
+                    seq: index,
+                })
+                .collect(),
+        );
+        OrderTopSolvers::<T>::insert(order_id, ranked);
+        seed_answer_index::<T>(order_id);
+        OrderPayeeRequirements::<T>::insert(order_id, 20033);
+        let payee = types::WinnerPayee::V1 {
+            chain_id: 20033,
+            address: sp_core::H160::repeat_byte(1),
+        };
+        // The commitment, made in this block and revealed in the next.
+        let solutions = solutions_with_dimensions::<T>(n, s);
+        let salt = [7u8; 32];
+        let deposit = QuantumComputeMempool::<T>::commitment_deposit();
+        assert!(T::Currency::reserve(&solver, deposit).is_ok());
+        let now = frame_system::Pallet::<T>::block_number();
+        AnswerCommitments::<T>::insert(
+            order_id,
+            &solver,
+            types::AnswerCommitment {
+                commitment: QuantumComputeMempool::<T>::answer_commitment(
+                    order_id,
+                    &solver,
+                    &solutions,
+                    &Some(payee),
+                    &salt,
+                ),
+                commit_block: now,
+                deposit,
+            },
+        );
+        CommitmentCount::<T>::insert(order_id, 1);
+        frame_system::Pallet::<T>::set_block_number(now.saturating_add(One::one()));
+
+        #[extrinsic_call]
+        QuantumComputeMempool::reveal_solution(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            solutions,
+            Some(payee),
+            salt,
+        );
+
+        assert!(OrderSolutions::<T>::contains_key(order_id, &solver));
+        assert!(!AnswerCommitments::<T>::contains_key(order_id, &solver));
+        assert_eq!(
+            OrderSolutions::<T>::get(order_id, &solver)
+                .expect("revealed")
+                .effective_at,
+            now
+        );
+    }
+
     /// W3-001 B5c: a FIRST commitment (the deposit reserved) by a registered
     /// solver on a maximum-size open order whose commitment count is one below
     /// the cap -- the worst `commit_answer`.

@@ -692,6 +692,14 @@ pub mod pallet {
         CommitmentCapReached,
         /// The solver cannot reserve the commitment deposit (W3-001).
         CommitmentDepositNotAvailable,
+        /// The solver has no outstanding commitment on this order (W3-001).
+        CommitmentNotFound,
+        /// A commitment can be revealed only in a later block than it was
+        /// made in (W3-001).
+        RevealTooEarly,
+        /// The revealed solutions, payee and salt do not match the commitment
+        /// (W3-001).
+        CommitmentMismatch,
     }
 
     #[pallet::call]
@@ -1168,6 +1176,59 @@ pub mod pallet {
                 commit_block: now,
             });
             Ok(())
+        }
+
+        /// Reveal a committed answer and submit it (W3-001, design §B5 v2).
+        ///
+        /// `solutions`, `payee` and `salt` must reproduce the solver's
+        /// commitment ([`Pallet::answer_commitment`]), made in an earlier
+        /// block. The commitment is consumed -- deleted, its deposit
+        /// returned -- and the solutions are submitted as `submit_solution`
+        /// would, but ranked at the commitment's block (`effective_at`). If the
+        /// submission is refused, nothing changes: the commitment, its count
+        /// and its deposit stay as they were.
+        #[pallet::call_index(11)]
+        #[pallet::weight(<T as Config>::WeightInfo::reveal_solution(
+            T::MaxNodes::get(), T::MaxEdges::get(), T::MaxSolutions::get())
+            .saturating_add(Pallet::<T>::transform_weight(T::MaxTransformStepsPerSubmission::get(), true)))]
+        pub fn reveal_solution(
+            origin: OriginFor<T>,
+            order_id: u64,
+            solutions: SolutionsOf<T>,
+            payee: Option<types::WinnerPayee>,
+            salt: [u8; 32],
+        ) -> DispatchResultWithPostInfo {
+            let solver = ensure_signed(origin)?;
+            let entry = AnswerCommitments::<T>::get(order_id, &solver)
+                .ok_or(Error::<T>::CommitmentNotFound)?;
+            ensure!(
+                entry.commit_block < frame_system::Pallet::<T>::block_number(),
+                Error::<T>::RevealTooEarly
+            );
+            ensure!(
+                Self::answer_commitment(order_id, &solver, &solutions, &payee, &salt)
+                    == entry.commitment,
+                Error::<T>::CommitmentMismatch
+            );
+            // Consumed: deleted, the count decremented, the deposit returned.
+            // A refused submission below rolls all of it back (the dispatch is
+            // transactional).
+            AnswerCommitments::<T>::remove(order_id, &solver);
+            CommitmentCount::<T>::mutate(order_id, |count| *count = count.saturating_sub(1));
+            T::Currency::unreserve(&solver, entry.deposit);
+            let base = <T as Config>::WeightInfo::reveal_solution(
+                T::MaxNodes::get(),
+                T::MaxEdges::get(),
+                T::MaxSolutions::get(),
+            );
+            Self::do_submit(
+                solver,
+                order_id,
+                solutions,
+                payee,
+                Some(entry.commit_block),
+                base,
+            )
         }
     }
 
@@ -1669,7 +1730,6 @@ pub mod pallet {
             solutions: SolutionsOf<T>,
             payee: Option<types::WinnerPayee>,
         ) -> DispatchResultWithPostInfo {
-            use frame_support::dispatch::{DispatchErrorWithPostInfo, Pays, PostDispatchInfo};
             let base = if payee.is_some() {
                 <T as Config>::WeightInfo::submit_solution_with_payee(
                     T::MaxNodes::get(),
@@ -1683,6 +1743,21 @@ pub mod pallet {
                     T::MaxSolutions::get(),
                 )
             };
+            Self::do_submit(solver, order_id, solutions, payee, None, base)
+        }
+
+        /// Submit `solutions`, charging `base` plus the transform steps run.
+        /// `effective_at` is the commitment block of a reveal (W3-001), `None`
+        /// for an uncommitted submission.
+        fn do_submit(
+            solver: T::AccountId,
+            order_id: u64,
+            solutions: SolutionsOf<T>,
+            payee: Option<types::WinnerPayee>,
+            effective_at: Option<BlockNumberFor<T>>,
+            base: Weight,
+        ) -> DispatchResultWithPostInfo {
+            use frame_support::dispatch::{DispatchErrorWithPostInfo, Pays, PostDispatchInfo};
             let mut steps = 0;
             let mut has_program = false;
             let result = Self::submit_solution_inner(
@@ -1690,6 +1765,7 @@ pub mod pallet {
                 order_id,
                 solutions,
                 payee,
+                effective_at,
                 &mut steps,
                 &mut has_program,
             );
@@ -1704,11 +1780,13 @@ pub mod pallet {
                 .map_err(|error| DispatchErrorWithPostInfo { post_info, error })
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn submit_solution_inner(
             solver: T::AccountId,
             order_id: u64,
             solutions: SolutionsOf<T>,
             payee: Option<types::WinnerPayee>,
+            effective_at: Option<BlockNumberFor<T>>,
             vm_steps: &mut u64,
             has_program: &mut bool,
         ) -> DispatchResult {
@@ -1908,10 +1986,9 @@ pub mod pallet {
                 Error::<T>::DuplicateAnswer
             );
 
-            // W3-001: the ordering key. Uncommitted, so the effective time is
-            // the arrival block (a revealed commitment, B5d, will set it
-            // earlier); `seq` is the order's arrival counter (N2).
-            let effective_at = now;
+            // W3-001: the ordering key. A revealed commitment's block, else the
+            // arrival block; `seq` is the order's arrival counter (N2).
+            let effective_at = effective_at.unwrap_or(now);
             let seq = NextSubmissionSeq::<T>::get(order_id);
             NextSubmissionSeq::<T>::insert(order_id, seq.saturating_add(1));
 
@@ -2263,6 +2340,31 @@ pub mod pallet {
             }
             Self::prune_solutions(order_id);
             forfeited
+        }
+
+        /// The commitment to an answer (W3-001): `blake2_256` of the SCALE
+        /// encoding of `(tag, order_id, solver, blake2_256(SCALE(solutions)),
+        /// payee, salt)`, where `tag` is the 21 bytes `quip-answer-commit-v1`
+        /// encoded as a fixed array (no length prefix).
+        pub fn answer_commitment(
+            order_id: u64,
+            solver: &T::AccountId,
+            solutions: &SolutionsOf<T>,
+            payee: &Option<types::WinnerPayee>,
+            salt: &[u8; 32],
+        ) -> sp_core::H256 {
+            let solutions_hash = sp_core::hashing::blake2_256(&solutions.encode());
+            sp_core::H256(sp_core::hashing::blake2_256(
+                &(
+                    b"quip-answer-commit-v1",
+                    order_id,
+                    solver,
+                    solutions_hash,
+                    payee,
+                    salt,
+                )
+                    .encode(),
+            ))
         }
 
         /// The deposit a commitment reserves (W3-001): B4a's storage rates on

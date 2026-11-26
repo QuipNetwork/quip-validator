@@ -71,6 +71,7 @@ pub trait WeightInfo {
 	fn auto_close_unsolved(k: u32, ) -> Weight;
 	fn commit_answer() -> Weight;
 	fn forfeit_commitments(c: u32, ) -> Weight;
+	fn reveal_solution(n: u32, e: u32, s: u32, ) -> Weight;
 }
 
 /// Weights for `pallet_quantum_compute_mempool` using the Substrate node and recommended hardware.
@@ -513,6 +514,18 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads((3_u64).saturating_mul(c.into())))
 			.saturating_add(T::DbWeight::get().writes((3_u64).saturating_mul(c.into())))
 	}
+	/// UNMEASURED: handwritten allowance for `reveal_solution` (W3-001): a
+	/// `submit_solution_with_payee` plus the commitment's read, the preimage
+	/// hash over the submitted solutions, and its consumption (the entry and
+	/// count written, the deposit unreserved). Measured by the
+	/// `reveal_solution` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-001): reveal_solution, added by hand; regenerate (benchmark-weights job).
+	fn reveal_solution(n: u32, e: u32, s: u32, ) -> Weight {
+		Self::submit_solution_with_payee(n, e, s)
+			.saturating_add(Weight::from_parts(100_000_000, 10_000))
+			.saturating_add(T::DbWeight::get().reads(3_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
 }
 
 // For backwards compatibility and tests.
@@ -953,5 +966,17 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 			.saturating_add(RocksDbWeight::get().reads((3_u64).saturating_mul(c.into())))
 			.saturating_add(RocksDbWeight::get().writes((3_u64).saturating_mul(c.into())))
+	}
+	/// UNMEASURED: handwritten allowance for `reveal_solution` (W3-001): a
+	/// `submit_solution_with_payee` plus the commitment's read, the preimage
+	/// hash over the submitted solutions, and its consumption (the entry and
+	/// count written, the deposit unreserved). Measured by the
+	/// `reveal_solution` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-001): reveal_solution, added by hand; regenerate (benchmark-weights job).
+	fn reveal_solution(n: u32, e: u32, s: u32, ) -> Weight {
+		Self::submit_solution_with_payee(n, e, s)
+			.saturating_add(Weight::from_parts(100_000_000, 10_000))
+			.saturating_add(RocksDbWeight::get().reads(3_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
 }

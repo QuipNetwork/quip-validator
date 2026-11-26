@@ -5457,3 +5457,256 @@ mod w3_001_commitments {
         assert_eq!(charged(true) - charged(false), weights(3) - weights(0));
     }
 }
+
+/// W3-001 B5d (design §B5 v2 items 1, 3, 8; N3) -- revealing a commitment.
+mod w3_001_reveal {
+    use super::*;
+    use crate::{AnswerCommitments, CommitmentCount};
+
+    const SALT: [u8; 32] = [7; 32];
+
+    fn register(who: AccountId) {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+    }
+
+    fn propose(resolution: RewardResolution, block_wait: u64) -> u64 {
+        let spec_id = match JobSpecs::<Test>::iter_keys().next() {
+            Some(spec_id) => spec_id,
+            None => register_spec(),
+        };
+        let id = NextOrderId::<Test>::get();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            chain_params(4),
+            100,
+            JobMode::Open,
+            resolution,
+            20,
+            block_wait,
+            ResultDelivery::OnChainOnly,
+        ));
+        id
+    }
+
+    fn commit(who: AccountId, id: u64, k: u32) {
+        let commitment =
+            QuantumComputeMempool::answer_commitment(id, &who, &chain_row(4, k), &None, &SALT);
+        assert_ok!(QuantumComputeMempool::commit_answer(
+            RuntimeOrigin::signed(who),
+            id,
+            commitment
+        ));
+    }
+
+    fn reveal(
+        who: AccountId,
+        id: u64,
+        k: u32,
+    ) -> frame_support::dispatch::DispatchResultWithPostInfo {
+        QuantumComputeMempool::reveal_solution(
+            RuntimeOrigin::signed(who),
+            id,
+            chain_row(4, k),
+            None,
+            SALT,
+        )
+    }
+
+    /// The reveal consumes the commitment -- deleted, count decremented,
+    /// deposit returned -- and the solution carries the commitment's block.
+    #[test]
+    fn a_reveal_consumes_the_commitment_and_carries_its_block() {
+        new_test_ext().execute_with(|| {
+            OrderDepositPerItem::set(10);
+            OrderDepositPerByte::set(1);
+            register(2);
+            let id = propose(RewardResolution::SingleBest, 5);
+            let reserved = Balances::reserved_balance(2);
+            commit(2, id, 4);
+            assert!(Balances::reserved_balance(2) > reserved);
+            run_to_block(3);
+            assert_ok!(reveal(2, id, 4));
+            assert!(AnswerCommitments::<Test>::get(id, 2).is_none());
+            assert_eq!(CommitmentCount::<Test>::get(id), 0);
+            assert_eq!(Balances::reserved_balance(2), reserved);
+            let solution = OrderSolutions::<Test>::get(id, 2).unwrap();
+            assert_eq!((solution.effective_at, solution.seq), (1, 0));
+            let owner = crate::OrderAnswers::<Test>::get(id, solution.answer).unwrap();
+            assert_eq!((owner.solver, owner.effective_at), (2, 1));
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().effective_at, 1);
+        });
+    }
+
+    /// No commitment, the same block, and any mismatch -- solutions, payee or
+    /// salt -- are refused, changing nothing.
+    #[test]
+    fn invalid_reveals_are_refused() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            let id = propose(RewardResolution::SingleBest, 5);
+            assert_noop!(reveal(2, id, 4), crate::Error::<Test>::CommitmentNotFound);
+            commit(2, id, 4);
+            assert_noop!(reveal(2, id, 4), crate::Error::<Test>::RevealTooEarly);
+            run_to_block(2);
+            assert_noop!(reveal(2, id, 6), crate::Error::<Test>::CommitmentMismatch);
+            assert_noop!(
+                QuantumComputeMempool::reveal_solution(
+                    RuntimeOrigin::signed(2),
+                    id,
+                    chain_row(4, 4),
+                    None,
+                    [8; 32]
+                ),
+                crate::Error::<Test>::CommitmentMismatch
+            );
+            assert_noop!(
+                QuantumComputeMempool::reveal_solution(
+                    RuntimeOrigin::signed(2),
+                    id,
+                    chain_row(4, 4),
+                    Some(crate::types::WinnerPayee::V1 {
+                        chain_id: 20033,
+                        address: sp_core::H160::repeat_byte(1),
+                    }),
+                    SALT
+                ),
+                crate::Error::<Test>::CommitmentMismatch
+            );
+            assert_ok!(reveal(2, id, 4));
+        });
+    }
+
+    /// A stored commitment is not standing eligibility (kimi's reminder): the
+    /// reveal re-checks registration exactly as a plain submission does, so a
+    /// solver that deregistered after committing cannot reveal, and the
+    /// commitment stays.
+    #[test]
+    fn a_reveal_rechecks_registration() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            let id = propose(RewardResolution::SingleBest, 5);
+            commit(2, id, 4);
+            assert_ok!(QuantumComputeMempool::deregister_solver(
+                RuntimeOrigin::signed(2)
+            ));
+            run_to_block(2);
+            assert_noop!(
+                reveal(2, id, 4).map_err(|e| e.error),
+                crate::Error::<Test>::SolverNotRegistered
+            );
+            assert!(AnswerCommitments::<Test>::contains_key(id, 2));
+        });
+    }
+
+    /// N3: a reveal whose submission is refused (here a duplicate answer)
+    /// rolls back entirely -- the commitment, the count and the deposit stay.
+    #[test]
+    fn a_failed_reveal_leaves_the_commitment_count_and_deposit() {
+        new_test_ext().execute_with(|| {
+            OrderDepositPerItem::set(10);
+            register(2);
+            register(3);
+            let id = propose(RewardResolution::SingleBest, 5);
+            commit(2, id, 4);
+            let entry = AnswerCommitments::<Test>::get(id, 2).unwrap();
+            let reserved = Balances::reserved_balance(2);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(3),
+                id,
+                chain_row(4, 4)
+            ));
+            run_to_block(2);
+            assert_noop!(
+                reveal(2, id, 4).map_err(|e| e.error),
+                crate::Error::<Test>::DuplicateAnswer
+            );
+            assert_eq!(AnswerCommitments::<Test>::get(id, 2), Some(entry));
+            assert_eq!(CommitmentCount::<Test>::get(id), 1);
+            assert_eq!(Balances::reserved_balance(2), reserved);
+        });
+    }
+
+    /// The point of committing: a reveal ranks at its commitment's block, so
+    /// at equal energy it beats an uncommitted answer that landed first --
+    /// under every resolution.
+    #[test]
+    fn a_revealed_answer_outranks_an_earlier_landed_equal_energy_one() {
+        for resolution in [
+            RewardResolution::SingleBest,
+            RewardResolution::TopNEqual { n: 2 },
+            RewardResolution::TopNWeighted { n: 2 },
+        ] {
+            new_test_ext().execute_with(|| {
+                register(2);
+                register(3);
+                let id = propose(resolution, 10);
+                commit(2, id, 4);
+                run_to_block(2);
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(3),
+                    id,
+                    chain_row(4, 6)
+                ));
+                run_to_block(3);
+                assert_ok!(reveal(2, id, 4));
+                let energy = |who| {
+                    OrderSolutions::<Test>::get(id, who)
+                        .unwrap()
+                        .best_energy_milli
+                };
+                assert_eq!(energy(2), energy(3));
+                match resolution {
+                    RewardResolution::SingleBest => {
+                        assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 2)
+                    }
+                    _ => {
+                        let order: Vec<_> = crate::OrderTopSolvers::<Test>::get(id)
+                            .iter()
+                            .map(|entry| entry.solver)
+                            .collect();
+                        assert_eq!(order, vec![2, 3], "{resolution:?}");
+                    }
+                }
+            });
+        }
+    }
+
+    /// E4: why `MinBlockWait` is 2. A first solution at block M starts the
+    /// block wait; an honest reveal that slips to M + 1 still lands with a
+    /// wait of 2. With a wait of 1 the order is finalised at M + 1, before the
+    /// reveal, which forfeits the commitment: the reveal finds none. (Taking a
+    /// copied answer's key is eviction, B5e.)
+    #[test]
+    fn a_reveal_one_block_behind_the_first_solution_needs_a_wait_of_two() {
+        for (wait, lands) in [(2u64, true), (1, false)] {
+            new_test_ext().execute_with(|| {
+                register(2);
+                register(3);
+                let id = propose(RewardResolution::SingleBest, wait);
+                commit(2, id, 4);
+                run_to_block(5);
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(3),
+                    id,
+                    chain_row(4, 6)
+                ));
+                run_to_block(6);
+                if lands {
+                    assert_ok!(reveal(2, id, 4));
+                    assert_eq!(OrderSolutions::<Test>::get(id, 2).unwrap().effective_at, 1);
+                } else {
+                    assert_eq!(
+                        JobOrders::<Test>::get(id).unwrap().status,
+                        OrderStatus::Expired
+                    );
+                    assert!(AnswerCommitments::<Test>::get(id, 2).is_none(), "forfeited");
+                    assert_noop!(reveal(2, id, 4), crate::Error::<Test>::CommitmentNotFound);
+                }
+            });
+        }
+    }
+}
