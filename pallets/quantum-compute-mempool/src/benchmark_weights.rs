@@ -503,7 +503,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 	/// UNMEASURED: handwritten allowance for forfeiting `c` outstanding
 	/// commitments at finalisation (W3-001): the count removed, then per
-	/// commitment its entry and the committer's and proposer's accounts.
+	/// commitment its entry and the committer's account, whose reserved
+	/// deposit is slashed and burned (B5c3).
 	/// Measured by the `forfeit_commitments` benchmark.
 	// BENCHMARK-PLACEHOLDER(W3-001): forfeit_commitments, added by hand; regenerate (benchmark-weights job).
 	fn forfeit_commitments(c: u32, ) -> Weight {
@@ -958,7 +959,8 @@ impl WeightInfo for () {
 	}
 	/// UNMEASURED: handwritten allowance for forfeiting `c` outstanding
 	/// commitments at finalisation (W3-001): the count removed, then per
-	/// commitment its entry and the committer's and proposer's accounts.
+	/// commitment its entry and the committer's account, whose reserved
+	/// deposit is slashed and burned (B5c3).
 	/// Measured by the `forfeit_commitments` benchmark.
 	// BENCHMARK-PLACEHOLDER(W3-001): forfeit_commitments, added by hand; regenerate (benchmark-weights job).
 	fn forfeit_commitments(c: u32, ) -> Weight {

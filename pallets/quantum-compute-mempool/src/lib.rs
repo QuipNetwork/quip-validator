@@ -41,6 +41,10 @@
 //! - **The payee is part of the commitment.** The reveal must carry the
 //!   payee committed to; changing it means committing again, which restarts
 //!   the clock.
+//! - **Deregistering abandons your commitments.** A reveal needs a
+//!   registered solver, so after `deregister_solver` your outstanding
+//!   commitments stay until their orders close and are then burned, unless
+//!   you register again and reveal first.
 //! - **Near-copies are not evicted.** Eviction is by canonical answer. An
 //!   answer at the same energy with a different canonical form -- a
 //!   degenerate spin, a spin coupled only through a self-loop, another
@@ -53,7 +57,10 @@
 //!   stored as the lower-energy twin whichever one you submit or commit to
 //!   (with h = 0 the twins tie and the row is kept as submitted). So a
 //!   commitment to either twin of an answer holds the answer at its better
-//!   energy.
+//!   energy. The flip is taken on the rows as scored, after the spec's
+//!   transform program if it has one: a transform need not satisfy
+//!   T(-s) = -T(s), so two submitted rows that are flips of each other are
+//!   twins only when their transformed rows are.
 
 extern crate alloc;
 
@@ -2502,8 +2509,9 @@ pub mod pallet {
         ///   value -- the stored-program rate, as for job orders; and
         /// - `reward / MaxCommitmentsPerOrder` (owner decision, B5c3): the
         ///   divisor is the commitment slot cap, so filling every slot of an
-        ///   order locks at least its reward, and an unrevealed slot burns a
-        ///   share of it.
+        ///   order locks `reward - (reward % MaxCommitmentsPerOrder)` -- the
+        ///   reward, short by at most `MaxCommitmentsPerOrder - 1` planck of
+        ///   integer division -- and an unrevealed slot burns a share of it.
         pub fn commitment_deposit(reward: BalanceOf<T>) -> BalanceOf<T> {
             let bytes = 16usize
                 .saturating_add(u64::max_encoded_len())

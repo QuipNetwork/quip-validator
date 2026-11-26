@@ -252,8 +252,6 @@ fn nth_distinct_solution<T: Config>(node_count: u32, index: u32) -> SolutionsOf<
     bounded(vec![distinct_row(node_count, index, 1)])
 }
 
-/// How many distinct answers `distinct_rows` can hold: `node_count - 1` free
-/// spins give at most `2^(node_count - 1)` flip classes.
 /// How many of `distinct_rows`' rows 1, 2, ... are distinct answers other
 /// than row 0's: at most `2^(n-1) - 1` below 33 free spins.
 fn worse_distinct(node_count: u32, solution_count: u32) -> u32 {
@@ -276,6 +274,8 @@ fn worse_distinct_rows<T: Config>(node_count: u32, solution_count: u32) -> Solut
     )
 }
 
+/// How many distinct answers `distinct_rows` can hold: `node_count - 1` free
+/// spins give at most `2^(node_count - 1)` flip classes.
 fn achievable_distinct(node_count: u32, solution_count: u32) -> u32 {
     let free = node_count.saturating_sub(1);
     if free >= 32 {
