@@ -183,6 +183,8 @@ pub fn submit_solution_proof_envelope<T: crate::Config>() -> u64 {
         .saturating_add(storage_key_envelope::<crate::OrdersExpiringAt<T>>().saturating_mul(2))
         .saturating_add(storage_key_envelope::<crate::OrderPayeeRequirements<T>>())
         .saturating_add(storage_key_envelope::<crate::OrderPayees<T>>())
+        // The order's arrival counter, read and written once (W3-001).
+        .saturating_add(storage_key_envelope::<crate::NextSubmissionSeq<T>>())
         .saturating_add(
             frame_system::pallet_prelude::BlockNumberFor::<T>::max_encoded_len() as u64
                 + TRIE_OVERHEAD_PER_KEY,
@@ -200,6 +202,8 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
         storage_key_envelope::<crate::OrderSolutions<T>>()
             .saturating_add(storage_key_envelope::<crate::OrderAnswers<T>>())
             .saturating_mul(u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER))
+            // The arrival counter, cleared with the solutions (W3-001).
+            .saturating_add(storage_key_envelope::<crate::NextSubmissionSeq<T>>())
             <= SOLUTION_PRUNING_PROOF_FLOOR,
         "solution pruning proof floor no longer covers the payload cap"
     );

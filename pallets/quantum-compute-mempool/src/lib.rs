@@ -1471,8 +1471,9 @@ pub mod pallet {
         /// pruned, each at its bounded maximum -- the ranking
         /// (`OrderTopSolvers`, or `OrderFrontRunner`, whichever is larger), up
         /// to `MAX_SOLVERS_PER_OPEN_ORDER` `OrderPayees` entries (key and
-        /// value), `OrderPayeeRequirements`, and `OrderResults` for a
-        /// `CallbackWithPoll` order.
+        /// value), `OrderPayeeRequirements`, the `NextSubmissionSeq` counter
+        /// (key and value, W3-001), and `OrderResults` for a `CallbackWithPoll`
+        /// order.
         pub fn order_deposit(order: &JobOrderOf<T>) -> BalanceOf<T> {
             let ranking =
                 TopSolversOf::<T>::max_encoded_len().max(FrontRunnerOf::<T>::max_encoded_len());
@@ -1488,10 +1489,13 @@ pub mod pallet {
             } else {
                 0
             };
+            // `NextSubmissionSeq`: a `u64` key and a `u32` value (W3-001).
+            let seq_counter = u64::max_encoded_len().saturating_add(u32::max_encoded_len());
             let bytes = Self::max_order_size(order)
                 .saturating_add(ranking)
                 .saturating_add(payees)
                 .saturating_add(u64::max_encoded_len())
+                .saturating_add(seq_counter)
                 .saturating_add(results);
             let bytes: BalanceOf<T> = u32::try_from(bytes).unwrap_or(u32::MAX).into();
             T::OrderDepositPerItem::get()
@@ -2254,7 +2258,7 @@ pub mod pallet {
         }
 
         #[allow(clippy::too_many_arguments)]
-        fn update_ranking(
+        pub(crate) fn update_ranking(
             order_id: u64,
             resolution: &types::RewardResolution,
             solver: &T::AccountId,

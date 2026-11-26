@@ -4500,7 +4500,10 @@ mod w3_006_deposit {
             let side = crate::TopSolversOf::<Test>::max_encoded_len()
                 .max(crate::FrontRunnerOf::<Test>::max_encoded_len())
                 + payee * crate::types::MAX_SOLVERS_PER_OPEN_ORDER as usize
-                + u64::max_encoded_len();
+                + u64::max_encoded_len()
+                // `NextSubmissionSeq`: a u64 key and a u32 value (W3-001).
+                + u64::max_encoded_len()
+                + u32::max_encoded_len();
             let needed = 10 + (order.encoded_size() + side) as u128;
             let deposit = OrderDeposit::<Test>::get(id).unwrap();
             assert!(deposit >= needed, "deposit {deposit} < needed {needed}");
@@ -5045,6 +5048,34 @@ mod w3_001_ordering_key {
                 }
             });
         }
+    }
+
+    /// M1 (R8 on B5b): SingleBest compares the whole key. A candidate at the
+    /// front runner's energy with an EARLIER `effective_at` but a LATER `seq`
+    /// replaces it; a later `effective_at` does not. (Crafted keys: until B5d
+    /// a submission's `effective_at` is its arrival block.)
+    #[test]
+    fn single_best_replaces_on_an_earlier_effective_time_at_equal_energy() {
+        new_test_ext().execute_with(|| {
+            let id = 7;
+            let front = |solver: u128, effective_at: u64, seq: u32| crate::types::FrontRunner {
+                solver,
+                energy_milli: -1_000,
+                effective_at,
+                seq,
+            };
+            OrderFrontRunner::<Test>::insert(id, front(2, 10, 0));
+            let answer = sp_core::H256::repeat_byte(9);
+            let single = RewardResolution::SingleBest;
+            assert_ok!(QuantumComputeMempool::update_ranking(
+                id, &single, &3, -1_000, answer, 12, 5
+            ));
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap(), front(2, 10, 0));
+            assert_ok!(QuantumComputeMempool::update_ranking(
+                id, &single, &3, -1_000, answer, 3, 5
+            ));
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap(), front(3, 3, 5));
+        });
     }
 
     /// Each accepted submission takes the order's next `seq` and, uncommitted,

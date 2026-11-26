@@ -361,6 +361,21 @@ fn normalize_ordering_key(before: &mut Value, after: &mut Value) -> Result<(), S
     }
     entries.pop();
 
+    // M3 (R8 on B5b): every new `BlockNumber` parameter is `JobSolution`'s
+    // own, the runtime's `u32`.
+    let job_solution_block_number = types["types"]["types"]
+        .as_array()
+        .ok_or("missing candidate registry")?
+        .iter()
+        .find(|ty| ty["type"]["path"] == mempool_type_path("JobSolution"))
+        .and_then(|ty| ty["type"]["params"].as_array())
+        .and_then(|params| params.iter().find(|p| p["name"] == "BlockNumber"))
+        .map(|p| p["type"].clone())
+        .ok_or("missing candidate JobSolution BlockNumber parameter")?;
+    if !is_primitive(&types, &job_solution_block_number, "u32") {
+        return Err("JobSolution's BlockNumber is not u32".into());
+    }
+
     // `OrderAnswers`' value: the exact `AnswerOwner`, restored to the account.
     let entries = mempool_storage_entries(after)?;
     let solutions = entries
@@ -388,7 +403,12 @@ fn normalize_ordering_key(before: &mut Value, after: &mut Value) -> Result<(), S
         {"name": "effective_at", "type": block_number.clone(), "typeName": "BlockNumber"},
         {"name": "seq", "type": owner["def"]["composite"]["fields"][3]["type"].clone(), "typeName": "u32"},
     ]);
+    let want_params = serde_json::json!([
+        {"name": "AccountId", "type": account.clone()},
+        {"name": "BlockNumber", "type": job_solution_block_number.clone()},
+    ]);
     if owner["path"] != mempool_type_path("AnswerOwner")
+        || owner["params"] != want_params
         || owner["def"]["composite"]["fields"] != want_owner
         || !is_primitive(&types, &want_owner[1]["type"], "i64")
         || !is_primitive(&types, &want_owner[3]["type"], "u32")
@@ -458,7 +478,10 @@ fn normalize_ordering_key(before: &mut Value, after: &mut Value) -> Result<(), S
                 let params = ty["type"]["params"]
                     .as_array_mut()
                     .ok_or_else(|| format!("{name} has no type parameters"))?;
-                if params.len() != 2 || params[1]["name"] != "BlockNumber" {
+                if params.len() != 2
+                    || params[1]["name"] != "BlockNumber"
+                    || params[1]["type"] != job_solution_block_number
+                {
                     return Err(format!(
                         "missing or incorrect required {name} BlockNumber parameter: {}",
                         serde_json::to_string(params).unwrap_or_default()
@@ -3142,6 +3165,35 @@ mod tests {
                 ty["type"]["params"].as_array_mut().unwrap().pop();
             }
             cases.push((format!("{name} without the BlockNumber parameter"), wrong));
+        }
+        // M3: a `BlockNumber` parameter that is not `JobSolution`'s `u32`, e.g.
+        // `AnswerOwner<AccountId, u64>`.
+        let u64_id = after["types"]["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ty| ty["type"]["def"]["primitive"] == "u64")
+            .map(|ty| ty["id"].clone())
+            .expect("a u64 in the registry");
+        // The parameter and its `effective_at` field retyped together, as a
+        // real `AnswerOwner<AccountId, u64>` would be: only the M3 pin to
+        // `JobSolution`'s `BlockNumber` catches it.
+        for name in ["AnswerOwner", "RankedSolver", "FrontRunner"] {
+            let mut wrong = after.clone();
+            for ty in types_at(&mut wrong, name) {
+                let params = ty["type"]["params"].as_array_mut().unwrap();
+                let last = params.len() - 1;
+                params[last]["type"] = u64_id.clone();
+                for field in ty["type"]["def"]["composite"]["fields"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .filter(|f| f["name"] == "effective_at")
+                {
+                    field["type"] = u64_id.clone();
+                }
+            }
+            cases.push((format!("{name}<_, u64>"), wrong));
         }
         for (name, wrong) in cases {
             assert!(check(&before, &wrong).is_err(), "accepted {name}");

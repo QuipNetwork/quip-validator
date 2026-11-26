@@ -1776,10 +1776,13 @@ mod tests {
             claim_reward_proof_envelope, CLAIM_REWARD_PROOF_FLOOR,
         };
         <QuantumComputeMempool as Hooks<BlockNumber>>::integrity_test();
-        // W3-001 B5b: the ordering key (`effective_at`, `seq`) adds 8 B to
-        // each of the 32 ranking entries (+256 B to claim) and, with the larger
-        // `OrderAnswers` value and the `NextSubmissionSeq` counter, +296 B to
-        // a submission; both stay under their 1 MiB floors.
+        // W3-001. B5b's ordering key (`effective_at` and `seq`, 8 B) is type
+        // growth only: +256 B to claim (32 ranking entries x 8) and +296 B to a
+        // submission (the ranking, 256; `OrderAnswers`, counted twice, x 16 for
+        // account -> `AnswerOwner`, 32; `JobSolution`, 8). B5b3 adds the
+        // `NextSubmissionSeq` counter's key to the submission: max_size 28 +
+        // `TRIE_OVERHEAD_PER_KEY` (10 x 15 x 33 = 4,950) = 4,978 B. All stay
+        // under their 1 MiB floors.
         assert_eq!(claim_reward_proof_envelope::<Runtime>(), 1_008_413);
         assert_eq!(
             pallet_quantum_compute_mempool::weights::reclaim_order_proof_envelope::<Runtime>(),
@@ -1787,7 +1790,7 @@ mod tests {
         );
         let submission =
             pallet_quantum_compute_mempool::weights::submit_solution_proof_envelope::<Runtime>();
-        assert_eq!(submission, 803_976);
+        assert_eq!(submission, 808_954);
         let proposal =
             pallet_quantum_compute_mempool::weights::propose_job_proof_envelope::<Runtime>();
         assert_eq!(proposal, 691_400);

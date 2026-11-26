@@ -15,7 +15,11 @@ pub fn update_ranked_solvers<AccountId: Clone + Eq, BlockNumber: Copy + Ord>(
         .iter_mut()
         .find(|entry| entry.solver == candidate.solver)
     {
-        if candidate.energy_milli < existing.energy_milli {
+        // W3-001: the same key that orders the list (B5b3). Today a solver's
+        // own improvement lowers its energy, so this equals the energy test;
+        // once a reveal (B5d) can lower only `effective_at`, the entry must
+        // follow it, or the ranking and `OrderSolutions` would disagree.
+        if candidate.rank_key() < existing.rank_key() {
             *existing = candidate;
         }
     } else {
@@ -135,6 +139,23 @@ mod tests {
             effective_at,
             seq,
         }
+    }
+
+    /// W3-001 B5b3: a solver's own entry is replaced by a lower key, here an
+    /// equal energy with an earlier effective time, not only a lower energy.
+    #[test]
+    fn a_solvers_own_entry_follows_an_earlier_key_at_equal_energy() {
+        let current = vec![entry(1, 5, 10, 0), entry(2, 6, 10, 1)];
+        let earlier = update_ranked_solvers(&current, entry(1, 5, 3, 2), 2);
+        assert_eq!(earlier[0].solver, 1);
+        assert_eq!((earlier[0].effective_at, earlier[0].seq), (3, 2));
+        assert_eq!(earlier.len(), 2, "one entry per solver");
+        let later = update_ranked_solvers(&current, entry(1, 5, 12, 3), 2);
+        assert_eq!(
+            (later[0].effective_at, later[0].seq),
+            (10, 0),
+            "a later key does not"
+        );
     }
 
     /// W3-001 B5b: ties in energy go to the earlier effective time, then the
