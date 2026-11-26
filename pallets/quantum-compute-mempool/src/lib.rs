@@ -36,10 +36,11 @@
 //! - **A reveal exposes its rows.** Anyone can then submit them, or a
 //!   near-copy, on another order with the same problem. Commit on every
 //!   concurrent order you intend to answer before revealing on any.
-//! - **Flip twins.** A row and its global flip are one answer, scored at the
-//!   energy of the row submitted. Commit to, and submit, the lower-energy
-//!   flip. (How flip twins are scored is an open owner question; this note
-//!   may change.)
+//! - **Flip twins.** A row and its global flip are one answer, scored and
+//!   stored as the lower-energy twin whichever one you submit or commit to
+//!   (with h = 0 the twins tie and the row is kept as submitted). So a
+//!   commitment to either twin of an answer holds the answer at its better
+//!   energy.
 
 extern crate alloc;
 
@@ -222,7 +223,7 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, distinct_solutions, energy_of_solution_indexed, AnswerCanonicalizer,
+        better_flip_energy_indexed, calculate_diversity, distinct_solutions, AnswerCanonicalizer,
         TopologyIndex, ValidationError,
     };
     use sp_runtime::traits::{
@@ -1895,9 +1896,14 @@ pub mod pallet {
             let mut valid_solutions: Vec<Vec<i8>> = Vec::new();
             let mut valid_energies: Vec<i64> = Vec::new();
 
+            // A row and its global flip are one answer (O-B3); with h != 0
+            // they differ in energy. Each row is scored, filtered and kept as
+            // the lower-energy twin (owner decision on flip twins, W3-001), so
+            // which twin was submitted -- or committed to -- does not change
+            // the stored rows, their energy or the ranking.
             for solution in &transformed_solutions {
-                let energy =
-                    energy_of_solution_indexed(solution.as_slice(), h_values, j_values, &topology)
+                let (energy, flip) =
+                    better_flip_energy_indexed(solution.as_slice(), h_values, j_values, &topology)
                         .map_err(Self::map_validation_error)?;
                 if let Some(max_energy) = order.ising_params.max_energy_milli {
                     if energy > max_energy {
@@ -1905,7 +1911,11 @@ pub mod pallet {
                     }
                 }
 
-                valid_solutions.push(solution.as_slice().to_vec());
+                valid_solutions.push(if flip {
+                    solution.iter().map(|&spin| spin.saturating_neg()).collect()
+                } else {
+                    solution.as_slice().to_vec()
+                });
                 valid_energies.push(energy);
             }
 

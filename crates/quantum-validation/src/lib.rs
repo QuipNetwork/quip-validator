@@ -41,7 +41,9 @@ pub use crate::answer::{canonical_answer_row, AnswerCanonicalizer};
 pub use crate::diversity::{
     calculate_diversity, distinct_solutions, select_diverse, symmetric_hamming,
 };
-pub use crate::energy::{energy_of_solution, energy_of_solution_indexed, expected_gse};
+pub use crate::energy::{
+    better_flip_energy_indexed, energy_of_solution, energy_of_solution_indexed, expected_gse,
+};
 pub use crate::errors::ValidationError;
 pub use crate::fixed::{MilliDiversity, MilliEnergy, MilliValue, MILLI_SCALE};
 pub use crate::ising::{derive_nonce, generate_ising_model, generate_ising_model_indexed};

@@ -2702,9 +2702,10 @@ fn invalid_or_non_improving_payee_submission_is_atomic_and_expiry_freezes_metada
             payee(20033, 3)
         ));
         assert_eq!(crate::OrderPayees::<Test>::get(0, 2), Some(payee(20033, 3)));
+        // [-1, -1] (-500) is scored as its better flip twin [1, 1] (B5f).
         assert_eq!(
             OrderSolutions::<Test>::get(0, 2).unwrap().best_energy_milli,
-            -500
+            -1500
         );
         // Leave the hook behind: expiry is enforced from timing, not stored status.
         System::set_block_number(6);
@@ -2877,9 +2878,9 @@ fn accepted_payee_events_report_only_metadata_transitions() {
     new_test_ext().execute_with(|| {
         let spec = register_spec();
         let params = crate::types::IsingParams {
-            nodes: bounded(vec![0, 1, 2]),
+            nodes: bounded(vec![0, 1, 2, 3]),
             edges: bounded(vec![(0, 1)]),
-            h_values: bounded(vec![1_000, 2_000, 4_000]),
+            h_values: bounded(vec![1_000, 2_000, 4_000, 8_000]),
             j_values: bounded(vec![0]),
             max_energy_milli: None,
             min_diversity_milli: None,
@@ -2912,10 +2913,12 @@ fn accepted_payee_events_report_only_metadata_transitions() {
         .into_iter()
         .enumerate()
         {
-            // Binary-weighted local fields give a strictly decreasing energy each step.
+            // Binary-weighted local fields give a strictly decreasing energy
+            // each step: -1000 - 2000 * step, every row already the lower of
+            // its flip twins (B5f), so it is stored as submitted.
             let solutions = bounded(vec![bounded(
-                (0..3)
-                    .map(|bit| if step & (1 << bit) == 0 { 1 } else { -1 })
+                (0..4)
+                    .map(|bit| if (8 + step) & (1 << bit) == 0 { 1 } else { -1 })
                     .collect(),
             )]);
             let start = System::events().len();
@@ -5870,11 +5873,13 @@ mod w3_001_eviction {
 
     const SALT: [u8; 32] = [7; 32];
     // On `field_params`: GOOD and FLIP are global flips of each other, so one
-    // answer, at different energies; BEST and MID are two other answers.
+    // answer, scored and stored as GOOD whichever is submitted (B5f); BEST,
+    // MID and LOW are three other answers.
     const GOOD: [i8; 4] = [1, 1, 1, -1]; // -2000
-    const FLIP: [i8; 4] = [-1, -1, -1, 1]; // 0
+    const FLIP: [i8; 4] = [-1, -1, -1, 1]; // 0 as given, -2000 as its twin GOOD
     const BEST: [i8; 4] = [1, 1, 1, 1]; // -5000
     const MID: [i8; 4] = [1, 1, -1, -1]; // -1000
+    const LOW: [i8; 4] = [1, 1, -1, 1]; // 0, and 0 as its twin
 
     /// A ferromagnetic 4-chain with a field on every spin, so a global flip
     /// is the same answer at a different energy (E1).
@@ -5971,10 +5976,11 @@ mod w3_001_eviction {
         RewardResolution::TopNWeighted { n: 2 },
     ];
 
-    /// E1 (and E5): a copier's worse flip of a committed answer lands first;
-    /// the honest reveal takes the answer, the copier's solution, payee and
-    /// ranking entry go, and the honest solver keeps its slot at its OWN
-    /// energy -- so a third solver at an intermediate energy ranks behind it.
+    /// E1 (and E5): a copier's worse flip of a committed answer lands first
+    /// (stored as the better twin, B5f); the honest reveal takes the answer,
+    /// the copier's solution, payee and ranking entry go, and the honest
+    /// solver holds the slot at the answer's energy -- so a third solver at an
+    /// intermediate energy ranks behind it.
     #[test]
     fn an_earlier_commitment_evicts_a_copied_worse_flip_at_its_own_energy() {
         for resolution in RESOLUTIONS {
@@ -5991,7 +5997,7 @@ mod w3_001_eviction {
                     row(&FLIP),
                     payee(20033, 3)
                 ));
-                assert_eq!(energy(3, id), 0);
+                assert_eq!(energy(3, id), -2000);
                 assert!(OrderPayees::<Test>::contains_key(id, 3));
                 run_to_block(3);
                 assert_ok!(reveal(2, id, &row(&GOOD)));
@@ -6039,50 +6045,162 @@ mod w3_001_eviction {
     }
 
     /// N1: the ranking is rebuilt after an eviction, so a solver truncated
-    /// out of the top-n comes back. n = 2: A = -5000, X = -2000 (a better
-    /// flip of H's answer), Y = -1000 (truncated), H = 0 committed first:
-    /// after the eviction the list is [A, Y]. Under SingleBest with X the
-    /// front runner, the front runner becomes Y, not H.
+    /// out of the top-n comes back. An evictor takes the evicted answer at the
+    /// same energy (flip twins score alike, B5f) and an earlier key, so a slot
+    /// frees only when the evictor already held a ranked entry. n = 3:
+    /// A = -5000, X = -2000 (FLIP, stored as GOOD), H = -1000 (MID, H having
+    /// committed GOOD first), Y = 0 (truncated). H's reveal replaces its own
+    /// entry and evicts X: the list is [A, H, Y]. Under SingleBest, with X
+    /// the front runner, H takes the front at -2000.
     #[test]
     fn an_eviction_rebuilds_the_ranking_from_the_answer_index() {
-        for resolution in RESOLUTIONS {
+        for resolution in [
+            RewardResolution::SingleBest,
+            RewardResolution::TopNEqual { n: 3 },
+            RewardResolution::TopNWeighted { n: 3 },
+        ] {
             new_test_ext().execute_with(|| {
                 for who in [2, 3, 4, 5] {
                     register(who);
                 }
                 let id = propose(field_params(), resolution, 10);
                 let single = resolution == RewardResolution::SingleBest;
-                commit(2, id, &row(&FLIP));
+                commit(2, id, &row(&GOOD));
                 run_to_block(2);
                 if !single {
                     submit(3, id, &row(&BEST));
                 }
-                submit(4, id, &row(&GOOD));
-                submit(5, id, &row(&MID));
+                submit(4, id, &row(&FLIP));
+                submit(2, id, &row(&MID));
+                submit(5, id, &row(&LOW));
                 if single {
                     assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 4);
                 } else {
-                    assert_eq!(ranking(id), vec![(3, -5000), (4, -2000)]);
+                    assert_eq!(ranking(id), vec![(3, -5000), (4, -2000), (2, -1000)]);
                 }
                 run_to_block(3);
-                assert_ok!(reveal(2, id, &row(&FLIP)));
+                assert_ok!(reveal(2, id, &row(&GOOD)));
                 assert!(OrderSolutions::<Test>::get(id, 4).is_none());
                 if single {
                     let front = OrderFrontRunner::<Test>::get(id).unwrap();
-                    assert_eq!((front.solver, front.energy_milli), (5, -1000));
+                    assert_eq!((front.solver, front.energy_milli), (2, -2000));
                     System::assert_has_event(
                         crate::Event::FrontRunnerChanged {
                             order_id: id,
-                            solver: 5,
-                            energy_milli: -1000,
+                            solver: 2,
+                            energy_milli: -2000,
                         }
                         .into(),
                     );
                 } else {
-                    assert_eq!(ranking(id), vec![(3, -5000), (5, -1000)], "{resolution:?}");
+                    assert_eq!(
+                        ranking(id),
+                        vec![(3, -5000), (2, -2000), (5, 0)],
+                        "{resolution:?}"
+                    );
                 }
             });
         }
+    }
+
+    /// B5f: a flip twin is scored and stored as the lower-energy twin. A
+    /// commitment to the worse twin, revealed after another solver submitted
+    /// the better twin, evicts it and holds the answer at the better twin's
+    /// energy, with the better twin's row stored -- the order is no longer
+    /// ranked at the worse energy.
+    #[test]
+    fn a_worse_twin_committed_first_is_stored_and_ranked_as_the_better_twin() {
+        for resolution in RESOLUTIONS {
+            new_test_ext().execute_with(|| {
+                register(2);
+                register(3);
+                let id = propose(field_params(), resolution, 10);
+                commit(2, id, &row(&FLIP));
+                run_to_block(2);
+                submit(3, id, &row(&GOOD));
+                assert_eq!(energy(3, id), -2000);
+                run_to_block(3);
+                assert_ok!(reveal(2, id, &row(&FLIP)));
+                assert!(OrderSolutions::<Test>::get(id, 3).is_none());
+                let stored = OrderSolutions::<Test>::get(id, 2).unwrap();
+                assert_eq!(stored.best_energy_milli, -2000);
+                assert_eq!(stored.solutions, row(&GOOD));
+                let owner = OrderAnswers::<Test>::get(id, stored.answer).unwrap();
+                assert_eq!((owner.solver, owner.best_energy_milli), (2, -2000));
+                match resolution {
+                    RewardResolution::SingleBest => {
+                        let front = OrderFrontRunner::<Test>::get(id).unwrap();
+                        assert_eq!((front.solver, front.energy_milli), (2, -2000));
+                    }
+                    _ => assert_eq!(ranking(id), vec![(2, -2000)], "{resolution:?}"),
+                }
+            });
+        }
+    }
+
+    /// B5f, the reverse order: the better twin is committed first and a
+    /// copier submits the worse twin. The copy is stored as the better twin,
+    /// the reveal evicts it, and the stored row and energy are the better
+    /// twin's either way.
+    #[test]
+    fn a_worse_twin_submitted_second_is_stored_as_the_better_twin() {
+        for resolution in RESOLUTIONS {
+            new_test_ext().execute_with(|| {
+                register(2);
+                register(3);
+                let id = propose(field_params(), resolution, 10);
+                commit(2, id, &row(&GOOD));
+                run_to_block(2);
+                submit(3, id, &row(&FLIP));
+                let copy = OrderSolutions::<Test>::get(id, 3).unwrap();
+                assert_eq!(
+                    (copy.best_energy_milli, copy.solutions),
+                    (-2000, row(&GOOD))
+                );
+                run_to_block(3);
+                assert_ok!(reveal(2, id, &row(&GOOD)));
+                assert!(OrderSolutions::<Test>::get(id, 3).is_none());
+                let stored = OrderSolutions::<Test>::get(id, 2).unwrap();
+                assert_eq!(
+                    (stored.best_energy_milli, stored.solutions),
+                    (-2000, row(&GOOD))
+                );
+                match resolution {
+                    RewardResolution::SingleBest => {
+                        let front = OrderFrontRunner::<Test>::get(id).unwrap();
+                        assert_eq!((front.solver, front.energy_milli), (2, -2000));
+                    }
+                    _ => assert_eq!(ranking(id), vec![(2, -2000)], "{resolution:?}"),
+                }
+            });
+        }
+    }
+
+    /// B5f with h = 0: the twins tie, so a row is stored exactly as
+    /// submitted, at its own energy, and its twin is still the same answer.
+    #[test]
+    fn with_no_field_flip_twins_tie_and_the_row_is_kept_as_submitted() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            let id = propose(chain_params(4), RewardResolution::SingleBest, 10);
+            let twin: [i8; 4] = [-1, -1, 1, 1];
+            submit(2, id, &row(&twin));
+            let stored = OrderSolutions::<Test>::get(id, 2).unwrap();
+            assert_eq!(
+                (stored.best_energy_milli, stored.solutions),
+                (-1000, row(&twin))
+            );
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(3),
+                    id,
+                    row(&twin.map(|spin| -spin))
+                )
+                .map_err(|e| e.error),
+                crate::Error::<Test>::DuplicateAnswer
+            );
+        });
     }
 
     /// E2: the cap is checked after the eviction decision. A full order (32

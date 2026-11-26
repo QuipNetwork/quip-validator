@@ -169,9 +169,9 @@ fn params_with_dimensions<T: Config>(
         // node outside every edge and with no field would be isolated, and
         // rows differing only there are one answer (W1-004 keys by the W1-012
         // canonical form). Non-zero fields keep `distinct_rows` pairwise
-        // distinct answers, the dedupe's worst case, for every `e`. 1 milli,
-        // so a single field placed on spin 0 can still dominate the energy
-        // (`setup_solution_replacement`).
+        // distinct answers, the dedupe's worst case, for every `e`. Aligned
+        // with a ferromagnetic coupling, they make all +1 the unique ground
+        // state (`setup_solution_replacement`).
         h_values: bounded(vec![1; node_count as usize]),
         j_values: bounded(vec![-1_000; edge_count as usize]),
         max_energy_milli: None,
@@ -254,6 +254,28 @@ fn nth_distinct_solution<T: Config>(node_count: u32, index: u32) -> SolutionsOf<
 
 /// How many distinct answers `distinct_rows` can hold: `node_count - 1` free
 /// spins give at most `2^(node_count - 1)` flip classes.
+/// How many of `distinct_rows`' rows 1, 2, ... are distinct answers other
+/// than row 0's: at most `2^(n-1) - 1` below 33 free spins.
+fn worse_distinct(node_count: u32, solution_count: u32) -> u32 {
+    let free = node_count.saturating_sub(1);
+    if free >= 32 {
+        solution_count
+    } else {
+        solution_count.min((1u32 << free) - 1)
+    }
+}
+
+/// `worse_distinct(n, s)` rows of `node_count` spins: `distinct_rows`' rows
+/// 1, 2, ..., every one a distinct answer and none of them row 0 (all +1),
+/// so each is strictly worse than row 0 under `params_with_dimensions`.
+fn worse_distinct_rows<T: Config>(node_count: u32, solution_count: u32) -> SolutionsOf<T> {
+    bounded(
+        (1..=worse_distinct(node_count, solution_count))
+            .map(|solution_index| distinct_row(node_count, solution_index, 1))
+            .collect(),
+    )
+}
+
 fn achievable_distinct(node_count: u32, solution_count: u32) -> u32 {
     let free = node_count.saturating_sub(1);
     if free >= 32 {
@@ -470,13 +492,15 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
     let proposer: T::AccountId = whitelisted_caller();
     let solver: T::AccountId = account("solver", 0, 0);
     register_solver_for::<T>(&solver);
-    let mut params = params_with_dimensions::<T>(n, e, Some(achievable_distinct(n, s)));
-    // A dominant field on spin 0 makes every first-spin-minus row strictly
-    // worse than its negation (the first-spin-plus row) at every dimension,
-    // without relying on a fabricated stored score. A row's negation changes
-    // its energy by twice the sum of h_i * s_i; the other n - 1 fields are 1
-    // milli each, so |h_0| > 2n outweighs them for every row.
-    params.h_values[0] = -(2 * i32::try_from(n).expect("n fits i32") + 1_000);
+    // The seeded payload is rows 1..=s (`worse_distinct_rows`), the
+    // replacement rows 0..s (`solutions_with_dimensions`): row 0, all +1, is
+    // the unique ground state of these params at every dimension, so the
+    // replacement is a real improvement without a fabricated stored score.
+    // A row scores as the better of its flip twins (B5f), C - |F| with C the
+    // coupling and F the field term: all +1 has the least C (every coupling
+    // -1000 satisfied) and the largest |F| (n fields of 1 milli, aligned),
+    // and any other row has |F| <= n - 2.
+    let params = params_with_dimensions::<T>(n, e, Some(worse_distinct(n, s)));
     let order_id = propose_order_for::<T>(
         &proposer,
         params,
@@ -494,7 +518,7 @@ fn setup_solution_replacement<T: Config>(n: u32, e: u32, s: u32) -> (T::AccountI
     assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
         RawOrigin::Signed(solver.clone()).into(),
         order_id,
-        distinct_rows::<T>(n, s, -1),
+        worse_distinct_rows::<T>(n, s),
         payee,
     )
     .is_ok());

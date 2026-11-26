@@ -76,6 +76,51 @@ pub fn energy_of_solution_indexed(
     Ok(energy)
 }
 
+/// The lower Ising energy of `solution` and of its global flip `-solution`,
+/// and whether the flip is the lower one (W3-001, owner decision on flip
+/// twins).
+///
+/// A row and its global flip are one answer (O-B3). With `h != 0` they have
+/// different energies: flipping every spin negates the field term `F` and
+/// keeps the coupling term `C`, so `E(s) = C + F` and `E(-s) = C - F`, both
+/// from one pass. The answer is scored at the lower of the two; on a tie
+/// (`F == 0`, for example `h = 0`) the row as given is kept (`false`).
+///
+/// Same inputs, checks and errors as [`energy_of_solution_indexed`].
+pub fn better_flip_energy_indexed(
+    solution: &[i8],
+    h: &[MilliValue],
+    j: &[MilliValue],
+    topology: &TopologyIndex,
+) -> Result<(MilliEnergy, bool), ValidationError> {
+    validate_shape_lengths(solution, h, topology.edge_count(), j, topology.len())?;
+    ensure_valid_spins(solution)?;
+
+    let mut field = 0_i64;
+    for (position, &value) in h.iter().enumerate() {
+        field = field
+            .checked_add(i64::from(value) * i64::from(solution[position]))
+            .ok_or(ValidationError::ArithmeticOverflow)?;
+    }
+    let mut coupling = 0_i64;
+    for (&(u_pos, v_pos), &value) in topology.edge_positions().iter().zip(j.iter()) {
+        coupling = coupling
+            .checked_add(i64::from(value) * i64::from(solution[u_pos]) * i64::from(solution[v_pos]))
+            .ok_or(ValidationError::ArithmeticOverflow)?;
+    }
+    let given = coupling
+        .checked_add(field)
+        .ok_or(ValidationError::ArithmeticOverflow)?;
+    let flipped = coupling
+        .checked_sub(field)
+        .ok_or(ValidationError::ArithmeticOverflow)?;
+    Ok(if flipped < given {
+        (flipped, true)
+    } else {
+        (given, false)
+    })
+}
+
 /// Estimate the expected ground-state energy for the h/J distributions a
 /// registered topology actually samples, at a chosen empirical `c`.
 ///
@@ -209,7 +254,9 @@ fn validate_shape_lengths(
 
 #[cfg(test)]
 mod tests {
-    use super::{energy_of_solution, energy_of_solution_indexed, expected_gse};
+    use super::{
+        better_flip_energy_indexed, energy_of_solution, energy_of_solution_indexed, expected_gse,
+    };
     use crate::errors::ValidationError;
     use crate::fixed::MilliValue;
     use crate::puzzle_spec::AllowedValueSpec;
@@ -452,5 +499,66 @@ mod tests {
                 reference(&solution, &h, &edges, &j, &nodes)
             );
         }
+    }
+
+    #[test]
+    fn better_flip_energy_is_the_lower_of_a_row_and_its_flip() {
+        let nodes = [10, 20, 30, 40];
+        let edges = [(10, 20), (20, 30), (30, 40)];
+        let h = [-500, 250, -1_000, 0];
+        let j = [750, -250, 500];
+        let topology = TopologyIndex::new(&nodes, &edges).unwrap();
+        for row in [
+            [1, 1, 1, 1],
+            [1, -1, 1, -1],
+            [-1, -1, 1, 1],
+            [-1, 1, -1, -1],
+        ] {
+            let flip: [i8; 4] = row.map(|spin| -spin);
+            let given = energy_of_solution_indexed(&row, &h, &j, &topology).unwrap();
+            let flipped = energy_of_solution_indexed(&flip, &h, &j, &topology).unwrap();
+            assert_ne!(given, flipped, "h != 0 separates the twins of {row:?}");
+            let expected = (given.min(flipped), flipped < given);
+            assert_eq!(
+                better_flip_energy_indexed(&row, &h, &j, &topology).unwrap(),
+                expected
+            );
+            // Either twin gives the same score, flagged from its own side.
+            assert_eq!(
+                better_flip_energy_indexed(&flip, &h, &j, &topology).unwrap(),
+                (expected.0, !expected.1)
+            );
+        }
+    }
+
+    #[test]
+    fn better_flip_energy_keeps_the_row_when_the_twins_tie() {
+        let nodes = [0, 1, 2];
+        let edges = [(0, 1), (1, 2)];
+        let h = [0, 0, 0];
+        let j = [-1_000, 500];
+        let topology = TopologyIndex::new(&nodes, &edges).unwrap();
+        let row = [1, -1, -1];
+        let energy = energy_of_solution_indexed(&row, &h, &j, &topology).unwrap();
+        assert_eq!(
+            better_flip_energy_indexed(&row, &h, &j, &topology).unwrap(),
+            (energy, false)
+        );
+        assert_eq!(
+            better_flip_energy_indexed(&[-1, 1, 1], &h, &j, &topology).unwrap(),
+            (energy, false)
+        );
+    }
+
+    #[test]
+    fn better_flip_energy_rejects_what_the_energy_rejects() {
+        let nodes = [0, 1];
+        let edges = [(0, 1)];
+        let topology = TopologyIndex::new(&nodes, &edges).unwrap();
+        assert_eq!(
+            better_flip_energy_indexed(&[1, 0], &[0, 0], &[1], &topology),
+            Err(ValidationError::InvalidSpinValue { index: 1, value: 0 })
+        );
+        assert!(better_flip_energy_indexed(&[1], &[0, 0], &[1], &topology).is_err());
     }
 }
