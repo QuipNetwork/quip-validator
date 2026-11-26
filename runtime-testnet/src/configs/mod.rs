@@ -991,9 +991,9 @@ parameter_types! {
     /// `QuantumPowMaxProofsPerBlock` a better proof still replaces the best,
     /// so the submitter set must not bind before the block does. The runtime
     /// charges the composed `submit_proof` weight; its cheapest accepted case
-    /// (`MinNodes` 16 nodes, one edge, one solution) is ~5.05e9 ps on these
-    /// weights (~5.36e9 on the d102f1a reference weights), so a 1.5e12 ps
-    /// Normal block admits at most ~297 (~280). 400 leaves room for a
+    /// (`MinNodes` 16 nodes, one edge, one solution) is ~5.39e9 ps on the
+    /// 08ac62e reference weights, so a 1.5e12 ps Normal block admits at most
+    /// ~278. 400 leaves room for a
     /// regeneration that makes the base cheaper; the set costs only its
     /// decode (~17.8 us native at 300 entries, ~12.8 KB encoded at 400). The
     /// runtime test `the_proof_submitter_bound_covers_a_normal_block_of_the_
