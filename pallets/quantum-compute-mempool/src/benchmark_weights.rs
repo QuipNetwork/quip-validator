@@ -69,6 +69,8 @@ pub trait WeightInfo {
 	fn finalise_expired_orders(k: u32, ) -> Weight;
 	fn prune_closed_orders(k: u32, ) -> Weight;
 	fn auto_close_unsolved(k: u32, ) -> Weight;
+	fn commit_answer() -> Weight;
+	fn forfeit_commitments(c: u32, ) -> Weight;
 }
 
 /// Weights for `pallet_quantum_compute_mempool` using the Substrate node and recommended hardware.
@@ -488,6 +490,29 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads((5_u64).saturating_mul(k.into())))
 			.saturating_add(T::DbWeight::get().writes((6_u64).saturating_mul(k.into())))
 	}
+	/// UNMEASURED: handwritten allowance for `commit_answer` (W3-001): reads the
+	/// solver, the order (at its maximum size), the commitment, the count and
+	/// the solver's account; writes the commitment, the count and the account
+	/// (the reserve). Measured by the `commit_answer` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-001): commit_answer, added by hand; regenerate (benchmark-weights job).
+	fn commit_answer() -> Weight {
+		Weight::from_parts(60_000_000, 650_000)
+			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().writes(3_u64))
+	}
+	/// UNMEASURED: handwritten allowance for forfeiting `c` outstanding
+	/// commitments at finalisation (W3-001): the count removed, then per
+	/// commitment its entry and the committer's and proposer's accounts.
+	/// Measured by the `forfeit_commitments` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-001): forfeit_commitments, added by hand; regenerate (benchmark-weights job).
+	fn forfeit_commitments(c: u32, ) -> Weight {
+		Weight::from_parts(10_000_000, 3_000)
+			.saturating_add(Weight::from_parts(60_000_000, 6_000).saturating_mul(c.into()))
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+			.saturating_add(T::DbWeight::get().reads((3_u64).saturating_mul(c.into())))
+			.saturating_add(T::DbWeight::get().writes((3_u64).saturating_mul(c.into())))
+	}
 }
 
 // For backwards compatibility and tests.
@@ -905,5 +930,28 @@ impl WeightInfo for () {
 			.saturating_add(Weight::from_parts(150_000_000, 30_000).saturating_mul(k.into()))
 			.saturating_add(RocksDbWeight::get().reads((5_u64).saturating_mul(k.into())))
 			.saturating_add(RocksDbWeight::get().writes((6_u64).saturating_mul(k.into())))
+	}
+	/// UNMEASURED: handwritten allowance for `commit_answer` (W3-001): reads the
+	/// solver, the order (at its maximum size), the commitment, the count and
+	/// the solver's account; writes the commitment, the count and the account
+	/// (the reserve). Measured by the `commit_answer` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-001): commit_answer, added by hand; regenerate (benchmark-weights job).
+	fn commit_answer() -> Weight {
+		Weight::from_parts(60_000_000, 650_000)
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(3_u64))
+	}
+	/// UNMEASURED: handwritten allowance for forfeiting `c` outstanding
+	/// commitments at finalisation (W3-001): the count removed, then per
+	/// commitment its entry and the committer's and proposer's accounts.
+	/// Measured by the `forfeit_commitments` benchmark.
+	// BENCHMARK-PLACEHOLDER(W3-001): forfeit_commitments, added by hand; regenerate (benchmark-weights job).
+	fn forfeit_commitments(c: u32, ) -> Weight {
+		Weight::from_parts(10_000_000, 3_000)
+			.saturating_add(Weight::from_parts(60_000_000, 6_000).saturating_mul(c.into()))
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+			.saturating_add(RocksDbWeight::get().reads((3_u64).saturating_mul(c.into())))
+			.saturating_add(RocksDbWeight::get().writes((3_u64).saturating_mul(c.into())))
 	}
 }

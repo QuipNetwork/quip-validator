@@ -1281,6 +1281,98 @@ mod benchmarks {
         assert!(failed.is_empty(), "at MinBlockWait 2: {failed:?}");
     }
 
+    /// W3-001 B5c: a FIRST commitment (the deposit reserved) by a registered
+    /// solver on a maximum-size open order whose commitment count is one below
+    /// the cap -- the worst `commit_answer`.
+    #[benchmark]
+    fn commit_answer() {
+        let proposer: T::AccountId = account("proposer", 0, 0);
+        fund_account::<T>(
+            &proposer,
+            benchmark_funding::<T>().saturating_mul(2u32.saturated_into()),
+        );
+        let spec_id = register_spec_for::<T>(&account("builder", 0, 0));
+        let order_id = NextOrderId::<T>::get();
+        assert!(QuantumComputeMempool::<T>::propose_job(
+            RawOrigin::Signed(proposer).into(),
+            spec_id,
+            params_with_dimensions::<T>(T::MaxNodes::get(), T::MaxEdges::get(), None),
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::SingleBest,
+            10u32.into(),
+            T::MinBlockWait::get().max(One::one()),
+            types::ResultDelivery::OnChainOnly,
+        )
+        .is_ok());
+        let solver: T::AccountId = account("committer", 0, 0);
+        register_solver_for::<T>(&solver);
+        fund_account::<T>(&solver, benchmark_funding::<T>());
+        CommitmentCount::<T>::insert(order_id, T::MaxCommitmentsPerOrder::get().saturating_sub(1));
+
+        #[extrinsic_call]
+        QuantumComputeMempool::commit_answer(
+            RawOrigin::Signed(solver.clone()),
+            order_id,
+            sp_core::H256::repeat_byte(1),
+        );
+
+        assert!(AnswerCommitments::<T>::contains_key(order_id, &solver));
+        assert_eq!(
+            CommitmentCount::<T>::get(order_id),
+            T::MaxCommitmentsPerOrder::get()
+        );
+    }
+
+    /// W3-001 B5c: forfeiting `c` outstanding commitments at finalisation, each
+    /// by its own funded, non-whitelisted committer (cold accounts, the B4d
+    /// lesson), to a funded proposer. 64 is the runtimes'
+    /// `MaxCommitmentsPerOrder`.
+    #[benchmark]
+    fn forfeit_commitments(c: Linear<0, 64>) {
+        assert!(c <= T::MaxCommitmentsPerOrder::get(), "c within the cap");
+        let proposer: T::AccountId = account("proposer", 0, 0);
+        fund_account::<T>(
+            &proposer,
+            benchmark_funding::<T>().saturating_mul(2u32.saturated_into()),
+        );
+        let spec_id = register_spec_for::<T>(&account("builder", 0, 0));
+        let order_id = NextOrderId::<T>::get();
+        assert!(QuantumComputeMempool::<T>::propose_job(
+            RawOrigin::Signed(proposer.clone()).into(),
+            spec_id,
+            sample_params::<T>(),
+            benchmark_reward::<T>(),
+            types::JobMode::Open,
+            types::RewardResolution::SingleBest,
+            10u32.into(),
+            T::MinBlockWait::get().max(One::one()),
+            types::ResultDelivery::OnChainOnly,
+        )
+        .is_ok());
+        for i in 0..c {
+            let committer: T::AccountId = account("committer", i, 0);
+            register_solver_for::<T>(&committer);
+            fund_account::<T>(&committer, benchmark_funding::<T>());
+            assert!(QuantumComputeMempool::<T>::commit_answer(
+                RawOrigin::Signed(committer).into(),
+                order_id,
+                sp_core::H256::repeat_byte(i as u8),
+            )
+            .is_ok());
+        }
+
+        #[block]
+        {
+            QuantumComputeMempool::<T>::forfeit_commitments(order_id, &proposer);
+        }
+
+        assert!(AnswerCommitments::<T>::iter_prefix(order_id)
+            .next()
+            .is_none());
+        assert!(!CommitmentCount::<T>::contains_key(order_id));
+    }
+
     /// The mock's ED of 1 makes `ED - 1` zero, so a "dust" assertion holds
     /// vacuously there. Run the dust benchmark with an ED above one, as the
     /// runtime has (benchmark-preflight runs it at the production ED).

@@ -291,6 +291,271 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5c (answer commitments). Exact deltas, each appended last: the
+// `commit_answer` call (index 10), the `MaxCommitmentsPerOrder` constant
+// (u32, 64), the `AnswerCommitments` (order, solver) -> `AnswerCommitment`
+// and `CommitmentCount` storage after `NextSubmissionSeq`, the
+// `CommitmentCapReached`/`CommitmentDepositNotAvailable` errors and the
+// `AnswerCommitted`/`CommitmentForfeited` events. Runs first: the newest delta.
+const MAX_COMMITMENTS_PER_ORDER_DOCS: &[&str] = &[
+    " The most outstanding answer commitments one order holds (W3-001,",
+    " design §B5 v2 item 3): 64, twice the 32-solver cap.",
+];
+const ANSWER_COMMITMENTS_DOCS: &[&str] = &[
+    " Outstanding answer commitments (W3-001): at most one per (order,",
+    " solver), at most `MaxCommitmentsPerOrder` per order, each holding its",
+    " reserved deposit. Those still outstanding when the order is finalised",
+    " are forfeited to its proposer.",
+];
+const COMMITMENT_COUNT_DOCS: &[&str] =
+    &[" The number of outstanding commitments on each order (W3-001)."];
+const COMMITMENT_ERRORS: &[(&str, &[&str])] = &[
+    (
+        "CommitmentCapReached",
+        &[
+            "The order already holds `MaxCommitmentsPerOrder` commitments",
+            "(W3-001).",
+        ],
+    ),
+    (
+        "CommitmentDepositNotAvailable",
+        &["The solver cannot reserve the commitment deposit (W3-001)."],
+    ),
+];
+const ANSWER_COMMITTED_DOCS: &[&str] = &[
+    "A solver committed to an answer on an order (W3-001), or replaced",
+    "its commitment: `commit_block` is the effective time its reveal",
+    "will carry.",
+];
+const COMMITMENT_FORFEITED_DOCS: &[&str] = &[
+    "A commitment was still outstanding when its order was finalised",
+    "(W3-001): its deposit went to the proposer (`to_proposer`), or was",
+    "burned when the proposer could not receive it (`burned`).",
+];
+const COMMIT_ANSWER_DOCS: &[&str] = &[
+    "Commit to an answer before revealing it (W3-001, design §B5 v2).",
+    "",
+    "`commitment` is `blake2_256` of the SCALE encoding of",
+    "`(b\"quip-answer-commit-v1\", order_id, solver,",
+    "blake2_256(SCALE(solutions)), payee, salt)`, where `salt` is 32",
+    "random bytes: a low-entropy salt on a small order lets a watcher",
+    "brute-force the commitment. Allowed to a registered solver eligible",
+    "for the order's mode, while the order is open and not expired.",
+    "Committing again replaces the commitment (and its block) in place;",
+    "a first commitment reserves the commitment deposit, which the reveal",
+    "returns and finalisation forfeits to the proposer if it is still",
+    "outstanding.",
+];
+
+fn normalize_commitments(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    let has = |list: &[Value], name: &str| list.iter().any(|v| v["name"] == name);
+    if has(mempool_constants(before)?, "MaxCommitmentsPerOrder")
+        || has(mempool_storage_entries(before)?, "AnswerCommitments")
+        || has(mempool_storage_entries(before)?, "CommitmentCount")
+        || has(mempool_variants(before, "calls")?, "commit_answer")
+    {
+        return Err("unexpected baseline mempool commitments".into());
+    }
+    let types = after.clone();
+    let field_ty = |variants: &[Value], variant: &str, field: &str| -> Value {
+        variants
+            .iter()
+            .find(|v| v["name"] == variant)
+            .and_then(|v| v["fields"].as_array())
+            .and_then(|fields| fields.iter().find(|f| f["name"] == field))
+            .map(|f| f["type"].clone())
+            .unwrap_or(Value::Null)
+    };
+
+    // The call: `commit_answer`, index 10, last.
+    let calls = mempool_variants(after, "calls")?.clone();
+    let order_id_ty = field_ty(&calls, "claim_reward", "order_id");
+    let h256_ty = types["types"]["types"]
+        .as_array()
+        .ok_or("missing candidate registry")?
+        .iter()
+        .find(|ty| ty["type"]["path"] == serde_json::json!(["primitive_types", "H256"]))
+        .map(|ty| ty["id"].clone())
+        .ok_or("missing candidate H256")?;
+    let want = serde_json::json!({
+        "docs": COMMIT_ANSWER_DOCS,
+        "fields": [
+            {"name": "order_id", "type": order_id_ty, "typeName": "u64"},
+            {"name": "commitment", "type": h256_ty.clone(), "typeName": "sp_core::H256"},
+        ],
+        "index": 10,
+        "name": "commit_answer",
+    });
+    let calls = mempool_variants(after, "calls")?;
+    if calls.last() != Some(&want) {
+        return Err(format!(
+            "missing or incorrect required mempool commit_answer call: {}",
+            serde_json::to_string(&calls.last()).unwrap_or_default()
+        ));
+    }
+    calls.pop();
+
+    // The constant: `MaxCommitmentsPerOrder`, after `MinBlockWait`, `u32` 64.
+    let constants = mempool_constants(after)?;
+    let u32_ty = constants
+        .iter()
+        .find(|c| c["name"] == "MaxOrdersPerProposer")
+        .map(|c| c["ty"].clone())
+        .ok_or("missing candidate MaxOrdersPerProposer")?;
+    let want = serde_json::json!({
+        "deprecation_info": "NotDeprecated",
+        "docs": MAX_COMMITMENTS_PER_ORDER_DOCS,
+        "name": "MaxCommitmentsPerOrder",
+        "ty": u32_ty,
+        "value": [64, 0, 0, 0],
+    });
+    let len = constants.len();
+    if len < 2 || constants[len - 2]["name"] != "MinBlockWait" || constants.last() != Some(&want) {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool MaxCommitmentsPerOrder: {}",
+            serde_json::to_string(&constants.last()).unwrap_or_default()
+        ));
+    }
+    constants.pop();
+
+    // Storage: `AnswerCommitments` then `CommitmentCount`, after
+    // `NextSubmissionSeq`.
+    let entries = mempool_storage_entries(after)?;
+    let solutions = entries
+        .iter()
+        .find(|e| e["name"] == "OrderSolutions")
+        .cloned()
+        .ok_or("missing candidate OrderSolutions")?;
+    let seq = entries
+        .iter()
+        .find(|e| e["name"] == "NextSubmissionSeq")
+        .cloned()
+        .ok_or("missing candidate NextSubmissionSeq")?;
+    let deposit_value = entries
+        .iter()
+        .find(|e| e["name"] == "OrderDeposit")
+        .map(|e| e["ty"]["Map"]["value"].clone())
+        .ok_or("missing candidate OrderDeposit")?;
+    let len = entries.len();
+    if len < 3 || entries[len - 3]["name"] != "NextSubmissionSeq" {
+        return Err("misplaced required mempool commitment storage".into());
+    }
+    let commitments = entries[len - 2].clone();
+    let value_id = commitments["ty"]["Map"]["value"].clone();
+    let value = registry_type(&types, &value_id).unwrap_or(Value::Null);
+    let block_number = value["params"]
+        .as_array()
+        .and_then(|params| params.iter().find(|p| p["name"] == "BlockNumber"))
+        .map(|p| p["type"].clone())
+        .unwrap_or(Value::Null);
+    let want_value_fields = serde_json::json!([
+        {"name": "commitment", "type": h256_ty, "typeName": "sp_core::H256"},
+        {"name": "commit_block", "type": block_number.clone(), "typeName": "BlockNumber"},
+        {"name": "deposit", "type": deposit_value.clone(), "typeName": "Balance"},
+    ]);
+    let want_commitments = serde_json::json!({
+        "default": [0],
+        "deprecation_info": "NotDeprecated",
+        "docs": ANSWER_COMMITMENTS_DOCS,
+        "modifier": "Optional",
+        "name": "AnswerCommitments",
+        "ty": {"Map": {
+            "hashers": solutions["ty"]["Map"]["hashers"].clone(),
+            "key": solutions["ty"]["Map"]["key"].clone(),
+            "value": value_id,
+        }},
+    });
+    if commitments != want_commitments
+        || value["path"] != mempool_type_path("AnswerCommitment")
+        || value["def"]["composite"]["fields"] != want_value_fields
+        || !is_primitive(&types, &block_number, "u32")
+    {
+        return Err(format!(
+            "missing or incorrect required mempool AnswerCommitments: {} / {}",
+            serde_json::to_string(&commitments).unwrap_or_default(),
+            serde_json::to_string(&value).unwrap_or_default()
+        ));
+    }
+    let want_count = serde_json::json!({
+        "default": [0, 0, 0, 0],
+        "deprecation_info": "NotDeprecated",
+        "docs": COMMITMENT_COUNT_DOCS,
+        "modifier": "Default",
+        "name": "CommitmentCount",
+        "ty": seq["ty"].clone(),
+    });
+    if entries[len - 1] != want_count {
+        return Err(format!(
+            "missing or incorrect required mempool CommitmentCount: {}",
+            serde_json::to_string(&entries[len - 1]).unwrap_or_default()
+        ));
+    }
+    entries.truncate(len - 2);
+
+    // Errors, after `BlockWaitTooShort`.
+    let errors = mempool_variants(after, "error")?;
+    let len = errors.len();
+    let want: Vec<Value> = COMMITMENT_ERRORS
+        .iter()
+        .enumerate()
+        .map(|(i, (name, docs))| {
+            serde_json::json!({"docs": docs, "index": len - 2 + i, "name": name})
+        })
+        .collect();
+    if len < 3 || errors[len - 3]["name"] != "BlockWaitTooShort" || errors[len - 2..] != want[..] {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool commitment errors: {}",
+            serde_json::to_string(&errors.get(len.saturating_sub(2)..)).unwrap_or_default()
+        ));
+    }
+    errors.truncate(len - 2);
+
+    // Events, after `OrderDepositReleased`.
+    let events = mempool_variants(after, "event")?.clone();
+    let order_id_ty = field_ty(&events, "OrderDepositReleased", "order_id");
+    let account_ty = field_ty(&events, "OrderDepositReleased", "proposer");
+    let balance_ty = field_ty(&events, "OrderDepositReleased", "amount");
+    let commitment_ty = field_ty(&events, "AnswerCommitted", "commitment");
+    let events = mempool_variants(after, "event")?;
+    let len = events.len();
+    let want = serde_json::json!([
+        {
+            "docs": ANSWER_COMMITTED_DOCS,
+            "fields": [
+                {"name": "order_id", "type": order_id_ty.clone(), "typeName": "u64"},
+                {"name": "solver", "type": account_ty.clone(), "typeName": "T::AccountId"},
+                {"name": "commitment", "type": commitment_ty.clone(), "typeName": "sp_core::H256"},
+                {"name": "commit_block", "type": block_number, "typeName": "BlockNumberFor<T>"},
+            ],
+            "index": len.saturating_sub(2),
+            "name": "AnswerCommitted",
+        },
+        {
+            "docs": COMMITMENT_FORFEITED_DOCS,
+            "fields": [
+                {"name": "order_id", "type": order_id_ty, "typeName": "u64"},
+                {"name": "solver", "type": account_ty, "typeName": "T::AccountId"},
+                {"name": "to_proposer", "type": balance_ty.clone(), "typeName": "BalanceOf<T>"},
+                {"name": "burned", "type": balance_ty, "typeName": "BalanceOf<T>"},
+            ],
+            "index": len.saturating_sub(1),
+            "name": "CommitmentForfeited",
+        },
+    ]);
+    if len < 3
+        || events[len - 3]["name"] != "OrderDepositReleased"
+        || events.get(len - 2..) != want.as_array().map(Vec::as_slice)
+        || !is_h256(&types, &commitment_ty)
+    {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool commitment events: {}",
+            serde_json::to_string(&events.get(len.saturating_sub(2)..)).unwrap_or_default()
+        ));
+    }
+    events.truncate(len - 2);
+    Ok(())
+}
+
 // W3-001 B5b (ordering key, N2). Exact deltas:
 // - `effective_at: BlockNumber` and `seq: u32` appended to `JobSolution`,
 //   `RankedSolver` and `FrontRunner`; the last two also gain a `BlockNumber`
@@ -2392,6 +2657,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     // First: W3-001 then W3-006 append after every other mempool delta,
     // newest first.
+    normalize_commitments(&mut left, &mut right)?;
     normalize_ordering_key(&mut left, &mut right)?;
     normalize_min_block_wait(&mut left, &mut right)?;
     normalize_deadline_too_short(&mut left, &mut right)?;
@@ -3078,6 +3344,106 @@ mod tests {
             .iter_mut()
             .filter(|ty| ty["type"]["path"] == path)
             .collect()
+    }
+
+    #[test]
+    fn requires_exact_mempool_commitments() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        let variant = |metadata: &mut Value, kind: &str, name: &str, field: &str, value: Value| {
+            mempool_variants(metadata, kind)
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == name)
+                .unwrap()[field] = value;
+        };
+        // The call.
+        for field in ["docs", "index"] {
+            let mut wrong = after.clone();
+            variant(
+                &mut wrong,
+                "calls",
+                "commit_answer",
+                field,
+                Value::from(999),
+            );
+            cases.push((format!("commit_answer.{field}"), wrong));
+        }
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "calls")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "commit_answer")
+            .unwrap()["fields"][1]["typeName"] = Value::from("H256");
+        cases.push(("commit_answer field".into(), wrong));
+        // The constant.
+        for (field, value) in [
+            ("value", serde_json::json!([63, 0, 0, 0])),
+            ("docs", Value::from("mutated")),
+            ("ty", Value::from(0)),
+        ] {
+            let mut wrong = after.clone();
+            mempool_constants(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|c| c["name"] == "MaxCommitmentsPerOrder")
+                .unwrap()[field] = value;
+            cases.push((format!("MaxCommitmentsPerOrder.{field}"), wrong));
+        }
+        // The storage.
+        for (name, field) in [
+            ("AnswerCommitments", "docs"),
+            ("AnswerCommitments", "modifier"),
+            ("AnswerCommitments", "ty"),
+            ("CommitmentCount", "docs"),
+            ("CommitmentCount", "modifier"),
+            ("CommitmentCount", "default"),
+        ] {
+            let mut wrong = after.clone();
+            mempool_storage_entries(&mut wrong)
+                .unwrap()
+                .iter_mut()
+                .find(|e| e["name"] == name)
+                .unwrap()[field] = Value::from("mutated");
+            cases.push((format!("{name}.{field}"), wrong));
+        }
+        let mut wrong = after.clone();
+        for ty in types_at(&mut wrong, "AnswerCommitment") {
+            ty["type"]["def"]["composite"]["fields"][2]["name"] = Value::from("amount");
+        }
+        cases.push(("AnswerCommitment.deposit renamed".into(), wrong));
+        let mut misplaced = after.clone();
+        let entries = mempool_storage_entries(&mut misplaced).unwrap();
+        let len = entries.len();
+        entries.swap(len - 1, len - 3);
+        cases.push(("misplaced commitment storage".into(), misplaced));
+        // The errors and events.
+        for (kind, name) in [
+            ("error", "CommitmentCapReached"),
+            ("error", "CommitmentDepositNotAvailable"),
+            ("event", "AnswerCommitted"),
+            ("event", "CommitmentForfeited"),
+        ] {
+            for field in ["docs", "index", "name"] {
+                let mut wrong = after.clone();
+                variant(&mut wrong, kind, name, field, Value::from(999));
+                cases.push((format!("{name}.{field}"), wrong));
+            }
+        }
+        let mut wrong = after.clone();
+        mempool_variants(&mut wrong, "event")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "CommitmentForfeited")
+            .unwrap()["fields"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        cases.push(("CommitmentForfeited without burned".into(), wrong));
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]

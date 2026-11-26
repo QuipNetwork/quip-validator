@@ -86,6 +86,7 @@ type JobSolutionOf<T> = types::JobSolution<AccountIdOf<T>, BlockNumberOf<T>, Sol
 type SolverInfoOf<T> = types::SolverInfo<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type FrontRunnerOf<T> = types::FrontRunner<AccountIdOf<T>, BlockNumberOf<T>>;
 type AnswerOwnerOf<T> = types::AnswerOwner<AccountIdOf<T>, BlockNumberOf<T>>;
+type AnswerCommitmentOf<T> = types::AnswerCommitment<BlockNumberOf<T>, BalanceOf<T>>;
 type WinnerSummariesOf<T> = frame_support::pallet_prelude::BoundedVec<
     types::WinnerSummary<AccountIdOf<T>, BalanceOf<T>>,
     frame_support::traits::ConstU32<{ types::MAX_REWARD_WINNERS }>,
@@ -303,6 +304,11 @@ pub mod pallet {
         #[pallet::constant]
         type MinBlockWait: Get<BlockNumberFor<Self>>;
 
+        /// The most outstanding answer commitments one order holds (W3-001,
+        /// design §B5 v2 item 3): 64, twice the 32-solver cap.
+        #[pallet::constant]
+        type MaxCommitmentsPerOrder: Get<u32>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -460,6 +466,24 @@ pub mod pallet {
     #[pallet::storage]
     pub type NextSubmissionSeq<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
 
+    /// Outstanding answer commitments (W3-001): at most one per (order,
+    /// solver), at most `MaxCommitmentsPerOrder` per order, each holding its
+    /// reserved deposit. Those still outstanding when the order is finalised
+    /// are forfeited to its proposer.
+    #[pallet::storage]
+    pub type AnswerCommitments<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        T::AccountId,
+        AnswerCommitmentOf<T>,
+    >;
+
+    /// The number of outstanding commitments on each order (W3-001).
+    #[pallet::storage]
+    pub type CommitmentCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -563,6 +587,24 @@ pub mod pallet {
             proposer: T::AccountId,
             amount: BalanceOf<T>,
         },
+        /// A solver committed to an answer on an order (W3-001), or replaced
+        /// its commitment: `commit_block` is the effective time its reveal
+        /// will carry.
+        AnswerCommitted {
+            order_id: u64,
+            solver: T::AccountId,
+            commitment: sp_core::H256,
+            commit_block: BlockNumberFor<T>,
+        },
+        /// A commitment was still outstanding when its order was finalised
+        /// (W3-001): its deposit went to the proposer (`to_proposer`), or was
+        /// burned when the proposer could not receive it (`burned`).
+        CommitmentForfeited {
+            order_id: u64,
+            solver: T::AccountId,
+            to_proposer: BalanceOf<T>,
+            burned: BalanceOf<T>,
+        },
     }
 
     #[pallet::error]
@@ -645,6 +687,11 @@ pub mod pallet {
         DeadlineTooShort,
         /// `block_wait` is below `MinBlockWait` (W3-001).
         BlockWaitTooShort,
+        /// The order already holds `MaxCommitmentsPerOrder` commitments
+        /// (W3-001).
+        CommitmentCapReached,
+        /// The solver cannot reserve the commitment deposit (W3-001).
+        CommitmentDepositNotAvailable,
     }
 
     #[pallet::call]
@@ -1050,6 +1097,78 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             Self::do_submit_solution(ensure_signed(origin)?, order_id, solutions, Some(payee))
         }
+
+        /// Commit to an answer before revealing it (W3-001, design §B5 v2).
+        ///
+        /// `commitment` is `blake2_256` of the SCALE encoding of
+        /// `(b"quip-answer-commit-v1", order_id, solver,
+        /// blake2_256(SCALE(solutions)), payee, salt)`, where `salt` is 32
+        /// random bytes: a low-entropy salt on a small order lets a watcher
+        /// brute-force the commitment. Allowed to a registered solver eligible
+        /// for the order's mode, while the order is open and not expired.
+        /// Committing again replaces the commitment (and its block) in place;
+        /// a first commitment reserves the commitment deposit, which the reveal
+        /// returns and finalisation forfeits to the proposer if it is still
+        /// outstanding.
+        #[pallet::call_index(10)]
+        #[pallet::weight(<T as Config>::WeightInfo::commit_answer())]
+        pub fn commit_answer(
+            origin: OriginFor<T>,
+            order_id: u64,
+            commitment: sp_core::H256,
+        ) -> DispatchResult {
+            let solver = ensure_signed(origin)?;
+            let info = Solvers::<T>::get(&solver).ok_or(Error::<T>::SolverNotRegistered)?;
+            let order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
+            let now = frame_system::Pallet::<T>::block_number();
+            ensure!(
+                order.status == types::OrderStatus::Opened
+                    && !lifecycle::is_expired(
+                        now,
+                        order.created_at,
+                        order.first_solution_at,
+                        &order.timing,
+                    ),
+                Error::<T>::OrderNotOpen
+            );
+            ensure!(
+                Self::solver_is_eligible(&solver, info.solver_type, &order.mode),
+                Error::<T>::NotEligibleSolver
+            );
+            let entry = match AnswerCommitments::<T>::get(order_id, &solver) {
+                Some(existing) => AnswerCommitmentOf::<T> {
+                    commitment,
+                    commit_block: now,
+                    deposit: existing.deposit,
+                },
+                None => {
+                    // The cap before the reserve: a refused commitment changes
+                    // nothing.
+                    let count = CommitmentCount::<T>::get(order_id);
+                    ensure!(
+                        count < T::MaxCommitmentsPerOrder::get(),
+                        Error::<T>::CommitmentCapReached
+                    );
+                    let deposit = Self::commitment_deposit();
+                    T::Currency::reserve(&solver, deposit)
+                        .map_err(|_| Error::<T>::CommitmentDepositNotAvailable)?;
+                    CommitmentCount::<T>::insert(order_id, count.saturating_add(1));
+                    AnswerCommitmentOf::<T> {
+                        commitment,
+                        commit_block: now,
+                        deposit,
+                    }
+                }
+            };
+            AnswerCommitments::<T>::insert(order_id, &solver, entry);
+            Self::deposit_event(Event::AnswerCommitted {
+                order_id,
+                solver,
+                commitment,
+                commit_block: now,
+            });
+            Ok(())
+        }
     }
 
     #[pallet::hooks]
@@ -1139,7 +1258,7 @@ pub mod pallet {
         /// Work is bounded by `MAX_FINALISED_ORDERS_PER_BLOCK`. Overflow
         /// shares capacity with later due buckets while the head progresses.
         fn on_initialize(now: BlockNumberFor<T>) -> Weight {
-            let (finalised, buckets_visited) = Self::finalise_expired_orders(now);
+            let (finalised, buckets_visited, forfeited) = Self::finalise_expired_orders(now);
             let (pruned, prune_buckets) = Self::prune_closed_orders(now);
             <T as Config>::WeightInfo::finalise_expired_orders(finalised)
                 // Extra cursor plus the bounded look-ahead key on every visit.
@@ -1153,6 +1272,8 @@ pub mod pallet {
                 )
                 // W3-006: any finalised order may be auto-closed.
                 .saturating_add(<T as Config>::WeightInfo::auto_close_unsolved(finalised))
+                // W3-001: the commitments actually forfeited.
+                .saturating_add(<T as Config>::WeightInfo::forfeit_commitments(forfeited))
                 .saturating_add(<T as Config>::WeightInfo::prune_closed_orders(pruned).max(
                     weights::closed_order_pruning_weight::<T>(pruned, prune_buckets),
                 ))
@@ -2019,7 +2140,8 @@ pub mod pallet {
         /// first, then the saved scan serves later due buckets. If the scan is
         /// caught up, unused capacity returns to the head. Only two cursors are
         /// stored; processed keys are removed, so no per-bucket list is needed.
-        fn finalise_expired_orders(now: BlockNumberFor<T>) -> (u32, u64) {
+        fn finalise_expired_orders(now: BlockNumberFor<T>) -> (u32, u64, u32) {
+            let mut forfeited = 0u32;
             let mut remaining = types::MAX_FINALISED_ORDERS_PER_BLOCK;
             let mut visits = types::MAX_FINALISED_ORDERS_PER_BLOCK;
             let mut head_share = types::EXPIRY_BUCKET_SHARE;
@@ -2027,7 +2149,8 @@ pub mod pallet {
             let mut scan = NextExpiryBucket::<T>::get();
             let mut overflow = false;
             while head <= now && head_share > 0 && visits > 0 {
-                let (taken, drained) = Self::drain_expiry_bucket(head, head_share);
+                let (taken, drained, f) = Self::drain_expiry_bucket(head, head_share);
+                forfeited = forfeited.saturating_add(f);
                 remaining -= taken;
                 head_share -= taken;
                 visits -= 1;
@@ -2049,8 +2172,9 @@ pub mod pallet {
                 scan = head;
             }
             while scan <= now && remaining > 0 && visits > 0 {
-                let (taken, drained) =
+                let (taken, drained, f) =
                     Self::drain_expiry_bucket(scan, remaining.min(types::EXPIRY_BUCKET_SHARE));
+                forfeited = forfeited.saturating_add(f);
                 remaining -= taken;
                 visits -= 1;
                 if scan == head && drained {
@@ -2059,7 +2183,8 @@ pub mod pallet {
                 scan = scan.saturating_add(One::one());
             }
             if overflow && scan > now && remaining > 0 && visits > 0 {
-                let (taken, drained) = Self::drain_expiry_bucket(head, remaining);
+                let (taken, drained, f) = Self::drain_expiry_bucket(head, remaining);
+                forfeited = forfeited.saturating_add(f);
                 remaining -= taken;
                 visits -= 1;
                 if drained {
@@ -2071,10 +2196,13 @@ pub mod pallet {
             (
                 types::MAX_FINALISED_ORDERS_PER_BLOCK - remaining,
                 u64::from(types::MAX_FINALISED_ORDERS_PER_BLOCK - visits),
+                forfeited,
             )
         }
 
-        fn drain_expiry_bucket(bucket: BlockNumberFor<T>, limit: u32) -> (u32, bool) {
+        /// Returns the orders taken, whether the bucket is drained, and the
+        /// commitments those orders forfeited.
+        fn drain_expiry_bucket(bucket: BlockNumberFor<T>, limit: u32) -> (u32, bool, u32) {
             // One extra key distinguishes a drained bucket from a full share.
             let mut ids: Vec<u64> = OrdersExpiringAt::<T>::iter_key_prefix(bucket)
                 .take(limit.saturating_add(1) as usize)
@@ -2082,11 +2210,12 @@ pub mod pallet {
             let drained = ids.len() <= limit as usize;
             ids.truncate(limit as usize);
             let taken = ids.len() as u32;
+            let mut forfeited = 0u32;
             for order_id in ids {
                 OrdersExpiringAt::<T>::remove(bucket, order_id);
-                Self::finalise_order(order_id);
+                forfeited = forfeited.saturating_add(Self::finalise_order(order_id));
             }
-            (taken, drained)
+            (taken, drained, forfeited)
         }
 
         /// Mark an open order expired at its effective expiry and announce the
@@ -2098,22 +2227,27 @@ pub mod pallet {
         /// An order with no accepted solution is closed here (W3-006, design
         /// §B4 v2 item 2), so it is pruned without anyone calling
         /// `reclaim_order`: see `auto_close_unsolved`.
-        fn finalise_order(order_id: u64) {
+        ///
+        /// Commitments still outstanding are forfeited to the proposer first
+        /// (W3-001), on every path that finalises: the queue and the lazy
+        /// settlement alike. Returns how many were forfeited.
+        fn finalise_order(order_id: u64) -> u32 {
             let Some(mut order) = JobOrders::<T>::get(order_id) else {
-                return;
+                return 0;
             };
             if order.status != types::OrderStatus::Opened {
-                return;
+                return 0;
             }
 
             order.status = types::OrderStatus::Expired;
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
             Self::deposit_event(Event::OrderExpired { order_id });
+            let forfeited = Self::forfeit_commitments(order_id, &order.proposer);
 
             if order.solution_count == 0 {
                 Self::auto_close_unsolved(order_id, order);
-                return;
+                return forfeited;
             }
             match Self::compute_payouts(order_id, &order) {
                 Ok(payouts) => {
@@ -2128,6 +2262,67 @@ pub mod pallet {
                 }
             }
             Self::prune_solutions(order_id);
+            forfeited
+        }
+
+        /// The deposit a commitment reserves (W3-001): B4a's storage rates on
+        /// the bounded size of an `AnswerCommitments` entry -- its key (the
+        /// order id and the solver, each behind a 16-byte `Blake2_128Concat`
+        /// hash) and its value -- the stored-program rate, as for job orders.
+        pub fn commitment_deposit() -> BalanceOf<T> {
+            let bytes = 16usize
+                .saturating_add(u64::max_encoded_len())
+                .saturating_add(16)
+                .saturating_add(T::AccountId::max_encoded_len())
+                .saturating_add(AnswerCommitmentOf::<T>::max_encoded_len());
+            let bytes: BalanceOf<T> = u32::try_from(bytes).unwrap_or(u32::MAX).into();
+            T::OrderDepositPerItem::get()
+                .saturating_add(T::OrderDepositPerByte::get().saturating_mul(bytes))
+        }
+
+        /// Forfeit every commitment still outstanding on a finalised order to
+        /// its proposer (W3-001; owner decision of 2026-11-25): the deposit
+        /// moves from the committer's reserve into the proposer's free balance.
+        /// `repatriate_reserved` needs a living beneficiary, so for a reaped
+        /// proposer the deposit is unreserved and transferred instead, which
+        /// recreates the account when it covers the existential deposit; when
+        /// even that fails, the freed deposit is burned. Bounded by
+        /// `MaxCommitmentsPerOrder`; returns the number forfeited.
+        pub(crate) fn forfeit_commitments(order_id: u64, proposer: &T::AccountId) -> u32 {
+            CommitmentCount::<T>::remove(order_id);
+            let mut forfeited = 0u32;
+            for (solver, entry) in AnswerCommitments::<T>::drain_prefix(order_id)
+                .take(T::MaxCommitmentsPerOrder::get() as usize)
+            {
+                let (to_proposer, burned) = match T::Currency::repatriate_reserved(
+                    &solver,
+                    proposer,
+                    entry.deposit,
+                    frame_support::traits::BalanceStatus::Free,
+                ) {
+                    Ok(missing) => (entry.deposit.saturating_sub(missing), Zero::zero()),
+                    Err(_) => {
+                        let freed = entry
+                            .deposit
+                            .saturating_sub(T::Currency::unreserve(&solver, entry.deposit));
+                        if T::Currency::transfer(&solver, proposer, freed, AllowDeath).is_ok() {
+                            (freed, Zero::zero())
+                        } else {
+                            let (imbalance, missing) = T::Currency::slash(&solver, freed);
+                            drop(imbalance);
+                            (Zero::zero(), freed.saturating_sub(missing))
+                        }
+                    }
+                };
+                Self::deposit_event(Event::CommitmentForfeited {
+                    order_id,
+                    solver,
+                    to_proposer,
+                    burned,
+                });
+                forfeited = forfeited.saturating_add(1);
+            }
+            forfeited
         }
 
         /// Refund and close an expired order with no accepted solution, as

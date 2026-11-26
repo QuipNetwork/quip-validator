@@ -293,6 +293,19 @@ impl<AccountId, BlockNumber: Copy> FrontRunner<AccountId, BlockNumber> {
     }
 }
 
+/// An outstanding answer commitment (W3-001): the hash a solver committed
+/// to, the block it committed in (the effective time its reveal will carry),
+/// and the deposit reserved for it, released or forfeited as exactly this
+/// amount.
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
+pub struct AnswerCommitment<BlockNumber, Balance> {
+    pub commitment: sp_core::H256,
+    pub commit_block: BlockNumber,
+    pub deposit: Balance,
+}
+
 /// The owner of a canonical answer on an order (W1-012, extended by W3-001):
 /// the solver, and the energy and ordering key of its accepted submission, so
 /// a contested answer and a ranking recompute need no payload reads.

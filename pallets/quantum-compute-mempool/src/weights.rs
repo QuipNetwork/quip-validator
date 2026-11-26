@@ -47,6 +47,12 @@ pub fn schedule_order_pruning_weight<T: crate::Config>() -> Weight {
 pub fn lazy_finalisation_weight<T: crate::Config>() -> Weight {
     <<T as crate::Config>::WeightInfo as WeightInfo>::finalise_expired_orders(1)
         .saturating_add(T::DbWeight::get().writes(1))
+        // W3-001: finalisation forfeits the order's outstanding commitments.
+        .saturating_add(
+            <<T as crate::Config>::WeightInfo as WeightInfo>::forfeit_commitments(
+                <T as crate::Config>::MaxCommitmentsPerOrder::get(),
+            ),
+        )
 }
 
 /// Conservative unmeasured cleanup bound, including empty-bucket traversal.
@@ -346,6 +352,8 @@ pub trait WeightInfo {
     fn finalise_expired_orders(k: u32) -> Weight;
     fn prune_closed_orders(k: u32) -> Weight;
     fn auto_close_unsolved(k: u32) -> Weight;
+    fn commit_answer() -> Weight;
+    fn forfeit_commitments(c: u32) -> Weight;
 }
 
 pub struct SubstrateWeight<T>(PhantomData<T>);
@@ -398,6 +406,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     fn auto_close_unsolved(k: u32) -> Weight {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::auto_close_unsolved(k)
     }
+    fn commit_answer() -> Weight {
+        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::commit_answer()
+    }
+    fn forfeit_commitments(c: u32) -> Weight {
+        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::forfeit_commitments(c)
+    }
 }
 impl WeightInfo for () {
     fn propose_job_with_payee_requirement(n: u32, e: u32, b: u32, t: u32) -> Weight {
@@ -445,5 +459,11 @@ impl WeightInfo for () {
     }
     fn auto_close_unsolved(k: u32) -> Weight {
         <() as BenchmarkWeightInfo>::auto_close_unsolved(k)
+    }
+    fn commit_answer() -> Weight {
+        <() as BenchmarkWeightInfo>::commit_answer()
+    }
+    fn forfeit_commitments(c: u32) -> Weight {
+        <() as BenchmarkWeightInfo>::forfeit_commitments(c)
     }
 }

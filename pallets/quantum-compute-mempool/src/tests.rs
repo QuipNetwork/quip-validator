@@ -5177,3 +5177,283 @@ mod w3_001_storage_version {
         });
     }
 }
+
+/// W3-001 B5c (design §B5 v2 item 3; owner decision of 2026-11-25) -- answer
+/// commitments, their deposits, and the forfeit of those still outstanding at
+/// finalisation.
+mod w3_001_commitments {
+    use super::*;
+    use crate::{AnswerCommitments, CommitmentCount};
+    use frame_support::traits::{Currency, ReservableCurrency};
+    use sp_core::H256;
+
+    fn rates() {
+        OrderDepositPerItem::set(10);
+        OrderDepositPerByte::set(1);
+    }
+
+    fn register(who: AccountId) {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+    }
+
+    fn commit(who: AccountId, id: u64, byte: u8) -> frame_support::dispatch::DispatchResult {
+        QuantumComputeMempool::commit_answer(
+            RuntimeOrigin::signed(who),
+            id,
+            H256::repeat_byte(byte),
+        )
+    }
+
+    fn forfeits(id: u64) -> Vec<(AccountId, u128, u128)> {
+        System::events()
+            .into_iter()
+            .filter_map(|record| match record.event {
+                RuntimeEvent::QuantumComputeMempool(crate::Event::CommitmentForfeited {
+                    order_id,
+                    solver,
+                    to_proposer,
+                    burned,
+                }) if order_id == id => Some((solver, to_proposer, burned)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_no_commitments(id: u64) {
+        assert!(AnswerCommitments::<Test>::iter_prefix(id).next().is_none());
+        assert!(!CommitmentCount::<Test>::contains_key(id));
+    }
+
+    #[test]
+    fn a_commitment_is_stored_with_its_deposit_reserved() {
+        new_test_ext().execute_with(|| {
+            rates();
+            register(2);
+            let id = propose_single_best(1, 10, 5);
+            let deposit = QuantumComputeMempool::commitment_deposit();
+            assert!(deposit > 10, "priced on the entry's bounded size");
+            let reserved = Balances::reserved_balance(2);
+            assert_ok!(commit(2, id, 7));
+            let entry = AnswerCommitments::<Test>::get(id, 2).unwrap();
+            assert_eq!(
+                (entry.commitment, entry.commit_block, entry.deposit),
+                (H256::repeat_byte(7), 1, deposit)
+            );
+            assert_eq!(Balances::reserved_balance(2), reserved + deposit);
+            assert_eq!(CommitmentCount::<Test>::get(id), 1);
+            System::assert_last_event(
+                crate::Event::AnswerCommitted {
+                    order_id: id,
+                    solver: 2,
+                    commitment: H256::repeat_byte(7),
+                    commit_block: 1,
+                }
+                .into(),
+            );
+        });
+    }
+
+    /// A second commitment replaces the first in place: a new hash and block,
+    /// the same deposit, no new reserve, the same count.
+    #[test]
+    fn recommitting_replaces_in_place() {
+        new_test_ext().execute_with(|| {
+            rates();
+            register(2);
+            let id = propose_single_best(1, 10, 5);
+            assert_ok!(commit(2, id, 7));
+            let reserved = Balances::reserved_balance(2);
+            let deposit = AnswerCommitments::<Test>::get(id, 2).unwrap().deposit;
+            System::set_block_number(3);
+            assert_ok!(commit(2, id, 8));
+            let entry = AnswerCommitments::<Test>::get(id, 2).unwrap();
+            assert_eq!(
+                (entry.commitment, entry.commit_block, entry.deposit),
+                (H256::repeat_byte(8), 3, deposit)
+            );
+            assert_eq!(Balances::reserved_balance(2), reserved);
+            assert_eq!(CommitmentCount::<Test>::get(id), 1);
+        });
+    }
+
+    /// Each refusal changes nothing, and the cap is checked before the
+    /// reserve: a solver who cannot pay is told the cap is reached.
+    #[test]
+    fn refused_commitments_change_nothing() {
+        new_test_ext().execute_with(|| {
+            rates();
+            register(2);
+            register(3);
+            let id = propose_single_best(1, 10, 5);
+            assert_noop!(commit(4, id, 1), crate::Error::<Test>::SolverNotRegistered);
+            assert_noop!(commit(2, 99, 1), crate::Error::<Test>::OrderNotFound);
+            // Solver 3 with less free balance than the deposit: it cannot
+            // reserve. (Free cannot go to 0 while it holds a reserve.)
+            Balances::make_free_balance_be(&3, 5);
+            assert_noop!(
+                commit(3, id, 1),
+                crate::Error::<Test>::CommitmentDepositNotAvailable
+            );
+            MaxCommitmentsPerOrder::set(1);
+            assert_ok!(commit(2, id, 1));
+            assert_noop!(commit(3, id, 2), crate::Error::<Test>::CommitmentCapReached);
+            // Not eligible: a bid order that names only solver 2.
+            let spec_id = JobSpecs::<Test>::iter_keys().next().unwrap();
+            let bid = NextOrderId::<Test>::get();
+            assert_ok!(QuantumComputeMempool::propose_job(
+                RuntimeOrigin::signed(1),
+                spec_id,
+                sample_params(),
+                100,
+                JobMode::Bid {
+                    miners: Some(bounded(vec![2])),
+                    miner_types: None,
+                },
+                RewardResolution::SingleBest,
+                10,
+                5,
+                ResultDelivery::OnChainOnly,
+            ));
+            Balances::make_free_balance_be(&3, 1_000_000);
+            assert_noop!(commit(3, bid, 1), crate::Error::<Test>::NotEligibleSolver);
+            // Expired: no commitment after the order's deadline.
+            System::set_block_number(20);
+            assert_noop!(commit(2, bid, 1), crate::Error::<Test>::OrderNotOpen);
+        });
+    }
+
+    /// Unrevealed commitments are forfeited to the proposer when the order is
+    /// finalised, on the queue's path, solved or not; nothing is left.
+    #[test]
+    fn outstanding_commitments_are_forfeited_to_the_proposer_at_finalisation() {
+        for solved in [false, true] {
+            new_test_ext().execute_with(|| {
+                rates();
+                for who in [2, 3, 4] {
+                    register(who);
+                }
+                let id = propose_single_best(1, 2, 2);
+                if solved {
+                    assert_ok!(QuantumComputeMempool::submit_solution(
+                        RuntimeOrigin::signed(2),
+                        id,
+                        sample_solution()
+                    ));
+                }
+                assert_ok!(commit(3, id, 3));
+                assert_ok!(commit(4, id, 4));
+                let deposit = QuantumComputeMempool::commitment_deposit();
+                let reserved = |who| Balances::reserved_balance(who);
+                let (r3, r4, free1) = (reserved(3), reserved(4), Balances::free_balance(1));
+                System::reset_events();
+                run_to_block(3);
+                assert_ne!(
+                    JobOrders::<Test>::get(id).unwrap().status,
+                    OrderStatus::Opened
+                );
+                let mut got = forfeits(id);
+                got.sort();
+                assert_eq!(
+                    got,
+                    vec![(3, deposit, 0), (4, deposit, 0)],
+                    "solved {solved}"
+                );
+                assert_eq!((reserved(3), reserved(4)), (r3 - deposit, r4 - deposit));
+                let refund = if solved { 0 } else { 100 };
+                assert_eq!(Balances::free_balance(1), free1 + 2 * deposit + refund);
+                assert_no_commitments(id);
+            });
+        }
+    }
+
+    /// The lazy settlement (B4c) finalises inline, and forfeits too.
+    #[test]
+    fn lazy_settlement_forfeits_too() {
+        new_test_ext().execute_with(|| {
+            rates();
+            register(3);
+            let id = propose_single_best(1, 1, 1);
+            assert_ok!(commit(3, id, 3));
+            let deposit = QuantumComputeMempool::commitment_deposit();
+            System::set_block_number(5);
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+            assert_eq!(forfeits(id), vec![(3, deposit, 0)]);
+            assert_no_commitments(id);
+        });
+    }
+
+    /// The proposer reaped before finalisation: the deposit recreates its
+    /// account when it covers the existential deposit, and is burned when it
+    /// does not. (A solved order, so no refund recreates the proposer.)
+    #[test]
+    fn a_reaped_proposer_is_recreated_or_the_deposit_burned() {
+        for (ed, per_byte, recreated) in [(1u128, 1u128, true), (50, 0, false)] {
+            new_test_ext().execute_with(|| {
+                OrderDepositPerItem::set(10);
+                OrderDepositPerByte::set(per_byte);
+                ExistentialDeposit::set(ed);
+                register(2);
+                register(3);
+                let id = propose_single_best(1, 2, 2);
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    id,
+                    sample_solution()
+                ));
+                assert_ok!(commit(3, id, 3));
+                let deposit = QuantumComputeMempool::commitment_deposit();
+                assert_eq!(deposit >= ed, recreated);
+                // Reap the proposer: its order deposit, then its free balance.
+                let held = Balances::reserved_balance(1);
+                let _ = Balances::slash_reserved(&1, held);
+                Balances::make_free_balance_be(&1, 0);
+                assert!(!System::account_exists(&1));
+                let issuance = Balances::total_issuance();
+                System::reset_events();
+                run_to_block(3);
+                if recreated {
+                    assert_eq!(forfeits(id), vec![(3, deposit, 0)]);
+                    assert_eq!(Balances::free_balance(1), deposit);
+                    assert_eq!(Balances::total_issuance(), issuance);
+                } else {
+                    assert_eq!(forfeits(id), vec![(3, 0, deposit)]);
+                    assert!(!System::account_exists(&1));
+                    assert_eq!(Balances::total_issuance(), issuance - deposit);
+                }
+                assert_no_commitments(id);
+            });
+        }
+    }
+
+    /// `on_initialize` charges exactly the forfeits it performed: the same
+    /// block with and without three commitments differs by
+    /// `forfeit_commitments(3) - forfeit_commitments(0)`.
+    #[test]
+    fn on_initialize_charges_the_commitments_forfeited() {
+        use crate::weights::WeightInfo as _;
+        let charged = |commitments: bool| {
+            new_test_ext().execute_with(|| {
+                rates();
+                for who in [2, 3, 4] {
+                    register(who);
+                }
+                let id = propose_single_best(1, 1, 1);
+                if commitments {
+                    for who in [2, 3, 4] {
+                        assert_ok!(commit(who, id, who as u8));
+                    }
+                }
+                System::set_block_number(2);
+                QuantumComputeMempool::on_initialize(2)
+            })
+        };
+        let weights = <Test as crate::Config>::WeightInfo::forfeit_commitments;
+        assert_eq!(charged(true) - charged(false), weights(3) - weights(0));
+    }
+}

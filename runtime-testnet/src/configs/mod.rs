@@ -921,6 +921,9 @@ parameter_types! {
     pub const QuantumMaxBlockWait: BlockNumber = 100;
     /// W3-001: room for an honest reveal one block behind a copied answer.
     pub const QuantumMinBlockWait: BlockNumber = 2;
+    /// W3-001: outstanding answer commitments per order, twice the 32-solver
+    /// cap.
+    pub const QuantumMaxCommitmentsPerOrder: u32 = 64;
     pub const QuantumMinReward: Balance = UNIT;
     /// Root of the compute-mempool's per-order reward escrow accounts (W1-006).
     pub const QuantumEscrowPalletId: frame_support::PalletId = frame_support::PalletId(*b"qp/escrw");
@@ -1069,6 +1072,7 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type OrderDepositPerItem = StorageDepositPerItem;
     type OrderDepositPerByte = StorageDepositPerByte;
     type MinBlockWait = QuantumMinBlockWait;
+    type MaxCommitmentsPerOrder = QuantumMaxCommitmentsPerOrder;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
 }
 
