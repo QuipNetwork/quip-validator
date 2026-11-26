@@ -1738,8 +1738,7 @@ mod tests {
             assert!(!Solvers::<Runtime>::contains_key(&caller));
             let call = pallet_quantum_compute_mempool::Call::claim_reward { order_id: 0 }.into();
             let xt = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call, 0);
-            let expected_fee = TransactionPayment::query_info(xt.clone(), xt.encode().len() as u32)
-                .partial_fee;
+            let expected_fee = settled_claim_fee(&xt);
             assert!(expected_fee > 0);
             assert_ok!(Executive::apply_extrinsic(xt).unwrap());
             // W3-006: the order's storage deposit stays reserved until prune.
@@ -1760,6 +1759,21 @@ mod tests {
                 }) if who == &caller && *actual_fee == expected_fee && *tip == 0
             )));
         });
+    }
+
+    /// The fee a successful `claim_reward` that does not finalise the order
+    /// itself pays (B5c2): the pre-dispatch `query_info` estimate, which
+    /// charges `forfeit_commitments` at the cap, less the fee of the weight
+    /// the call refunds by reporting none forfeited.
+    fn settled_claim_fee(xt: &UncheckedExtrinsic) -> Balance {
+        use pallet_quantum_compute_mempool::weights::{
+            claim_reward_call_weight, with_actual_forfeits,
+        };
+        let declared = claim_reward_call_weight::<Runtime>();
+        let refunded = declared.saturating_sub(with_actual_forfeits::<Runtime>(declared, 0));
+        assert!(refunded.ref_time() > 0);
+        TransactionPayment::query_info(xt.clone(), xt.encode().len() as u32).partial_fee
+            - TransactionPayment::weight_to_fee(refunded)
     }
 
     fn prepare_two_winner_settlement(
@@ -1912,7 +1926,7 @@ mod tests {
             Balances::remove_lock(*b"settle!!", &escrow);
             System::reset_events();
             let retry = signed_test_extrinsic(&signer, Address::Id(caller.clone()), call.clone(), 1);
-            let retry_fee = TransactionPayment::query_info(retry.clone(), retry.encode().len() as u32).partial_fee;
+            let retry_fee = settled_claim_fee(&retry);
             assert_ok!(Executive::apply_extrinsic(retry).unwrap());
             assert_eq!(System::account_nonce(&caller), 2);
             assert_eq!(Balances::free_balance(&caller), initial - failed_fee - retry_fee);

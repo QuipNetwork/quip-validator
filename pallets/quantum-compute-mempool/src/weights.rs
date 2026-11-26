@@ -55,6 +55,36 @@ pub fn lazy_finalisation_weight<T: crate::Config>() -> Weight {
         )
 }
 
+/// `claim_reward`'s declared weight: the settlement, its pruning and
+/// scheduling, and a lazy finalisation forfeiting up to the cap.
+pub fn claim_reward_call_weight<T: crate::Config>() -> Weight {
+    <<T as crate::Config>::WeightInfo as WeightInfo>::claim_reward()
+        .saturating_add(solution_pruning_weight::<T>())
+        .saturating_add(schedule_order_pruning_weight::<T>())
+        .saturating_add(lazy_finalisation_weight::<T>())
+}
+
+/// `reclaim_order`'s declared weight: as `claim_reward`'s, plus the inline
+/// auto-close of an unsolved order.
+pub fn reclaim_order_call_weight<T: crate::Config>() -> Weight {
+    <<T as crate::Config>::WeightInfo as WeightInfo>::reclaim_order()
+        .saturating_add(solution_pruning_weight::<T>())
+        .saturating_add(schedule_order_pruning_weight::<T>())
+        .saturating_add(lazy_finalisation_weight::<T>())
+        .saturating_add(<<T as crate::Config>::WeightInfo as WeightInfo>::auto_close_unsolved(1))
+}
+
+/// A lazy settlement's actual weight (B5c2): `declared` charges
+/// `forfeit_commitments(MaxCommitmentsPerOrder)`; the dispatch reports
+/// `forfeit_commitments(forfeited)` instead, the commitments it actually
+/// forfeited (none when the order was not finalised here).
+pub fn with_actual_forfeits<T: crate::Config>(declared: Weight, forfeited: u32) -> Weight {
+    let forfeit = <<T as crate::Config>::WeightInfo as WeightInfo>::forfeit_commitments;
+    declared
+        .saturating_sub(forfeit(<T as crate::Config>::MaxCommitmentsPerOrder::get()))
+        .saturating_add(forfeit(forfeited))
+}
+
 /// Conservative unmeasured cleanup bound, including empty-bucket traversal.
 pub fn closed_order_pruning_weight<T: crate::Config>(orders: u32, buckets: u64) -> Weight {
     closed_order_pruning_weight_with(T::DbWeight::get(), orders, buckets)

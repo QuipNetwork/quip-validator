@@ -4506,6 +4506,9 @@ mod w3_006_deposit {
                 + u64::max_encoded_len()
                 // `NextSubmissionSeq`: a u64 key and a u32 value (W3-001).
                 + u64::max_encoded_len()
+                + u32::max_encoded_len()
+                // `CommitmentCount`: likewise (W3-001, B5c2).
+                + u64::max_encoded_len()
                 + u32::max_encoded_len();
             let needed = 10 + (order.encoded_size() + side) as u128;
             let deposit = OrderDeposit::<Test>::get(id).unwrap();
@@ -5547,6 +5550,122 @@ mod w3_001_commitments {
             assert_eq!(forfeits(id), vec![(committer, left)]);
             assert_eq!(Balances::reserved_balance(committer), 0);
             assert_eq!(Balances::total_issuance(), issuance - left);
+        });
+    }
+
+    /// B5c2, what the burn leaves: a committer cannot hold its deposit
+    /// alone -- while anything is reserved its free balance stays at the
+    /// existential deposit at least -- so a deregistered committer that has
+    /// sent everything else away ends with exactly the existential deposit,
+    /// nothing reserved, and its account alive. Nothing reaches the proposer.
+    #[test]
+    fn a_deregistered_committer_keeps_only_its_existential_deposit_after_the_burn() {
+        new_test_ext().execute_with(|| {
+            rates();
+            ExistentialDeposit::set(10);
+            let committer = 70;
+            Balances::make_free_balance_be(&committer, 1_000_000);
+            register(committer);
+            let id = propose_single_best(1, 2, 2);
+            assert_ok!(commit(committer, id, 1));
+            let deposit = QuantumComputeMempool::commitment_deposit(100);
+            assert_ok!(QuantumComputeMempool::deregister_solver(
+                RuntimeOrigin::signed(committer)
+            ));
+            assert_ok!(Balances::transfer_all(
+                RuntimeOrigin::signed(committer),
+                5,
+                false
+            ));
+            assert_eq!(
+                (
+                    Balances::free_balance(committer),
+                    Balances::reserved_balance(committer)
+                ),
+                (10, deposit),
+                "the reserve keeps the existential deposit free"
+            );
+            let (issuance, free1) = (Balances::total_issuance(), Balances::free_balance(1));
+            System::reset_events();
+            run_to_block(3);
+            assert_eq!(forfeits(id), vec![(committer, deposit)]);
+            assert_eq!(
+                (
+                    Balances::free_balance(committer),
+                    Balances::reserved_balance(committer)
+                ),
+                (10, 0)
+            );
+            assert!(System::account_exists(&committer));
+            assert_eq!(Balances::total_issuance(), issuance - deposit);
+            // The unsolved refund, and nothing from the forfeit.
+            assert_eq!(Balances::free_balance(1), free1 + 100);
+        });
+    }
+
+    /// B5c2: a lazy settlement declares `forfeit_commitments` at the cap and
+    /// reports the commitments it actually forfeited; a settlement that did
+    /// not finalise reports none.
+    #[test]
+    fn a_lazy_settlement_reports_the_forfeits_it_performed() {
+        use crate::weights::{
+            claim_reward_call_weight, reclaim_order_call_weight, with_actual_forfeits,
+        };
+        new_test_ext().execute_with(|| {
+            rates();
+            register(2);
+            register(3);
+            // Lazy reclaim of an unsolved order with one commitment.
+            let id = propose_single_best(1, 1, 1);
+            assert_ok!(commit(3, id, 3));
+            System::set_block_number(5);
+            let post = QuantumComputeMempool::reclaim_order(RuntimeOrigin::signed(1), id).unwrap();
+            let declared = reclaim_order_call_weight::<Test>();
+            let actual = with_actual_forfeits::<Test>(declared, 1);
+            assert_eq!(post.actual_weight, Some(actual));
+            assert!(actual.ref_time() < declared.ref_time());
+            assert_eq!(forfeits(id).len(), 1);
+            // Lazy claim of a solved order with two commitments.
+            let id = propose_single_best(1, 2, 2);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
+            assert_ok!(commit(3, id, 4));
+            Balances::make_free_balance_be(&4, 1_000_000);
+            register(4);
+            assert_ok!(commit(4, id, 5));
+            System::set_block_number(10);
+            let post = QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(9), id).unwrap();
+            assert_eq!(
+                post.actual_weight,
+                Some(with_actual_forfeits::<Test>(
+                    claim_reward_call_weight::<Test>(),
+                    2
+                ))
+            );
+            // A claim after the queue finalised: nothing forfeited here.
+            let id = propose_single_best(1, 2, 2);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
+            assert_ok!(commit(3, id, 6));
+            run_to_block(20);
+            assert_ne!(
+                JobOrders::<Test>::get(id).unwrap().status,
+                OrderStatus::Opened
+            );
+            let post = QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(9), id).unwrap();
+            assert_eq!(
+                post.actual_weight,
+                Some(with_actual_forfeits::<Test>(
+                    claim_reward_call_weight::<Test>(),
+                    0
+                ))
+            );
         });
     }
 

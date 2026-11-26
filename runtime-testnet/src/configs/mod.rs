@@ -392,7 +392,7 @@ parameter_types! {
     /// Measured on real signed extrinsics (release runtime, 2026-11-26):
     /// - every signed extrinsic carries about 1,700 B of hybrid H4 signature
     ///   and extensions, so it pays at least about 0.00017 QUIP for length: a
-    ///   transfer is about 0.0011 QUIP (was 0.00098);
+    ///   transfer is about 0.0012 QUIP (was 0.00098);
     /// - a runtime upgrade is a 2/3 Foundation motion (`FoundationOrigin` is a
     ///   collective origin; a member's own signed `dispatch_as_root` is
     ///   `BadOrigin`). Through `dispatch_as_root(set_code)` the member who

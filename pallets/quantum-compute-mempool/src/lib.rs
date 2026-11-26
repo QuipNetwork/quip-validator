@@ -31,6 +31,16 @@
 //! reward / `MaxCommitmentsPerOrder`, so an honest solver whose reveal is
 //! refused, or never sent, loses max(storage deposit, reward / 64).
 //!
+//! - **Timing.** Reveal at least one block after committing, and before the
+//!   order closes: an order closes `block_wait` blocks after its first
+//!   accepted solution, or at its deadline if that comes first, so the
+//!   window can be as short as `block_wait` once anyone has answered.
+//! - **Re-committing restarts the clock.** A second `commit_answer` replaces
+//!   the commitment in place and moves its block to now: the reveal is then
+//!   ranked from the new block, behind anything effective earlier.
+//! - **The payee is part of the commitment.** The reveal must carry the
+//!   payee committed to; changing it means committing again, which restarts
+//!   the clock.
 //! - **Near-copies are not evicted.** Eviction is by canonical answer. An
 //!   answer at the same energy with a different canonical form -- a
 //!   degenerate spin, a spin coupled only through a self-loop, another
@@ -898,15 +908,16 @@ pub mod pallet {
         /// Settle an expired solved order. Any signed account may call; rewards
         /// go only to the selected solvers, with no bounty for the caller.
         #[pallet::call_index(5)]
-        #[pallet::weight(<T as Config>::WeightInfo::claim_reward().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()).saturating_add(weights::lazy_finalisation_weight::<T>()))]
-        pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
+        #[pallet::weight(weights::claim_reward_call_weight::<T>())]
+        pub fn claim_reward(origin: OriginFor<T>, order_id: u64) -> DispatchResultWithPostInfo {
             let _caller = ensure_signed(origin)?;
+            let mut forfeited = 0u32;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             let spec = JobSpecs::<T>::get(order.spec_id).ok_or(Error::<T>::JobSpecNotFound)?;
             // W3-006: settle a due order without waiting for the expiry queue.
             if Self::is_due(&order) {
                 ensure!(order.solution_count > 0, Error::<T>::NoSolutionsAccepted);
-                Self::finalise_due(order_id, &order);
+                forfeited = Self::finalise_due(order_id, &order);
                 // Continue from the finalised (`Expired`) record.
                 order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             }
@@ -1014,13 +1025,18 @@ pub mod pallet {
                 order_id,
                 successful: true,
             });
-            Ok(())
+            Ok(Some(weights::with_actual_forfeits::<T>(
+                weights::claim_reward_call_weight::<T>(),
+                forfeited,
+            ))
+            .into())
         }
 
         #[pallet::call_index(6)]
-        #[pallet::weight(<T as Config>::WeightInfo::reclaim_order().saturating_add(weights::solution_pruning_weight::<T>()).saturating_add(weights::schedule_order_pruning_weight::<T>()).saturating_add(weights::lazy_finalisation_weight::<T>()).saturating_add(<T as Config>::WeightInfo::auto_close_unsolved(1)))]
-        pub fn reclaim_order(origin: OriginFor<T>, order_id: u64) -> DispatchResult {
+        #[pallet::weight(weights::reclaim_order_call_weight::<T>())]
+        pub fn reclaim_order(origin: OriginFor<T>, order_id: u64) -> DispatchResultWithPostInfo {
             let caller = ensure_signed(origin)?;
+            let mut forfeited = 0u32;
             let mut order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
             ensure!(order.proposer == caller, Error::<T>::NotProposer);
             // W3-006: finalise a due order here instead of waiting for the
@@ -1028,10 +1044,14 @@ pub mod pallet {
             // refund included: that is the reclaim, so return `Ok` and keep it.
             if Self::is_due(&order) {
                 ensure!(order.solution_count == 0, Error::<T>::NoSolutionsAccepted);
-                Self::finalise_due(order_id, &order);
+                forfeited = Self::finalise_due(order_id, &order);
                 order = JobOrders::<T>::get(order_id).ok_or(Error::<T>::OrderNotFound)?;
                 if order.status == types::OrderStatus::Closed {
-                    return Ok(());
+                    return Ok(Some(weights::with_actual_forfeits::<T>(
+                        weights::reclaim_order_call_weight::<T>(),
+                        forfeited,
+                    ))
+                    .into());
                 }
             }
             ensure!(
@@ -1073,7 +1093,11 @@ pub mod pallet {
                 order_id,
                 successful: false,
             });
-            Ok(())
+            Ok(Some(weights::with_actual_forfeits::<T>(
+                weights::reclaim_order_call_weight::<T>(),
+                forfeited,
+            ))
+            .into())
         }
 
         #[pallet::call_index(7)]
@@ -1716,11 +1740,16 @@ pub mod pallet {
             };
             // `NextSubmissionSeq`: a `u64` key and a `u32` value (W3-001).
             let seq_counter = u64::max_encoded_len().saturating_add(u32::max_encoded_len());
+            // `CommitmentCount`: likewise a `u64` key and a `u32` value
+            // (W3-001, B5c2). The commitments themselves are each paid by
+            // their committer (`commitment_deposit`).
+            let commitment_counter = u64::max_encoded_len().saturating_add(u32::max_encoded_len());
             let bytes = Self::max_order_size(order)
                 .saturating_add(ranking)
                 .saturating_add(payees)
                 .saturating_add(u64::max_encoded_len())
                 .saturating_add(seq_counter)
+                .saturating_add(commitment_counter)
                 .saturating_add(results);
             let bytes: BalanceOf<T> = u32::try_from(bytes).unwrap_or(u32::MAX).into();
             T::OrderDepositPerItem::get()
@@ -2252,9 +2281,10 @@ pub mod pallet {
 
         /// Lazy finalisation (W3-006): take a due order out of its expiry
         /// bucket and finalise it now, exactly as the queue would.
-        fn finalise_due(order_id: u64, order: &JobOrderOf<T>) {
+        /// Returns the number of commitments the finalisation forfeited.
+        fn finalise_due(order_id: u64, order: &JobOrderOf<T>) -> u32 {
             OrdersExpiringAt::<T>::remove(Self::bucket_of(order), order_id);
-            Self::finalise_order(order_id);
+            Self::finalise_order(order_id)
         }
 
         /// Block whose `on_initialize` must finalise an order with `expiry`.
@@ -2492,13 +2522,21 @@ pub mod pallet {
         /// slashed from the committer's reserve and burned -- total issuance
         /// falls by it, and the proposer receives nothing, so filling an
         /// order's slots with one's own accounts recovers nothing. A
-        /// committer holding only the deposit is reaped by the slash; nothing
-        /// is left behind. `burned` is the amount actually slashed, short of
+        /// committer never holds the deposit alone: while anything is
+        /// reserved its free balance stays at the existential deposit at
+        /// least, so the burn leaves it alive with whatever is free -- at the
+        /// least, exactly the existential deposit -- and nothing reserved for
+        /// the order. `burned` is the amount actually slashed, short of
         /// the deposit only if something else took from the reserve. Bounded
         /// by `MaxCommitmentsPerOrder`; returns the number forfeited.
         pub(crate) fn forfeit_commitments(order_id: u64) -> u32 {
             CommitmentCount::<T>::remove(order_id);
             let mut forfeited = 0u32;
+            // `commit_answer` keeps an order's commitments within
+            // `MaxCommitmentsPerOrder`, so the `take` only bounds the weight
+            // charged. Lowering the constant while an order holds more would
+            // leave the entries past it, and their reserves, stranded: raise
+            // it freely, lower it only with no order above the new value.
             for (solver, entry) in AnswerCommitments::<T>::drain_prefix(order_id)
                 .take(T::MaxCommitmentsPerOrder::get() as usize)
             {
