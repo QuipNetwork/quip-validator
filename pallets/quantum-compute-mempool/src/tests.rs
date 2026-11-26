@@ -1966,11 +1966,20 @@ fn settlement_wrapper_maximizes_complete_weights_and_floors_both_providers() {
     let test_db: frame_support::weights::RuntimeDbWeight =
         <Test as frame_system::Config>::DbWeight::get();
     // Both generated implementations must have the same measured base once
-    // the modeled 69/69 DB accesses are removed. Reference regeneration may
-    // replace that base without changing this accounting contract.
+    // the modeled DB accesses are removed. Reference regeneration may replace
+    // that base without changing this accounting contract.
+    //
+    // The accesses are the benchmark's `r:`/`w:` totals, pinned so that a
+    // regeneration that changes them is reviewed against the code path. At
+    // the d102f1a reference run they are 70/71: 69/69 before, plus the
+    // pruning schedule a settled order now writes -- `NextPruneBucket`
+    // (r:1 w:1) and `OrdersPrunableAt` (w:1). The call also adds
+    // `schedule_order_pruning_weight` on top, so those are counted twice.
+    const CLAIM_REWARD_READS_WRITES: (u64, u64) = (70, 71);
+    let (reads, writes) = CLAIM_REWARD_READS_WRITES;
     assert_eq!(
-        generated.ref_time() - RocksDbWeight::get().reads_writes(69, 69).ref_time(),
-        generic.ref_time() - test_db.reads_writes(69, 69).ref_time(),
+        generated.ref_time() - RocksDbWeight::get().reads_writes(reads, writes).ref_time(),
+        generic.ref_time() - test_db.reads_writes(reads, writes).ref_time(),
     );
     assert_eq!(
         <() as WeightInfo>::claim_reward().ref_time(),
@@ -3439,22 +3448,90 @@ fn retention_sweep_bounds_empty_buckets_and_fails_closed_on_unpaid_queue_entry()
     });
 }
 
+/// The composed pruning providers cover the hand floor at every bounded
+/// cleanup shape (A12). The measured `prune_closed_orders(k)` varies orders
+/// only, with one bucket visit, so it does not cover the bucket dimension by
+/// itself (at 0 orders its proof size is under one bucket's): the providers
+/// floor it at the maximum bucket visits. The generated functions alone are
+/// deliberately not asserted here.
 #[test]
 fn pruning_weight_providers_cover_every_bounded_cleanup_shape() {
-    use crate::{benchmark_weights, types, weights};
+    use crate::{types, weights};
     for orders in 0..=types::MAX_PRUNED_ORDERS_PER_BLOCK {
         for buckets in 0..=u64::from(types::MAX_PRUNED_ORDERS_PER_BLOCK) {
             let floor = weights::closed_order_pruning_weight::<Test>(orders, buckets);
             for bound in [
-                <benchmark_weights::SubstrateWeight<Test> as benchmark_weights::WeightInfo>::prune_closed_orders(orders),
-                <() as benchmark_weights::WeightInfo>::prune_closed_orders(orders),
-                <weights::SubstrateWeight<Test> as weights::WeightInfo>::prune_closed_orders(orders),
+                <weights::SubstrateWeight<Test> as weights::WeightInfo>::prune_closed_orders(
+                    orders,
+                ),
                 <() as weights::WeightInfo>::prune_closed_orders(orders),
             ] {
-                assert!(bound.all_gte(floor), "cleanup bound below existing floor: {orders} orders, {buckets} buckets");
+                assert!(
+                    bound.all_gte(floor),
+                    "cleanup bound below existing floor: {orders} orders, {buckets} buckets"
+                );
             }
         }
     }
+}
+
+/// The retention sweep's charge (A12). `on_initialize` charges
+/// `prune_closed_orders(pruned).max(closed_order_pruning_weight(pruned,
+/// buckets))` componentwise: the provider for the orders pruned and the hand
+/// floor for the shape actually visited. The bucket dimension is priced by
+/// the hand floor alone (benchmarking bucket visits is a follow-up). Driven
+/// at no orders in one bucket, no orders across the eight-bucket bound, and
+/// the most orders across the most buckets.
+#[test]
+fn the_retention_sweep_charges_the_provider_and_the_floor_at_the_visited_shape() {
+    use crate::weights::{closed_order_pruning_weight, WeightInfo};
+    type Provider = <Test as crate::Config>::WeightInfo;
+    let max = crate::types::MAX_PRUNED_ORDERS_PER_BLOCK;
+    let check = |now: u64, orders: u32, buckets: u64| {
+        let charged = QuantumComputeMempool::on_initialize(now);
+        let expected = Provider::prune_closed_orders(orders)
+            .max(closed_order_pruning_weight::<Test>(orders, buckets));
+        assert!(
+            charged.all_gte(expected),
+            "{orders} orders, {buckets} buckets: charged {charged:?} < {expected:?}"
+        );
+    };
+    // No orders, one empty bucket at the cursor.
+    new_test_ext().execute_with(|| {
+        crate::NextPruneBucket::<Test>::put(12);
+        System::set_block_number(12);
+        check(12, 0, 1);
+        assert!(!crate::NextPruneBucket::<Test>::exists());
+    });
+    // No orders, eight empty buckets: the visit bound stops the sweep.
+    new_test_ext().execute_with(|| {
+        let id = propose_single_best(1, 1, 1);
+        run_to_block(2);
+        crate::OrdersPrunableAt::<Test>::insert(12, id, ());
+        crate::NextPruneBucket::<Test>::put(0);
+        System::set_block_number(12);
+        check(12, 0, u64::from(max));
+        assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(u64::from(max)));
+    });
+    // The most orders across the most buckets: one closed order per bucket.
+    new_test_ext().execute_with(|| {
+        for _ in 0..max {
+            propose_single_best(1, 1, 1);
+        }
+        for id in 0..u64::from(max) {
+            run_to_block(2 + id);
+            assert_ok!(QuantumComputeMempool::reclaim_order(
+                RuntimeOrigin::signed(1),
+                id
+            ));
+        }
+        let first = 2 + <Test as crate::Config>::OrderRetentionBlocks::get();
+        let last = first + u64::from(max) - 1;
+        assert_eq!(crate::NextPruneBucket::<Test>::get(), Some(first));
+        System::set_block_number(last);
+        check(last, max, u64::from(max));
+        assert_eq!(JobOrders::<Test>::iter_keys().count(), 0);
+    });
 }
 
 // --- W1-006: per-order reward escrow ---

@@ -10,18 +10,23 @@ use codec::MaxEncodedLen;
 use core::marker::PhantomData;
 use frame_support::{
     traits::{Get, StorageInfoTrait},
-    weights::Weight,
+    weights::{constants::RocksDbWeight, RuntimeDbWeight, Weight},
 };
 
 /// Conservative unmeasured allowance for deleting all 32 maximum-size payloads.
 /// Keep until the reference runner measures the enlarged expiry/closure paths.
 pub const SOLUTION_PRUNING_PROOF_FLOOR: u64 = 4 * 1024 * 1024;
 pub fn solution_pruning_weight<T: crate::Config>() -> Weight {
+    solution_pruning_weight_with(T::DbWeight::get())
+}
+
+/// `solution_pruning_weight` for an explicit database weight.
+fn solution_pruning_weight_with(db: RuntimeDbWeight) -> Weight {
     let cap = u64::from(crate::types::MAX_SOLVERS_PER_OPEN_ORDER);
     // OrderSolutions and the OrderAnswers index (W1-012), each at most `cap`
     // entries per order and cleared in the same step.
     Weight::from_parts(100_000_000, SOLUTION_PRUNING_PROOF_FLOOR)
-        .saturating_add(T::DbWeight::get().reads_writes(2 * cap + 2, 2 * cap))
+        .saturating_add(db.reads_writes(2 * cap + 2, 2 * cap))
 }
 
 /// Unmeasured registration reserve/refund allowance pending reference weights.
@@ -37,14 +42,33 @@ pub fn schedule_order_pruning_weight<T: crate::Config>() -> Weight {
 
 /// Conservative unmeasured cleanup bound, including empty-bucket traversal.
 pub fn closed_order_pruning_weight<T: crate::Config>(orders: u32, buckets: u64) -> Weight {
+    closed_order_pruning_weight_with(T::DbWeight::get(), orders, buckets)
+}
+
+/// `closed_order_pruning_weight` for an explicit database weight.
+fn closed_order_pruning_weight_with(db: RuntimeDbWeight, orders: u32, buckets: u64) -> Weight {
     let orders = u64::from(orders);
     Weight::from_parts(50_000_000, 5_000 + 5_000 * buckets)
         .saturating_add(
             Weight::from_parts(100_000_000, CLOSED_ORDER_PRUNING_PROOF_FLOOR)
                 .saturating_mul(orders),
         )
-        .saturating_add(T::DbWeight::get().reads_writes(2 + buckets + 35 * orders, 1 + 40 * orders))
-        .saturating_add(solution_pruning_weight::<T>().saturating_mul(orders))
+        .saturating_add(db.reads_writes(2 + buckets + 35 * orders, 1 + 40 * orders))
+        .saturating_add(solution_pruning_weight_with(db).saturating_mul(orders))
+}
+
+/// The sweep's provider (A12): the measured `prune_closed_orders(k)`, floored
+/// componentwise by the hand bound at the maximum bucket visits. The benchmark
+/// varies orders only, with one bucket visit, so the bucket dimension is
+/// priced by the hand floor; flooring the provider itself keeps any caller
+/// that charges the provider alone covered (`on_initialize` also floors it at
+/// the shape actually visited).
+fn prune_closed_orders_weight(generated: Weight, db: RuntimeDbWeight, orders: u32) -> Weight {
+    generated.max(closed_order_pruning_weight_with(
+        db,
+        orders,
+        u64::from(crate::types::MAX_PRUNED_ORDERS_PER_BLOCK),
+    ))
 }
 
 fn closed_order_pruning_proof_envelope<T: crate::Config>() -> u64 {
@@ -351,7 +375,11 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::finalise_expired_orders(k)
     }
     fn prune_closed_orders(k: u32) -> Weight {
-        <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::prune_closed_orders(k)
+        prune_closed_orders_weight(
+            <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::prune_closed_orders(k),
+            T::DbWeight::get(),
+            k,
+        )
     }
 }
 impl WeightInfo for () {
@@ -392,6 +420,10 @@ impl WeightInfo for () {
         <() as BenchmarkWeightInfo>::finalise_expired_orders(k)
     }
     fn prune_closed_orders(k: u32) -> Weight {
-        <() as BenchmarkWeightInfo>::prune_closed_orders(k)
+        prune_closed_orders_weight(
+            <() as BenchmarkWeightInfo>::prune_closed_orders(k),
+            RocksDbWeight::get(),
+            k,
+        )
     }
 }
