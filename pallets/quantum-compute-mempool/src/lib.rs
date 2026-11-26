@@ -212,7 +212,7 @@ pub mod pallet {
     // v5 (W1-012): JobSolution and RankedSolver gain `answer: H256`. No
     // migration (owner O-B2): no in-place upgrade reaches a chain with open
     // orders (testnet reset, fresh mainnet). See `on_runtime_upgrade`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(6);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -1055,9 +1055,20 @@ pub mod pallet {
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         /// v5 (W1-012) adds `answer` to `JobSolution` and `RankedSolver` with no
-        /// migration (owner O-B2). That is sound only on a chain without orders:
-        /// with orders, their stored solutions and rankings would stop decoding.
-        /// Such a chain is left untouched and a warning is logged.
+        /// migration (owner O-B2); v6 (W3-001) adds `effective_at` and `seq` to
+        /// `JobSolution`, `RankedSolver` and `FrontRunner`, makes the
+        /// `OrderAnswers` value an `AnswerOwner` and adds `NextSubmissionSeq`,
+        /// again with no migration. That is sound only on a chain without
+        /// orders: with orders, their stored solutions, rankings, front runners
+        /// and answer index would stop decoding. Such a chain is left untouched
+        /// and a warning is logged; under `try-runtime`, `pre_upgrade` refuses
+        /// it.
+        ///
+        /// Precondition: runtime 120 launches from a fresh genesis, and the
+        /// mempool is never upgraded in place under live orders. No migration
+        /// is written because an existing solution's arrival order (`seq`)
+        /// cannot be reconstructed, and clearing live orders instead would be
+        /// an economic decision, not a storage one.
         fn on_runtime_upgrade() -> Weight {
             let on_chain = StorageVersion::get::<Pallet<T>>();
             if on_chain >= STORAGE_VERSION {
@@ -1066,8 +1077,10 @@ pub mod pallet {
             if JobOrders::<T>::iter_keys().next().is_some() {
                 log::warn!(
                     target: "runtime::quantum-compute-mempool",
-                    "storage version {on_chain:?} < 5 with existing orders: not upgrading; \
-                     the JobSolution/RankedSolver layout changed without a migration, and the \
+                    "storage version {on_chain:?} < 6 with existing orders: not upgrading; \
+                     the JobSolution/RankedSolver/FrontRunner layouts and the OrderAnswers value \
+                     changed, and NextSubmissionSeq was added, without a migration (W1-012, \
+                     W3-001), and the \
                      OrderAnswers index starts empty, so orders open before the upgrade detect \
                      duplicates only among answers submitted after it (W1-012); and orders \
                      open before the per-order escrow hold their reward as a reserve on the \
@@ -1079,6 +1092,22 @@ pub mod pallet {
             }
             STORAGE_VERSION.put::<Pallet<T>>();
             T::DbWeight::get().reads_writes(2, 1)
+        }
+
+        /// Fail closed (B5b2): a chain below the current storage version that
+        /// holds orders cannot be upgraded without a migration (see
+        /// `on_runtime_upgrade`).
+        #[cfg(feature = "try-runtime")]
+        fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+            let on_chain = StorageVersion::get::<Pallet<T>>();
+            if on_chain < STORAGE_VERSION && JobOrders::<T>::iter_keys().next().is_some() {
+                return Err(
+                    "quantum-compute-mempool: storage version below 6 with existing orders; \
+                     the W1-012/W3-001 layouts changed without a migration"
+                        .into(),
+                );
+            }
+            Ok(Vec::new())
         }
 
         fn integrity_test() {

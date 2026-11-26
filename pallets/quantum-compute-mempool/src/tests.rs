@@ -5090,3 +5090,59 @@ mod w3_001_ordering_key {
         });
     }
 }
+
+/// W3-001 B5b2 -- storage version 6 for B5b's layout change, and the upgrade
+/// guard that leaves a chain with orders untouched.
+mod w3_001_storage_version {
+    use super::*;
+    use frame_support::traits::{GetStorageVersion, StorageVersion};
+
+    #[test]
+    fn the_storage_version_is_6() {
+        assert_eq!(
+            QuantumComputeMempool::in_code_storage_version(),
+            StorageVersion::new(6)
+        );
+    }
+
+    /// Its solutions, rankings and answer index would no longer decode, so a
+    /// v5 chain with an order is not moved (a warning is logged).
+    #[test]
+    fn a_v5_chain_with_an_order_stays_at_5() {
+        new_test_ext().execute_with(|| {
+            propose_single_best(1, 1, 1);
+            StorageVersion::new(5).put::<QuantumComputeMempool>();
+            <QuantumComputeMempool as Hooks<u64>>::on_runtime_upgrade();
+            assert_eq!(
+                QuantumComputeMempool::on_chain_storage_version(),
+                StorageVersion::new(5)
+            );
+        });
+    }
+
+    /// Under try-runtime the upgrade fails closed on such a chain.
+    #[cfg(feature = "try-runtime")]
+    #[test]
+    fn pre_upgrade_refuses_a_v5_chain_with_orders() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(5).put::<QuantumComputeMempool>();
+            assert!(<QuantumComputeMempool as Hooks<u64>>::pre_upgrade().is_ok());
+            propose_single_best(1, 1, 1);
+            assert!(<QuantumComputeMempool as Hooks<u64>>::pre_upgrade().is_err());
+            StorageVersion::new(6).put::<QuantumComputeMempool>();
+            assert!(<QuantumComputeMempool as Hooks<u64>>::pre_upgrade().is_ok());
+        });
+    }
+
+    #[test]
+    fn an_order_free_v5_chain_moves_to_6() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(5).put::<QuantumComputeMempool>();
+            <QuantumComputeMempool as Hooks<u64>>::on_runtime_upgrade();
+            assert_eq!(
+                QuantumComputeMempool::on_chain_storage_version(),
+                StorageVersion::new(6)
+            );
+        });
+    }
+}

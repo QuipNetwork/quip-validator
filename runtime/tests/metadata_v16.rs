@@ -737,23 +737,25 @@ fn empty_vesting_and_removed_legacy_genesis_charge_are_only_deltas() {
         .expect("baseline QuantumPow storage version");
     assert_eq!(baseline_pow.1, hex::encode(6u16.encode()));
     baseline_pow.1 = hex::encode(7u16.encode());
-    // W1-012: QuantumComputeMempool's storage version moves 4 -> 5 (the
-    // `answer` fields and the OrderAnswers index; no migration).
+    // W1-012 then W3-001: QuantumComputeMempool's storage version moves
+    // 4 -> 5 (the `answer` fields and the OrderAnswers index) -> 6 (the
+    // ordering key, the AnswerOwner index value and NextSubmissionSeq); no
+    // migration either time.
     let mempool_version = frame_support::storage::storage_prefix(
         b"QuantumComputeMempool",
         frame_support::traits::STORAGE_VERSION_STORAGE_KEY_POSTFIX,
     );
     assert_eq!(
         after.get(mempool_version.as_slice()),
-        Some(&5u16.encode()),
-        "QuantumComputeMempool genesis storage version must be 5"
+        Some(&6u16.encode()),
+        "QuantumComputeMempool genesis storage version must be 6"
     );
     let baseline_mempool = before
         .iter_mut()
         .find(|(key, _)| *key == hex::encode(mempool_version))
         .expect("baseline QuantumComputeMempool storage version");
     assert_eq!(baseline_mempool.1, hex::encode(4u16.encode()));
-    baseline_mempool.1 = hex::encode(5u16.encode());
+    baseline_mempool.1 = hex::encode(6u16.encode());
     let after: Vec<_> = after
         .iter()
         .map(|(k, v)| (hex::encode(k), hex::encode(v)))
