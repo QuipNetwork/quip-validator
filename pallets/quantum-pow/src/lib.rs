@@ -227,7 +227,7 @@ pub mod pallet {
         /// a Normal block's weight admits, so it never binds before the block
         /// does. Must be at least `MaxProofsPerBlock`.
         #[pallet::constant]
-        type MaxProofAttemptsPerBlock: Get<u32>;
+        type MaxProofSubmittersPerBlock: Get<u32>;
 
         /// Per-mille `c` value for the easiest (least-negative) end of the
         /// energy curve. The difficulty curve is calibrated against the
@@ -298,11 +298,11 @@ pub mod pallet {
     /// one `submit_proof` per miner per block, so one miner cannot take every
     /// slot. Each accepted proof -- below `MaxProofsPerBlock`, or past it as a
     /// strictly better replacement -- adds its miner. Cleared in
-    /// `on_initialize`; bounded by `MaxProofAttemptsPerBlock`
+    /// `on_initialize`; bounded by `MaxProofSubmittersPerBlock`
     /// (`ProofLimitReached` when full).
     #[pallet::storage]
     pub type BlockSubmitters<T: Config> =
-        StorageValue<_, BoundedBTreeSet<T::AccountId, T::MaxProofAttemptsPerBlock>, ValueQuery>;
+        StorageValue<_, BoundedBTreeSet<T::AccountId, T::MaxProofSubmittersPerBlock>, ValueQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -439,7 +439,7 @@ pub mod pallet {
         InvalidCurve,
         GraphTooSmall,
         InvalidTopology,
-        /// This block's `BlockSubmitters` is full (`MaxProofAttemptsPerBlock`
+        /// This block's `BlockSubmitters` is full (`MaxProofSubmittersPerBlock`
         /// miners with an accepted proof). Past `MaxProofsPerBlock` a better
         /// proof is still accepted until then (W3-009).
         ProofLimitReached,
@@ -540,8 +540,8 @@ pub mod pallet {
                 "MinTargetProofBlocks must exceed FAST_PROOF_BLOCKS"
             );
             assert!(
-                T::MaxProofAttemptsPerBlock::get() >= T::MaxProofsPerBlock::get(),
-                "MaxProofAttemptsPerBlock must be at least MaxProofsPerBlock"
+                T::MaxProofSubmittersPerBlock::get() >= T::MaxProofsPerBlock::get(),
+                "MaxProofSubmittersPerBlock must be at least MaxProofsPerBlock"
             );
             assert!(
                 min <= default && default <= max,
@@ -1005,7 +1005,7 @@ pub mod pallet {
                 Error::<T>::ProofAlreadySubmittedThisBlock
             );
             ensure!(
-                (submitters.len() as u32) < T::MaxProofAttemptsPerBlock::get(),
+                (submitters.len() as u32) < T::MaxProofSubmittersPerBlock::get(),
                 Error::<T>::ProofLimitReached
             );
             ensure!(

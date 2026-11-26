@@ -394,8 +394,8 @@ mod benchmarks {
         // the comparison with the block's best, which this proof replaces --
         // against a submitter set one short of its bound (its largest read
         // and write).
-        let attempts = T::MaxProofAttemptsPerBlock::get();
-        let others: alloc::collections::BTreeSet<T::AccountId> = (1..attempts)
+        let bound = T::MaxProofSubmittersPerBlock::get();
+        let others: alloc::collections::BTreeSet<T::AccountId> = (1..bound)
             .map(|index| account("block-submitter", index, 0))
             .collect();
         BlockSubmitters::<T>::put(
@@ -421,7 +421,7 @@ mod benchmarks {
             BlockBestProof::<T>::get().expect("a best proof").miner,
             caller
         );
-        assert_eq!(BlockSubmitters::<T>::get().len() as u32, attempts);
+        assert_eq!(BlockSubmitters::<T>::get().len() as u32, bound);
     }
 
     #[benchmark]

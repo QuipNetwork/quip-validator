@@ -3944,12 +3944,12 @@ mod w3_009_better_proof_past_the_cap {
     }
 
     /// 4. The submitter set's bound refuses with `ProofLimitReached`, not a
-    /// panic, once `MaxProofAttemptsPerBlock` miners have an accepted proof.
+    /// panic, once `MaxProofSubmittersPerBlock` miners have an accepted proof.
     #[test]
     fn a_full_submitter_set_refuses_with_proof_limit_reached() {
         new_test_ext().execute_with(|| {
             let t = setup();
-            MaxProofAttemptsPerBlock::set(cap() + 2);
+            MaxProofSubmittersPerBlock::set(cap() + 2);
             for who in [9, 30, 31] {
                 miner(who);
             }
