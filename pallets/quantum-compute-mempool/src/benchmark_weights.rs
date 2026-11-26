@@ -517,14 +517,16 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// UNMEASURED: handwritten allowance for `reveal_solution` (W3-001): a
 	/// `submit_solution_with_payee` plus the commitment's read, the preimage
 	/// hash over the submitted solutions, and its consumption (the entry and
-	/// count written, the deposit unreserved). Measured by the
-	/// `reveal_solution` benchmark.
+	/// count written, the deposit unreserved); and an eviction (B5e): the
+	/// evicted solver's solution and payee removed, and the ranking rebuilt
+	/// from the order's answer index (at most 32 entries, about 700 bytes of
+	/// proof each). Measured by the `reveal_solution` benchmark.
 	// BENCHMARK-PLACEHOLDER(W3-001): reveal_solution, added by hand; regenerate (benchmark-weights job).
 	fn reveal_solution(n: u32, e: u32, s: u32, ) -> Weight {
 		Self::submit_solution_with_payee(n, e, s)
-			.saturating_add(Weight::from_parts(100_000_000, 10_000))
-			.saturating_add(T::DbWeight::get().reads(3_u64))
-			.saturating_add(T::DbWeight::get().writes(3_u64))
+			.saturating_add(Weight::from_parts(150_000_000, 32_400))
+			.saturating_add(T::DbWeight::get().reads(35_u64))
+			.saturating_add(T::DbWeight::get().writes(5_u64))
 	}
 }
 
@@ -970,13 +972,15 @@ impl WeightInfo for () {
 	/// UNMEASURED: handwritten allowance for `reveal_solution` (W3-001): a
 	/// `submit_solution_with_payee` plus the commitment's read, the preimage
 	/// hash over the submitted solutions, and its consumption (the entry and
-	/// count written, the deposit unreserved). Measured by the
-	/// `reveal_solution` benchmark.
+	/// count written, the deposit unreserved); and an eviction (B5e): the
+	/// evicted solver's solution and payee removed, and the ranking rebuilt
+	/// from the order's answer index (at most 32 entries, about 700 bytes of
+	/// proof each). Measured by the `reveal_solution` benchmark.
 	// BENCHMARK-PLACEHOLDER(W3-001): reveal_solution, added by hand; regenerate (benchmark-weights job).
 	fn reveal_solution(n: u32, e: u32, s: u32, ) -> Weight {
 		Self::submit_solution_with_payee(n, e, s)
-			.saturating_add(Weight::from_parts(100_000_000, 10_000))
-			.saturating_add(RocksDbWeight::get().reads(3_u64))
-			.saturating_add(RocksDbWeight::get().writes(3_u64))
+			.saturating_add(Weight::from_parts(150_000_000, 32_400))
+			.saturating_add(RocksDbWeight::get().reads(35_u64))
+			.saturating_add(RocksDbWeight::get().writes(5_u64))
 	}
 }

@@ -605,6 +605,16 @@ pub mod pallet {
             to_proposer: BalanceOf<T>,
             burned: BalanceOf<T>,
         },
+        /// A revealed answer took `answer` from a solver whose submission of it
+        /// was effective later (W3-001): `evicted`'s accepted solution, payee
+        /// and ranking entry are removed, and `by` is ranked at its own
+        /// energy.
+        SolutionEvicted {
+            order_id: u64,
+            evicted: T::AccountId,
+            by: T::AccountId,
+            answer: sp_core::H256,
+        },
     }
 
     #[pallet::error]
@@ -1186,9 +1196,11 @@ pub mod pallet {
         /// commitment ([`Pallet::answer_commitment`]), made in an earlier
         /// block. The commitment is consumed -- deleted, its deposit
         /// returned -- and the solutions are submitted as `submit_solution`
-        /// would, but ranked at the commitment's block (`effective_at`). If the
-        /// submission is refused, nothing changes: the commitment, its count
-        /// and its deposit stay as they were.
+        /// would, but ranked at the commitment's block (`effective_at`). If
+        /// another solver holds the same answer from a later effective time,
+        /// the reveal takes it and that solver's submission is evicted
+        /// (`SolutionEvicted`). If the submission is refused, nothing changes:
+        /// the commitment, its count and its deposit stay as they were.
         #[pallet::call_index(11)]
         #[pallet::weight(<T as Config>::WeightInfo::reveal_solution(
             T::MaxNodes::get(), T::MaxEdges::get(), T::MaxSolutions::get())
@@ -1905,12 +1917,6 @@ pub mod pallet {
             }
 
             let previous = OrderSolutions::<T>::get(order_id, &solver);
-            // solution_count increments only on the first accepted submission
-            // by an account. Improvements reuse its existing slot and payload.
-            ensure!(
-                previous.is_some() || order.solution_count < types::MAX_SOLVERS_PER_OPEN_ORDER,
-                Error::<T>::OrderSolverCapReached
-            );
             // W3-001: the ordering key, a revealed commitment's block or else
             // the arrival block, then the order's arrival counter (N2). A
             // replacement must have a lower key (B5d3), the comparison the
@@ -1996,9 +2002,30 @@ pub mod pallet {
                 .canonical(valid_solutions[best_index].as_slice())
                 .map_err(Self::map_validation_error)?;
             let answer = sp_core::H256(sp_core::hashing::blake2_256(&canonical.encode()));
+            // W3-001 eviction (E1): another solver's answer is taken only by a
+            // strictly earlier effective time -- a reveal of a commitment made
+            // before that solver's submission was effective. A plain
+            // submission is effective now, never earlier than an existing
+            // owner, so it can only be a duplicate.
+            let evicted = match OrderAnswers::<T>::get(order_id, answer) {
+                Some(owner) if owner.solver != solver => {
+                    ensure!(
+                        effective_at < owner.effective_at,
+                        Error::<T>::DuplicateAnswer
+                    );
+                    Some(owner.solver)
+                }
+                _ => None,
+            };
+            // E2: the solver cap after the eviction decision, which needs the
+            // answer. `solution_count` grows only on an account's first
+            // accepted submission; improvements reuse its slot, and an
+            // eviction frees the evicted solver's.
             ensure!(
-                OrderAnswers::<T>::get(order_id, answer).is_none_or(|owner| owner.solver == solver),
-                Error::<T>::DuplicateAnswer
+                previous.is_some()
+                    || evicted.is_some()
+                    || order.solution_count < types::MAX_SOLVERS_PER_OPEN_ORDER,
+                Error::<T>::OrderSolverCapReached
             );
 
             NextSubmissionSeq::<T>::insert(order_id, seq.saturating_add(1));
@@ -2035,8 +2062,15 @@ pub mod pallet {
                 },
             );
 
-            if is_new_solver {
-                order.solution_count = order.solution_count.saturating_add(1);
+            // E3: `solution_count += is_new_solver - evicted`.
+            if let Some(evicted) = evicted.as_ref() {
+                OrderSolutions::<T>::remove(order_id, evicted);
+                OrderPayees::<T>::remove(order_id, evicted);
+            }
+            match (is_new_solver, evicted.is_some()) {
+                (true, false) => order.solution_count = order.solution_count.saturating_add(1),
+                (false, true) => order.solution_count = order.solution_count.saturating_sub(1),
+                _ => {}
             }
 
             if order.first_solution_at.is_none() {
@@ -2067,15 +2101,29 @@ pub mod pallet {
                 });
             }
 
-            Self::update_ranking(
-                order_id,
-                &order.resolution,
-                &solver,
-                best_energy,
-                answer,
-                effective_at,
-                seq,
-            )?;
+            match evicted {
+                // N1: the evicted solver's ranking entry goes, and the next
+                // best may have been truncated away, so the ranking is rebuilt
+                // from the answer index (which already holds the evictor).
+                Some(evicted) => {
+                    Self::deposit_event(Event::SolutionEvicted {
+                        order_id,
+                        evicted,
+                        by: solver.clone(),
+                        answer,
+                    });
+                    Self::recompute_ranking(order_id, &order.resolution)?;
+                }
+                None => Self::update_ranking(
+                    order_id,
+                    &order.resolution,
+                    &solver,
+                    best_energy,
+                    answer,
+                    effective_at,
+                    seq,
+                )?,
+            }
             if OrderPayees::<T>::get(order_id, &solver) != payee {
                 match payee {
                     Some(destination) => OrderPayees::<T>::insert(order_id, &solver, destination),
@@ -2634,6 +2682,74 @@ pub mod pallet {
                             });
                         }
                     }
+                }
+            }
+            Ok(())
+        }
+
+        /// Rebuild order `order_id`'s ranking from its answer index (W3-001
+        /// N1), after an eviction removed a ranked solver: every accepted
+        /// solver has exactly one index entry, with its best energy and
+        /// ordering key, so this is the ranking the incremental updates would
+        /// have kept without the evicted solver. At most
+        /// `MAX_SOLVERS_PER_OPEN_ORDER` entries, ordered by `(energy,
+        /// effective_at, seq)` (N2).
+        pub(crate) fn recompute_ranking(
+            order_id: u64,
+            resolution: &types::RewardResolution,
+        ) -> Result<(), DispatchError> {
+            let mut entries: Vec<types::RankedSolver<T::AccountId, BlockNumberFor<T>>> =
+                OrderAnswers::<T>::iter_prefix(order_id)
+                    .map(|(answer, owner)| types::RankedSolver {
+                        solver: owner.solver,
+                        energy_milli: owner.best_energy_milli,
+                        answer,
+                        effective_at: owner.effective_at,
+                        seq: owner.seq,
+                    })
+                    .collect();
+            entries.sort_by_key(|entry| entry.rank_key());
+            let next_front = entries
+                .first()
+                .map(|entry| (entry.solver.clone(), entry.energy_milli));
+            let previous_front = match resolution {
+                types::RewardResolution::SingleBest => {
+                    let previous = OrderFrontRunner::<T>::get(order_id)
+                        .map(|front| (front.solver, front.energy_milli));
+                    match entries.into_iter().next() {
+                        Some(best) => OrderFrontRunner::<T>::insert(
+                            order_id,
+                            FrontRunnerOf::<T> {
+                                solver: best.solver,
+                                energy_milli: best.energy_milli,
+                                effective_at: best.effective_at,
+                                seq: best.seq,
+                            },
+                        ),
+                        None => OrderFrontRunner::<T>::remove(order_id),
+                    }
+                    previous
+                }
+                types::RewardResolution::TopNWeighted { n }
+                | types::RewardResolution::TopNEqual { n } => {
+                    let previous = OrderTopSolvers::<T>::get(order_id)
+                        .first()
+                        .map(|entry| (entry.solver.clone(), entry.energy_milli));
+                    entries.truncate(*n as usize);
+                    let ranked: TopSolversOf<T> = entries
+                        .try_into()
+                        .map_err(|_| Error::<T>::InvalidRewardResolution)?;
+                    OrderTopSolvers::<T>::insert(order_id, ranked);
+                    previous
+                }
+            };
+            if previous_front != next_front {
+                if let Some((leader, energy)) = next_front {
+                    Self::deposit_event(Event::FrontRunnerChanged {
+                        order_id,
+                        solver: leader,
+                        energy_milli: energy,
+                    });
                 }
             }
             Ok(())

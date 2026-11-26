@@ -5860,3 +5860,389 @@ mod w3_001_reveal {
         }
     }
 }
+
+/// W3-001 B5e (design §B5 v2 items 5-9, N1, N2) -- eviction by an earlier
+/// commitment.
+mod w3_001_eviction {
+    use super::*;
+    use crate::{AnswerCommitments, OrderAnswers, OrderPayees, OrderTopSolvers};
+    use frame_support::traits::Currency;
+
+    const SALT: [u8; 32] = [7; 32];
+    // On `field_params`: GOOD and FLIP are global flips of each other, so one
+    // answer, at different energies; BEST and MID are two other answers.
+    const GOOD: [i8; 4] = [1, 1, 1, -1]; // -2000
+    const FLIP: [i8; 4] = [-1, -1, -1, 1]; // 0
+    const BEST: [i8; 4] = [1, 1, 1, 1]; // -5000
+    const MID: [i8; 4] = [1, 1, -1, -1]; // -1000
+
+    /// A ferromagnetic 4-chain with a field on every spin, so a global flip
+    /// is the same answer at a different energy (E1).
+    fn field_params() -> crate::IsingParamsOf<Test> {
+        let mut params = chain_params(4);
+        params.h_values = bounded(vec![-500; 4]);
+        params
+    }
+
+    fn row(spins: &[i8]) -> crate::SolutionsOf<Test> {
+        bounded(vec![bounded(spins.to_vec())])
+    }
+
+    fn register(who: AccountId) {
+        if who > 4 {
+            Balances::make_free_balance_be(&who, 1_000_000);
+        }
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(who),
+            MinerType::Cpu
+        ));
+    }
+
+    fn propose(params: crate::IsingParamsOf<Test>, resolution: RewardResolution, wait: u64) -> u64 {
+        let spec_id = match JobSpecs::<Test>::iter_keys().next() {
+            Some(spec_id) => spec_id,
+            None => register_spec(),
+        };
+        let id = NextOrderId::<Test>::get();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            params,
+            100,
+            JobMode::Open,
+            resolution,
+            20,
+            wait,
+            ResultDelivery::OnChainOnly,
+        ));
+        id
+    }
+
+    fn commit(who: AccountId, id: u64, solutions: &crate::SolutionsOf<Test>) {
+        let commitment =
+            QuantumComputeMempool::answer_commitment(id, &who, solutions, &None, &SALT);
+        assert_ok!(QuantumComputeMempool::commit_answer(
+            RuntimeOrigin::signed(who),
+            id,
+            commitment
+        ));
+    }
+
+    fn reveal(
+        who: AccountId,
+        id: u64,
+        solutions: &crate::SolutionsOf<Test>,
+    ) -> Result<(), sp_runtime::DispatchError> {
+        QuantumComputeMempool::reveal_solution(
+            RuntimeOrigin::signed(who),
+            id,
+            solutions.clone(),
+            None,
+            SALT,
+        )
+        .map(|_| ())
+        .map_err(|e| e.error)
+    }
+
+    fn submit(who: AccountId, id: u64, solutions: &crate::SolutionsOf<Test>) {
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(who),
+            id,
+            solutions.clone()
+        ));
+    }
+
+    fn ranking(id: u64) -> Vec<(AccountId, i64)> {
+        OrderTopSolvers::<Test>::get(id)
+            .iter()
+            .map(|entry| (entry.solver, entry.energy_milli))
+            .collect()
+    }
+
+    fn energy(who: AccountId, id: u64) -> i64 {
+        OrderSolutions::<Test>::get(id, who)
+            .unwrap()
+            .best_energy_milli
+    }
+
+    const RESOLUTIONS: [RewardResolution; 3] = [
+        RewardResolution::SingleBest,
+        RewardResolution::TopNEqual { n: 2 },
+        RewardResolution::TopNWeighted { n: 2 },
+    ];
+
+    /// E1 (and E5): a copier's worse flip of a committed answer lands first;
+    /// the honest reveal takes the answer, the copier's solution, payee and
+    /// ranking entry go, and the honest solver keeps its slot at its OWN
+    /// energy -- so a third solver at an intermediate energy ranks behind it.
+    #[test]
+    fn an_earlier_commitment_evicts_a_copied_worse_flip_at_its_own_energy() {
+        for resolution in RESOLUTIONS {
+            new_test_ext().execute_with(|| {
+                for who in [2, 3, 4] {
+                    register(who);
+                }
+                let id = propose(field_params(), resolution, 10);
+                commit(2, id, &row(&GOOD));
+                run_to_block(2);
+                assert_ok!(QuantumComputeMempool::submit_solution_with_payee(
+                    RuntimeOrigin::signed(3),
+                    id,
+                    row(&FLIP),
+                    payee(20033, 3)
+                ));
+                assert_eq!(energy(3, id), 0);
+                assert!(OrderPayees::<Test>::contains_key(id, 3));
+                run_to_block(3);
+                assert_ok!(reveal(2, id, &row(&GOOD)));
+                let answer = OrderSolutions::<Test>::get(id, 2).unwrap().answer;
+                System::assert_has_event(
+                    crate::Event::SolutionEvicted {
+                        order_id: id,
+                        evicted: 3,
+                        by: 2,
+                        answer,
+                    }
+                    .into(),
+                );
+                assert!(OrderSolutions::<Test>::get(id, 3).is_none());
+                assert!(!OrderPayees::<Test>::contains_key(id, 3));
+                let owner = OrderAnswers::<Test>::get(id, answer).unwrap();
+                assert_eq!(
+                    (owner.solver, owner.best_energy_milli, owner.effective_at),
+                    (2, -2000, 1)
+                );
+                assert_eq!(energy(2, id), -2000);
+                assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 1);
+                // The copier cannot take it back, flipped or not.
+                for spins in [FLIP, GOOD] {
+                    assert_noop!(
+                        QuantumComputeMempool::submit_solution(
+                            RuntimeOrigin::signed(3),
+                            id,
+                            row(&spins)
+                        )
+                        .map_err(|e| e.error),
+                        crate::Error::<Test>::DuplicateAnswer
+                    );
+                }
+                submit(4, id, &row(&MID));
+                match resolution {
+                    RewardResolution::SingleBest => {
+                        let front = OrderFrontRunner::<Test>::get(id).unwrap();
+                        assert_eq!((front.solver, front.energy_milli), (2, -2000));
+                    }
+                    _ => assert_eq!(ranking(id), vec![(2, -2000), (4, -1000)], "{resolution:?}"),
+                }
+            });
+        }
+    }
+
+    /// N1: the ranking is rebuilt after an eviction, so a solver truncated
+    /// out of the top-n comes back. n = 2: A = -5000, X = -2000 (a better
+    /// flip of H's answer), Y = -1000 (truncated), H = 0 committed first:
+    /// after the eviction the list is [A, Y]. Under SingleBest with X the
+    /// front runner, the front runner becomes Y, not H.
+    #[test]
+    fn an_eviction_rebuilds_the_ranking_from_the_answer_index() {
+        for resolution in RESOLUTIONS {
+            new_test_ext().execute_with(|| {
+                for who in [2, 3, 4, 5] {
+                    register(who);
+                }
+                let id = propose(field_params(), resolution, 10);
+                let single = resolution == RewardResolution::SingleBest;
+                commit(2, id, &row(&FLIP));
+                run_to_block(2);
+                if !single {
+                    submit(3, id, &row(&BEST));
+                }
+                submit(4, id, &row(&GOOD));
+                submit(5, id, &row(&MID));
+                if single {
+                    assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 4);
+                } else {
+                    assert_eq!(ranking(id), vec![(3, -5000), (4, -2000)]);
+                }
+                run_to_block(3);
+                assert_ok!(reveal(2, id, &row(&FLIP)));
+                assert!(OrderSolutions::<Test>::get(id, 4).is_none());
+                if single {
+                    let front = OrderFrontRunner::<Test>::get(id).unwrap();
+                    assert_eq!((front.solver, front.energy_milli), (5, -1000));
+                    System::assert_has_event(
+                        crate::Event::FrontRunnerChanged {
+                            order_id: id,
+                            solver: 5,
+                            energy_milli: -1000,
+                        }
+                        .into(),
+                    );
+                } else {
+                    assert_eq!(ranking(id), vec![(3, -5000), (5, -1000)], "{resolution:?}");
+                }
+            });
+        }
+    }
+
+    /// E2: the cap is checked after the eviction decision. A full order (32
+    /// solvers, the copy in slot 32) refuses a 33rd plain solver but admits
+    /// the reveal that evicts the copy; the count stays 32.
+    #[test]
+    fn a_full_order_admits_a_reveal_that_evicts() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            register(4);
+            let id = propose(chain_params(7), RewardResolution::TopNEqual { n: 2 }, 10);
+            commit(2, id, &chain_row(7, 40));
+            run_to_block(2);
+            for k in 1..=31u32 {
+                let who = 100 + AccountId::from(k);
+                register(who);
+                submit(who, id, &chain_row(7, k));
+            }
+            submit(3, id, &chain_row(7, 40));
+            assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
+            assert_noop!(
+                QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(4),
+                    id,
+                    chain_row(7, 41)
+                )
+                .map_err(|e| e.error),
+                crate::Error::<Test>::OrderSolverCapReached
+            );
+            run_to_block(3);
+            assert_ok!(reveal(2, id, &chain_row(7, 40)));
+            assert!(OrderSolutions::<Test>::get(id, 3).is_none());
+            assert!(OrderSolutions::<Test>::get(id, 2).is_some());
+            assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 32);
+            assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), 32);
+        });
+    }
+
+    /// E3: `solution_count += is_new_solver - evicted`. A new evictor leaves
+    /// the count unchanged; an existing solver evicting with a second answer
+    /// lowers it (its own previous answer is replaced, the copier's removed).
+    #[test]
+    fn the_solution_count_nets_new_solvers_and_evictions() {
+        new_test_ext().execute_with(|| {
+            for who in [2, 3] {
+                register(who);
+            }
+            let id = propose(field_params(), RewardResolution::TopNEqual { n: 2 }, 10);
+            commit(2, id, &row(&GOOD));
+            run_to_block(2);
+            submit(2, id, &row(&MID));
+            submit(3, id, &row(&FLIP));
+            assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 2);
+            run_to_block(3);
+            assert_ok!(reveal(2, id, &row(&GOOD)));
+            assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 1);
+            assert_eq!(OrderAnswers::<Test>::iter_prefix(id).count(), 1);
+            assert_eq!(OrderSolutions::<Test>::iter_prefix(id).count(), 1);
+            assert_eq!(ranking(id), vec![(2, -2000)]);
+        });
+    }
+
+    /// E4, the copy half: a copy at M -- the first solution, which starts the
+    /// block wait -- and the honest reveal at M + 1. With a wait of 2 the
+    /// reveal lands and evicts the copy; with a wait of 1 the order was
+    /// finalised at M + 1, the commitment forfeited, and the copy keeps the
+    /// answer. Why `MinBlockWait` is 2.
+    #[test]
+    fn a_copy_one_block_ahead_of_the_reveal_is_evicted_only_with_a_wait_of_two() {
+        for (wait, lands) in [(2u64, true), (1, false)] {
+            new_test_ext().execute_with(|| {
+                register(2);
+                register(3);
+                let id = propose(chain_params(4), RewardResolution::SingleBest, wait);
+                commit(2, id, &chain_row(4, 4));
+                run_to_block(5);
+                submit(3, id, &chain_row(4, 4));
+                run_to_block(6);
+                if lands {
+                    assert_ok!(reveal(2, id, &chain_row(4, 4)));
+                    assert!(OrderSolutions::<Test>::get(id, 3).is_none());
+                    assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 2);
+                } else {
+                    assert_eq!(
+                        reveal(2, id, &chain_row(4, 4)),
+                        Err(crate::Error::<Test>::CommitmentNotFound.into())
+                    );
+                    assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 3);
+                }
+            });
+        }
+    }
+
+    /// The interim risk B5d left open: a watcher front-runs the reveal
+    /// transaction, in the same block, with a plain submission of the same
+    /// answer. The reveal still lands and evicts it.
+    #[test]
+    fn a_same_block_front_run_of_a_reveal_is_evicted() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            let id = propose(chain_params(4), RewardResolution::SingleBest, 10);
+            commit(2, id, &chain_row(4, 4));
+            run_to_block(3);
+            submit(3, id, &chain_row(4, 4));
+            assert_ok!(reveal(2, id, &chain_row(4, 4)));
+            assert!(OrderSolutions::<Test>::get(id, 3).is_none());
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 2);
+            assert!(AnswerCommitments::<Test>::get(id, 2).is_none());
+        });
+    }
+
+    /// Eviction needs a strictly earlier effective time: two solvers that
+    /// committed to the same answer in the same block -- the first reveal
+    /// keeps it, the second is a duplicate and rolls back.
+    #[test]
+    fn an_equal_effective_time_does_not_evict() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            let id = propose(chain_params(4), RewardResolution::SingleBest, 10);
+            commit(2, id, &chain_row(4, 4));
+            commit(3, id, &chain_row(4, 4));
+            run_to_block(2);
+            assert_ok!(reveal(2, id, &chain_row(4, 4)));
+            assert_noop!(
+                reveal(3, id, &chain_row(4, 4)),
+                crate::Error::<Test>::DuplicateAnswer
+            );
+            assert!(AnswerCommitments::<Test>::contains_key(id, 3));
+            assert_eq!(OrderFrontRunner::<Test>::get(id).unwrap().solver, 2);
+        });
+    }
+
+    /// N2: the rebuild orders ties by arrival. Two equal-energy solvers in
+    /// the same block keep their order across an unrelated eviction -- for
+    /// either assignment of the two answers, so the index's storage order
+    /// cannot stand in for `seq`.
+    #[test]
+    fn same_block_equal_energy_solvers_keep_their_order_across_an_eviction() {
+        for (first, second) in [(4u32, 6u32), (6, 4)] {
+            new_test_ext().execute_with(|| {
+                for who in [2, 3, 4, 5] {
+                    register(who);
+                }
+                let id = propose(chain_params(4), RewardResolution::TopNEqual { n: 3 }, 10);
+                commit(2, id, &chain_row(4, 1));
+                run_to_block(2);
+                submit(3, id, &chain_row(4, first));
+                submit(4, id, &chain_row(4, second));
+                assert_eq!(energy(3, id), energy(4, id));
+                submit(5, id, &chain_row(4, 1));
+                run_to_block(3);
+                assert_ok!(reveal(2, id, &chain_row(4, 1)));
+                let order: Vec<_> = ranking(id).into_iter().map(|(who, _)| who).collect();
+                let position = |who| order.iter().position(|w| *w == who).unwrap();
+                assert!(position(3) < position(4), "{order:?}");
+                assert!(!order.contains(&5));
+            });
+        }
+    }
+}

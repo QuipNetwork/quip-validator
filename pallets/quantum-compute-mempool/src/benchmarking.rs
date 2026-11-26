@@ -1284,7 +1284,10 @@ mod benchmarks {
     /// W3-001 B5d: a reveal -- `submit_solution_with_payee`'s worst case (a
     /// full ranking and answer index), plus reading the commitment, hashing
     /// the submitted solutions for the preimage and consuming the commitment
-    /// (its deposit unreserved).
+    /// (its deposit unreserved). B5e: on a full order, the revealed answer
+    /// was copied a block after the commitment, so the reveal evicts the copy
+    /// (its solution and payee removed) and rebuilds the ranking from the
+    /// full answer index.
     #[benchmark]
     fn reveal_solution(
         n: Linear<2, { T::MaxNodes::get() }>,
@@ -1349,7 +1352,27 @@ mod benchmarks {
             },
         );
         CommitmentCount::<T>::insert(order_id, 1);
+        // The copy, a block later: the 32nd index entry, and the order full.
+        let copier: T::AccountId = account("copier", 0, 0);
+        register_solver_for::<T>(&copier);
         frame_system::Pallet::<T>::set_block_number(now.saturating_add(One::one()));
+        assert!(QuantumComputeMempool::<T>::submit_solution_with_payee(
+            RawOrigin::Signed(copier.clone()).into(),
+            order_id,
+            solutions.clone(),
+            payee,
+        )
+        .is_ok());
+        JobOrders::<T>::mutate(order_id, |order| {
+            if let Some(order) = order {
+                order.solution_count = types::MAX_SOLVERS_PER_OPEN_ORDER;
+            }
+        });
+        assert_eq!(
+            OrderAnswers::<T>::iter_prefix(order_id).count(),
+            types::MAX_SOLVERS_PER_OPEN_ORDER as usize
+        );
+        frame_system::Pallet::<T>::set_block_number(now.saturating_add(2u32.into()));
 
         #[extrinsic_call]
         QuantumComputeMempool::reveal_solution(
@@ -1361,6 +1384,8 @@ mod benchmarks {
         );
 
         assert!(OrderSolutions::<T>::contains_key(order_id, &solver));
+        assert!(!OrderSolutions::<T>::contains_key(order_id, &copier));
+        assert!(!OrderPayees::<T>::contains_key(order_id, &copier));
         assert!(!AnswerCommitments::<T>::contains_key(order_id, &solver));
         assert_eq!(
             OrderSolutions::<T>::get(order_id, &solver)

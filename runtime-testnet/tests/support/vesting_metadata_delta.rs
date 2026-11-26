@@ -291,6 +291,63 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5e (eviction). Exact delta: the `SolutionEvicted` event, appended
+// last after `CommitmentForfeited`. Runs first: the newest delta.
+const SOLUTION_EVICTED_DOCS: &[&str] = &[
+    "A revealed answer took `answer` from a solver whose submission of it",
+    "was effective later (W3-001): `evicted`'s accepted solution, payee",
+    "and ranking entry are removed, and `by` is ranked at its own",
+    "energy.",
+];
+
+fn normalize_eviction(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    if mempool_variants(before, "event")?
+        .iter()
+        .any(|v| v["name"] == "SolutionEvicted")
+    {
+        return Err("unexpected baseline mempool SolutionEvicted".into());
+    }
+    let types = after.clone();
+    let events = mempool_variants(after, "event")?.clone();
+    let field_ty = |variant: &str, field: &str| -> Value {
+        events
+            .iter()
+            .find(|v| v["name"] == variant)
+            .and_then(|v| v["fields"].as_array())
+            .and_then(|fields| fields.iter().find(|f| f["name"] == field))
+            .map(|f| f["type"].clone())
+            .unwrap_or(Value::Null)
+    };
+    let order_id_ty = field_ty("OrderDepositReleased", "order_id");
+    let account_ty = field_ty("OrderDepositReleased", "proposer");
+    let answer_ty = field_ty("SolutionEvicted", "answer");
+    let events = mempool_variants(after, "event")?;
+    let len = events.len();
+    let want = serde_json::json!({
+        "docs": SOLUTION_EVICTED_DOCS,
+        "fields": [
+            {"name": "order_id", "type": order_id_ty, "typeName": "u64"},
+            {"name": "evicted", "type": account_ty.clone(), "typeName": "T::AccountId"},
+            {"name": "by", "type": account_ty, "typeName": "T::AccountId"},
+            {"name": "answer", "type": answer_ty.clone(), "typeName": "sp_core::H256"},
+        ],
+        "index": len.saturating_sub(1),
+        "name": "SolutionEvicted",
+    });
+    if len < 2
+        || events[len - 2]["name"] != "CommitmentForfeited"
+        || events.last() != Some(&want)
+        || !is_h256(&types, &answer_ty)
+    {
+        return Err(format!(
+            "missing, misplaced or incorrect required mempool SolutionEvicted event: {}",
+            serde_json::to_string(&events.last()).unwrap_or_default()
+        ));
+    }
+    events.pop();
+    Ok(())
+}
+
 // W3-001 B5d3 (same-solver replacement by rank key). Exact delta: only the
 // docs of the mempool `SolutionNotImproved` error, which now names the
 // equal-energy reveal from an earlier commitment. Runs first: the newest
@@ -344,9 +401,11 @@ const REVEAL_SOLUTION_DOCS: &[&str] = &[
     "commitment ([`Pallet::answer_commitment`]), made in an earlier",
     "block. The commitment is consumed -- deleted, its deposit",
     "returned -- and the solutions are submitted as `submit_solution`",
-    "would, but ranked at the commitment's block (`effective_at`). If the",
-    "submission is refused, nothing changes: the commitment, its count",
-    "and its deposit stay as they were.",
+    "would, but ranked at the commitment's block (`effective_at`). If",
+    "another solver holds the same answer from a later effective time,",
+    "the reveal takes it and that solver's submission is evicted",
+    "(`SolutionEvicted`). If the submission is refused, nothing changes:",
+    "the commitment, its count and its deposit stay as they were.",
 ];
 const REVEAL_ERRORS: &[(&str, &[&str])] = &[
     (
@@ -2813,6 +2872,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     // First: W3-001 then W3-006 append after every other mempool delta,
     // newest first.
+    normalize_eviction(&mut left, &mut right)?;
     normalize_solution_not_improved_docs(&mut left, &mut right)?;
     normalize_reveal(&mut left, &mut right)?;
     normalize_commitments(&mut left, &mut right)?;
@@ -3502,6 +3562,72 @@ mod tests {
             .iter_mut()
             .filter(|ty| ty["type"]["path"] == path)
             .collect()
+    }
+
+    #[test]
+    fn requires_exact_mempool_solution_evicted_event() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(String, Value)> = Vec::new();
+        let edit = |metadata: &Value, f: &dyn Fn(&mut Value)| -> Value {
+            let mut wrong = metadata.clone();
+            f(mempool_variants(&mut wrong, "event")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "SolutionEvicted")
+                .unwrap());
+            wrong
+        };
+        for field in ["docs", "index", "name"] {
+            cases.push((
+                format!("SolutionEvicted.{field}"),
+                edit(&after, &|v| v[field] = Value::from(999)),
+            ));
+        }
+        for index in 0..4 {
+            cases.push((
+                format!("SolutionEvicted field {index} typeName"),
+                edit(&after, &|v| {
+                    v["fields"][index]["typeName"] = Value::from("mutated")
+                }),
+            ));
+            cases.push((
+                format!("SolutionEvicted field {index} name"),
+                edit(&after, &|v| {
+                    v["fields"][index]["name"] = Value::from("mutated")
+                }),
+            ));
+        }
+        // The answer retyped to the account type, with its typeName kept.
+        let mut retyped = after.clone();
+        let events = mempool_variants(&mut retyped, "event").unwrap();
+        let account_ty = events
+            .iter()
+            .find(|v| v["name"] == "SolutionEvicted")
+            .unwrap()["fields"][1]["type"]
+            .clone();
+        events
+            .iter_mut()
+            .find(|v| v["name"] == "SolutionEvicted")
+            .unwrap()["fields"][3]["type"] = account_ty;
+        cases.push(("SolutionEvicted answer retyped".into(), retyped));
+        cases.push((
+            "SolutionEvicted without answer".into(),
+            edit(&after, &|v| {
+                v["fields"].as_array_mut().unwrap().pop();
+            }),
+        ));
+        let mut misplaced = after.clone();
+        let events = mempool_variants(&mut misplaced, "event").unwrap();
+        let len = events.len();
+        events.swap(len - 1, len - 2);
+        cases.push(("misplaced SolutionEvicted".into(), misplaced));
+        let mut missing = after.clone();
+        mempool_variants(&mut missing, "event").unwrap().pop();
+        cases.push(("missing SolutionEvicted".into(), missing));
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
     }
 
     #[test]
