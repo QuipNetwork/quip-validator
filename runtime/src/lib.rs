@@ -1098,16 +1098,36 @@ mod tests {
                         code_hash: authorized, ..
                     }) if authorized == code_hash
                 )));
-                let apply: UncheckedExtrinsic = generic::UncheckedExtrinsic::new_bare(
-                    SystemCall::apply_authorized_upgrade {
-                        code: wasm.to_vec(),
-                    }
-                    .into(),
-                )
-                .into();
+                let bare = |code: Vec<u8>| -> UncheckedExtrinsic {
+                    generic::UncheckedExtrinsic::new_bare(
+                        SystemCall::apply_authorized_upgrade { code }.into(),
+                    )
+                    .into()
+                };
+                // Only the authorized code validates: one byte more is
+                // `Invalid(Call)` (System's `ValidateUnsigned` checks the hash).
+                let mut altered = wasm.to_vec();
+                altered.push(0);
+                assert_eq!(
+                    validate(bare(altered)),
+                    Err(InvalidTransaction::Call.into())
+                );
+                let apply = bare(wasm.to_vec());
                 assert!(validate(apply.clone()).is_ok(), "{:?}", validate(apply));
+                // Fee-free because it is unsigned: no bare extrinsic is charged,
+                // so this zero holds for any bare extrinsic and is not a check of
+                // `Pays::No`. `apply_authorized_upgrade` sets `Pays::No` only after
+                // dispatch (on success, or on a version rejection), and this
+                // test does not apply it (see below).
                 let len = apply.encode().len() as u32;
                 assert_eq!(TransactionPayment::query_info(apply, len).partial_fee, 0);
+                // Not applied: these test externalities lack
+                // `ReadRuntimeVersionExt`. With it, applying this Wasm returns
+                // `Ok(Ok(()))` but emits `RejectedInvalidAuthorizedUpgrade {
+                // SpecVersionNeedsToIncrease }` -- it carries the running
+                // spec_version -- and changes no code. A future apply leg must
+                // assert `CodeUpdated` and no `RejectedInvalidAuthorizedUpgrade`,
+                // with a spec-bumped blob or `authorize_upgrade_without_checks`.
             });
         }
     }
