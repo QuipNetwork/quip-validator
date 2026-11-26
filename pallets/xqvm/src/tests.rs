@@ -1038,8 +1038,13 @@ fn control_flow_shape_counts_leaders_like_the_verifier() {
     assert_eq!(ControlFlowShape::of(&[NEXT, NEXT, HALT]).loop_depth, 0);
 }
 
+/// `store_program` pre-charges at `MaxProgramBlocks` and reports the weight
+/// at the verified block count. The reference measurement has no per-block
+/// cost (the generated weight drops `b`), so today nothing is refunded and
+/// the actual weight equals the pre-charge; the refund path stays, so a
+/// regeneration that measures a block cost refunds it.
 #[test]
-fn store_refunds_unused_blocks() {
+fn store_reports_the_weight_at_the_verified_block_count() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
 
@@ -1058,11 +1063,16 @@ fn store_refunds_unused_blocks() {
 
         let pre_charged = <() as crate::WeightInfo>::store_program(len, MaxProgramBlocks::get());
         assert!(
-            actual.ref_time() < pre_charged.ref_time(),
-            "actual {} should be below pre-charged {}",
-            actual.ref_time(),
-            pre_charged.ref_time(),
+            actual.all_lte(pre_charged),
+            "actual {actual:?} above pre-charged {pre_charged:?}"
         );
+        // No measured per-block cost: the block count changes nothing.
+        let unmeasured = <() as crate::WeightInfo>::store_program(len, 1) == pre_charged;
+        if unmeasured {
+            assert_eq!(actual, pre_charged);
+        } else {
+            assert!(actual.ref_time() < pre_charged.ref_time());
+        }
     });
 }
 

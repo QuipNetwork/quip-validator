@@ -568,7 +568,9 @@ parameter_types! {
     /// the ceiling binds abuse, not use. The bound is priced separately: `store_program` pre-charges
     /// its per-block component -- the structural gate's jump-span searches, one
     /// per jump, and jumps are bounded by blocks -- at this many blocks and
-    /// refunds to the actual count.
+    /// reports the weight at the actual count. The reference measurement
+    /// finds no per-block cost beyond the per-byte one, so nothing is refunded
+    /// today.
     pub const MaxProgramBlocks: u32 = 2_048;
     /// Maximum static loop nesting in a stored program.
     ///
