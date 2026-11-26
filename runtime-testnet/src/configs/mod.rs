@@ -387,15 +387,22 @@ parameter_types! {
     /// The length fee (W3-005): one `MICRO_UNIT` per encoded byte of an
     /// extrinsic, signature included. Before it was one planck per byte
     /// (`IdentityFee`), so a block filled with bytes cost almost nothing
-    /// beyond weight: about 0.043 QUIP for a 3.5 MiB Normal block, now about
-    /// 3.72 QUIP. Measured on real signed extrinsics (release runtime,
-    /// 2026-11-26):
+    /// beyond weight: one remark the size of a 3.5 MiB Normal block cost
+    /// about 0.041 QUIP, now about 3.71 QUIP (3.67 of it length; chunking
+    /// into several remarks costs a little more). Measured on real signed
+    /// extrinsics (release runtime, 2026-11-26):
     /// - every signed extrinsic carries about 1,700 B of hybrid H4 signature
     ///   and extensions, so it pays at least about 0.0017 QUIP for length: a
     ///   transfer is about 0.0027 QUIP (was 0.00098);
-    /// - the Foundation's runtime upgrade, `dispatch_as_root(set_code)` with
-    ///   the ~1.6 MB Wasm, is about 1.76 QUIP (was 0.17); its signing account
-    ///   must hold that;
+    /// - a runtime upgrade is a 2/3 Foundation motion (`FoundationOrigin` is a
+    ///   collective origin; a member's own signed `dispatch_as_root` is
+    ///   `BadOrigin`). Through `dispatch_as_root(set_code)` the member who
+    ///   proposes carries the ~1.6 MB Wasm and pays about 1.6 QUIP for
+    ///   `propose` (fee + ED needed: the fee is withdrawn keeping the account
+    ///   alive), `close` about 0.17 and each vote about 0.003. Through
+    ///   `dispatch_as_root(authorize_upgrade(hash))` every extrinsic is about
+    ///   0.003 QUIP, and the code then goes in as an unsigned
+    ///   `apply_authorized_upgrade`, which pays no fee;
     /// - a realistic quantum-pow proof (32 packed 5,000-spin solutions,
     ///   ~22 KB) is about 0.028 QUIP, 2.8% of the default 1 QUIP block reward
     ///   (miner proofs pay the normal fee);

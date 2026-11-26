@@ -891,6 +891,7 @@ mod tests {
     mod byte_fee {
         use super::*;
         use frame_support::{dispatch::GetDispatchInfo, traits::Currency as _};
+        use sp_runtime::traits::{Dispatchable as _, Hash as _};
         use sp_runtime::transaction_validity::{
             InvalidTransaction, TransactionSource, TransactionValidity,
         };
@@ -915,16 +916,19 @@ mod tests {
                 .len_fee
         }
 
-        /// Two signed remarks whose payloads differ by N bytes have encoded
-        /// lengths that differ by N, and length fees that differ by exactly
-        /// N x `MICRO_UNIT`; each length fee is its whole length (signature
-        /// included) x `MICRO_UNIT`. The same call charged at two lengths
-        /// differs in total fee by exactly N x `MICRO_UNIT` (a remark's weight
-        /// also grows with its payload, so two different remarks' totals do
-        /// not).
+        /// The rate is pinned once, as the guard against a return to one planck
+        /// per byte; everything else follows `TransactionByteFee`, so a rate
+        /// change edits only the constant and the pin. Two signed remarks
+        /// whose payloads differ by N bytes have encoded lengths that differ by
+        /// N, and length fees that differ by exactly N x the rate; each length
+        /// fee is its whole length (signature included) x the rate. The same
+        /// call charged at two lengths differs in total fee by exactly N x the
+        /// rate (a remark's weight also grows with its payload, so two
+        /// different remarks' totals do not).
         #[test]
         fn the_length_fee_is_one_micro_unit_per_byte() {
             assert_eq!(configs::TransactionByteFee::get(), MICRO_UNIT);
+            let rate = configs::TransactionByteFee::get();
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
             ext().execute_with(|| {
@@ -943,62 +947,168 @@ mod tests {
                 let (short, long) = (remark(1_000), remark(1_000 + N));
                 let (short_len, long_len) = (short.encode().len(), long.encode().len());
                 assert_eq!(long_len - short_len, N);
-                assert_eq!(len_fee(&short), short_len as Balance * MICRO_UNIT);
-                assert_eq!(len_fee(&long), long_len as Balance * MICRO_UNIT);
-                assert_eq!(len_fee(&long) - len_fee(&short), N as Balance * MICRO_UNIT);
+                assert_eq!(len_fee(&short), short_len as Balance * rate);
+                assert_eq!(len_fee(&long), long_len as Balance * rate);
+                assert_eq!(len_fee(&long) - len_fee(&short), N as Balance * rate);
                 let info = short.0.get_dispatch_info();
                 let at = |len: usize| TransactionPayment::compute_fee(len as u32, &info, 0);
-                assert_eq!(at(short_len + N) - at(short_len), N as Balance * MICRO_UNIT);
+                assert_eq!(at(short_len + N) - at(short_len), N as Balance * rate);
             });
         }
 
-        /// The Foundation's runtime upgrade with this runtime's real Wasm costs
-        /// about 1.76 QUIP, almost all of it length, and is payable from a
-        /// Foundation account holding 10 QUIP; with 1 QUIP it cannot pay.
+        /// Six Foundation members, `who` first, set the way governance sets
+        /// them (membership reset, propagated to the collective).
+        fn seat_foundation(who: &AccountId) {
+            let mut members: Vec<AccountId> = (1u8..=5).map(|i| AccountId::new([i; 32])).collect();
+            members.push(who.clone());
+            members.sort();
+            assert_ok!(FoundationMembership::reset_members(
+                RuntimeOrigin::root(),
+                members
+            ));
+            assert!(
+                pallet_collective::Members::<Runtime, pallet_collective::Instance1>::get()
+                    .contains(who)
+            );
+        }
+
+        fn upgrade_motion(inner: RuntimeCall) -> (RuntimeCall, RuntimeCall) {
+            let proposal: RuntimeCall =
+                pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
+                    call: Box::new(inner),
+                }
+                .into();
+            let propose =
+                pallet_collective::Call::<Runtime, pallet_collective::Instance1>::propose {
+                    threshold: 4,
+                    proposal: Box::new(proposal.clone()),
+                    length_bound: proposal.encoded_size() as u32,
+                }
+                .into();
+            (proposal, propose)
+        }
+
+        /// The Foundation's runtime upgrade is a 2/3 motion (`FoundationOrigin`
+        /// is a collective origin: a member's own signed `dispatch_as_root` is
+        /// `BadOrigin`). The member proposing `dispatch_as_root(set_code)` with
+        /// this runtime's real Wasm carries the code and pays for its length
+        /// (about 1.6 QUIP at a micro-QUIP per byte). The fee is withdrawn
+        /// keeping the account alive (`Preservation::Preserve`), so the
+        /// proposer needs fee + ED: with one planck less validation refuses
+        /// it (`Payment`); with fee + ED it validates and applies, and the
+        /// motion is recorded -- the dispatch itself succeeds.
         #[test]
-        fn the_foundation_runtime_upgrade_is_payable_from_a_funded_account() {
+        fn the_foundation_upgrade_proposal_is_payable_from_a_funded_account() {
             let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
-            for (funds, payable) in [(10 * UNIT, true), (UNIT, false)] {
+            let rate = configs::TransactionByteFee::get();
+            for short in [true, false] {
                 ext().execute_with(|| {
-                    Balances::make_free_balance_be(&who, funds);
-                    pallet_membership::Members::<Runtime, pallet_membership::Instance1>::put(
-                        frame_support::BoundedVec::try_from(vec![who.clone()]).unwrap(),
-                    );
-                    let xt = signed_test_extrinsic(
-                        &sender,
-                        who.clone().into(),
-                        pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
-                            call: Box::new(
-                                SystemCall::set_code {
-                                    code: wasm.to_vec(),
-                                }
-                                .into(),
-                            ),
+                    seat_foundation(&who);
+                    let (proposal, propose) = upgrade_motion(
+                        SystemCall::set_code {
+                            code: wasm.to_vec(),
                         }
                         .into(),
-                        0,
                     );
+                    let xt = signed_test_extrinsic(&sender, who.clone().into(), propose, 0);
                     let len = xt.encode().len() as Balance;
                     let fee = TransactionPayment::query_info(xt.clone(), len as u32).partial_fee;
-                    assert_eq!(len_fee(&xt), len * MICRO_UNIT);
-                    assert!(fee > len * MICRO_UNIT && fee < 2 * UNIT, "fee {fee}");
-                    if payable {
-                        assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
-                        // Included and charged, whatever the upgrade's own result.
-                        assert!(Executive::apply_extrinsic(xt).is_ok());
-                        let paid = funds - Balances::free_balance(&who);
-                        assert!(paid > len * MICRO_UNIT && paid <= fee, "paid {paid}");
-                    } else {
-                        assert_eq!(
-                            validate(xt),
-                            Err(InvalidTransaction::Payment.into()),
-                            "1 QUIP cannot pay a ~1.76 QUIP upgrade"
-                        );
+                    assert_eq!(len_fee(&xt), len * rate);
+                    assert!(fee > len * rate, "fee {fee}");
+                    let funds = fee + EXISTENTIAL_DEPOSIT - Balance::from(short);
+                    Balances::make_free_balance_be(&who, funds);
+                    if short {
+                        assert_eq!(validate(xt), Err(InvalidTransaction::Payment.into()));
+                        return;
                     }
+                    assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+                    System::reset_events();
+                    assert_ok!(Executive::apply_extrinsic(xt).unwrap());
+                    let hash = <Runtime as frame_system::Config>::Hashing::hash_of(&proposal);
+                    assert!(
+                        pallet_collective::Proposals::<Runtime, pallet_collective::Instance1>::get(
+                        )
+                        .contains(&hash)
+                    );
+                    assert!(System::events().iter().any(|record| matches!(
+                        record.event,
+                        RuntimeEvent::Foundation(pallet_collective::Event::Proposed {
+                            proposal_hash, ..
+                        }) if proposal_hash == hash
+                    )));
+                    assert!(!System::events().iter().any(|record| matches!(
+                        record.event,
+                        RuntimeEvent::System(frame_system::Event::ExtrinsicFailed { .. })
+                    )));
+                    let paid = funds - Balances::free_balance(&who);
+                    assert!(paid > len * rate && paid <= fee, "paid {paid}");
+                    assert!(Balances::free_balance(&who) >= EXISTENTIAL_DEPOSIT);
                 });
             }
+        }
+
+        /// The cheap upgrade route: a 2/3 motion `dispatch_as_root(
+        /// authorize_upgrade(hash))` (small extrinsics) authorizes the code,
+        /// and the code itself then goes in as an unsigned
+        /// `apply_authorized_upgrade`, which validates and pays no fee.
+        #[test]
+        fn an_authorized_upgrade_is_applied_unsigned_and_fee_free() {
+            let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let who = account_id_from_public(&sender.public());
+            ext().execute_with(|| {
+                seat_foundation(&who);
+                let code_hash = <Runtime as frame_system::Config>::Hashing::hash(wasm);
+                let (proposal, propose) =
+                    upgrade_motion(SystemCall::authorize_upgrade { code_hash }.into());
+                assert_ok!(propose.dispatch(RuntimeOrigin::signed(who.clone())));
+                let hash = <Runtime as frame_system::Config>::Hashing::hash_of(&proposal);
+                // Four ayes of six (the proposer's own aye is not implied).
+                for voter in [who.clone()]
+                    .into_iter()
+                    .chain((1u8..=3).map(|i| AccountId::new([i; 32])))
+                {
+                    assert_ok!(Foundation::vote(
+                        RuntimeOrigin::signed(voter),
+                        hash,
+                        0,
+                        true
+                    ));
+                }
+                System::reset_events();
+                assert_ok!(Foundation::close(
+                    RuntimeOrigin::signed(who.clone()),
+                    hash,
+                    0,
+                    proposal.get_dispatch_info().call_weight,
+                    proposal.encoded_size() as u32
+                ));
+                assert!(System::events().iter().any(|record| matches!(
+                    record.event,
+                    RuntimeEvent::Foundation(pallet_collective::Event::Executed {
+                        result: Ok(()),
+                        ..
+                    })
+                )));
+                assert!(System::events().iter().any(|record| matches!(
+                    record.event,
+                    RuntimeEvent::System(frame_system::Event::UpgradeAuthorized {
+                        code_hash: authorized, ..
+                    }) if authorized == code_hash
+                )));
+                let apply: UncheckedExtrinsic = generic::UncheckedExtrinsic::new_bare(
+                    SystemCall::apply_authorized_upgrade {
+                        code: wasm.to_vec(),
+                    }
+                    .into(),
+                )
+                .into();
+                assert!(validate(apply.clone()).is_ok(), "{:?}", validate(apply));
+                let len = apply.encode().len() as u32;
+                assert_eq!(TransactionPayment::query_info(apply, len).partial_fee, 0);
+            });
         }
     }
 
