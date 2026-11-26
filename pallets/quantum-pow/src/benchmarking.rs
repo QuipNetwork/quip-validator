@@ -390,14 +390,38 @@ mod benchmarks {
             },
         );
         let proof = valid_proof_for::<T>(&caller, topology_hash, s);
+        // W3-009 (B6): the worst path is past the cap -- full validation, then
+        // the comparison with the block's best, which this proof replaces --
+        // against a submitter set one short of its bound (its largest read
+        // and write).
+        let attempts = T::MaxProofAttemptsPerBlock::get();
+        let others: alloc::collections::BTreeSet<T::AccountId> = (1..attempts)
+            .map(|index| account("block-submitter", index, 0))
+            .collect();
+        BlockSubmitters::<T>::put(
+            frame_support::BoundedBTreeSet::try_from(others).expect("one short of the bound"),
+        );
+        BlockProofCount::<T>::put(T::MaxProofsPerBlock::get());
+        BlockBestProof::<T>::put(types::ProofRecord {
+            miner: account("block-submitter", 1, 0),
+            submitted_at: frame_system::Pallet::<T>::block_number(),
+            energy_milli: i64::MAX,
+            salt: [0; 32],
+            topology_hash,
+            device_access_time_us: 0,
+        });
 
         #[extrinsic_call]
         QuantumPow::submit_proof(RawOrigin::Signed(caller.clone()), proof);
 
-        let miner = Miners::<T>::get(caller).expect("miner remains registered");
+        let miner = Miners::<T>::get(caller.clone()).expect("miner remains registered");
         assert_eq!(miner.proofs_submitted, 1);
-        assert_eq!(BlockProofCount::<T>::get(), 1);
-        assert!(BlockBestProof::<T>::get().is_some());
+        assert_eq!(BlockProofCount::<T>::get(), T::MaxProofsPerBlock::get() + 1);
+        assert_eq!(
+            BlockBestProof::<T>::get().expect("a best proof").miner,
+            caller
+        );
+        assert_eq!(BlockSubmitters::<T>::get().len() as u32, attempts);
     }
 
     #[benchmark]

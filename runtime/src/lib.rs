@@ -887,6 +887,31 @@ mod tests {
         }
     }
 
+    /// W3-009 (B6): the submitter-set bound never binds before the block's
+    /// weight does -- the bound times the cheapest accepted `submit_proof`
+    /// (`MinNodes` nodes, one edge, one solution) covers the Normal class.
+    #[test]
+    fn the_proof_attempt_bound_covers_a_normal_block_of_the_cheapest_proofs() {
+        use pallet_quantum_pow::WeightInfo as _;
+        let cheapest = <Runtime as pallet_quantum_pow::Config>::WeightInfo::submit_proof(
+            configs::QuantumPowMinNodes::get(),
+            1,
+            1,
+        );
+        let normal = configs::RuntimeBlockWeights::get()
+            .get(frame_support::dispatch::DispatchClass::Normal)
+            .max_total
+            .expect("a Normal limit");
+        let attempts = u64::from(configs::QuantumPowMaxProofAttemptsPerBlock::get());
+        assert!(
+            attempts * cheapest.ref_time() >= normal.ref_time(),
+            "{attempts} x {} < {}",
+            cheapest.ref_time(),
+            normal.ref_time()
+        );
+        assert!(attempts >= u64::from(configs::QuantumPowMaxProofsPerBlock::get()));
+    }
+
     // W3-005 (B2, B2d): the length fee is a tenth of a `MICRO_UNIT` per encoded byte.
     mod byte_fee {
         use super::*;

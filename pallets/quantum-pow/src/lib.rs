@@ -217,8 +217,17 @@ pub mod pallet {
 
         /// Pays from a prefunded subnet pot; never mints outside the controller.
         type RewardPayment: MiningReward<Self::AccountId, BalanceOf<Self>>;
+        /// Proofs accepted per block before only a strictly better proof is
+        /// accepted (W3-009, option (i)): past it, a proof replaces the block's
+        /// best or is refused with `ProofNotBetterThanBest`.
         #[pallet::constant]
         type MaxProofsPerBlock: Get<u32>;
+        /// Bound on the miners with an accepted proof in one block
+        /// (`BlockSubmitters`, W3-009): at least the most `submit_proof` calls
+        /// a Normal block's weight admits, so it never binds before the block
+        /// does. Must be at least `MaxProofsPerBlock`.
+        #[pallet::constant]
+        type MaxProofAttemptsPerBlock: Get<u32>;
 
         /// Per-mille `c` value for the easiest (least-negative) end of the
         /// energy curve. The difficulty curve is calibrated against the
@@ -286,13 +295,14 @@ pub mod pallet {
     pub type BlockBestProof<T: Config> = StorageValue<_, ProofRecordOf<T>>;
 
     /// The miners that submitted an accepted proof in this block (W3-009):
-    /// one `submit_proof` per miner per block, checked before the
-    /// `MaxProofsPerBlock` limit so one miner cannot take every slot. Cleared
-    /// in `on_initialize`; bounded by `MaxProofsPerBlock`, since each accepted
-    /// proof adds one miner and the block accepts at most that many.
+    /// one `submit_proof` per miner per block, so one miner cannot take every
+    /// slot. Each accepted proof -- below `MaxProofsPerBlock`, or past it as a
+    /// strictly better replacement -- adds its miner. Cleared in
+    /// `on_initialize`; bounded by `MaxProofAttemptsPerBlock`
+    /// (`ProofLimitReached` when full).
     #[pallet::storage]
     pub type BlockSubmitters<T: Config> =
-        StorageValue<_, BoundedBTreeSet<T::AccountId, T::MaxProofsPerBlock>, ValueQuery>;
+        StorageValue<_, BoundedBTreeSet<T::AccountId, T::MaxProofAttemptsPerBlock>, ValueQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -315,6 +325,9 @@ pub mod pallet {
     #[pallet::storage]
     pub type LastProofBlockHash<T: Config> = StorageValue<_, H256, ValueQuery>;
 
+    /// Proofs accepted in this block, replacements past `MaxProofsPerBlock`
+    /// included (W3-009): at or above `MaxProofsPerBlock`, a proof must beat
+    /// the block's best. Cleared in `on_initialize`.
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
@@ -426,6 +439,9 @@ pub mod pallet {
         InvalidCurve,
         GraphTooSmall,
         InvalidTopology,
+        /// This block's `BlockSubmitters` is full (`MaxProofAttemptsPerBlock`
+        /// miners with an accepted proof). Past `MaxProofsPerBlock` a better
+        /// proof is still accepted until then (W3-009).
         ProofLimitReached,
         InvalidNonce,
         NoSolutionsSubmitted,
@@ -471,6 +487,10 @@ pub mod pallet {
         /// This miner already had a proof accepted in this block: one
         /// `submit_proof` per miner per block (W3-009).
         ProofAlreadySubmittedThisBlock,
+        /// The block already accepted `MaxProofsPerBlock` proofs, and this one
+        /// is valid but its energy is not strictly below the block's best
+        /// (W3-009). The validation it caused is charged in full.
+        ProofNotBetterThanBest,
     }
 
     #[pallet::hooks]
@@ -518,6 +538,10 @@ pub mod pallet {
             assert!(
                 min as u64 > crate::difficulty::FAST_PROOF_BLOCKS,
                 "MinTargetProofBlocks must exceed FAST_PROOF_BLOCKS"
+            );
+            assert!(
+                T::MaxProofAttemptsPerBlock::get() >= T::MaxProofsPerBlock::get(),
+                "MaxProofAttemptsPerBlock must be at least MaxProofsPerBlock"
             );
             assert!(
                 min <= default && default <= max,
@@ -969,15 +993,19 @@ pub mod pallet {
                 Miners::<T>::contains_key(&who),
                 Error::<T>::MinerNotRegistered
             );
-            // One proof per miner per block (W3-009), checked before the
-            // block-wide limit: otherwise one miner can fill every slot with
-            // proofs under different salts and lock the others out.
+            // One proof per miner per block (W3-009): otherwise one miner can
+            // fill every slot with proofs under different salts. The cap is
+            // not checked here: past `MaxProofsPerBlock` a proof is validated
+            // in full and accepted only if it beats the block's best, so
+            // filling the cap with weak proofs cannot lock a better one out.
+            // Only a full submitter set refuses up front.
+            let submitters = BlockSubmitters::<T>::get();
             ensure!(
-                !BlockSubmitters::<T>::get().contains(&who),
+                !submitters.contains(&who),
                 Error::<T>::ProofAlreadySubmittedThisBlock
             );
             ensure!(
-                BlockProofCount::<T>::get() < T::MaxProofsPerBlock::get(),
+                (submitters.len() as u32) < T::MaxProofAttemptsPerBlock::get(),
                 Error::<T>::ProofLimitReached
             );
             ensure!(
@@ -1073,6 +1101,12 @@ pub mod pallet {
                 Some(existing) => record.energy_milli < existing.energy_milli,
                 None => true,
             };
+            // At the cap a proof is accepted only as a strictly better best
+            // (W3-009); the refusal keeps the full declared weight.
+            ensure!(
+                should_replace || BlockProofCount::<T>::get() < T::MaxProofsPerBlock::get(),
+                Error::<T>::ProofNotBetterThanBest
+            );
             if should_replace {
                 BlockBestProof::<T>::put(record);
             }
@@ -1080,8 +1114,8 @@ pub mod pallet {
             BlockProofCount::<T>::mutate(|count| {
                 *count = count.saturating_add(1);
             });
-            // Cannot be full: one entry per accepted proof, and the count
-            // check above keeps accepted proofs below `MaxProofsPerBlock`.
+            // Cannot be full: the set's size was checked before validation,
+            // and this miner is not in it.
             BlockSubmitters::<T>::try_mutate(|submitters| {
                 submitters
                     .try_insert(who.clone())

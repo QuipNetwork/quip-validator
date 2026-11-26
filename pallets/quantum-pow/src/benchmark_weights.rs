@@ -179,7 +179,9 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 32]`.
 	// BENCHMARK-PLACEHOLDER(W3-009): `BlockSubmitters` (r:1 w:1) added by hand to the generated
-	// counts (11 -> 12 reads, 3 -> 4 writes); regenerate (benchmark-weights job).
+	// counts (11 -> 12 reads, 3 -> 4 writes); regenerate (benchmark-weights job). B6: the
+	// benchmark now takes the past-the-cap path with the set one short of
+	// `MaxProofAttemptsPerBlock`; its decode/encode cost is not yet measured.
 	fn submit_proof(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `531 + e * (8 ±0) + n * (4 ±0)`
@@ -340,7 +342,9 @@ impl WeightInfo for () {
 	/// The range of component `e` is `[1, 50000]`.
 	/// The range of component `s` is `[1, 32]`.
 	// BENCHMARK-PLACEHOLDER(W3-009): `BlockSubmitters` (r:1 w:1) added by hand to the generated
-	// counts (11 -> 12 reads, 3 -> 4 writes); regenerate (benchmark-weights job).
+	// counts (11 -> 12 reads, 3 -> 4 writes); regenerate (benchmark-weights job). B6: the
+	// benchmark now takes the past-the-cap path with the set one short of
+	// `MaxProofAttemptsPerBlock`; its decode/encode cost is not yet measured.
 	fn submit_proof(n: u32, e: u32, s: u32, ) -> Weight {
 		// Proof Size summary in bytes:
 		//  Measured:  `531 + e * (8 ±0) + n * (4 ±0)`

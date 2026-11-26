@@ -78,6 +78,7 @@ parameter_types! {
     pub const MinTargetProofBlocks: u32 = 80;
     pub const MaxTargetProofBlocks: u32 = 400;
     pub const MaxProofsPerBlock: u32 = 8;
+    pub static MaxProofAttemptsPerBlock: u32 = 12;
     pub const MaxAllowedValues: u32 = 32;
 }
 
@@ -123,6 +124,7 @@ impl pallet_quantum_pow::Config for Test {
     type MinTargetProofBlocks = MinTargetProofBlocks;
     type MaxTargetProofBlocks = MaxTargetProofBlocks;
     type MaxProofsPerBlock = MaxProofsPerBlock;
+    type MaxProofAttemptsPerBlock = MaxProofAttemptsPerBlock;
     type MaxAllowedValues = MaxAllowedValues;
     type CurveCEasyMilli = ConstU32<700>;
     type CurveCKneeMilli = ConstU32<725>;

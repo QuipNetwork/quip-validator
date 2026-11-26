@@ -3776,3 +3776,247 @@ fn on_finalize_does_not_pay_a_deregistered_winner() {
         assert!(Miners::<Test>::get(1).is_none());
     });
 }
+
+/// W3-009 option (i), owner decision (B6): past `MaxProofsPerBlock` a proof is
+/// validated in full and accepted only if it beats the block's best, so weak
+/// proofs filling the cap cannot lock a better one out.
+mod w3_009_better_proof_past_the_cap {
+    use super::*;
+    use crate::{BlockSubmitters, Error};
+    use frame_support::storage::{with_transaction, TransactionOutcome};
+    use frame_support::traits::Currency as _;
+
+    type Topology = (
+        BoundedVec<u32, MaxNodes>,
+        BoundedVec<(u32, u32), MaxEdges>,
+        sp_core::H256,
+    );
+
+    fn cap() -> u32 {
+        <Test as crate::Config>::MaxProofsPerBlock::get()
+    }
+
+    fn setup() -> Topology {
+        let topology = registered_topology();
+        set_difficulty_default(easy_difficulty());
+        topology
+    }
+
+    fn miner(who: u64) {
+        if Miners::<Test>::contains_key(who) {
+            return;
+        }
+        Balances::make_free_balance_be(&who, 1_000_000);
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(who)));
+    }
+
+    /// `who`'s proof at `salt` with the model's `index`-th best row.
+    fn proof(
+        t: &Topology,
+        who: u64,
+        salt: u8,
+        index: usize,
+    ) -> QuantumProof<crate::PackedSolutionsOf<Test>> {
+        proof_with_salt(who, &t.0, &t.1, t.2, &[index], [salt; 32])
+    }
+
+    /// The energy `submit_proof` would accept that proof at, measured in a
+    /// rolled-back transaction (it depends on the miner, the salt and the
+    /// round's nonce seed, not on the block's proofs).
+    fn energy(t: &Topology, who: u64, salt: u8, index: usize) -> i64 {
+        with_transaction(|| {
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(who),
+                proof(t, who, salt, index)
+            ));
+            let energy = BlockBestProof::<Test>::get().unwrap().energy_milli;
+            TransactionOutcome::Rollback(Ok::<_, sp_runtime::DispatchError>(energy))
+        })
+        .unwrap()
+    }
+
+    /// Fill the cap with miners 10.. submitting their model's worst row (each
+    /// >= +1000 on this 2-spin model); returns the block's best energy.
+    fn fill_cap_with_weak_proofs(t: &Topology) -> i64 {
+        for who in 10..10 + u64::from(cap()) {
+            miner(who);
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(who),
+                proof(t, who, 0, 3)
+            ));
+        }
+        assert_eq!(BlockProofCount::<Test>::get(), cap());
+        BlockBestProof::<Test>::get().unwrap().energy_milli
+    }
+
+    /// A (salt, index) for `who` whose energy satisfies `wanted`.
+    fn find(t: &Topology, who: u64, wanted: impl Fn(i64) -> bool) -> (u8, usize, i64) {
+        for salt in 0..=255u8 {
+            for index in 0..4 {
+                let e = energy(t, who, salt, index);
+                if wanted(e) {
+                    return (salt, index, e);
+                }
+            }
+        }
+        panic!("no candidate proof for miner {who}");
+    }
+
+    /// 1. The lockout is gone: with the cap full of weak proofs, a better
+    /// proof from a new miner is accepted and becomes the block's best.
+    #[test]
+    fn a_better_proof_past_the_cap_replaces_the_best() {
+        new_test_ext().execute_with(|| {
+            let t = setup();
+            miner(9);
+            let better = energy(&t, 9, 0, 0);
+            let best = fill_cap_with_weak_proofs(&t);
+            assert!(better < best);
+            System::reset_events();
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(9),
+                proof(&t, 9, 0, 0)
+            ));
+            let stored = BlockBestProof::<Test>::get().unwrap();
+            assert_eq!((stored.miner, stored.energy_milli), (9, better));
+            assert!(System::events().iter().any(|record| matches!(
+                record.event,
+                RuntimeEvent::QuantumPow(crate::Event::ProofAccepted { miner: 9, energy_milli, .. })
+                    if energy_milli == better
+            )));
+            // Replacements are counted, and the miner joins the set.
+            assert_eq!(BlockProofCount::<Test>::get(), cap() + 1);
+            let submitters = BlockSubmitters::<Test>::get();
+            assert_eq!(submitters.len() as u32, cap() + 1);
+            assert!(submitters.contains(&9));
+        });
+    }
+
+    /// 2. Past the cap, a valid proof at the best's energy (strictness) or
+    /// above it is refused with `ProofNotBetterThanBest` and changes nothing.
+    #[test]
+    fn an_equal_or_worse_proof_past_the_cap_is_refused() {
+        new_test_ext().execute_with(|| {
+            let t = setup();
+            miner(9);
+            // The weak proofs' best is known before they are submitted.
+            let weak: Vec<i64> = (10..10 + u64::from(cap()))
+                .map(|who| {
+                    miner(who);
+                    energy(&t, who, 0, 3)
+                })
+                .collect();
+            let best = *weak.iter().min().unwrap();
+            let equal = find(&t, 9, |e| e == best);
+            let worse = find(&t, 9, |e| e > best);
+            for who in 10..10 + u64::from(cap()) {
+                assert_ok!(QuantumPow::submit_proof(
+                    RuntimeOrigin::signed(who),
+                    proof(&t, who, 0, 3)
+                ));
+            }
+            let stored = BlockBestProof::<Test>::get().unwrap();
+            assert_eq!(stored.energy_milli, best);
+            for (salt, index, _) in [equal, worse] {
+                assert_noop!(
+                    QuantumPow::submit_proof(RuntimeOrigin::signed(9), proof(&t, 9, salt, index)),
+                    Error::<Test>::ProofNotBetterThanBest
+                );
+            }
+            assert_eq!(BlockBestProof::<Test>::get().unwrap(), stored);
+            assert_eq!(BlockProofCount::<Test>::get(), cap());
+            assert!(!BlockSubmitters::<Test>::get().contains(&9));
+        });
+    }
+
+    /// 3. A miner already in the set cannot submit again past the cap, even
+    /// with a better proof.
+    #[test]
+    fn a_miner_with_a_proof_in_the_block_cannot_submit_again_past_the_cap() {
+        new_test_ext().execute_with(|| {
+            let t = setup();
+            let _ = fill_cap_with_weak_proofs(&t);
+            assert_noop!(
+                QuantumPow::submit_proof(RuntimeOrigin::signed(10), proof(&t, 10, 1, 0)),
+                Error::<Test>::ProofAlreadySubmittedThisBlock
+            );
+        });
+    }
+
+    /// 4. The submitter set's bound refuses with `ProofLimitReached`, not a
+    /// panic, once `MaxProofAttemptsPerBlock` miners have an accepted proof.
+    #[test]
+    fn a_full_submitter_set_refuses_with_proof_limit_reached() {
+        new_test_ext().execute_with(|| {
+            let t = setup();
+            MaxProofAttemptsPerBlock::set(cap() + 2);
+            for who in [9, 30, 31] {
+                miner(who);
+            }
+            let best = (10..10 + u64::from(cap()))
+                .map(|who| {
+                    miner(who);
+                    energy(&t, who, 0, 3)
+                })
+                .min()
+                .unwrap();
+            let first = find(&t, 9, |e| e < best);
+            let second = find(&t, 30, |e| e < first.2);
+            let _ = fill_cap_with_weak_proofs(&t);
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(9),
+                proof(&t, 9, first.0, first.1)
+            ));
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(30),
+                proof(&t, 30, second.0, second.1)
+            ));
+            assert_eq!(BlockSubmitters::<Test>::get().len() as u32, cap() + 2);
+            assert_noop!(
+                QuantumPow::submit_proof(RuntimeOrigin::signed(31), proof(&t, 31, 0, 0)),
+                Error::<Test>::ProofLimitReached
+            );
+        });
+    }
+
+    /// 5. `on_initialize` clears both the count and the set.
+    #[test]
+    fn a_new_block_clears_the_count_and_the_set() {
+        new_test_ext().execute_with(|| {
+            let t = setup();
+            miner(9);
+            let _ = fill_cap_with_weak_proofs(&t);
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(9),
+                proof(&t, 9, 0, 0)
+            ));
+            System::set_block_number(2);
+            QuantumPow::on_initialize(2);
+            assert_eq!(BlockProofCount::<Test>::get(), 0);
+            assert!(BlockSubmitters::<Test>::get().is_empty());
+        });
+    }
+
+    /// 6. The replacing proof's miner is the one rewarded when the block
+    /// finalises (`BlockBestProof::take`); the weak proofs' miners are not.
+    #[test]
+    fn the_replacing_miner_is_rewarded() {
+        new_test_ext().execute_with(|| {
+            let t = setup();
+            miner(9);
+            let _ = fill_cap_with_weak_proofs(&t);
+            assert_ok!(QuantumPow::submit_proof(
+                RuntimeOrigin::signed(9),
+                proof(&t, 9, 0, 0)
+            ));
+            let before = Balances::free_balance(9);
+            QuantumPow::on_finalize(System::block_number());
+            assert_eq!(Balances::free_balance(9), before + 50);
+            assert_eq!(Miners::<Test>::get(9).unwrap().proofs_won, 1);
+            for who in 10..10 + u64::from(cap()) {
+                assert_eq!(Miners::<Test>::get(who).unwrap().proofs_won, 0);
+            }
+            assert!(BlockBestProof::<Test>::get().is_none());
+        });
+    }
+}

@@ -2163,6 +2163,175 @@ fn pow_errors(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
         .ok_or_else(|| "missing QuantumPow.error variants".into())
 }
 
+// W3-009 option (i) (B6, owner decision): past `MaxProofsPerBlock` a better
+// proof replaces the block's best. Exact deltas, undone here so the B3a delta
+// below sees its own state: one error appended after
+// `ProofAlreadySubmittedThisBlock`, `ProofNotBetterThanBest`; one constant,
+// `MaxProofAttemptsPerBlock` (u32, 300), right after `MaxProofsPerBlock`; and
+// new docs on `MaxProofsPerBlock`, `ProofLimitReached`, `BlockSubmitters` and
+// `BlockProofCount`.
+const PROOF_NOT_BETTER_DOCS: &[&str] = &[
+    "The block already accepted `MaxProofsPerBlock` proofs, and this one",
+    "is valid but its energy is not strictly below the block's best",
+    "(W3-009). The validation it caused is charged in full.",
+];
+const PROOF_LIMIT_REACHED_DOCS: &[&str] = &[
+    "This block's `BlockSubmitters` is full (`MaxProofAttemptsPerBlock`",
+    "miners with an accepted proof). Past `MaxProofsPerBlock` a better",
+    "proof is still accepted until then (W3-009).",
+];
+const MAX_PROOFS_PER_BLOCK_DOCS: &[&str] = &[
+    " Proofs accepted per block before only a strictly better proof is",
+    " accepted (W3-009, option (i)): past it, a proof replaces the block's",
+    " best or is refused with `ProofNotBetterThanBest`.",
+];
+const MAX_PROOF_ATTEMPTS_DOCS: &[&str] = &[
+    " Bound on the miners with an accepted proof in one block",
+    " (`BlockSubmitters`, W3-009): at least the most `submit_proof` calls",
+    " a Normal block's weight admits, so it never binds before the block",
+    " does. Must be at least `MaxProofsPerBlock`.",
+];
+const BLOCK_SUBMITTERS_B6_DOCS: &[&str] = &[
+    " The miners that submitted an accepted proof in this block (W3-009):",
+    " one `submit_proof` per miner per block, so one miner cannot take every",
+    " slot. Each accepted proof -- below `MaxProofsPerBlock`, or past it as a",
+    " strictly better replacement -- adds its miner. Cleared in",
+    " `on_initialize`; bounded by `MaxProofAttemptsPerBlock`",
+    " (`ProofLimitReached` when full).",
+];
+const BLOCK_PROOF_COUNT_DOCS: &[&str] = &[
+    " Proofs accepted in this block, replacements past `MaxProofsPerBlock`",
+    " included (W3-009): at or above `MaxProofsPerBlock`, a proof must beat",
+    " the block's best. Cleared in `on_initialize`.",
+];
+
+fn pow_constants(metadata: &mut Value) -> Result<&mut Vec<Value>, String> {
+    metadata["pallets"]
+        .as_array_mut()
+        .ok_or("missing pallets")?
+        .iter_mut()
+        .find(|pallet| pallet["name"] == "QuantumPow")
+        .and_then(|pallet| pallet.get_mut("constants"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "missing QuantumPow constants".into())
+}
+
+/// Replace `name`'s docs in `after` with `before`'s, after checking `after`
+/// carries exactly `expected`.
+fn restore_docs(
+    before: &[Value],
+    after: &mut [Value],
+    name: &str,
+    expected: &[&str],
+) -> Result<(), String> {
+    let baseline = before
+        .iter()
+        .find(|v| v["name"] == name)
+        .map(|v| v.get("docs").cloned())
+        .ok_or_else(|| format!("missing baseline QuantumPow {name}"))?;
+    let candidate = after
+        .iter_mut()
+        .find(|v| v["name"] == name)
+        .ok_or_else(|| format!("missing candidate QuantumPow {name}"))?;
+    if candidate["docs"] != serde_json::json!(expected) {
+        return Err(format!("unexpected QuantumPow {name} docs"));
+    }
+    // Empty docs are omitted from the metadata, key and all.
+    let object = candidate
+        .as_object_mut()
+        .ok_or("QuantumPow entry is not an object")?;
+    match baseline {
+        Some(docs) => object.insert("docs".into(), docs),
+        None => object.remove("docs"),
+    };
+    Ok(())
+}
+
+fn normalize_proof_attempts(before: &mut Value, after: &mut Value) -> Result<(), String> {
+    // The appended error, after B3a's `ProofAlreadySubmittedThisBlock`.
+    let baseline = pow_errors(before)?.clone();
+    if baseline
+        .iter()
+        .any(|v| v["name"] == "ProofNotBetterThanBest")
+    {
+        return Err("unexpected baseline QuantumPow ProofNotBetterThanBest".into());
+    }
+    let candidate = pow_errors(after)?;
+    let expected = serde_json::json!({
+        "name": "ProofNotBetterThanBest",
+        "index": baseline.len() + 1,
+        "docs": PROOF_NOT_BETTER_DOCS,
+    });
+    if candidate.len() != baseline.len() + 2 || candidate.last() != Some(&expected) {
+        return Err("missing or incorrect QuantumPow ProofNotBetterThanBest".into());
+    }
+    candidate.pop();
+    restore_docs(
+        &baseline,
+        candidate,
+        "ProofLimitReached",
+        PROOF_LIMIT_REACHED_DOCS,
+    )?;
+
+    // The constant, right after `MaxProofsPerBlock`, and its neighbour's docs.
+    let baseline = pow_constants(before)?.clone();
+    if baseline
+        .iter()
+        .any(|v| v["name"] == "MaxProofAttemptsPerBlock")
+    {
+        return Err("unexpected baseline QuantumPow MaxProofAttemptsPerBlock".into());
+    }
+    let constants = pow_constants(after)?;
+    let at = constants
+        .iter()
+        .position(|v| v["name"] == "MaxProofsPerBlock")
+        .ok_or("missing candidate MaxProofsPerBlock")?;
+    let expected = serde_json::json!({
+        "deprecation_info": "NotDeprecated",
+        "name": "MaxProofAttemptsPerBlock",
+        "ty": constants[at]["ty"].clone(),
+        "value": 300u32.to_le_bytes(),
+        "docs": MAX_PROOF_ATTEMPTS_DOCS,
+    });
+    if constants.get(at + 1) != Some(&expected)
+        || constants
+            .iter()
+            .filter(|v| v["name"] == "MaxProofAttemptsPerBlock")
+            .count()
+            != 1
+    {
+        return Err("missing or incorrect QuantumPow MaxProofAttemptsPerBlock".into());
+    }
+    constants.remove(at + 1);
+    restore_docs(
+        &baseline,
+        constants,
+        "MaxProofsPerBlock",
+        MAX_PROOFS_PER_BLOCK_DOCS,
+    )?;
+
+    // The storage docs. `BlockSubmitters` returns to B3a's docs (its bound is
+    // a type parameter the metadata does not carry); `BlockProofCount` to the
+    // baseline's.
+    let baseline = pow_storage_entries(before)?.clone();
+    let entries = pow_storage_entries(after)?;
+    restore_docs(
+        &baseline,
+        entries,
+        "BlockProofCount",
+        BLOCK_PROOF_COUNT_DOCS,
+    )?;
+    let submitters = entries
+        .iter_mut()
+        .find(|v| v["name"] == "BlockSubmitters")
+        .ok_or("missing candidate BlockSubmitters")?;
+    if submitters["docs"] != serde_json::json!(BLOCK_SUBMITTERS_B6_DOCS) {
+        return Err("unexpected QuantumPow BlockSubmitters docs".into());
+    }
+    submitters["docs"] = serde_json::json!(BLOCK_SUBMITTERS_DOCS);
+    Ok(())
+}
+
 fn normalize_block_submitters(before: &mut Value, after: &mut Value) -> Result<(), String> {
     // The appended error.
     let baseline = pow_errors(before)?;
@@ -2919,6 +3088,8 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     normalize_xqvm(&mut left, &mut right)?;
     normalize_miner_registry(&mut left, &mut right)?;
     normalize_topology_summary(&mut left, &mut right)?;
+    // Before normalize_block_submitters, which expects its error last.
+    normalize_proof_attempts(&mut left, &mut right)?;
     normalize_block_submitters(&mut left, &mut right)?;
     let before_types = left["types"]["types"]
         .as_array()
@@ -4168,6 +4339,73 @@ mod tests {
             let len = variants.len();
             variants.swap(len - 1, len - 2);
             cases.push((format!("misplaced {name}"), misplaced));
+        }
+        for (name, wrong) in cases {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
+    }
+
+    #[test]
+    fn requires_exact_quantum_pow_proof_attempts() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let mut cases: Vec<(&str, Value)> = Vec::new();
+        // The appended error: missing, renamed, re-indexed, re-documented.
+        let mut wrong = after.clone();
+        pow_errors(&mut wrong).unwrap().pop();
+        cases.push(("missing ProofNotBetterThanBest", wrong));
+        for (field, value) in [
+            ("name", Value::from("ProofNotBetter")),
+            ("index", Value::from(99)),
+            ("docs", serde_json::json!(["other"])),
+        ] {
+            let mut wrong = after.clone();
+            pow_errors(&mut wrong).unwrap().last_mut().unwrap()[field] = value;
+            cases.push(("ProofNotBetterThanBest field", wrong));
+        }
+        // The constant: missing, another value, misplaced, re-documented.
+        let mut wrong = after.clone();
+        pow_constants(&mut wrong)
+            .unwrap()
+            .retain(|v| v["name"] != "MaxProofAttemptsPerBlock");
+        cases.push(("missing MaxProofAttemptsPerBlock", wrong));
+        let constant = |wrong: &mut Value| -> usize {
+            pow_constants(wrong)
+                .unwrap()
+                .iter()
+                .position(|v| v["name"] == "MaxProofAttemptsPerBlock")
+                .unwrap()
+        };
+        let mut wrong = after.clone();
+        let at = constant(&mut wrong);
+        pow_constants(&mut wrong).unwrap()[at]["value"] = serde_json::json!(299u32.to_le_bytes());
+        cases.push(("MaxProofAttemptsPerBlock = 299", wrong));
+        let mut wrong = after.clone();
+        let at = constant(&mut wrong);
+        pow_constants(&mut wrong).unwrap()[at]["docs"] = serde_json::json!(["other"]);
+        cases.push(("MaxProofAttemptsPerBlock docs", wrong));
+        let mut wrong = after.clone();
+        let at = constant(&mut wrong);
+        let constants = pow_constants(&mut wrong).unwrap();
+        let moved = constants.remove(at);
+        constants.push(moved);
+        cases.push(("misplaced MaxProofAttemptsPerBlock", wrong));
+        // The changed docs.
+        for (kind, name) in [
+            ("constant", "MaxProofsPerBlock"),
+            ("error", "ProofLimitReached"),
+            ("storage", "BlockSubmitters"),
+            ("storage", "BlockProofCount"),
+        ] {
+            let mut wrong = after.clone();
+            let list = match kind {
+                "constant" => pow_constants(&mut wrong).unwrap(),
+                "error" => pow_errors(&mut wrong).unwrap(),
+                _ => pow_storage_entries(&mut wrong).unwrap(),
+            };
+            list.iter_mut().find(|v| v["name"] == name).unwrap()["docs"] =
+                serde_json::json!(["other"]);
+            cases.push((name, wrong));
         }
         for (name, wrong) in cases {
             assert!(check(&before, &wrong).is_err(), "accepted {name}");

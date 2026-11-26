@@ -987,6 +987,16 @@ parameter_types! {
     pub const QuantumPowMinTargetProofBlocks: u32 = 80;
     pub const QuantumPowMaxTargetProofBlocks: u32 = 400;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
+    /// Bound on the miners with an accepted proof in one block (W3-009): past
+    /// `QuantumPowMaxProofsPerBlock` a better proof still replaces the best,
+    /// so the submitter set must not bind before the block does. The cheapest
+    /// accepted `submit_proof` -- `MinNodes` 16 nodes, one edge, one solution
+    /// -- is ~5.42e9 ps on the reference weights (d102f1a: 4,655,793,000 +
+    /// 16 x 150,587 + 56,782 + 63,968,741, and 12 reads / 4 writes with
+    /// `BlockSubmitters`), so a 1.5e12 ps Normal block admits at most 277;
+    /// 300 covers it (pinned in the runtime tests). At 300 accounts the set
+    /// encodes to ~9.6 KB.
+    pub const QuantumPowMaxProofAttemptsPerBlock: u32 = 300;
     /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
     /// and `allowed_spin_values` per registered topology. Set well above the
     /// expected real-world maximum (the legacy ternary spec uses 3 for h; the
@@ -1132,6 +1142,7 @@ impl pallet_quantum_pow::Config for Runtime {
         { pallet_emission_controller::ISING_SUBNET },
     >;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
+    type MaxProofAttemptsPerBlock = QuantumPowMaxProofAttemptsPerBlock;
     type MaxAllowedValues = QuantumPowMaxAllowedValues;
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
