@@ -887,7 +887,7 @@ mod tests {
         }
     }
 
-    // W3-005 (B2): the length fee is one `MICRO_UNIT` per encoded byte.
+    // W3-005 (B2, B2d): the length fee is a tenth of a `MICRO_UNIT` per encoded byte.
     mod byte_fee {
         use super::*;
         use frame_support::{dispatch::GetDispatchInfo, traits::Currency as _};
@@ -926,8 +926,8 @@ mod tests {
         /// rate (a remark's weight also grows with its payload, so two
         /// different remarks' totals do not).
         #[test]
-        fn the_length_fee_is_one_micro_unit_per_byte() {
-            assert_eq!(configs::TransactionByteFee::get(), MICRO_UNIT);
+        fn the_length_fee_is_a_tenth_of_a_micro_unit_per_byte() {
+            assert_eq!(configs::TransactionByteFee::get(), MICRO_UNIT / 10);
             let rate = configs::TransactionByteFee::get();
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
@@ -992,7 +992,7 @@ mod tests {
         /// is a collective origin: a member's own signed `dispatch_as_root` is
         /// `BadOrigin`). The member proposing `dispatch_as_root(set_code)` with
         /// this runtime's real Wasm carries the code and pays for its length
-        /// (about 1.6 QUIP at a micro-QUIP per byte). The fee is withdrawn
+        /// (about 0.16 QUIP at a tenth of a micro-QUIP per byte). The fee is withdrawn
         /// keeping the account alive (`Preservation::Preserve`), so the
         /// proposer needs fee + ED: with one planck less validation refuses
         /// it (`Payment`); with fee + ED it validates and applies, and the
