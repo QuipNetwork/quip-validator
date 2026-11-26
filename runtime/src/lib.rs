@@ -570,6 +570,36 @@ mod tests {
         generic::UncheckedExtrinsic::new_signed(call, address, signature, tx_ext).into()
     }
 
+    /// The `sp_maybe_compressed_blob` zstd magic (its private `ZSTD_PREFIX`),
+    /// which a shipped runtime Wasm starts with.
+    const COMPRESSED_WASM_PREFIX: [u8; 8] = [82, 188, 83, 118, 70, 219, 142, 5];
+
+    /// This runtime's Wasm as it ships: compact and compressed (A11). Tests
+    /// that measure it against a block limit need that blob. A plain debug
+    /// `cargo test` embeds the uncompressed debug Wasm instead (~8.9 MB, over
+    /// every block length), so build the Wasm in release as CI's `cargo-test`
+    /// does: `WASM_BUILD_TYPE=release cargo test`.
+    fn shipped_wasm() -> &'static [u8] {
+        ensure_shipped(WASM_BINARY.expect("tests build the Wasm runtime"))
+    }
+
+    fn ensure_shipped(wasm: &[u8]) -> &[u8] {
+        assert!(
+            wasm.starts_with(&COMPRESSED_WASM_PREFIX),
+            "WASM_BINARY is not the compressed release Wasm ({} B): run with \
+             WASM_BUILD_TYPE=release",
+            wasm.len()
+        );
+        wasm
+    }
+
+    /// The guard names its cause on an uncompressed (debug) blob.
+    #[test]
+    #[should_panic(expected = "run with WASM_BUILD_TYPE=release")]
+    fn an_uncompressed_wasm_is_refused_with_its_cause() {
+        ensure_shipped(b"\0asm\x01\0\0\0");
+    }
+
     #[test]
     fn hybrid_signed_extrinsic_checks_successfully() {
         let mut ext =
@@ -745,7 +775,7 @@ mod tests {
         /// Operational and admitted at validation.
         #[test]
         fn the_foundation_upgrade_proposal_fits_the_operational_block_length() {
-            let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
+            let wasm = shipped_wasm();
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
             ext_with_funded(&who).execute_with(|| {
@@ -771,11 +801,18 @@ mod tests {
                     0,
                 );
                 let len = xt.encode().len();
+                let spare = (configs::OPERATIONAL_BLOCK_LENGTH as usize)
+                    .checked_sub(len)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "runtime upgrade extrinsic {len} B is over the Operational limit {} B",
+                            configs::OPERATIONAL_BLOCK_LENGTH
+                        )
+                    });
                 println!(
-                    "runtime upgrade extrinsic: {len} B (Wasm {} B); Operational limit {} B, {} B spare",
+                    "runtime upgrade extrinsic: {len} B (Wasm {} B); Operational limit {} B, {spare} B spare",
                     wasm.len(),
                     configs::OPERATIONAL_BLOCK_LENGTH,
-                    configs::OPERATIONAL_BLOCK_LENGTH as usize - len
                 );
                 assert!(wasm.len() > 1024 * 1024, "the real runtime Wasm");
                 assert_eq!(xt.0.function.get_dispatch_info().class, DispatchClass::Operational);

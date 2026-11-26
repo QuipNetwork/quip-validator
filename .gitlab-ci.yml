@@ -222,6 +222,15 @@ cargo-test:
     # working set (~88-105 GiB: fmt, clippy, tests, node, release runtimes),
     # so the after_script sweep never evicts what the next run reuses.
     CI_CACHE_MAX_SIZE: 140GiB
+    # The debug tests embed the runtime Wasm as WASM_BINARY. Built as debug it
+    # is the uncompressed debug blob (~8.87 MB), over the 3.75 MiB Operational
+    # block length, so the tests that measure the real Wasm against a block
+    # limit (runtime `block_length`
+    # the_foundation_upgrade_proposal_fits_the_operational_block_length, and
+    # its testnet twin) could not pass. Build it as it ships: compact and
+    # compressed (A11). Those tests assert the compressed prefix and name this
+    # variable when it is missing.
+    WASM_BUILD_TYPE: release
   script:
     # Self-test of the cache prune that this job's after_script runs (fake
     # cargo, temp volume; seconds).
