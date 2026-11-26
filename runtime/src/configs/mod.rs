@@ -96,8 +96,10 @@ parameter_types! {
     /// (over 4 MiB), which an importer could not hold next to the VM budget
     /// (see [`VM_BLOCK_RESIDENCY`]). Operational keeps 0.25 MiB above Normal in
     /// reserve; Mandatory (inherents only) keeps the previous 5 MiB. A runtime
-    /// upgrade (`dispatch_as_root(set_code)` with the 1,587,318-B Wasm, a
-    /// 1,589,028-B extrinsic) fits with 2.3 MB to spare.
+    /// upgrade fits with 2.3 MB to spare: it is a 2/3 Foundation motion, and
+    /// the extrinsic carrying the code is a member's Operational
+    /// `Foundation::propose` of `dispatch_as_root(set_code)` (1,589,929 B with
+    /// the 1,588,212-B Wasm when measured).
     pub RuntimeBlockLength: BlockLength = BlockLength::builder()
         .max_length(MANDATORY_BLOCK_LENGTH)
         .modify_max_length_for_class(frame_support::dispatch::DispatchClass::Normal, |len| {

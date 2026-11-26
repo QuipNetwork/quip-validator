@@ -736,23 +736,35 @@ mod tests {
             }
         }
 
-        /// The runtime upgrade path still fits: the Foundation's
-        /// `dispatch_as_root(set_code)` carrying this runtime's real Wasm is
+        /// The runtime upgrade path still fits. An upgrade is a 2/3 Foundation
+        /// motion (`FoundationOrigin` is a collective origin; a member's own
+        /// signed `dispatch_as_root` is `BadOrigin`), so the extrinsic that
+        /// carries the code is a member's `Foundation::propose` of
+        /// `dispatch_as_root(set_code)` with this runtime's real Wasm: it is
         /// Operational and admitted at validation.
         #[test]
-        fn foundation_runtime_upgrade_fits_the_operational_block_length() {
+        fn the_foundation_upgrade_proposal_fits_the_operational_block_length() {
             let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
             ext_with_funded(&who).execute_with(|| {
-                pallet_membership::Members::<Runtime, pallet_membership::Instance1>::put(
-                    frame_support::BoundedVec::try_from(vec![who.clone()]).unwrap(),
-                );
+                let mut members: Vec<AccountId> =
+                    (1u8..=5).map(|i| AccountId::new([i; 32])).collect();
+                members.push(who.clone());
+                members.sort();
+                FoundationMembership::reset_members(RuntimeOrigin::root(), members).unwrap();
+                let proposal: RuntimeCall =
+                    pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
+                        call: Box::new(SystemCall::set_code { code: wasm.to_vec() }.into()),
+                    }
+                    .into();
                 let xt = signed_test_extrinsic(
                     &sender,
                     who.clone().into(),
-                    pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
-                        call: Box::new(SystemCall::set_code { code: wasm.to_vec() }.into()),
+                    pallet_collective::Call::<Runtime, pallet_collective::Instance1>::propose {
+                        threshold: 4,
+                        length_bound: proposal.encoded_size() as u32,
+                        proposal: Box::new(proposal),
                     }
                     .into(),
                     0,
