@@ -410,8 +410,11 @@ parameter_types! {
     ///   `QuantumMinReward`;
     /// - a one-solution `submit_solution` (5,000 spins, ~6.7 KB) pays about
     ///   0.00067 QUIP for length, about a third of the smallest TopN-32 share
-    ///   at `QuantumMinReward` (1/528, ~0.0019 QUIP); its weight fee, charged
-    ///   at the configured maxima, is about 0.29 QUIP whatever the length;
+    ///   at `QuantumMinReward` (1/528, ~0.0019 QUIP; an equal TopN-32 share is
+    ///   0.031). Its weight dominates: about 0.29 QUIP is withdrawn up front,
+    ///   and after the VM-cap refund a successful submit pays about 0.088
+    ///   (Advantage2-sized order, no program) and a `reveal_solution` about
+    ///   0.090, whatever the length;
     /// - an `eth_transact` at the payload cap adds about 0.125 QUIP to its gas.
     pub const TransactionByteFee: Balance = MICRO_UNIT / 10;
 }
