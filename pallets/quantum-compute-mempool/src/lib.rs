@@ -26,7 +26,10 @@
 //! answer ranked at the commitment's block, refunds the deposit, and evicts
 //! another solver holding the same answer from a later effective time
 //! (`SolutionEvicted`). A commitment never revealed into an accepted
-//! submission before the order closes forfeits its deposit.
+//! submission before the order closes forfeits its deposit, which is
+//! burned. The deposit is the larger of a storage deposit and the order's
+//! reward / `MaxCommitmentsPerOrder`, so an honest solver whose reveal is
+//! refused, or never sent, loses max(storage deposit, reward / 64).
 //!
 //! - **Near-copies are not evicted.** Eviction is by canonical answer. An
 //!   answer at the same energy with a different canonical form -- a
@@ -330,7 +333,8 @@ pub mod pallet {
         type MinBlockWait: Get<BlockNumberFor<Self>>;
 
         /// The most outstanding answer commitments one order holds (W3-001,
-        /// design §B5 v2 item 3): 64, twice the 32-solver cap.
+        /// design §B5 v2 item 3): 64, twice the 32-solver cap. Also the
+        /// divisor of the commitment deposit's floor, reward / this (B5c3).
         #[pallet::constant]
         type MaxCommitmentsPerOrder: Get<u32>;
 
@@ -494,7 +498,7 @@ pub mod pallet {
     /// Outstanding answer commitments (W3-001): at most one per (order,
     /// solver), at most `MaxCommitmentsPerOrder` per order, each holding its
     /// reserved deposit. Those still outstanding when the order is finalised
-    /// are forfeited to its proposer.
+    /// are forfeited: the deposit is burned.
     #[pallet::storage]
     pub type AnswerCommitments<T: Config> = StorageDoubleMap<
         _,
@@ -622,12 +626,10 @@ pub mod pallet {
             commit_block: BlockNumberFor<T>,
         },
         /// A commitment was still outstanding when its order was finalised
-        /// (W3-001): its deposit went to the proposer (`to_proposer`), or was
-        /// burned when the proposer could not receive it (`burned`).
+        /// (W3-001): its deposit was burned (`burned`, the amount slashed).
         CommitmentForfeited {
             order_id: u64,
             solver: T::AccountId,
-            to_proposer: BalanceOf<T>,
             burned: BalanceOf<T>,
         },
         /// A revealed answer took `answer` from a solver whose submission of it
@@ -1154,9 +1156,9 @@ pub mod pallet {
         /// brute-force the commitment. Allowed to a registered solver eligible
         /// for the order's mode, while the order is open and not expired.
         /// Committing again replaces the commitment (and its block) in place;
-        /// a first commitment reserves the commitment deposit, which the reveal
-        /// returns and finalisation forfeits to the proposer if it is still
-        /// outstanding.
+        /// a first commitment reserves the commitment deposit
+        /// ([`Pallet::commitment_deposit`]), which the reveal returns and
+        /// finalisation burns if it is still outstanding.
         #[pallet::call_index(10)]
         #[pallet::weight(<T as Config>::WeightInfo::commit_answer())]
         pub fn commit_answer(
@@ -1196,7 +1198,7 @@ pub mod pallet {
                         count < T::MaxCommitmentsPerOrder::get(),
                         Error::<T>::CommitmentCapReached
                     );
-                    let deposit = Self::commitment_deposit();
+                    let deposit = Self::commitment_deposit(order.reward);
                     T::Currency::reserve(&solver, deposit)
                         .map_err(|_| Error::<T>::CommitmentDepositNotAvailable)?;
                     CommitmentCount::<T>::insert(order_id, count.saturating_add(1));
@@ -2400,7 +2402,7 @@ pub mod pallet {
         /// §B4 v2 item 2), so it is pruned without anyone calling
         /// `reclaim_order`: see `auto_close_unsolved`.
         ///
-        /// Commitments still outstanding are forfeited to the proposer first
+        /// Commitments still outstanding are forfeited (burned) first
         /// (W3-001), on every path that finalises: the queue and the lazy
         /// settlement alike. Returns how many were forfeited.
         fn finalise_order(order_id: u64) -> u32 {
@@ -2415,7 +2417,7 @@ pub mod pallet {
             JobOrders::<T>::insert(order_id, &order);
             OpenOrders::<T>::remove(order_id);
             Self::deposit_event(Event::OrderExpired { order_id });
-            let forfeited = Self::forfeit_commitments(order_id, &order.proposer);
+            let forfeited = Self::forfeit_commitments(order_id);
 
             if order.solution_count == 0 {
                 Self::auto_close_unsolved(order_id, order);
@@ -2462,60 +2464,51 @@ pub mod pallet {
             ))
         }
 
-        /// The deposit a commitment reserves (W3-001): B4a's storage rates on
-        /// the bounded size of an `AnswerCommitments` entry -- its key (the
-        /// order id and the solver, each behind a 16-byte `Blake2_128Concat`
-        /// hash) and its value -- the stored-program rate, as for job orders.
-        pub fn commitment_deposit() -> BalanceOf<T> {
+        /// The deposit a commitment on an order with `reward` reserves
+        /// (W3-001): the larger of
+        /// - the storage deposit: B4a's storage rates on the bounded size of
+        ///   an `AnswerCommitments` entry -- its key (the order id and the
+        ///   solver, each behind a 16-byte `Blake2_128Concat` hash) and its
+        ///   value -- the stored-program rate, as for job orders; and
+        /// - `reward / MaxCommitmentsPerOrder` (owner decision, B5c3): the
+        ///   divisor is the commitment slot cap, so filling every slot of an
+        ///   order locks at least its reward, and an unrevealed slot burns a
+        ///   share of it.
+        pub fn commitment_deposit(reward: BalanceOf<T>) -> BalanceOf<T> {
             let bytes = 16usize
                 .saturating_add(u64::max_encoded_len())
                 .saturating_add(16)
                 .saturating_add(T::AccountId::max_encoded_len())
                 .saturating_add(AnswerCommitmentOf::<T>::max_encoded_len());
             let bytes: BalanceOf<T> = u32::try_from(bytes).unwrap_or(u32::MAX).into();
-            T::OrderDepositPerItem::get()
-                .saturating_add(T::OrderDepositPerByte::get().saturating_mul(bytes))
+            let storage = T::OrderDepositPerItem::get()
+                .saturating_add(T::OrderDepositPerByte::get().saturating_mul(bytes));
+            let slots: BalanceOf<T> = T::MaxCommitmentsPerOrder::get().max(1).into();
+            storage.max(reward / slots)
         }
 
-        /// Forfeit every commitment still outstanding on a finalised order to
-        /// its proposer (W3-001; owner decision of 2026-11-25): the deposit
-        /// moves from the committer's reserve into the proposer's free balance.
-        /// `repatriate_reserved` needs a living beneficiary, so for a reaped
-        /// proposer the deposit is unreserved and transferred instead, which
-        /// recreates the account when it covers the existential deposit; when
-        /// even that fails, the freed deposit is burned. Bounded by
-        /// `MaxCommitmentsPerOrder`; returns the number forfeited.
-        pub(crate) fn forfeit_commitments(order_id: u64, proposer: &T::AccountId) -> u32 {
+        /// Forfeit every commitment still outstanding on a finalised order
+        /// (W3-001; owner decision of 2026-11-26, B5c3): its deposit is
+        /// slashed from the committer's reserve and burned -- total issuance
+        /// falls by it, and the proposer receives nothing, so filling an
+        /// order's slots with one's own accounts recovers nothing. A
+        /// committer holding only the deposit is reaped by the slash; nothing
+        /// is left behind. `burned` is the amount actually slashed, short of
+        /// the deposit only if something else took from the reserve. Bounded
+        /// by `MaxCommitmentsPerOrder`; returns the number forfeited.
+        pub(crate) fn forfeit_commitments(order_id: u64) -> u32 {
             CommitmentCount::<T>::remove(order_id);
             let mut forfeited = 0u32;
             for (solver, entry) in AnswerCommitments::<T>::drain_prefix(order_id)
                 .take(T::MaxCommitmentsPerOrder::get() as usize)
             {
-                let (to_proposer, burned) = match T::Currency::repatriate_reserved(
-                    &solver,
-                    proposer,
-                    entry.deposit,
-                    frame_support::traits::BalanceStatus::Free,
-                ) {
-                    Ok(missing) => (entry.deposit.saturating_sub(missing), Zero::zero()),
-                    Err(_) => {
-                        let freed = entry
-                            .deposit
-                            .saturating_sub(T::Currency::unreserve(&solver, entry.deposit));
-                        if T::Currency::transfer(&solver, proposer, freed, AllowDeath).is_ok() {
-                            (freed, Zero::zero())
-                        } else {
-                            let (imbalance, missing) = T::Currency::slash(&solver, freed);
-                            drop(imbalance);
-                            (Zero::zero(), freed.saturating_sub(missing))
-                        }
-                    }
-                };
+                let (imbalance, missing) = T::Currency::slash_reserved(&solver, entry.deposit);
+                // Dropping the negative imbalance burns it.
+                drop(imbalance);
                 Self::deposit_event(Event::CommitmentForfeited {
                     order_id,
                     solver,
-                    to_proposer,
-                    burned,
+                    burned: entry.deposit.saturating_sub(missing),
                 });
                 forfeited = forfeited.saturating_add(1);
             }

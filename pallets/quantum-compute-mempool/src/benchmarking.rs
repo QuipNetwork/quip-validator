@@ -1357,7 +1357,7 @@ mod benchmarks {
         // The commitment, made in this block and revealed in the next.
         let solutions = solutions_with_dimensions::<T>(n, s);
         let salt = [7u8; 32];
-        let deposit = QuantumComputeMempool::<T>::commitment_deposit();
+        let deposit = QuantumComputeMempool::<T>::commitment_deposit(benchmark_reward::<T>());
         assert!(T::Currency::reserve(&solver, deposit).is_ok());
         let now = frame_system::Pallet::<T>::block_number();
         AnswerCommitments::<T>::insert(
@@ -1462,10 +1462,10 @@ mod benchmarks {
         );
     }
 
-    /// W3-001 B5c: forfeiting `c` outstanding commitments at finalisation, each
-    /// by its own funded, non-whitelisted committer (cold accounts, the B4d
-    /// lesson), to a funded proposer. 64 is the runtimes'
-    /// `MaxCommitmentsPerOrder`.
+    /// W3-001 B5c/B5c3: forfeiting `c` outstanding commitments at
+    /// finalisation, each by its own funded, non-whitelisted committer (cold
+    /// accounts, the B4d lesson): each deposit is slashed from its reserve and
+    /// burned, the only path. 64 is the runtimes' `MaxCommitmentsPerOrder`.
     #[benchmark]
     fn forfeit_commitments(c: Linear<0, 64>) {
         assert!(c <= T::MaxCommitmentsPerOrder::get(), "c within the cap");
@@ -1502,7 +1502,7 @@ mod benchmarks {
 
         #[block]
         {
-            QuantumComputeMempool::<T>::forfeit_commitments(order_id, &proposer);
+            QuantumComputeMempool::<T>::forfeit_commitments(order_id);
         }
 
         assert!(AnswerCommitments::<T>::iter_prefix(order_id)

@@ -5210,19 +5210,44 @@ mod w3_001_commitments {
         )
     }
 
-    fn forfeits(id: u64) -> Vec<(AccountId, u128, u128)> {
+    fn forfeits(id: u64) -> Vec<(AccountId, u128)> {
         System::events()
             .into_iter()
             .filter_map(|record| match record.event {
                 RuntimeEvent::QuantumComputeMempool(crate::Event::CommitmentForfeited {
                     order_id,
                     solver,
-                    to_proposer,
                     burned,
-                }) if order_id == id => Some((solver, to_proposer, burned)),
+                }) if order_id == id => Some((solver, burned)),
                 _ => None,
             })
             .collect()
+    }
+
+    /// An open single-best order with `reward`, proposed by `proposer`.
+    fn propose_with_reward(proposer: AccountId, reward: u128) -> u64 {
+        let spec_id = match JobSpecs::<Test>::iter_keys().next() {
+            Some(spec_id) => spec_id,
+            None => register_spec(),
+        };
+        let id = NextOrderId::<Test>::get();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(proposer),
+            spec_id,
+            sample_params(),
+            reward,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            2,
+            ResultDelivery::OnChainOnly,
+        ));
+        id
+    }
+
+    /// Free plus reserved.
+    fn total(who: AccountId) -> u128 {
+        Balances::free_balance(who) + Balances::reserved_balance(who)
     }
 
     fn assert_no_commitments(id: u64) {
@@ -5236,7 +5261,7 @@ mod w3_001_commitments {
             rates();
             register(2);
             let id = propose_single_best(1, 10, 5);
-            let deposit = QuantumComputeMempool::commitment_deposit();
+            let deposit = QuantumComputeMempool::commitment_deposit(100);
             assert!(deposit > 10, "priced on the entry's bounded size");
             let reserved = Balances::reserved_balance(2);
             assert_ok!(commit(2, id, 7));
@@ -5328,10 +5353,12 @@ mod w3_001_commitments {
         });
     }
 
-    /// Unrevealed commitments are forfeited to the proposer when the order is
-    /// finalised, on the queue's path, solved or not; nothing is left.
+    /// Unrevealed commitments are forfeited when the order is finalised, on
+    /// the queue's path, solved or not: each deposit is burned -- total
+    /// issuance falls by exactly the deposits -- and the proposer's balance
+    /// does not move for them (B5c3). Nothing is left.
     #[test]
-    fn outstanding_commitments_are_forfeited_to_the_proposer_at_finalisation() {
+    fn outstanding_commitments_are_burned_at_finalisation() {
         for solved in [false, true] {
             new_test_ext().execute_with(|| {
                 rates();
@@ -5348,9 +5375,10 @@ mod w3_001_commitments {
                 }
                 assert_ok!(commit(3, id, 3));
                 assert_ok!(commit(4, id, 4));
-                let deposit = QuantumComputeMempool::commitment_deposit();
+                let deposit = QuantumComputeMempool::commitment_deposit(100);
                 let reserved = |who| Balances::reserved_balance(who);
                 let (r3, r4, free1) = (reserved(3), reserved(4), Balances::free_balance(1));
+                let issuance = Balances::total_issuance();
                 System::reset_events();
                 run_to_block(3);
                 assert_ne!(
@@ -5359,20 +5387,18 @@ mod w3_001_commitments {
                 );
                 let mut got = forfeits(id);
                 got.sort();
-                assert_eq!(
-                    got,
-                    vec![(3, deposit, 0), (4, deposit, 0)],
-                    "solved {solved}"
-                );
+                assert_eq!(got, vec![(3, deposit), (4, deposit)], "solved {solved}");
                 assert_eq!((reserved(3), reserved(4)), (r3 - deposit, r4 - deposit));
+                assert_eq!(Balances::total_issuance(), issuance - 2 * deposit);
+                // The proposer gets its unsolved refund, and nothing else.
                 let refund = if solved { 0 } else { 100 };
-                assert_eq!(Balances::free_balance(1), free1 + 2 * deposit + refund);
+                assert_eq!(Balances::free_balance(1), free1 + refund);
                 assert_no_commitments(id);
             });
         }
     }
 
-    /// The lazy settlement (B4c) finalises inline, and forfeits too.
+    /// The lazy settlement (B4c) finalises inline, and burns too.
     #[test]
     fn lazy_settlement_forfeits_too() {
         new_test_ext().execute_with(|| {
@@ -5380,58 +5406,148 @@ mod w3_001_commitments {
             register(3);
             let id = propose_single_best(1, 1, 1);
             assert_ok!(commit(3, id, 3));
-            let deposit = QuantumComputeMempool::commitment_deposit();
+            let deposit = QuantumComputeMempool::commitment_deposit(100);
+            let issuance = Balances::total_issuance();
             System::set_block_number(5);
             assert_ok!(QuantumComputeMempool::reclaim_order(
                 RuntimeOrigin::signed(1),
                 id
             ));
-            assert_eq!(forfeits(id), vec![(3, deposit, 0)]);
+            assert_eq!(forfeits(id), vec![(3, deposit)]);
+            assert_eq!(Balances::total_issuance(), issuance - deposit);
             assert_no_commitments(id);
         });
     }
 
-    /// The proposer reaped before finalisation: the deposit recreates its
-    /// account when it covers the existential deposit, and is burned when it
-    /// does not. (A solved order, so no refund recreates the proposer.)
+    /// The proposer plays no part in a forfeit: reaped before finalisation,
+    /// it stays reaped, and the deposit is burned all the same.
     #[test]
-    fn a_reaped_proposer_is_recreated_or_the_deposit_burned() {
-        for (ed, per_byte, recreated) in [(1u128, 1u128, true), (50, 0, false)] {
-            new_test_ext().execute_with(|| {
-                OrderDepositPerItem::set(10);
-                OrderDepositPerByte::set(per_byte);
-                ExistentialDeposit::set(ed);
-                register(2);
-                register(3);
-                let id = propose_single_best(1, 2, 2);
-                assert_ok!(QuantumComputeMempool::submit_solution(
-                    RuntimeOrigin::signed(2),
-                    id,
-                    sample_solution()
-                ));
-                assert_ok!(commit(3, id, 3));
-                let deposit = QuantumComputeMempool::commitment_deposit();
-                assert_eq!(deposit >= ed, recreated);
-                // Reap the proposer: its order deposit, then its free balance.
-                let held = Balances::reserved_balance(1);
-                let _ = Balances::slash_reserved(&1, held);
-                Balances::make_free_balance_be(&1, 0);
-                assert!(!System::account_exists(&1));
-                let issuance = Balances::total_issuance();
-                System::reset_events();
-                run_to_block(3);
-                if recreated {
-                    assert_eq!(forfeits(id), vec![(3, deposit, 0)]);
-                    assert_eq!(Balances::free_balance(1), deposit);
-                    assert_eq!(Balances::total_issuance(), issuance);
-                } else {
-                    assert_eq!(forfeits(id), vec![(3, 0, deposit)]);
-                    assert!(!System::account_exists(&1));
-                    assert_eq!(Balances::total_issuance(), issuance - deposit);
-                }
-                assert_no_commitments(id);
-            });
-        }
+    fn a_reaped_proposer_is_not_recreated_by_a_forfeit() {
+        new_test_ext().execute_with(|| {
+            rates();
+            register(2);
+            register(3);
+            let id = propose_single_best(1, 2, 2);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(2),
+                id,
+                sample_solution()
+            ));
+            assert_ok!(commit(3, id, 3));
+            let deposit = QuantumComputeMempool::commitment_deposit(100);
+            let held = Balances::reserved_balance(1);
+            let _ = Balances::slash_reserved(&1, held);
+            Balances::make_free_balance_be(&1, 0);
+            assert!(!System::account_exists(&1));
+            let issuance = Balances::total_issuance();
+            System::reset_events();
+            run_to_block(3);
+            assert_eq!(forfeits(id), vec![(3, deposit)]);
+            assert!(!System::account_exists(&1));
+            assert_eq!(Balances::total_issuance(), issuance - deposit);
+            assert_no_commitments(id);
+        });
+    }
+
+    /// The deposit is max(storage deposit, reward / MaxCommitmentsPerOrder),
+    /// with the divisor read from the constant: the floor binds on a large
+    /// reward and not on a small one, and follows the cap when it changes.
+    #[test]
+    fn the_deposit_floor_is_the_reward_over_the_commitment_cap() {
+        new_test_ext().execute_with(|| {
+            rates();
+            register(2);
+            let storage = QuantumComputeMempool::commitment_deposit(0);
+            assert!(storage > 10);
+            let cap = u128::from(MaxCommitmentsPerOrder::get());
+            assert_eq!(cap, 64);
+            // Small reward: the storage deposit binds.
+            assert!(100 / cap < storage);
+            assert_eq!(QuantumComputeMempool::commitment_deposit(100), storage);
+            // Large reward: the floor binds, and the reserve is the floor.
+            let reward = 64 * (storage + 1_000);
+            assert_eq!(
+                QuantumComputeMempool::commitment_deposit(reward),
+                reward / cap
+            );
+            let id = propose_with_reward(1, reward);
+            let reserved = Balances::reserved_balance(2);
+            assert_ok!(commit(2, id, 1));
+            assert_eq!(
+                AnswerCommitments::<Test>::get(id, 2).unwrap().deposit,
+                reward / cap
+            );
+            assert_eq!(Balances::reserved_balance(2), reserved + reward / cap);
+            // The divisor is the constant, not a literal 64.
+            MaxCommitmentsPerOrder::set(32);
+            assert_eq!(
+                QuantumComputeMempool::commitment_deposit(reward),
+                reward / 32
+            );
+        });
+    }
+
+    /// Self-dealing: a proposer filling its order's commitment slots with
+    /// its own sock accounts recovers nothing at finalisation. Proposer and
+    /// socks together end exactly the deposits poorer (plus the order's own
+    /// refund), the proposer's balance does not move for the forfeits, and
+    /// the burn is the whole difference in total issuance.
+    #[test]
+    fn a_proposer_filling_slots_with_its_own_accounts_gains_nothing() {
+        new_test_ext().execute_with(|| {
+            rates();
+            let socks: Vec<AccountId> = (50..54).collect();
+            for &sock in &socks {
+                Balances::make_free_balance_be(&sock, 1_000_000);
+                register(sock);
+            }
+            let reward = 64_000;
+            let id = propose_with_reward(1, reward);
+            let deposit = QuantumComputeMempool::commitment_deposit(reward);
+            assert_eq!(deposit, reward / 64);
+            for &sock in &socks {
+                assert_ok!(commit(sock, id, sock as u8));
+            }
+            let group = |ids: &[AccountId]| ids.iter().map(|&who| total(who)).sum::<u128>();
+            let before = group(&socks) + total(1);
+            let free1 = Balances::free_balance(1);
+            let issuance = Balances::total_issuance();
+            run_to_block(3);
+            assert_eq!(forfeits(id).len(), socks.len());
+            let burned = deposit * socks.len() as u128;
+            // Unsolved: the proposer gets the reward back from escrow.
+            assert_eq!(Balances::free_balance(1), free1 + reward);
+            assert_eq!(group(&socks) + total(1), before + reward - burned);
+            assert_eq!(Balances::total_issuance(), issuance - burned);
+        });
+    }
+
+    /// A short reserve: if something else took part of the committer's
+    /// reserve before finalisation, `burned` is the amount actually slashed,
+    /// not the nominal deposit, and issuance falls by that.
+    #[test]
+    fn a_short_reserve_burns_and_reports_what_was_there() {
+        new_test_ext().execute_with(|| {
+            rates();
+            let committer = 60;
+            Balances::make_free_balance_be(&committer, 1_000_000);
+            register(committer);
+            let id = propose_single_best(1, 2, 2);
+            assert_ok!(commit(committer, id, 1));
+            let deposit = QuantumComputeMempool::commitment_deposit(100);
+            // Leave half the deposit in the reserve (the registration
+            // deposit shares the pool and goes first).
+            let reserved = Balances::reserved_balance(committer);
+            let left = deposit / 2;
+            let _ = Balances::slash_reserved(&committer, reserved - left);
+            assert_eq!(Balances::reserved_balance(committer), left);
+            let issuance = Balances::total_issuance();
+            System::reset_events();
+            run_to_block(3);
+            assert_eq!(forfeits(id), vec![(committer, left)]);
+            assert_eq!(Balances::reserved_balance(committer), 0);
+            assert_eq!(Balances::total_issuance(), issuance - left);
+        });
     }
 
     /// `on_initialize` charges exactly the forfeits it performed: the same

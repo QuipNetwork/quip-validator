@@ -543,13 +543,14 @@ fn normalize_reveal(before: &mut Value, after: &mut Value) -> Result<(), String>
 // `AnswerCommitted`/`CommitmentForfeited` events. Runs first: the newest delta.
 const MAX_COMMITMENTS_PER_ORDER_DOCS: &[&str] = &[
     " The most outstanding answer commitments one order holds (W3-001,",
-    " design §B5 v2 item 3): 64, twice the 32-solver cap.",
+    " design §B5 v2 item 3): 64, twice the 32-solver cap. Also the",
+    " divisor of the commitment deposit's floor, reward / this (B5c3).",
 ];
 const ANSWER_COMMITMENTS_DOCS: &[&str] = &[
     " Outstanding answer commitments (W3-001): at most one per (order,",
     " solver), at most `MaxCommitmentsPerOrder` per order, each holding its",
     " reserved deposit. Those still outstanding when the order is finalised",
-    " are forfeited to its proposer.",
+    " are forfeited: the deposit is burned.",
 ];
 const COMMITMENT_COUNT_DOCS: &[&str] =
     &[" The number of outstanding commitments on each order (W3-001)."];
@@ -573,8 +574,7 @@ const ANSWER_COMMITTED_DOCS: &[&str] = &[
 ];
 const COMMITMENT_FORFEITED_DOCS: &[&str] = &[
     "A commitment was still outstanding when its order was finalised",
-    "(W3-001): its deposit went to the proposer (`to_proposer`), or was",
-    "burned when the proposer could not receive it (`burned`).",
+    "(W3-001): its deposit was burned (`burned`, the amount slashed).",
 ];
 const COMMIT_ANSWER_DOCS: &[&str] = &[
     "Commit to an answer before revealing it (W3-001, design §B5 v2).",
@@ -586,9 +586,9 @@ const COMMIT_ANSWER_DOCS: &[&str] = &[
     "brute-force the commitment. Allowed to a registered solver eligible",
     "for the order's mode, while the order is open and not expired.",
     "Committing again replaces the commitment (and its block) in place;",
-    "a first commitment reserves the commitment deposit, which the reveal",
-    "returns and finalisation forfeits to the proposer if it is still",
-    "outstanding.",
+    "a first commitment reserves the commitment deposit",
+    "([`Pallet::commitment_deposit`]), which the reveal returns and",
+    "finalisation burns if it is still outstanding.",
 ];
 
 fn normalize_commitments(before: &mut Value, after: &mut Value) -> Result<(), String> {
@@ -779,7 +779,6 @@ fn normalize_commitments(before: &mut Value, after: &mut Value) -> Result<(), St
             "fields": [
                 {"name": "order_id", "type": order_id_ty, "typeName": "u64"},
                 {"name": "solver", "type": account_ty, "typeName": "T::AccountId"},
-                {"name": "to_proposer", "type": balance_ty.clone(), "typeName": "BalanceOf<T>"},
                 {"name": "burned", "type": balance_ty, "typeName": "BalanceOf<T>"},
             ],
             "index": len.saturating_sub(1),
@@ -3900,6 +3899,20 @@ mod tests {
             .unwrap()
             .pop();
         cases.push(("CommitmentForfeited without burned".into(), wrong));
+        // B5c3: the forfeit is a burn; a `to_proposer` field is refused.
+        let mut wrong = after.clone();
+        let fields = mempool_variants(&mut wrong, "event")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "CommitmentForfeited")
+            .unwrap()["fields"]
+            .as_array_mut()
+            .unwrap();
+        let burned = fields.last().unwrap().clone();
+        let mut to_proposer = burned.clone();
+        to_proposer["name"] = Value::from("to_proposer");
+        fields.insert(fields.len() - 1, to_proposer);
+        cases.push(("CommitmentForfeited with to_proposer".into(), wrong));
         for (name, wrong) in cases {
             assert!(check(&before, &wrong).is_err(), "accepted {name}");
         }
