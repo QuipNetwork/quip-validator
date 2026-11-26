@@ -603,6 +603,7 @@ mod tests {
     mod block_length {
         use super::*;
         use frame_support::dispatch::{DispatchClass, GetDispatchInfo};
+        use sp_runtime::traits::Hash as _;
         use sp_runtime::transaction_validity::{TransactionSource, TransactionValidity};
 
         fn ext_with_funded(who: &AccountId) -> sp_io::TestExternalities {
@@ -764,7 +765,7 @@ mod tests {
                     pallet_collective::Call::<Runtime, pallet_collective::Instance1>::propose {
                         threshold: 4,
                         length_bound: proposal.encoded_size() as u32,
-                        proposal: Box::new(proposal),
+                        proposal: Box::new(proposal.clone()),
                     }
                     .into(),
                     0,
@@ -779,6 +780,17 @@ mod tests {
                 assert!(wasm.len() > 1024 * 1024, "the real runtime Wasm");
                 assert_eq!(xt.0.function.get_dispatch_info().class, DispatchClass::Operational);
                 assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+                // The dispatch itself succeeds -- the motion is recorded. Both a
+                // member-signed `dispatch_as_root` and this `propose` validate as
+                // Operational; only the inner result tells them apart (the
+                // former is `BadOrigin`).
+                System::reset_events();
+                frame_support::assert_ok!(Executive::apply_extrinsic(xt).unwrap());
+                let hash = <Runtime as frame_system::Config>::Hashing::hash_of(&proposal);
+                assert!(
+                    pallet_collective::Proposals::<Runtime, pallet_collective::Instance1>::get()
+                        .contains(&hash)
+                );
             });
         }
     }
