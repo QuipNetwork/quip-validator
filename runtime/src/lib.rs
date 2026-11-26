@@ -1805,6 +1805,103 @@ mod tests {
     }
 
     #[test]
+    fn reveal_proof_envelope_is_pinned_under_its_floor() {
+        use frame_support::{dispatch::GetDispatchInfo, traits::Hooks};
+        use pallet_quantum_compute_mempool::weights::{
+            reveal_solution_proof_envelope, REVEAL_SOLUTION_PROOF_FLOOR,
+            SUBMIT_SOLUTION_PROOF_FLOOR,
+        };
+        <QuantumComputeMempool as Hooks<BlockNumber>>::integrity_test();
+        // W3-001 B5d4. Every touched key at `max_size` + `TRIE_OVERHEAD_PER_KEY`
+        // (4,950 B):
+        //   the submission envelope                                  808,954
+        //   + `AnswerCommitments` (124 + 4,950)                        5,074
+        //   + `CommitmentCount` (28 + 4,950)                           4,978
+        //   + the solver's `System::Account` (128 + 4,950)             5,078
+        //   = a reveal without an eviction (B5d)                     824,084
+        //   + the evicted `OrderSolutions` (100,206 + 4,950)         105,156
+        //   + the evicted `OrderPayees` (101 + 4,950)                  5,051
+        //   + 31 more `OrderAnswers` for the rebuild ((120 + 4,950) x 31)
+        //                                                            157,170
+        //   = 1,091,461: over the 1 MiB submission floor, under the 1.25 MiB
+        //     reveal floor.
+        let envelope = reveal_solution_proof_envelope::<Runtime>();
+        assert_eq!(envelope, 1_091_461);
+        assert!(envelope > SUBMIT_SOLUTION_PROOF_FLOOR);
+        assert!(envelope <= REVEAL_SOLUTION_PROOF_FLOOR);
+        let call: RuntimeCall = pallet_quantum_compute_mempool::Call::reveal_solution {
+            order_id: 0,
+            solutions: Default::default(),
+            payee: None,
+            salt: [0; 32],
+        }
+        .into();
+        let info = call.get_dispatch_info();
+        assert!(info.call_weight.proof_size() >= REVEAL_SOLUTION_PROOF_FLOOR);
+        let limits = <Runtime as frame_system::Config>::BlockWeights::get();
+        let normal = limits.get(frame_support::dispatch::DispatchClass::Normal);
+        assert!(info.call_weight.all_lte(normal.max_extrinsic.unwrap()));
+    }
+
+    /// W3-001 B5d4: known-answer vectors for `answer_commitment`, so an
+    /// off-chain miner can check its tag, field order and payee encoding. The
+    /// hex values were computed independently (Python `hashlib.blake2b`,
+    /// digest size 32) from the bytes spelled out below.
+    #[test]
+    fn answer_commitment_known_answer_vectors() {
+        use codec::Encode;
+        use frame_support::BoundedVec;
+        use pallet_quantum_compute_mempool::types::WinnerPayee;
+        let solver = AccountId::new([0x11; 32]);
+        let salt = [0x33u8; 32];
+        let solutions = BoundedVec::truncate_from(vec![
+            BoundedVec::truncate_from(vec![1i8, -1, 1, -1]),
+            BoundedVec::truncate_from(vec![-1i8, -1, 1, 1]),
+        ]);
+        // SCALE: compact(2) rows, each compact(4) spins as i8.
+        assert_eq!(
+            solutions.encode(),
+            [0x08, 0x10, 0x01, 0xff, 0x01, 0xff, 0x10, 0xff, 0xff, 0x01, 0x01]
+        );
+        assert_eq!(
+            hex::encode(sp_core::hashing::blake2_256(&solutions.encode())),
+            "93565f7117e49bc0cf1d84cc15e16f68d5e87cb30951b49adb0236fd35727218"
+        );
+        let payee = WinnerPayee::V1 {
+            chain_id: 20033,
+            address: sp_core::H160::repeat_byte(0x22),
+        };
+        // The preimage: the 21 tag bytes (no length prefix), `order_id` as
+        // u64 LE, the 32-byte account, the solutions hash, the payee as an
+        // `Option` (0x00, or 0x01 then variant 0x00, `chain_id` u64 LE and the
+        // 20 address bytes), then the 32 salt bytes: 126 or 155 bytes.
+        for (payee, preimage_len, expected) in [
+            (
+                None,
+                126,
+                "64d23969b80227766ee9ccb0c1b34d652aceafcfe3894ec6ebdb4baf34fa8d60",
+            ),
+            (
+                Some(payee),
+                155,
+                "f45d03413da58b61fd62d6f0167f498bd333b8c2d2dabac8aaface2c0683f5b4",
+            ),
+        ] {
+            let mut preimage = b"quip-answer-commit-v1".to_vec();
+            preimage.extend_from_slice(&7u64.to_le_bytes());
+            preimage.extend_from_slice(solver.as_ref());
+            preimage.extend_from_slice(&sp_core::hashing::blake2_256(&solutions.encode()));
+            preimage.extend_from_slice(&payee.encode());
+            preimage.extend_from_slice(&salt);
+            assert_eq!(preimage.len(), preimage_len);
+            let commitment =
+                QuantumComputeMempool::answer_commitment(7, &solver, &solutions, &payee, &salt);
+            assert_eq!(commitment.0, sp_core::hashing::blake2_256(&preimage));
+            assert_eq!(hex::encode(commitment.0), expected);
+        }
+    }
+
+    #[test]
     fn signed_payee_batch_binds_signer_and_rolls_back_failed_correlation() {
         use frame_support::{assert_ok, traits::Currency};
         use pallet_quantum_compute_mempool::{

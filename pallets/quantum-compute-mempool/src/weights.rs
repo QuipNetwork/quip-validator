@@ -105,6 +105,10 @@ pub const CLAIM_REWARD_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const RECLAIM_ORDER_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const PROPOSE_JOB_PROOF_FLOOR: u64 = 1024 * 1024;
 pub const SUBMIT_SOLUTION_PROOF_FLOOR: u64 = 1024 * 1024;
+/// A reveal is a submission plus the commitment and, on an eviction, the
+/// evicted solver's records and a rebuild over the answer index (W3-001):
+/// 1.25 MiB.
+pub const REVEAL_SOLUTION_PROOF_FLOOR: u64 = 1024 * 1024 + 256 * 1024;
 
 // SDK model: largest u32 map-cardinality bucket (eight radix-16 layers),
 // plus two global trie layers, each charged separately to EVERY touched key.
@@ -197,6 +201,26 @@ pub fn submit_solution_proof_envelope<T: crate::Config>() -> u64 {
         )
 }
 
+/// A reveal (W3-001): a submission's keys, plus the commitment entry and the
+/// order's commitment count (consumed), the solver's account (the deposit
+/// unreserved) and, on an eviction (B5e), the evicted solver's solution and
+/// payee (removed: write-only keys at `max_size`, like the rest of this
+/// model) and the ranking rebuild's reads of the rest of the answer index
+/// (the submission already counts two of its entries).
+pub fn reveal_solution_proof_envelope<T: crate::Config>() -> u64 {
+    submit_solution_proof_envelope::<T>()
+        .saturating_add(storage_key_envelope::<crate::AnswerCommitments<T>>())
+        .saturating_add(storage_key_envelope::<crate::CommitmentCount<T>>())
+        .saturating_add(storage_key_envelope::<frame_system::Account<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderSolutions<T>>())
+        .saturating_add(storage_key_envelope::<crate::OrderPayees<T>>())
+        .saturating_add(
+            storage_key_envelope::<crate::OrderAnswers<T>>().saturating_mul(u64::from(
+                crate::types::MAX_SOLVERS_PER_OPEN_ORDER.saturating_sub(1),
+            )),
+        )
+}
+
 /// Fail runtime integrity validation if the fixed floor or normal call limit
 /// no longer covers settlement. Currency/VM changes also require rebenchmarking.
 pub fn check_claim_reward_weight<T: crate::Config>() {
@@ -229,6 +253,10 @@ pub fn check_claim_reward_weight<T: crate::Config>() {
     assert!(
         submit_solution_proof_envelope::<T>() <= SUBMIT_SOLUTION_PROOF_FLOOR,
         "submission proof floor no longer covers storage bounds"
+    );
+    assert!(
+        reveal_solution_proof_envelope::<T>() <= REVEAL_SOLUTION_PROOF_FLOOR,
+        "reveal proof floor no longer covers storage bounds"
     );
     assert!(
         propose_job_proof_envelope::<T>() <= PROPOSE_JOB_PROOF_FLOOR,
@@ -323,6 +351,10 @@ fn with_submit_solution_proof_floor(weight: Weight) -> Weight {
     weight.max(Weight::from_parts(0, SUBMIT_SOLUTION_PROOF_FLOOR))
 }
 
+fn with_reveal_solution_proof_floor(weight: Weight) -> Weight {
+    weight.max(Weight::from_parts(0, REVEAL_SOLUTION_PROOF_FLOOR))
+}
+
 // Each generated value already includes its provider's DB costs. Take the
 // componentwise maximum first, then the maintained simultaneous-proof floor.
 fn claim_reward_weight<W: BenchmarkWeightInfo>() -> Weight {
@@ -414,7 +446,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
         <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::forfeit_commitments(c)
     }
     fn reveal_solution(n: u32, e: u32, s: u32) -> Weight {
-        with_submit_solution_proof_floor(
+        with_reveal_solution_proof_floor(
             <benchmark_weights::SubstrateWeight<T> as BenchmarkWeightInfo>::reveal_solution(
                 n, e, s,
             ),
@@ -475,6 +507,6 @@ impl WeightInfo for () {
         <() as BenchmarkWeightInfo>::forfeit_commitments(c)
     }
     fn reveal_solution(n: u32, e: u32, s: u32) -> Weight {
-        with_submit_solution_proof_floor(<() as BenchmarkWeightInfo>::reveal_solution(n, e, s))
+        with_reveal_solution_proof_floor(<() as BenchmarkWeightInfo>::reveal_solution(n, e, s))
     }
 }

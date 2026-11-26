@@ -291,6 +291,35 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5d4. Exact delta: only the docs of the mempool `DuplicateAnswer`
+// error, which now name the evicting reveal. They are put back to W1-012's
+// text, which its own normaliser then checks. Runs first: the newest delta.
+const DUPLICATE_ANSWER_DOCS_W1_012: &[&str] = &[
+    "Another solver already submitted the same answer for this order",
+    "(identical, globally flipped, or differing only in isolated spins).",
+];
+const DUPLICATE_ANSWER_DOCS_W3_001: &[&str] = &[
+    "Another solver already submitted the same answer for this order",
+    "(identical, globally flipped, or differing only in isolated spins),",
+    "unless this is a reveal of a commitment made before that submission",
+    "was effective (see `SolutionEvicted`).",
+];
+
+fn normalize_duplicate_answer_docs(after: &mut Value) -> Result<(), String> {
+    let variant = mempool_variants(after, "error")?
+        .iter_mut()
+        .find(|v| v["name"] == "DuplicateAnswer")
+        .ok_or("missing mempool DuplicateAnswer")?;
+    if variant["docs"] != serde_json::json!(DUPLICATE_ANSWER_DOCS_W3_001) {
+        return Err(format!(
+            "missing or incorrect required mempool DuplicateAnswer docs: {}",
+            variant["docs"]
+        ));
+    }
+    variant["docs"] = serde_json::json!(DUPLICATE_ANSWER_DOCS_W1_012);
+    Ok(())
+}
+
 // W3-001 B5e (eviction). Exact delta: the `SolutionEvicted` event, appended
 // last after `CommitmentForfeited`. Runs first: the newest delta.
 const SOLUTION_EVICTED_DOCS: &[&str] = &[
@@ -2872,6 +2901,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     // First: W3-001 then W3-006 append after every other mempool delta,
     // newest first.
+    normalize_duplicate_answer_docs(&mut right)?;
     normalize_eviction(&mut left, &mut right)?;
     normalize_solution_not_improved_docs(&mut left, &mut right)?;
     normalize_reveal(&mut left, &mut right)?;
@@ -3562,6 +3592,44 @@ mod tests {
             .iter_mut()
             .filter(|ty| ty["type"]["path"] == path)
             .collect()
+    }
+
+    #[test]
+    fn requires_exact_mempool_duplicate_answer_docs() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let set_docs = |docs: Value| -> Value {
+            let mut wrong = after.clone();
+            mempool_variants(&mut wrong, "error")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "DuplicateAnswer")
+                .unwrap()["docs"] = docs;
+            wrong
+        };
+        for (name, wrong) in [
+            (
+                "W1-012 docs",
+                set_docs(serde_json::json!(DUPLICATE_ANSWER_DOCS_W1_012)),
+            ),
+            ("edited docs", set_docs(serde_json::json!(["mutated"]))),
+            (
+                "truncated docs",
+                set_docs(serde_json::json!(&DUPLICATE_ANSWER_DOCS_W3_001[..3])),
+            ),
+        ] {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
+        let mut renamed = after.clone();
+        mempool_variants(&mut renamed, "error")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "DuplicateAnswer")
+            .unwrap()["name"] = Value::from("AnswerTaken");
+        assert!(
+            check(&before, &renamed).is_err(),
+            "accepted a renamed error"
+        );
     }
 
     #[test]

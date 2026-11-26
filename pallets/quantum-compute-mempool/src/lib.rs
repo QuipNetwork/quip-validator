@@ -16,6 +16,30 @@
 //! QUI-2158 tracks reference-count refusal in pallet-xqvm or copying bytes
 //! into mempool storage at registration. It must be closed or explicitly
 //! accepted before mainnet launch.
+//!
+//! ## Commit-reveal, for solvers (W3-001)
+//!
+//! A plain `submit_solution` is front-runnable by design: anyone who sees it
+//! in the transaction pool can submit the same answer first. Protection is
+//! opt-in. `commit_answer` records a hash (see [`Pallet::answer_commitment`])
+//! and reserves a deposit; `reveal_solution` in a later block submits the
+//! answer ranked at the commitment's block, refunds the deposit, and evicts
+//! another solver holding the same answer from a later effective time
+//! (`SolutionEvicted`). A commitment never revealed into an accepted
+//! submission before the order closes forfeits its deposit.
+//!
+//! - **Near-copies are not evicted.** Eviction is by canonical answer. An
+//!   answer at the same energy with a different canonical form -- a
+//!   degenerate spin, a spin coupled only through a self-loop, another
+//!   ground state -- is a different answer: it stays, ranked behind the
+//!   revealer, and under TopN it can dilute the payout.
+//! - **A reveal exposes its rows.** Anyone can then submit them, or a
+//!   near-copy, on another order with the same problem. Commit on every
+//!   concurrent order you intend to answer before revealing on any.
+//! - **Flip twins.** A row and its global flip are one answer, scored at the
+//!   energy of the row submitted. Commit to, and submit, the lower-energy
+//!   flip. (How flip twins are scored is an open owner question; this note
+//!   may change.)
 
 extern crate alloc;
 
@@ -691,7 +715,9 @@ pub mod pallet {
         /// proposer below the existential deposit.
         RewardNotSpendable,
         /// Another solver already submitted the same answer for this order
-        /// (identical, globally flipped, or differing only in isolated spins).
+        /// (identical, globally flipped, or differing only in isolated spins),
+        /// unless this is a reveal of a commitment made before that submission
+        /// was effective (see `SolutionEvicted`).
         DuplicateAnswer,
         /// The proposer cannot reserve the order's storage deposit (W3-006).
         DepositNotAvailable,
