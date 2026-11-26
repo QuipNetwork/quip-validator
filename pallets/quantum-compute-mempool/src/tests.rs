@@ -5602,6 +5602,49 @@ mod w3_001_reveal {
         });
     }
 
+    /// The preimage binds the solver and the order (B5d2). A watcher who
+    /// front-runs Y's commit transaction with Y's own hash H, then replays Y's
+    /// public preimage, gets `CommitmentMismatch`: the hash recomputed for the
+    /// watcher differs from H. Y's own reveal still lands. And H cannot be
+    /// replayed on another order.
+    #[test]
+    fn a_copied_commitment_cannot_be_revealed_by_another_solver() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            let id = propose(RewardResolution::SingleBest, 5);
+            let other = propose(RewardResolution::SingleBest, 5);
+            // Y (2) commits H; the watcher X (3) copies H, here on both orders.
+            commit(2, id, 4);
+            let h = crate::AnswerCommitments::<Test>::get(id, 2)
+                .unwrap()
+                .commitment;
+            for order in [id, other] {
+                assert_ok!(QuantumComputeMempool::commit_answer(
+                    RuntimeOrigin::signed(3),
+                    order,
+                    h
+                ));
+            }
+            run_to_block(2);
+            // X replays Y's preimage: the same solutions, payee and salt.
+            for order in [id, other] {
+                assert_noop!(
+                    reveal(3, order, 4).map_err(|e| e.error),
+                    crate::Error::<Test>::CommitmentMismatch
+                );
+            }
+            // Y's preimage does not open Y's own hash on another order either.
+            commit(2, other, 6);
+            assert_ne!(
+                QuantumComputeMempool::answer_commitment(other, &2, &chain_row(4, 4), &None, &SALT),
+                h
+            );
+            assert_ok!(reveal(2, id, 4));
+            assert_eq!(OrderSolutions::<Test>::get(id, 2).unwrap().effective_at, 1);
+        });
+    }
+
     /// N3: a reveal whose submission is refused (here a duplicate answer)
     /// rolls back entirely -- the commitment, the count and the deposit stay.
     #[test]
