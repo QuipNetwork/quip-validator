@@ -887,6 +887,121 @@ mod tests {
         }
     }
 
+    // W3-005 (B2): the length fee is one `MICRO_UNIT` per encoded byte.
+    mod byte_fee {
+        use super::*;
+        use frame_support::{dispatch::GetDispatchInfo, traits::Currency as _};
+        use sp_runtime::transaction_validity::{
+            InvalidTransaction, TransactionSource, TransactionValidity,
+        };
+
+        fn ext() -> sp_io::TestExternalities {
+            let mut ext = sp_io::TestExternalities::new(
+                RuntimeGenesisConfig::default().build_storage().unwrap(),
+            );
+            ext.execute_with(|| System::set_block_number(1));
+            ext
+        }
+
+        fn validate(xt: UncheckedExtrinsic) -> TransactionValidity {
+            Executive::validate_transaction(TransactionSource::External, xt, System::block_hash(0))
+        }
+
+        fn len_fee(xt: &UncheckedExtrinsic) -> Balance {
+            let len = xt.encode().len() as u32;
+            TransactionPayment::compute_fee_details(len, &xt.0.get_dispatch_info(), 0)
+                .inclusion_fee
+                .expect("signed")
+                .len_fee
+        }
+
+        /// Two signed remarks whose payloads differ by N bytes have encoded
+        /// lengths that differ by N, and length fees that differ by exactly
+        /// N x `MICRO_UNIT`; each length fee is its whole length (signature
+        /// included) x `MICRO_UNIT`. The same call charged at two lengths
+        /// differs in total fee by exactly N x `MICRO_UNIT` (a remark's weight
+        /// also grows with its payload, so two different remarks' totals do
+        /// not).
+        #[test]
+        fn the_length_fee_is_one_micro_unit_per_byte() {
+            assert_eq!(configs::TransactionByteFee::get(), MICRO_UNIT);
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let who = account_id_from_public(&sender.public());
+            ext().execute_with(|| {
+                const N: usize = 777;
+                let remark = |bytes: usize| {
+                    signed_test_extrinsic(
+                        &sender,
+                        who.clone().into(),
+                        SystemCall::remark {
+                            remark: vec![7; bytes],
+                        }
+                        .into(),
+                        0,
+                    )
+                };
+                let (short, long) = (remark(1_000), remark(1_000 + N));
+                let (short_len, long_len) = (short.encode().len(), long.encode().len());
+                assert_eq!(long_len - short_len, N);
+                assert_eq!(len_fee(&short), short_len as Balance * MICRO_UNIT);
+                assert_eq!(len_fee(&long), long_len as Balance * MICRO_UNIT);
+                assert_eq!(len_fee(&long) - len_fee(&short), N as Balance * MICRO_UNIT);
+                let info = short.0.get_dispatch_info();
+                let at = |len: usize| TransactionPayment::compute_fee(len as u32, &info, 0);
+                assert_eq!(at(short_len + N) - at(short_len), N as Balance * MICRO_UNIT);
+            });
+        }
+
+        /// The Foundation's runtime upgrade with this runtime's real Wasm costs
+        /// about 1.76 QUIP, almost all of it length, and is payable from a
+        /// Foundation account holding 10 QUIP; with 1 QUIP it cannot pay.
+        #[test]
+        fn the_foundation_runtime_upgrade_is_payable_from_a_funded_account() {
+            let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let who = account_id_from_public(&sender.public());
+            for (funds, payable) in [(10 * UNIT, true), (UNIT, false)] {
+                ext().execute_with(|| {
+                    Balances::make_free_balance_be(&who, funds);
+                    pallet_membership::Members::<Runtime, pallet_membership::Instance1>::put(
+                        frame_support::BoundedVec::try_from(vec![who.clone()]).unwrap(),
+                    );
+                    let xt = signed_test_extrinsic(
+                        &sender,
+                        who.clone().into(),
+                        pallet_validator_admission::Call::<Runtime>::dispatch_as_root {
+                            call: Box::new(
+                                SystemCall::set_code {
+                                    code: wasm.to_vec(),
+                                }
+                                .into(),
+                            ),
+                        }
+                        .into(),
+                        0,
+                    );
+                    let len = xt.encode().len() as Balance;
+                    let fee = TransactionPayment::query_info(xt.clone(), len as u32).partial_fee;
+                    assert_eq!(len_fee(&xt), len * MICRO_UNIT);
+                    assert!(fee > len * MICRO_UNIT && fee < 2 * UNIT, "fee {fee}");
+                    if payable {
+                        assert!(validate(xt.clone()).is_ok(), "{:?}", validate(xt));
+                        // Included and charged, whatever the upgrade's own result.
+                        assert!(Executive::apply_extrinsic(xt).is_ok());
+                        let paid = funds - Balances::free_balance(&who);
+                        assert!(paid > len * MICRO_UNIT && paid <= fee, "paid {paid}");
+                    } else {
+                        assert_eq!(
+                            validate(xt),
+                            Err(InvalidTransaction::Payment.into()),
+                            "1 QUIP cannot pay a ~1.76 QUIP upgrade"
+                        );
+                    }
+                });
+            }
+        }
+    }
+
     // A10b (QUI-2548 follow-up): the `eth_transact` payload cap.
     mod eth_transact_cap {
         use super::*;

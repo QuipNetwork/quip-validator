@@ -33,7 +33,7 @@ use frame_support::{
     traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, InstanceFilter, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
-        IdentityFee, Weight,
+        ConstantMultiplier, Weight,
     },
 };
 use frame_system::limits::{BlockLength, BlockWeights};
@@ -384,6 +384,25 @@ impl pallet_proxy::Config for Runtime {
 
 parameter_types! {
     pub FeeMultiplier: Multiplier = Multiplier::one();
+    /// The length fee (W3-005): one `MICRO_UNIT` per encoded byte of an
+    /// extrinsic, signature included. Before it was one planck per byte
+    /// (`IdentityFee`), so a block filled with bytes cost almost nothing
+    /// beyond weight: about 0.043 QUIP for a 3.5 MiB Normal block, now about
+    /// 3.72 QUIP. Measured on real signed extrinsics (release runtime,
+    /// 2026-11-26):
+    /// - every signed extrinsic carries about 1,700 B of hybrid H4 signature
+    ///   and extensions, so it pays at least about 0.0017 QUIP for length: a
+    ///   transfer is about 0.0027 QUIP (was 0.00098);
+    /// - the Foundation's runtime upgrade, `dispatch_as_root(set_code)` with
+    ///   the ~1.6 MB Wasm, is about 1.76 QUIP (was 0.17); its signing account
+    ///   must hold that;
+    /// - a realistic quantum-pow proof (32 packed 5,000-spin solutions,
+    ///   ~22 KB) is about 0.028 QUIP, 2.8% of the default 1 QUIP block reward
+    ///   (miner proofs pay the normal fee);
+    /// - a maximum-size `propose_job` (~642 KB) is about 0.65 QUIP, 65% of
+    ///   `QuantumMinReward` (unchanged; noted for the owner);
+    /// - an `eth_transact` at the payload cap adds about 1.245 QUIP to its gas.
+    pub const TransactionByteFee: Balance = MICRO_UNIT;
 }
 
 impl pallet_transaction_payment::Config for Runtime {
@@ -391,7 +410,7 @@ impl pallet_transaction_payment::Config for Runtime {
     type OnChargeTransaction = FungibleAdapter<Balances, ()>;
     type OperationalFeeMultiplier = ConstU8<5>;
     type WeightToFee = pallet_revive::evm::fees::BlockRatioFee<1, 1, Runtime, Balance>;
-    type LengthToFee = IdentityFee<Balance>;
+    type LengthToFee = ConstantMultiplier<Balance, TransactionByteFee>;
     type FeeMultiplierUpdate = ConstFeeMultiplier<FeeMultiplier>;
     type WeightInfo = pallet_transaction_payment::weights::SubstrateWeight<Runtime>;
 }
