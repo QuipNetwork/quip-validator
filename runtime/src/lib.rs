@@ -1024,7 +1024,7 @@ mod tests {
         /// motion is recorded -- the dispatch itself succeeds.
         #[test]
         fn the_foundation_upgrade_proposal_is_payable_from_a_funded_account() {
-            let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
+            let wasm = shipped_wasm();
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
             let rate = configs::TransactionByteFee::get();
@@ -1080,7 +1080,7 @@ mod tests {
         /// `apply_authorized_upgrade`, which validates and pays no fee.
         #[test]
         fn an_authorized_upgrade_is_applied_unsigned_and_fee_free() {
-            let wasm = WASM_BINARY.expect("tests build the Wasm runtime");
+            let wasm = shipped_wasm();
             let sender = HybridPair::from_string("//Alice", None).unwrap();
             let who = account_id_from_public(&sender.public());
             ext().execute_with(|| {
