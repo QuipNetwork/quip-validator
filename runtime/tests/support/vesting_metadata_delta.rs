@@ -291,6 +291,47 @@ fn revive_constant(metadata: &Value, name: &str) -> Option<Value> {
         .cloned()
 }
 
+// W3-001 B5d3 (same-solver replacement by rank key). Exact delta: only the
+// docs of the mempool `SolutionNotImproved` error, which now names the
+// equal-energy reveal from an earlier commitment. Runs first: the newest
+// delta.
+const SOLUTION_NOT_IMPROVED_DOCS_BEFORE: &[&str] =
+    &["A solver may replace its accepted payload only with a lower energy."];
+const SOLUTION_NOT_IMPROVED_DOCS_AFTER: &[&str] = &[
+    "A solver may replace its accepted payload only with a better one: a",
+    "lower energy, or an equal energy revealed from an earlier",
+    "commitment (W3-001).",
+];
+
+fn normalize_solution_not_improved_docs(
+    before: &mut Value,
+    after: &mut Value,
+) -> Result<(), String> {
+    let docs = |metadata: &mut Value| -> Result<Value, String> {
+        mempool_variants(metadata, "error")?
+            .iter()
+            .find(|v| v["name"] == "SolutionNotImproved")
+            .map(|v| v["docs"].clone())
+            .ok_or_else(|| "missing mempool SolutionNotImproved".to_string())
+    };
+    if docs(before)? != serde_json::json!(SOLUTION_NOT_IMPROVED_DOCS_BEFORE) {
+        return Err("unexpected baseline mempool SolutionNotImproved docs".into());
+    }
+    if docs(after)? != serde_json::json!(SOLUTION_NOT_IMPROVED_DOCS_AFTER) {
+        return Err(format!(
+            "missing or incorrect required mempool SolutionNotImproved docs: {}",
+            docs(after)?
+        ));
+    }
+    if let Some(variant) = mempool_variants(after, "error")?
+        .iter_mut()
+        .find(|v| v["name"] == "SolutionNotImproved")
+    {
+        variant["docs"] = serde_json::json!(SOLUTION_NOT_IMPROVED_DOCS_BEFORE);
+    }
+    Ok(())
+}
+
 // W3-001 B5d (reveal). Exact deltas, each appended last: the
 // `reveal_solution` call (index 11: order id, `submit_solution`'s solutions
 // type, the `Option<WinnerPayee>` of `SolutionPayeeSet`, a `[u8; 32]` salt)
@@ -2772,6 +2813,7 @@ pub fn check(before: &Value, after: &Value) -> Result<(), String> {
     }
     // First: W3-001 then W3-006 append after every other mempool delta,
     // newest first.
+    normalize_solution_not_improved_docs(&mut left, &mut right)?;
     normalize_reveal(&mut left, &mut right)?;
     normalize_commitments(&mut left, &mut right)?;
     normalize_ordering_key(&mut left, &mut right)?;
@@ -3460,6 +3502,50 @@ mod tests {
             .iter_mut()
             .filter(|ty| ty["type"]["path"] == path)
             .collect()
+    }
+
+    #[test]
+    fn requires_exact_mempool_solution_not_improved_docs() {
+        let (before, after) = metadata_pair();
+        check(&before, &after).unwrap();
+        let set_docs = |metadata: &Value, docs: Value| -> Value {
+            let mut wrong = metadata.clone();
+            mempool_variants(&mut wrong, "error")
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["name"] == "SolutionNotImproved")
+                .unwrap()["docs"] = docs;
+            wrong
+        };
+        for (name, wrong) in [
+            (
+                "unchanged docs",
+                set_docs(&after, serde_json::json!(SOLUTION_NOT_IMPROVED_DOCS_BEFORE)),
+            ),
+            (
+                "edited docs",
+                set_docs(&after, serde_json::json!(["mutated"])),
+            ),
+            (
+                "truncated docs",
+                set_docs(
+                    &after,
+                    serde_json::json!(&SOLUTION_NOT_IMPROVED_DOCS_AFTER[..2]),
+                ),
+            ),
+        ] {
+            assert!(check(&before, &wrong).is_err(), "accepted {name}");
+        }
+        let mut renamed = after.clone();
+        mempool_variants(&mut renamed, "error")
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == "SolutionNotImproved")
+            .unwrap()["name"] = Value::from("SolutionNotBetter");
+        assert!(
+            check(&before, &renamed).is_err(),
+            "accepted a renamed error"
+        );
     }
 
     #[test]

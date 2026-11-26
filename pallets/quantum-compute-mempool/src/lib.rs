@@ -643,7 +643,9 @@ pub mod pallet {
         /// solution minimum below two. `None` remains valid because it
         /// selects every valid submitted solution.
         InvalidDiversityConfig,
-        /// A solver may replace its accepted payload only with a lower energy.
+        /// A solver may replace its accepted payload only with a better one: a
+        /// lower energy, or an equal energy revealed from an earlier
+        /// commitment (W3-001).
         SolutionNotImproved,
         /// The order's escrow account does not hold its reward; the order is
         /// kept and nothing is paid.
@@ -1909,10 +1911,23 @@ pub mod pallet {
                 previous.is_some() || order.solution_count < types::MAX_SOLVERS_PER_OPEN_ORDER,
                 Error::<T>::OrderSolverCapReached
             );
+            // W3-001: the ordering key, a revealed commitment's block or else
+            // the arrival block, then the order's arrival counter (N2). A
+            // replacement must have a lower key (B5d3), the comparison the
+            // ranking uses (B5b3): a plain resubmission arrives after its own
+            // previous one, so it still needs a lower energy, while a reveal
+            // at equal energy from an earlier commitment replaces.
+            let effective_at = effective_at.unwrap_or(now);
+            let seq = NextSubmissionSeq::<T>::get(order_id);
             ensure!(
-                previous
-                    .as_ref()
-                    .is_none_or(|accepted| best_energy < accepted.best_energy_milli),
+                previous.as_ref().is_none_or(|accepted| {
+                    (best_energy, effective_at, seq)
+                        < (
+                            accepted.best_energy_milli,
+                            accepted.effective_at,
+                            accepted.seq,
+                        )
+                }),
                 Error::<T>::SolutionNotImproved
             );
 
@@ -1986,10 +2001,6 @@ pub mod pallet {
                 Error::<T>::DuplicateAnswer
             );
 
-            // W3-001: the ordering key. A revealed commitment's block, else the
-            // arrival block; `seq` is the order's arrival counter (N2).
-            let effective_at = effective_at.unwrap_or(now);
-            let seq = NextSubmissionSeq::<T>::get(order_id);
             NextSubmissionSeq::<T>::insert(order_id, seq.saturating_add(1));
 
             let is_new_solver = previous.is_none();

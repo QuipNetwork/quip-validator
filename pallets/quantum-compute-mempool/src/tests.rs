@@ -5462,6 +5462,7 @@ mod w3_001_commitments {
 mod w3_001_reveal {
     use super::*;
     use crate::{AnswerCommitments, CommitmentCount};
+    use sp_core::H256;
 
     const SALT: [u8; 32] = [7; 32];
 
@@ -5642,6 +5643,112 @@ mod w3_001_reveal {
             );
             assert_ok!(reveal(2, id, 4));
             assert_eq!(OrderSolutions::<Test>::get(id, 2).unwrap().effective_at, 1);
+        });
+    }
+
+    /// B5d3: a solver that plain-submitted an answer and also committed to it
+    /// earlier can reveal it. Admission compares the full rank key, so the
+    /// reveal at equal energy and an earlier `effective_at` replaces the
+    /// solver's own entry -- not `SolutionNotImproved`, and not
+    /// `DuplicateAnswer` against its own index entry -- and the deposit is
+    /// refunded, under every resolution.
+    #[test]
+    fn a_reveal_replaces_the_solvers_own_later_plain_submission() {
+        for resolution in [
+            RewardResolution::SingleBest,
+            RewardResolution::TopNEqual { n: 2 },
+            RewardResolution::TopNWeighted { n: 2 },
+        ] {
+            new_test_ext().execute_with(|| {
+                OrderDepositPerItem::set(10);
+                register(2);
+                let id = propose(resolution, 10);
+                let reserved = Balances::reserved_balance(2);
+                commit(2, id, 4);
+                run_to_block(2);
+                assert_ok!(QuantumComputeMempool::submit_solution(
+                    RuntimeOrigin::signed(2),
+                    id,
+                    chain_row(4, 4)
+                ));
+                assert_eq!(OrderSolutions::<Test>::get(id, 2).unwrap().effective_at, 2);
+                run_to_block(3);
+                assert_ok!(reveal(2, id, 4));
+                let solution = OrderSolutions::<Test>::get(id, 2).unwrap();
+                assert_eq!(
+                    (solution.effective_at, solution.seq),
+                    (1, 1),
+                    "{resolution:?}"
+                );
+                let owner = crate::OrderAnswers::<Test>::get(id, solution.answer).unwrap();
+                assert_eq!((owner.solver, owner.effective_at, owner.seq), (2, 1, 1));
+                assert_eq!(crate::OrderAnswers::<Test>::iter_prefix(id).count(), 1);
+                match resolution {
+                    RewardResolution::SingleBest => {
+                        let front = OrderFrontRunner::<Test>::get(id).unwrap();
+                        assert_eq!((front.solver, front.effective_at, front.seq), (2, 1, 1));
+                    }
+                    _ => {
+                        let ranked = crate::OrderTopSolvers::<Test>::get(id);
+                        assert_eq!(ranked.len(), 1);
+                        assert_eq!(
+                            (ranked[0].solver, ranked[0].effective_at, ranked[0].seq),
+                            (2, 1, 1)
+                        );
+                    }
+                }
+                assert_eq!(JobOrders::<Test>::get(id).unwrap().solution_count, 1);
+                assert!(AnswerCommitments::<Test>::get(id, 2).is_none());
+                assert_eq!(Balances::reserved_balance(2), reserved);
+                // A plain resubmission at equal energy is still refused.
+                assert_noop!(
+                    QuantumComputeMempool::submit_solution(
+                        RuntimeOrigin::signed(2),
+                        id,
+                        chain_row(4, 4)
+                    )
+                    .map_err(|e| e.error),
+                    crate::Error::<Test>::SolutionNotImproved
+                );
+            });
+        }
+    }
+
+    /// B5d3: re-committing resets the commitment's block, so garbage
+    /// committed early and replaced by a real commitment later does not lend
+    /// the real answer the early time: an equal-energy plain answer that
+    /// landed in between still ranks first.
+    #[test]
+    fn a_recommitment_carries_its_own_later_block() {
+        new_test_ext().execute_with(|| {
+            register(2);
+            register(3);
+            let id = propose(RewardResolution::TopNEqual { n: 2 }, 10);
+            assert_ok!(QuantumComputeMempool::commit_answer(
+                RuntimeOrigin::signed(2),
+                id,
+                H256::repeat_byte(9)
+            ));
+            run_to_block(2);
+            assert_ok!(QuantumComputeMempool::submit_solution(
+                RuntimeOrigin::signed(3),
+                id,
+                chain_row(4, 6)
+            ));
+            run_to_block(3);
+            commit(2, id, 4);
+            assert_eq!(
+                AnswerCommitments::<Test>::get(id, 2).unwrap().commit_block,
+                3
+            );
+            run_to_block(4);
+            assert_ok!(reveal(2, id, 4));
+            assert_eq!(OrderSolutions::<Test>::get(id, 2).unwrap().effective_at, 3);
+            let order: Vec<_> = crate::OrderTopSolvers::<Test>::get(id)
+                .iter()
+                .map(|entry| entry.solver)
+                .collect();
+            assert_eq!(order, vec![3, 2]);
         });
     }
 
